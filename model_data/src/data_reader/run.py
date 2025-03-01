@@ -7,7 +7,7 @@ import argparse
 import bufr
 
 import config
-import settings
+from .. import settings
 
 class Parameters:
     def __init__(self):

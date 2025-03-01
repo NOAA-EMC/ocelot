@@ -1,7 +1,7 @@
 import os, sys
 import pathlib
 
-sys.path.append(os.path.realpath(os.path.join(pathlib.Path(__file__).parent.resolve(), '../../configs')))
+sys.path.append(os.path.realpath(os.path.join(pathlib.Path(__file__).parent.resolve(), '../configs')))
 
 try:
     from local_settings import *

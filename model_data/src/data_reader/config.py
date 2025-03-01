@@ -1,7 +1,7 @@
 # read the tank yaml configuration
 import os
 import yaml
-import settings
+from .. import settings
 
 
 class OperationConfig:
