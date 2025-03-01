@@ -106,17 +106,8 @@ class Encoder(bufr.encoders.EncoderBase):
                         category:[str],
                         dims:bufr.encoders.EncoderDimensions):
 
-        for var in self.description.get_variables():
-            _, var_name = self._split_source_str(var['name'])
-
-            if var_name == 'dateTime':
-                continue # Skip the time variable as it is a dimension
-
-            if var["source"].split('/')[-1] not in container.list():
-                raise ValueError(f'Variable {var["source"]} not found in the container')
-
+        def addVariable(var, var_name, var_data):
             comp_level = var['compressionLevel'] if 'compressionLevel' in var else 3
-            var_data = container.get(var['source'].split('/')[-1], category)
 
             # Create the zarr dataset
             store = root.create_dataset(var_name,
@@ -140,13 +131,33 @@ class Encoder(bufr.encoders.EncoderBase):
             if 'range' in var:
                 store.attrs['valid_range'] = var['range']
 
+            store.attrs['_ARRAY_DIMENSIONS'] = ['time']
 
+
+        for var in self.description.get_variables():
             # Associate the dimensions
             dim_names = dims.dim_names_for_var(var["name"])
             dim_names = [dim_name.lower() for dim_name in dim_names]
             dim_names[0] = 'time'
 
-            store.attrs['_ARRAY_DIMENSIONS'] = dim_names
+            _, var_name = self._split_source_str(var['name'])
+
+            if var_name == 'dateTime':
+                continue # Skip the time variable as it is a dimension
+
+            if var["source"].split('/')[-1] not in container.list():
+                raise ValueError(f'Variable {var["source"]} not found in the container')
+
+            var_data = container.get(var['source'].split('/')[-1], category)
+
+            if len(var_data.shape) == 1:
+                addVariable(var, var_name, var_data)
+            elif len(var_data.shape) == 2:
+                for i in range(var_data.shape[1]):
+                    dim_vals = root[dim_names[1]]
+                    addVariable(var, f'{var_name}_{dim_vals[i]}', var_data[:, i])
+            else:
+                raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
     def _append_data(self,
                      root:zarr.Group,
