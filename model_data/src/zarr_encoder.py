@@ -84,7 +84,7 @@ class Encoder(bufr.encoders.EncoderBase):
         # Add the backing variables for the dimensions
         for dim in dims.dims():
             # Skip the location dimension as we will use the timestamp as the location
-            if dim.name == 'Location':
+            if dim.name().lower() == 'location':
                 continue
 
             dim_data = dim.labels
