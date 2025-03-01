@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
+import os
 import sys
-sys.path.insert(0, '../src')
+sys.path.insert(0, os.path.realpath('..'))
 
 import os
 import argparse
@@ -9,7 +10,7 @@ import numpy as np
 import bufr
 from wxflow import Logger
 
-from zarr_encoder import zarrEncoder
+from zarr_encoder import Encoder as zarrEncoder
 
 # Initialize Logger
 # Get log level from the environment variable, default to 'INFO it not set
@@ -116,6 +117,14 @@ def create_obs_file(input_path, mapping_path, output_path):
     if comm.rank() == 0:
         zarrEncoder(description).encode(container, output_path, append=True)
 
+
+MAP_PATH = os.path.join(os.path.dirname(__file__), 'bufr_atms_mapping.yaml')
+
+def make_obs(comm, input_path):
+    return _make_obs(comm, input_path, MAP_PATH)
+
+def make_encoder_description():
+    return _make_description(MAP_PATH)
 
 
 if __name__ == '__main__':

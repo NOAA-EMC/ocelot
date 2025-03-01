@@ -16,18 +16,6 @@ bufr:
     longitude:
       query: "*/CLONH"
 
-    satelliteIdentifier:
-      query: "*/SAID"
-
-    satelliteInstrument:
-      query: "*/SIID"
-
-    fieldOfViewNumber:
-      query: "*/FOVN"
-
-    heightOfStation:
-      query: "*/HMSL"
-
     solarZenithAngle:
       query: "*/SOZA"
 
@@ -36,16 +24,6 @@ bufr:
 
     sensorZenithAngle:
       query: "*/SAZA"
-
-    sensorAzimuthAngle:
-      query: "*/BEARAZ"
-
-    sensorScanAngle:
-      sensorScanAngle:
-        fieldOfViewNumber: "*/FOVN"
-        scanStart: -52.725
-        scanStep: 1.110
-        sensor: atms
 
     sensorChannelNumber:
       query: "*/ATMSCH/CHNM"
@@ -86,28 +64,6 @@ encoder:
       longName: "Longitude"
       units: "degree_east"
 
-    - name: "MetaData/satelliteIdentifier"
-      source: variables/satelliteIdentifier
-      longName: "Satellite Identifier"
-
-    - name: "MetaData/satelliteInstrument"
-      source: variables/satelliteInstrument
-      longName: "Satellite Instrument"
-
-    - name: "MetaData/sensorScanPosition"
-      source: variables/fieldOfViewNumber
-      longName: "Field of View Number"
-
-    - name: "MetaData/sensorViewAngle"
-      source: variables/sensorScanAngle
-      longName: "Sensor View Angle"
-      units: "degree"
-
-    - name: "MetaData/heightOfStation"
-      source: variables/heightOfStation
-      longName: "Altitude of Satellite"
-      units: "m"
-
     - name: "MetaData/solarZenithAngle"
       source: variables/solarZenithAngle
       longName: "Solar Zenith Angle"
@@ -126,27 +82,7 @@ encoder:
       units: "degree"
       range: [0, 90]
 
-    - name: "MetaData/sensorAzimuthAngle"
-      source: variables/sensorAzimuthAngle
-      longName: "Sensor Azimuth Angle"
-      units: "degree"
-      range: [0, 360]
-
-    - name: "MetaData/sensorChannelNumber"
-      source: variables/sensorChannelNumber
-      longName: "Sensor Channel Number"
-
-    - name: "ObsValue/brightnessTemperature"
+    - name: "ObsValue/BT"
       source: variables/brightnessTemperature
       longName: "Brightness Temperature"
-      chunks: [10000, 22]
       units: "K"
-
-
-    # ObsValue
-    # Remapped Brightness Temperature
-    #- name: "ObsValue/brightnessTemperature"
-    #  source: variables/remappedBT
-    #  longName: "3-by-3 Averaged Brightness Temperature"
-    #  units: "K"
-    #  chunks: [10000, 22]

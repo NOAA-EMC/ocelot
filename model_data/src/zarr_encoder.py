@@ -96,8 +96,7 @@ class Encoder(bufr.encoders.EncoderBase):
                                             compression='blosc',
                                             compression_opts=dict(cname='lz4',
                                                                   clevel=3,
-                                                                  shuffle=1),
-                                            maxshape=(DEFAULT_CHUNK_SIZE))
+                                                                  shuffle=1))
             dim_store[:] = dim_data
             dim_store.attrs['_ARRAY_DIMENSIONS'] = [dim.name().lower()]
 
@@ -113,11 +112,11 @@ class Encoder(bufr.encoders.EncoderBase):
             if var_name == 'dateTime':
                 continue # Skip the time variable as it is a dimension
 
-            if var["source"] not in container.list():
+            if var["source"].split('/')[-1] not in container.list():
                 raise ValueError(f'Variable {var["source"]} not found in the container')
 
             comp_level = var['compressionLevel'] if 'compressionLevel' in var else 3
-            var_data = container.get(var['source'], category)
+            var_data = container.get(var['source'].split('/')[-1], category)
 
             # Create the zarr dataset
             store = root.create_dataset(var_name,
@@ -160,7 +159,7 @@ class Encoder(bufr.encoders.EncoderBase):
             if var_name == 'dateTime':
                 var_name = 'time'
 
-            var_data = container.get(var['source'], category)
+            var_data = container.get(var["source"].split('/')[-1], category)
             root[var_name].append(var_data)
 
     def _make_path(self, prototype_path:str, sub_dict:dict[str, str]):
