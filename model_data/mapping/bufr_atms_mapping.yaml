@@ -82,7 +82,7 @@ encoder:
       units: "degree"
       range: [0, 90]
 
-    - name: "ObsValue/BT"
+    - name: "bt"
       source: variables/brightnessTemperature
       longName: "Brightness Temperature"
       units: "K"
