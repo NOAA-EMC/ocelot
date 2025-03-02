@@ -10,7 +10,7 @@ import argparse
 
 import bufr
 
-import config
+from . import config
 import settings
 
 class Parameters:

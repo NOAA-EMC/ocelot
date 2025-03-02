@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.realpath('./'))
 
 import argparse
 from datetime import datetime, timedelta
+import numpy as np
 
 import bufr
 from zarr_encoder import Encoder
