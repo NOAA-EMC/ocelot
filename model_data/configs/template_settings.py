@@ -18,6 +18,7 @@ MAPPING_FILE_DIR = ''
 
 OUTPUT_DIR = ''
 
-LAT_RANGE = (0, 90)
-LON_RANGE = (0, 360)
+# The range of latitude and longitude for the continental US
+LAT_RANGE = (24, 51)
+LON_RANGE = (-115, -74)
 
