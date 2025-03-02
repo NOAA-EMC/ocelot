@@ -1,3 +1,4 @@
+from pickle import LONG1
 
 # Path to the configuration yaml file for the BUFR tank
 # (example: '/install_dir/spoc/tank/conf/hera_test_tank.yaml')
@@ -14,4 +15,9 @@ DATETIME_DIR_FORMAT = '%Y%m%d'
 # Path to the directory that holds the BUFR mapping files
 # (example: '/install_dir/src/spoc/tank/mapping')
 MAPPING_FILE_DIR = ''
+
+OUTPUT_DIR = ''
+
+LAT_RANGE = (0, 90)
+LON_RANGE = (0, 360)
 

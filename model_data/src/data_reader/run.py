@@ -1,12 +1,16 @@
 import os
 import sys
+sys.path.insert(0, os.path.realpath('.'))
+sys.path.insert(0, os.path.realpath('..'))
+
+import sys
 import importlib.util
 from datetime import datetime, timedelta
 import argparse
 
 import bufr
 
-from . import config
+import config
 import settings
 
 class Parameters:
@@ -129,4 +133,4 @@ if __name__ == '__main__':
 
     if comm.rank() == 0:
         ZarrEncoder(description).encode(combined_container, "output_atms.zarr", append=True)
-        print("Output written to output.nc")
+        print("Output written to output_atms.zarr")

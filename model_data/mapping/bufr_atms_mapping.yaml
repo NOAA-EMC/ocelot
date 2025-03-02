@@ -16,6 +16,9 @@ bufr:
     longitude:
       query: "*/CLONH"
 
+    satelliteId:
+      query: "*/SAID"
+
     solarZenithAngle:
       query: "*/SOZA"
 
@@ -63,6 +66,11 @@ encoder:
       source: variables/longitude
       longName: "Longitude"
       units: "degree_east"
+
+    - name: "satelliteId"
+      source: variables/satelliteId
+      longName: "Numeric Satellite Identifier"
+      units: "ID"
 
     - name: "solarZenithAngle"
       source: variables/solarZenithAngle

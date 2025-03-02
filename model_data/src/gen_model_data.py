@@ -12,6 +12,14 @@ from zarr_encoder import Encoder
 import data_reader
 import settings
 
+def filter_data(container, mask):
+    filtered = bufr.DataContainer()
+    for var_name in container.list():
+        paths = container.get_paths(var_name)
+        vals = container.get(var_name)[mask]
+        filtered.add(var_name, vals, paths)
+    return filtered
+
 def create_data_for_day(date:datetime, type:str):
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
@@ -27,6 +35,20 @@ def create_data_for_day(date:datetime, type:str):
 
     if container is None:
         raise ValueError("No data found")
+
+    latitudes = container.get('latitude')
+    longitudes = container.get('longitude')
+
+    mask = np.array([True] * len(latitudes))
+    mask[latitudes < settings.LAT_RANGE[0]] = False
+    mask[latitudes > settings.LAT_RANGE[1]] = False
+    mask[longitudes < settings.LON_RANGE[0]] = False
+    mask[longitudes > settings.LON_RANGE[1]] = False
+
+    if not np.any(mask):
+        return # No data in the region
+
+    container = filter_data(container, mask)
 
     if comm.rank() == 0:
         output_path = os.path.join(settings.OUTPUT_PATH, f'{type}.zarr')
