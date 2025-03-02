@@ -12,14 +12,14 @@ from zarr_encoder import Encoder
 import data_reader
 import settings
 
-def create_data_for_day(start_datetime:datetime, end_datetime:datetime, type:str):
+def create_data_for_day(date:datetime, type:str):
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
-    parameters = emctank.Parameters()
+    parameters = data_reader.Parameters()
     parameters.start_time = start_datetime
     parameters.stop_time = end_datetime
 
