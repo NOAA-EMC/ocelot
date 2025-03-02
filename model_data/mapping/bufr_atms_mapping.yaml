@@ -36,7 +36,7 @@ bufr:
 
 encoder:
   dimensions:
-    - name: Channel
+    - name: channel
       source: variables/sensorChannelNumber
       path: "*/ATMSCH"
 
