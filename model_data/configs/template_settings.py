@@ -1,15 +1,17 @@
-import os
-import sys
+
+# Path to the configuration yaml file for the BUFR tank
+# (example: '/install_dir/spoc/tank/conf/hera_test_tank.yaml')
+BUFR_TANK_YAML = ''
 
 # Path to the root directory for the BUFR tank
-TANK_PATH =
+# (example: '/data_dir/ops/prod/dcom')
+TANK_PATH = '' 
 
-# The format for the directory that holds a days worth of data
+# The datetime format string for the subdirecotries in the tank 
+# (see docs for python datetime object)
 DATETIME_DIR_FORMAT = '%Y%m%d'
 
-# BUFR tank configuration
-BUFR_TANK_YAML =
+# Path to the directory that holds the BUFR mapping files
+# (example: '/install_dir/src/spoc/tank/mapping')
+MAPPING_FILE_DIR = ''
 
-MAPPING_FILE_DIR =
-
-OUTPUT_PATH =

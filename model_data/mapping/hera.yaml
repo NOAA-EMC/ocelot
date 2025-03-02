@@ -1,0 +1,9 @@
+data types:
+  - name: atms
+    mapping: bufr_atms_mapping.yaml
+    paths:
+      - 00/atmos/gdas.t00z.atms.tm00.bufr_d
+      - 06/atmos/gdas.t06z.atms.tm00.bufr_d
+      - 12/atmos/gdas.t12z.atms.tm00.bufr_d
+      - 18/atmos/gdas.t18z.atms.tm00.bufr_d
+
