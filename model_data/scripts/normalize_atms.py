@@ -9,8 +9,8 @@ def normalize(data):
     scaler.fit(data)
     return scaler.transform(data)
 
-def apply_normalization(zarr_file):
-    with zarr.open(args.output, mode='a') as zarr_file:
+def apply_normalization(output):
+    with zarr.open(output, mode='a') as zarr_file:
         fields_names = ['sensorZenithAngle', 'solarAzimuthAngle']
 
         # add the bt_channel fields
@@ -19,6 +19,7 @@ def apply_normalization(zarr_file):
                 fields_names.append(key)
 
         for field in fields_names:
+            print (f'Normalizing {field}')
             data = zarr_file[field][:]
             zarr_file[field][:] = normalize(data)
 

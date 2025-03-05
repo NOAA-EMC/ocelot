@@ -7,6 +7,7 @@ import zarr
 import numpy as np
 
 import bufr
+from bufr.obs_builder import add_encoder_type
 
 DEFAULT_CHUNK_SIZE = 5000
 
@@ -197,3 +198,5 @@ class Encoder(bufr.encoders.EncoderBase):
         variable_name = components[-1]
 
         return (group_name, variable_name)
+
+add_encoder_type('zarr-ocelot', Encoder)
