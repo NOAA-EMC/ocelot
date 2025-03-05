@@ -5,9 +5,6 @@ import numpy as np
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
-from docutils.nodes import description
-from earthkit.meteo.thermo.array import virtual_temperature
-from sympy.physics.units import temperature
 
 ADPUPA_MAPPING = './bufr_adpupa_mapping.yaml'
 ADPSFC_MAPPING = './bufr_adpsfc_mapping.yaml'
