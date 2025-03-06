@@ -18,6 +18,8 @@ bufr:
 
     longitude:
       query: "*/PRSLEVEL/DRFTINFO/XDR"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
 
     height:
       query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"

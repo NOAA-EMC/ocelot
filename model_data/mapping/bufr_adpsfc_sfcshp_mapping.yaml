@@ -1,5 +1,6 @@
 bufr:
   subsets:
+    - ADPSFC
     - SFCSHP
   variables:
     # MetaData
@@ -19,6 +20,8 @@ bufr:
 
     longitude:
       query: "*/XOB"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
 
     height:
       query: "*/Z___INFO/Z__EVENT{1}/ZOB"
@@ -51,8 +54,3 @@ encoder:
       source: variables/height
       longName: "Height"
       units: "meters"
-
-    - name: "stationPressure"
-      source: variables/stationPressure
-      longName: "Station Pressure"
-      units: "Pa"
