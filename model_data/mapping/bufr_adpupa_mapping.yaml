@@ -27,10 +27,8 @@ bufr:
       transforms:
         - scale: 100
 
-    airTemperature:
-      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TOB"
-      transforms:
-        - offset: 273.15
+    dataLevelCategory:
+      query: "*/PRSLEVEL/CAT"
 
 encoder:
 
@@ -61,11 +59,3 @@ encoder:
       source: variables/stationPressure
       longName: "Station Pressure"
       units: "Pa"
-
-    - name: "airTemperature"
-      source: variables/airTemperature
-      longName: "Air Temperature"
-      units: "K"
-
-
-

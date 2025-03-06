@@ -28,11 +28,6 @@ bufr:
       transforms:
         - scale: 100
 
-    airTemperature:
-      query: "*/T___INFO/T__EVENT{1}/TOB"
-      transforms:
-        - offset: 273.15
-
 encoder:
   variables:
     # MetaData
@@ -56,13 +51,3 @@ encoder:
       source: variables/height
       longName: "Height"
       units: "meters"
-
-    - name: "stationPressure"
-      source: variables/stationPressure
-      longName: "Station Pressure"
-      units: "Pa"
-
-    - name: "airTemperature"
-      source: variables/airTemperature
-      longName: "Air Temperature"
-      units: "K"
