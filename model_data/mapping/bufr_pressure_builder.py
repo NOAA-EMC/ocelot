@@ -29,7 +29,7 @@ class PressureObsBuilder(ObsBuilder):
         data_level_cat = adpupa_container.get('dataLevelCategory')
         adpupa_container.apply_mask(data_level_cat == 0)
 
-        # Remove extra data from ADPUPA (make all containers the same)
+        # Remove extra data field from ADPUPA (make all containers the same)
         adpupa_container.remove('dataLevelCategory')
 
         # Merge containers
