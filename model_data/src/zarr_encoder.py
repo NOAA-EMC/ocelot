@@ -181,7 +181,7 @@ class Encoder(bufr.encoders.EncoderBase):
             elif len(var_data.shape) == 2:
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
-                    root[f'{var_name}_{dim_vals[i]}'].append(var_data[:, i])
+                    root[f'{var_name}_{dim_names[1]}_{dim_vals[i]}'].append(var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
