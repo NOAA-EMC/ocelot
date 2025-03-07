@@ -92,15 +92,16 @@ class ScriptRunner(Runner):
         return self.script.make_obs(comm, input_path)
 
     def _load_script(self):
-        script_name = os.path.splitext(os.path.basename(self.map_path))[0]
-        spec = importlib.util.spec_from_file_location(script_name, self.map_path)
-        script = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(script)
+        module_name = os.path.splitext(os.path.basename(self.map_path))[0]
+        spec = importlib.util.spec_from_file_location(module_name, self.map_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
 
-        if not hasattr(script, 'make_obs') or not hasattr(script, 'make_encoder_description'):
+        if not hasattr(module, 'make_obs') or not hasattr(module, 'make_encoder_description'):
             raise ValueError(f"Script {self.map_path} must have a make_obs and make_encoder_description.")
 
-        return script
+        return module
 
 
 def run(comm, data_type, parameters:Parameters, tank_config = config.Config()) -> bufr.DataContainer:
