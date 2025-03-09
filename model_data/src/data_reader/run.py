@@ -84,12 +84,13 @@ class ScriptRunner(Runner):
     def __init__(self,data_type:str, config=config.Config()):
         super().__init__(data_type, config)
         self.script = self._load_script()
+        self.obs_builder = self.script.make_obs_builder()
 
     def get_encoder_description(self) -> bufr.encoders.Description:
-        return self.script.make_encoder_description()
+        return self.obs_builder.make_description()
 
     def _make_obs(self, comm, input_path:str) -> bufr.DataContainer:
-        return self.script.make_obs(comm, input_path)
+        return self.obs_builder.make_obs(comm, input_path)
 
     def _load_script(self):
         module_name = os.path.splitext(os.path.basename(self.map_path))[0]
@@ -104,7 +105,7 @@ class ScriptRunner(Runner):
         return module
 
 
-def run(comm, data_type, parameters:Parameters, tank_config = config.Config()) -> bufr.DataContainer:
+def run(comm, data_type, parameters:Parameters, tank_config = config.Config()) -> (bufr.encoders.Description, bufr.DataContainer):
     if data_type not in tank_config.get_data_type_names():
         raise ValueError(f"Data type {data_type} not found in tank")
 
@@ -113,7 +114,7 @@ def run(comm, data_type, parameters:Parameters, tank_config = config.Config()) -
     else:
         runner = YamlRunner(data_type, tank_config)
 
-    return (runner.run(comm, parameters), runner.get_encoder_description())
+    return (runner.get_encoder_description(), runner.run(comm, parameters))
 
 
 if __name__ == '__main__':
@@ -127,7 +128,7 @@ if __name__ == '__main__':
     parameters.start_time = datetime(2020, 10, 12)
     parameters.stop_time = datetime(2020, 10, 13)
 
-    combined_container, description = run(comm, 'atms', parameters)
+    description, combined_container = run(comm, 'atms', parameters)
 
     if combined_container is None:
         raise ValueError("No data found")

@@ -13,17 +13,17 @@ OBS_TYPES = np.array([180, 181, 183, 187, 120])
 
 
 class PressureObsBuilder(ObsBuilder):
-    def __init__(self, input_path):
-        input_dict = {'adpupa': (input_path, ADPUPA_MAPPING),
-                      'adpsfc_sfcshp': (input_path, ADPSFC_SFCSHP_MAPPING)}
+    def __init__(self):
+        map_dict = {'adpupa': ADPUPA_MAPPING,
+                    'adpsfc_sfcshp': ADPSFC_SFCSHP_MAPPING}
 
-        super().__init__(input_dict, log_name=os.path.basename(__file__))
+        super().__init__(map_dict, log_name=os.path.basename(__file__))
 
 
-    # Virtual Method
-    def _make_obs(self, comm) -> bufr.DataContainer:
-        container = bufr.Parser(*self.input_dict['adpsfc_sfcshp']).parse(comm)
-        adpupa_container = bufr.Parser(*self.input_dict['adpupa']).parse(comm)
+    # Overrides
+    def make_obs(self, comm, input_path) -> bufr.DataContainer:
+        container = bufr.Parser(input_path, self.map_dict['adpsfc_sfcshp']).parse(comm)
+        adpupa_container = bufr.Parser(input_path, self.map_dict['adpupa']).parse(comm)
 
         # Mask ADPUPA for station pressure category
         data_level_cat = adpupa_container.get('dataLevelCategory')
