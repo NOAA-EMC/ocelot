@@ -99,8 +99,8 @@ class ScriptRunner(Runner):
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
-        if not hasattr(module, 'make_obs') or not hasattr(module, 'make_encoder_description'):
-            raise ValueError(f"Script {self.map_path} must have a make_obs and make_encoder_description.")
+        if not hasattr(module, 'make_obs_builder'):
+            raise ValueError(f"Script {self.map_path} must define make_obs_builder.")
 
         return module
 
