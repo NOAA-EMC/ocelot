@@ -4,6 +4,8 @@ import os
 import numpy as np
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
+
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
@@ -24,9 +26,9 @@ class PressureObsBuilder(ObsBuilder):
         super().__init__(map_dict, log_name=os.path.basename(__file__))
 
     def _get_reference_time(self, input_path) -> np.datetime64:
-        path_components = os.path.split(input_path)
-
-        m = re.match(r'\w+\.(?<year>\d{4})(?<month>\d{2})(?<day>\d{2})', path_components[-4])
+        path_components = Path(input_path).parts
+        print (path_components)
+        m = re.match(r'\w+\.(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})', path_components[-4])
         return np.datetime64(datetime(year=int(m.group('year')),
                                       month=int(m.group('month')),
                                       day=int(m.group('day')),
@@ -40,18 +42,14 @@ class PressureObsBuilder(ObsBuilder):
         reference_time = self._get_reference_time(input_path)
 
         # Add time to ADPSFC and SFCSHP
-        cycle_times = np.array([timedelta(seconds=3600*t) for t in container.get('obsTimeMinusCycleTime')])
-        time = reference_time + cycle_times
+        cycle_times = np.array([3600*t for t in container.get('obsTimeMinusCycleTime')]).astype('timedelta64[s]')
+        time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add('timestamp', time, ['*'])
 
         # Add time to ADPUPA
-        cycle_times = np.array([timedelta(seconds=3600*t) for t in adpupa_container.get('obsTimeMinusCycleTime')])
-        drift_times = np.array([timedelta(seconds=3600*t) for t in adpupa_container.get('driftTime')])
-        time = reference_time + cycle_times + drift_times
+        drift_times = np.array([3600*t for t in adpupa_container.get('driftTime')]).astype('timedelta64[s]')
+        time = (reference_time + drift_times).astype('datetime64[s]').astype('int64')
         adpupa_container.add('timestamp', time, ['*'])
-
-        print(adpupa_container.get('obsTimeMinusCycleTime'))
-        print(adpupa_container.get('driftTime'))
 
         # Mask ADPUPA for station pressure category
         data_level_cat = adpupa_container.get('dataLevelCategory')
