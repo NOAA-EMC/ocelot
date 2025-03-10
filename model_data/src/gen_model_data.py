@@ -32,7 +32,7 @@ def create_data_for_day(date:datetime, type:str):
     parameters.start_time = start_datetime
     parameters.stop_time = end_datetime
 
-    container, description = data_reader.run(comm, type, parameters)
+    description, container = data_reader.run(comm, type, parameters)
 
     if container is None:
         raise ValueError("No data found")

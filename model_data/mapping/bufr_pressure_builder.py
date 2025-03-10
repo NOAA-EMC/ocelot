@@ -6,8 +6,10 @@ import numpy as np
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
 
-ADPUPA_MAPPING = './bufr_adpupa_mapping.yaml'
-ADPSFC_SFCSHP_MAPPING = './bufr_adpsfc_sfcshp_mapping.yaml'
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+ADPUPA_MAPPING = os.path.join(script_dir, 'bufr_adpupa_mapping.yaml')
+ADPSFC_SFCSHP_MAPPING = os.path.join(script_dir, 'bufr_adpsfc_sfcshp_mapping.yaml')
 
 OBS_TYPES = np.array([180, 181, 183, 187, 120])
 
