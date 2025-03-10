@@ -3,7 +3,7 @@
 import os
 import numpy as np
 import re
-import datetime
+from datetime import datetime, timedelta
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
@@ -23,29 +23,45 @@ class PressureObsBuilder(ObsBuilder):
 
         super().__init__(map_dict, log_name=os.path.basename(__file__))
 
-    def _get_reference_time(self, input_path) -> datetime.datetime:
+    def _get_reference_time(self, input_path) -> np.datetime64:
         path_components = os.path.split(input_path)
 
-        m = re.match('\w+\.(?<year>\d{4})(?<month>\d{2})(?<day>\d{2})', path_components[-4])
-        return np.datetime64(datetime.datetime(year=int(m.group('year')), 
-                                               month=int(m.group('month')), 
-                                               day=int(m.group('day')), 
-                                               hour=int(path_components[-3])))
+        m = re.match(r'\w+\.(?<year>\d{4})(?<month>\d{2})(?<day>\d{2})', path_components[-4])
+        return np.datetime64(datetime(year=int(m.group('year')),
+                                      month=int(m.group('month')),
+                                      day=int(m.group('day')),
+                                      hour=int(path_components[-3])))
 
     # Overrides
     def make_obs(self, comm, input_path) -> bufr.DataContainer:
         container = bufr.Parser(input_path, self.map_dict['adpsfc_sfcshp']).parse(comm)
-        cycle_times = np.array([timedelta(seconds=3600*t) for t in container.get('obsTimeMinusCycleTime')])
-        times = _get_reference_time(input_path) + cycle_times
-
         adpupa_container = bufr.Parser(input_path, self.map_dict['adpupa']).parse(comm)
+
+        reference_time = self._get_reference_time(input_path)
+
+        # Add time to ADPSFC and SFCSHP
+        cycle_times = np.array([timedelta(seconds=3600*t) for t in container.get('obsTimeMinusCycleTime')])
+        time = reference_time + cycle_times
+        container.add('timestamp', time, ['*'])
+
+        # Add time to ADPUPA
+        cycle_times = np.array([timedelta(seconds=3600*t) for t in adpupa_container.get('obsTimeMinusCycleTime')])
+        drift_times = np.array([timedelta(seconds=3600*t) for t in adpupa_container.get('driftTime')])
+        time = reference_time + cycle_times + drift_times
+        adpupa_container.add('timestamp', time, ['*'])
+
+        print(adpupa_container.get('obsTimeMinusCycleTime'))
+        print(adpupa_container.get('driftTime'))
 
         # Mask ADPUPA for station pressure category
         data_level_cat = adpupa_container.get('dataLevelCategory')
         adpupa_container.apply_mask(data_level_cat == 0)
 
-        # Remove extra data field from ADPUPA (make all containers the same)
+        # Remove uneeded data fields (make all containers the same)
+        container.remove('obsTimeMinusCycleTime')
         adpupa_container.remove('dataLevelCategory')
+        adpupa_container.remove('obsTimeMinusCycleTime')
+        adpupa_container.remove('driftTime')
 
         # Merge containers
         container.append(adpupa_container)

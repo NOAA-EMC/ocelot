@@ -3,16 +3,14 @@ bufr:
   subsets:
     - ADPUPA
   variables:
-    #    timestamp:
-    #  timeoffset:
-    #    timeOffset: "*/PRSLEVEL/DRFTINFO/HRDR"
-    #    transforms:
-    #      - scale: 3600
-    #    referenceTime: "2020-11-01T12:00:00Z"
+    obsTimeMinusCycleTime:
+      query: "*/DHR"
 
+    driftTime:
+      query: "*/PRSLEVEL/DRFTINFO/HRDR"
 
     observationType:
-      query: '*/TYP'
+      query: "*/TYP"
 
     latitude:
       query: "*/PRSLEVEL/DRFTINFO/YDR"

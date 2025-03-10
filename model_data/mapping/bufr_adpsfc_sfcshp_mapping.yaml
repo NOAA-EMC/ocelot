@@ -3,24 +3,11 @@ bufr:
     - ADPSFC
     - SFCSHP
   variables:
-    # MetaData
-    #    timestamp:
-    #  datetime:
-    #    year: "*/YEAR"
-    #    month: "*/MNTH"
-    #    day: "*/DAYS"
-    #    hour: "*/HOUR"
-    #    minute: "*/MINU"
-
-
-    reportTime:
-      query: '*/RPT'
-     
     obsTimeMinusCycleTime:
-      query: '*/DHR'
+      query: "*/DHR"
 
     observationType:
-      query: '*/TYP'
+      query: "*/TYP"
 
     latitude:
       query: "*/YOB"
