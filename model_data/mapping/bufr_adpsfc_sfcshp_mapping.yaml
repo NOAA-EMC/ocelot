@@ -4,13 +4,20 @@ bufr:
     - SFCSHP
   variables:
     # MetaData
-    timestamp:
-      datetime:
-        year: "*/YEAR"
-        month: "*/MNTH"
-        day: "*/DAYS"
-        hour: "*/HOUR"
-        minute: "*/MINU"
+    #    timestamp:
+    #  datetime:
+    #    year: "*/YEAR"
+    #    month: "*/MNTH"
+    #    day: "*/DAYS"
+    #    hour: "*/HOUR"
+    #    minute: "*/MINU"
+
+
+    reportTime:
+      query: '*/RPT'
+     
+    obsTimeMinusCycleTime:
+      query: '*/DHR'
 
     observationType:
       query: '*/TYP'
