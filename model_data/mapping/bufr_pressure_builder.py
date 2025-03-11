@@ -42,12 +42,15 @@ class PressureObsBuilder(ObsBuilder):
     def make_description(self):
         description = super().make_description()
 
-        description.add_variables({
+        description.add_variables([
+        {
             'name': "time",
             'source': 'timestamp',
             'longName': "Datetime",
             'units': "seconds since 1970-01-01T00:00:00Z"
-        })
+        }])
+
+        return description
 
     def make_obs(self, comm, input_path) -> bufr.DataContainer:
         container = bufr.Parser(input_path, self.map_dict['adpsfc_sfcshp']).parse(comm)
