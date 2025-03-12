@@ -29,7 +29,7 @@ def timing_decorator(func):
     return wrapper
 
 
-#@timing_decorator    
+@timing_decorator
 def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     """
     Organizes satellite observation times into 12-hour bins and creates input-target pairs 
