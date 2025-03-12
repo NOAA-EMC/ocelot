@@ -75,7 +75,7 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
             'input_time_index': input_times,
             'target_time_index': target_times
         }
-        
+
     return data_summary
 
 
@@ -96,67 +96,62 @@ def extract_features(z, data_summary):
     Notes:
         - Uses MinMax scaling for normalization.
         - Adds latitude and longitude (converted to radians) to both input and target features.
-        - Currently processes only 'bin1' (modify to process all bins).
     """
-    
-    all_unique_bins=list(data_summary.keys())
+
+    # Initialize scalers
     minmax_scaler_input = MinMaxScaler()
     minmax_scaler_target = MinMaxScaler()
-    all_times=z["time"][:]
-    
-    for bin in ['bin1']: # Modify to process all bins using `all_unique_bins` 
-        this_bin_input_index=np.isin(all_times,data_summary[bin]['input_time_index'])
-        this_bin_target_index=np.isin(all_times, data_summary[bin]['target_time_index'])
-        
-        # Prepare input features (for each bin) that need normalization
+
+    # Extract all necessary data at once (reduces repeated Zarr indexing)
+    all_times = z["time"][:]
+    latitude_rad = np.radians(z["latitude"][:])[:, None]  # Convert once, reshape for stacking
+    longitude_rad = np.radians(z["longitude"][:])[:, None]
+ 
+    # Extract all sensor angles at once (batch indexing)
+    sensor_zenith = z["sensorZenithAngle"][:]
+    solar_zenith = z["solarZenithAngle"][:]
+    solar_azimuth = z["solarAzimuthAngle"][:]
+
+    # Extract all 22 BT channels efficiently
+    bt_channels = np.stack([z[f"bt_channel_{i}"][:] for i in range(1, 23)], axis=1)  
+
+    for bin_name in data_summary.keys():  # Process all bins
+        # Find indices for input and target times
+        input_mask = np.isin(all_times, data_summary[bin_name]['input_time_index'])
+        target_mask = np.isin(all_times, data_summary[bin_name]['target_time_index'])
+
+        # Prepare input features (batch extraction, avoid repeated indexing)
         input_features_orig = np.column_stack([
-            z["sensorZenithAngle"][:][this_bin_input_index],
-            z["solarZenithAngle"][:][this_bin_input_index],
-            z["solarAzimuthAngle"][:][this_bin_input_index],
-            *[z[f"bt_channel_{i}"][:][this_bin_input_index] for i in range(1, 23)] # BT channels
+            sensor_zenith[input_mask], 
+            solar_zenith[input_mask], 
+            solar_azimuth[input_mask], 
+            bt_channels[input_mask]
         ])
+        input_features_normalized = minmax_scaler_input.fit_transform(input_features_orig)
 
-        input_features_nomalized = minmax_scaler_input.fit_transform(input_features_orig)
-
-
-        # Add latitude and longitude to the feature set
         input_features_final = np.hstack([
-            np.radians(z["latitude"][:][this_bin_input_index]).reshape(-1, 1), 
-            np.radians(z["longitude"][:][this_bin_input_index]).reshape(-1, 1),
-            input_features_nomalized
+            latitude_rad[input_mask], 
+            longitude_rad[input_mask], 
+            input_features_normalized
         ])
 
-        input_features_final=torch.tensor(input_features_final, dtype=torch.float32)
-
-        #prepare target features (for each bin)
-        target_features_orig = np.column_stack([
-            # z["sensorZenithAngle"][:][this_bin_target_index],
-            # z["solarZenithAngle"][:][this_bin_target_index],
-            # z["solarAzimuthAngle"][:][this_bin_target_index],
-            *[z[f"bt_channel_{i}"][:][this_bin_target_index] for i in range(1, 23)] # BT channels
-        ])
-
-        target_features_nomalized = minmax_scaler_target.fit_transform(target_features_orig)
+        # Prepare target features
+        target_features_orig = bt_channels[target_mask]
+        target_features_normalized = minmax_scaler_target.fit_transform(target_features_orig)
 
         target_features_final = np.hstack([
-            np.radians(z["latitude"][:][this_bin_target_index]).reshape(-1, 1),
-            np.radians(z["longitude"][:][this_bin_target_index]).reshape(-1, 1),
-            target_features_nomalized])
+            latitude_rad[target_mask], 
+            longitude_rad[target_mask], 
+            target_features_normalized
+        ])
 
-        target_features_final=torch.tensor(target_features_final, dtype=torch.float32)
-
-        print(input_features_orig.shape)
-        print(input_features_nomalized.shape)
-        print(input_features_final.shape)
-
-        # Store processed features in the dictionary
-        data_summary[bin]['input_features_final']=input_features_final
-        data_summary[bin]['target_features_final']=target_features_final
+        # Convert to tensors at the end
+        data_summary[bin_name]['input_features_final'] = torch.tensor(input_features_final, dtype=torch.float32)
+        data_summary[bin_name]['target_features_final'] = torch.tensor(target_features_final, dtype=torch.float32)
 
         # Store min/max values for later unnormalization
-        data_summary[bin]['target_scaler_min'] = minmax_scaler_target.data_min_
-        data_summary[bin]['target_scaler_max'] = minmax_scaler_target.data_max_
-    
+        data_summary[bin_name]['target_scaler_min'] = minmax_scaler_target.data_min_
+        data_summary[bin_name]['target_scaler_max'] = minmax_scaler_target.data_max_
     return data_summary
 
 
@@ -752,4 +747,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
