@@ -659,7 +659,7 @@ def main():
     
     # make pair of input-target data for each time step
     data_summary = organize_bins_times(z, start_date, end_date, selected_satelliteId)
-    data_summary=extract_features(z, data_summary)
+    data_summary = extract_features(z, data_summary)
     
     # for now, we only train for first time step--bin1 which its data are available in data_summary['bin1']
     
@@ -721,8 +721,8 @@ def main():
     
     # Instantiate the model
     gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
-    stacked_x=data_summary['bin1']['input_features_final']
-    stacked_y=data_summary['bin1']['target_features_final']
+    stacked_x = data_summary['bin1']['input_features_final']
+    stacked_y = data_summary['bin1']['target_features_final']
     
     # Assign to HeteroData
     hetero_data["hidden"].x = stacked_x  # Use the structured tensor
