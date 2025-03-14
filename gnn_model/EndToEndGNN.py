@@ -2,6 +2,7 @@ import zarr
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+import time
 import torch
 import trimesh
 import networkx as nx
@@ -16,6 +17,19 @@ from torch_geometric.nn import GCNConv, GATConv, MessagePassing
 import torch.optim as optim
 from sklearn.preprocessing import MinMaxScaler
 
+
+def timing_decorator(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        print(f"Function '{func.__name__}' took {execution_time:.6f} seconds to execute.")
+        return result
+    return wrapper
+
+
+@timing_decorator
 def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     """
     Organizes satellite observation times into 12-hour bins and creates input-target pairs 
@@ -61,10 +75,11 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
             'input_time_index': input_times,
             'target_time_index': target_times
         }
-        
+
     return data_summary
 
 
+@timing_decorator
 def extract_features(z, data_summary):
     """
     Extracts and normalizes input and target features for each time bin in the dataset.
@@ -81,68 +96,64 @@ def extract_features(z, data_summary):
     Notes:
         - Uses MinMax scaling for normalization.
         - Adds latitude and longitude (converted to radians) to both input and target features.
-        - Currently processes only 'bin1' (modify to process all bins).
     """
-    
-    all_unique_bins=list(data_summary.keys())
+
+    # Initialize scalers
     minmax_scaler_input = MinMaxScaler()
     minmax_scaler_target = MinMaxScaler()
-    all_times=z["time"][:]
-    
-    for bin in ['bin1']: # Modify to process all bins using `all_unique_bins` 
-        this_bin_input_index=np.isin(all_times,data_summary[bin]['input_time_index'])
-        this_bin_target_index=np.isin(all_times, data_summary[bin]['target_time_index'])
-        
-        # Prepare input features (for each bin) that need normalization
+
+    # Extract all necessary data at once (reduces repeated Zarr indexing)
+    all_times = z["time"][:]
+    latitude_rad = np.radians(z["latitude"][:])[:, None]  # Convert once, reshape for stacking
+    longitude_rad = np.radians(z["longitude"][:])[:, None]
+ 
+    # Extract all sensor angles at once (batch indexing)
+    sensor_zenith = z["sensorZenithAngle"][:]
+    solar_zenith = z["solarZenithAngle"][:]
+    solar_azimuth = z["solarAzimuthAngle"][:]
+
+    # Extract all 22 BT channels efficiently
+    bt_channels = np.stack([z[f"bt_channel_{i}"][:] for i in range(1, 23)], axis=1)  
+
+    for bin_name in data_summary.keys():  # Process all bins
+        # Find indices for input and target times
+        input_mask = np.isin(all_times, data_summary[bin_name]['input_time_index'])
+        target_mask = np.isin(all_times, data_summary[bin_name]['target_time_index'])
+
+        # Prepare input features (batch extraction, avoid repeated indexing)
         input_features_orig = np.column_stack([
-            z["sensorZenithAngle"][:][this_bin_input_index],
-            z["solarZenithAngle"][:][this_bin_input_index],
-            z["solarAzimuthAngle"][:][this_bin_input_index],
-            *[z[f"bt_channel_{i}"][:][this_bin_input_index] for i in range(1, 23)] # BT channels
+            sensor_zenith[input_mask], 
+            solar_zenith[input_mask], 
+            solar_azimuth[input_mask], 
+            bt_channels[input_mask]
         ])
+        input_features_normalized = minmax_scaler_input.fit_transform(input_features_orig)
 
-        input_features_nomalized = minmax_scaler_input.fit_transform(input_features_orig)
-
-
-        # Add latitude and longitude to the feature set
         input_features_final = np.hstack([
-            np.radians(z["latitude"][:][this_bin_input_index]).reshape(-1, 1), 
-            np.radians(z["longitude"][:][this_bin_input_index]).reshape(-1, 1),
-            input_features_nomalized
+            latitude_rad[input_mask], 
+            longitude_rad[input_mask], 
+            input_features_normalized
         ])
 
-        input_features_final=torch.tensor(input_features_final, dtype=torch.float32)
-
-        #prepare target features (for each bin)
-        target_features_orig = np.column_stack([
-            # z["sensorZenithAngle"][:][this_bin_target_index],
-            # z["solarZenithAngle"][:][this_bin_target_index],
-            # z["solarAzimuthAngle"][:][this_bin_target_index],
-            *[z[f"bt_channel_{i}"][:][this_bin_target_index] for i in range(1, 23)] # BT channels
-        ])
-
-        target_features_nomalized = minmax_scaler_target.fit_transform(target_features_orig)
+        # Prepare target features
+        target_features_orig = bt_channels[target_mask]
+        target_features_normalized = minmax_scaler_target.fit_transform(target_features_orig)
 
         target_features_final = np.hstack([
-            np.radians(z["latitude"][:][this_bin_target_index]).reshape(-1, 1),
-            np.radians(z["longitude"][:][this_bin_target_index]).reshape(-1, 1),
-            target_features_nomalized])
+            latitude_rad[target_mask], 
+            longitude_rad[target_mask], 
+            target_features_normalized
+        ])
 
-        target_features_final=torch.tensor(target_features_final, dtype=torch.float32)
-
-        print(input_features_orig.shape)
-        print(input_features_nomalized.shape)
-        print(input_features_final.shape)
-
-        # Store processed features in the dictionary
-        data_summary[bin]['input_features_final']=input_features_final
-        data_summary[bin]['target_features_final']=target_features_final
+        # Convert to tensors at the end
+        data_summary[bin_name]['input_features_final'] = torch.tensor(input_features_final, dtype=torch.float32)
+        data_summary[bin_name]['target_features_final'] = torch.tensor(target_features_final, dtype=torch.float32)
 
         # Store min/max values for later unnormalization
-        data_summary[bin]['target_scaler_min'] = minmax_scaler_target.data_min_
-        data_summary[bin]['target_scaler_max'] = minmax_scaler_target.data_max_
-    
+        data_summary[bin_name]['target_scaler_min'] = minmax_scaler_target.data_min_
+        data_summary[bin_name]['target_scaler_max'] = minmax_scaler_target.data_max_
     return data_summary
+
 
 def cartesian_to_latlon_rad(cartesian_coords):
     """
@@ -159,6 +170,8 @@ def cartesian_to_latlon_rad(cartesian_coords):
     lon = np.arctan2(y, x)  # Longitude in radians
     return np.column_stack((lat, lon))
 
+
+@timing_decorator
 def create_icosahedral_mesh(resolution=2):
     """
     Generates an icosahedral mesh, converts its nodes from Cartesian coordinates to latitude/longitude, 
@@ -240,7 +253,8 @@ class CutOffEdges:
         """
         self.cutoff_factor = cutoff_factor
         self.radius = None
-
+    
+    @timing_decorator
     def get_cutoff_radius(self, mesh_latlon_rad):
         """
         Computes the cutoff radius using the Haversine metric, based on the 
@@ -577,6 +591,7 @@ class GNNModel(nn.Module):
         return x_out
 
 
+@timing_decorator
 def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
     """
     Trains a Graph Neural Network (GNN) model using Mean Squared Error (MSE) loss.
@@ -630,98 +645,105 @@ def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
 
     return model
 
-############################################################################################
-# Define parameters
-start_date = "2024-04-01"
-end_date = "2024-04-07"
-selected_satelliteId = 224
 
-# Open Zarr dataset
-z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr", mode="r")
+@timing_decorator
+def main():
+    ############################################################################################
+    # Define parameters
+    start_date = "2024-04-01"
+    end_date = "2024-04-07"
+    selected_satelliteId = 224
+    
+    # Open Zarr dataset
+    z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr", mode="r")
+    
+    # make pair of input-target data for each time step
+    data_summary = organize_bins_times(z, start_date, end_date, selected_satelliteId)
+    data_summary = extract_features(z, data_summary)
+    
+    # for now, we only train for first time step--bin1 which its data are available in data_summary['bin1']
+    
+    #Generates an icosahedral mesh
+    hetero_data, mesh_graph, mesh_latlon_rad, mesh_coords = create_icosahedral_mesh(resolution=2)
+    print("\n--- Generated Mesh Info ---")
+    print(f"Total Nodes: {len(mesh_latlon_rad)}")  # Number of nodes
+    print(f"Total Edges: {mesh_graph.number_of_edges()}")  # Number of edges
+    print(f"Edge Index Shape: {hetero_data['hidden', 'to', 'hidden'].edge_index.shape}") # PyG edge index shape
+    print("\n--- HeteroData Structure ---")
+    print(hetero_data)
+    
+    #now start making graphs using above icosahedral mesh
+    encoder_graph = nx.DiGraph()  # Ensure only directed (No bidirectional edges) connections for encoder graph
+    
+    # Initialize CutOffEdges
+    cutoff_encoder = CutOffEdges(cutoff_factor=0.6)
+    #get lat and lon from input features
+    obs_latlon_rad=data_summary['bin1']['input_features_final'][:,-2:]
+    # Apply encoding (mapping observations to hidden mesh) 
+    adj_matrix_encoding = cutoff_encoder.add_edges(encoder_graph, obs_latlon_rad, mesh_latlon_rad)
+    
+    # For processor graph, apply multi-scale edges with x_hops=3 (3 number of hops for connectivity between nodes)
+    multi_scale_processor = MultiScaleEdges(source_name="hidden", target_name="hidden", x_hops=3)
+    
+    # Pass the updated mesh_graph-- update processor graph
+    hetero_data, mesh_graph = multi_scale_processor.update_graph(hetero_data, mesh_graph)
+    
+    # Generate adjacency matrix of processor graph
+    adj_matrix = multi_scale_processor.get_adjacency_matrix(mesh_graph)
+    
+    # Convert adjacency matrix to PyG edge index
+    edge_index = torch.tensor(np.vstack([adj_matrix.row, adj_matrix.col]), dtype=torch.long)
+    
+    # Assign multi-scale edges to the HeteroData object
+    hetero_data["hidden", "to", "hidden"].edge_index = edge_index
+    mesh_graph = mesh_graph.to_undirected()
+    
+    # Extract lat/lon of target needd for decoder graph
+    target_latlon_rad = data_summary['bin1']['target_features_final'][:,-2:]
+    
+    # Initialize KNNEdges for decoding
+    knn_decoder = KNNEdges(num_nearest_neighbours=3)
+    
+    # add decoder edges from mesh to target node
+    edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, mesh_latlon_rad)
+    
+    # Assign to HeteroData for PyTorch Geometric
+    hetero_data["hidden", "to", "target"].edge_index = edge_index_knn
+    hetero_data["hidden", "to", "target"].edge_attr = edge_attr_knn
+    
+    #here we are done defining our graphs and can not start to train the model using pytorch
+    
+    # Define pytorch model parameters
+    input_dim = 27
+    hidden_dim = 128  # Reduced hidden dimension to avoid memory issuesa
+    output_dim = 24 
+    num_layers=16
+    
+    # Instantiate the model
+    gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
+    stacked_x = data_summary['bin1']['input_features_final']
+    stacked_y = data_summary['bin1']['target_features_final']
+    
+    # Assign to HeteroData
+    hetero_data["hidden"].x = stacked_x  # Use the structured tensor
+    hetero_data["hidden", "to", "hidden"].edge_index = edge_index.to(torch.long)  # Processor edges
+    hetero_data["hidden", "to", "target"].edge_index = edge_index_knn.to(torch.long)  # Decoder edges
+    
+    # Convert to PyG Data object using stacked_x
+    hidden_data = Data(
+        x=stacked_x,  
+        edge_index=hetero_data["hidden", "to", "hidden"].edge_index,
+        edge_index_target=hetero_data["hidden", "to", "target"].edge_index, 
+        y=stacked_y   
+    )
+    
+    # Assign filtered target edges & ground truth to `hidden_data`
+    edge_index_target = hetero_data["hidden", "to", "target"].edge_index 
+    
+    
+    # Train Model
+    trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=10, lr=1e-4)
 
-# make pair of input-target data for each time step
-data_summary = organize_bins_times(z, start_date, end_date, selected_satelliteId)
-data_summary=extract_features(z, data_summary)
 
-# for now, we only train for first time step--bin1 which its data are available in data_summary['bin1']
-
-#Generates an icosahedral mesh
-hetero_data, mesh_graph, mesh_latlon_rad, mesh_coords = create_icosahedral_mesh(resolution=2)
-print("\n--- Generated Mesh Info ---")
-print(f"Total Nodes: {len(mesh_latlon_rad)}")  # Number of nodes
-print(f"Total Edges: {mesh_graph.number_of_edges()}")  # Number of edges
-print(f"Edge Index Shape: {hetero_data['hidden', 'to', 'hidden'].edge_index.shape}") # PyG edge index shape
-print("\n--- HeteroData Structure ---")
-print(hetero_data)
-
-#now start making graphs using above icosahedral mesh
-encoder_graph = nx.DiGraph()  # Ensure only directed (No bidirectional edges) connections for encoder graph
-
-# Initialize CutOffEdges
-cutoff_encoder = CutOffEdges(cutoff_factor=0.6)
-#get lat and lon from input features
-obs_latlon_rad=data_summary['bin1']['input_features_final'][:,-2:]
-# Apply encoding (mapping observations to hidden mesh) 
-adj_matrix_encoding = cutoff_encoder.add_edges(encoder_graph, obs_latlon_rad, mesh_latlon_rad)
-
-# For processor graph, apply multi-scale edges with x_hops=3 (3 number of hops for connectivity between nodes)
-multi_scale_processor = MultiScaleEdges(source_name="hidden", target_name="hidden", x_hops=3)
-
-# Pass the updated mesh_graph-- update processor graph
-hetero_data, mesh_graph = multi_scale_processor.update_graph(hetero_data, mesh_graph)
-
-# Generate adjacency matrix of processor graph
-adj_matrix = multi_scale_processor.get_adjacency_matrix(mesh_graph)
-
-# Convert adjacency matrix to PyG edge index
-edge_index = torch.tensor(np.vstack([adj_matrix.row, adj_matrix.col]), dtype=torch.long)
-
-# Assign multi-scale edges to the HeteroData object
-hetero_data["hidden", "to", "hidden"].edge_index = edge_index
-mesh_graph = mesh_graph.to_undirected()
-
-# Extract lat/lon of target needd for decoder graph
-target_latlon_rad = data_summary['bin1']['target_features_final'][:,-2:]
-
-# Initialize KNNEdges for decoding
-knn_decoder = KNNEdges(num_nearest_neighbours=3)
-
-# add decoder edges from mesh to target node
-edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, mesh_latlon_rad)
-
-# Assign to HeteroData for PyTorch Geometric
-hetero_data["hidden", "to", "target"].edge_index = edge_index_knn
-hetero_data["hidden", "to", "target"].edge_attr = edge_attr_knn
-
-#here we are done defining our graphs and can not start to train the model using pytorch
-
-# Define pytorch model parameters
-input_dim = 27
-hidden_dim = 128  # Reduced hidden dimension to avoid memory issuesa
-output_dim = 24 
-num_layers=16
-
-# Instantiate the model
-gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
-stacked_x=data_summary['bin1']['input_features_final']
-stacked_y=data_summary['bin1']['target_features_final']
-
-# Assign to HeteroData
-hetero_data["hidden"].x = stacked_x  # Use the structured tensor
-hetero_data["hidden", "to", "hidden"].edge_index = edge_index.to(torch.long)  # Processor edges
-hetero_data["hidden", "to", "target"].edge_index = edge_index_knn.to(torch.long)  # Decoder edges
-
-# Convert to PyG Data object using stacked_x
-hidden_data = Data(
-    x=stacked_x,  
-    edge_index=hetero_data["hidden", "to", "hidden"].edge_index,
-    edge_index_target=hetero_data["hidden", "to", "target"].edge_index, 
-    y=stacked_y   
-)
-
-# Assign filtered target edges & ground truth to `hidden_data`
-edge_index_target = hetero_data["hidden", "to", "target"].edge_index 
-
-
-# Train Model
-trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=10, lr=1e-4)
+if __name__ == "__main__":
+    main()
