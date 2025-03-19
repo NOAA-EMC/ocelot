@@ -1,5 +1,5 @@
 [pycodestyle]
 count = False
-max-line-length = 120
+max-line-length = 150
 statistics = True
 exclude = .git,.github,venv,.vscode,docs/conf.py

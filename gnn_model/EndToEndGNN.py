@@ -53,8 +53,8 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == 224))[0]
 
     # Filter data for the specified week and satellite
-    df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times] })
-    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids==224))[0]
+    df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times]})
+    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == 224))[0]
     df["time_bin"] = df["time"].dt.floor("12h")
 
     # Sort by time
@@ -224,7 +224,7 @@ def create_icosahedral_mesh(resolution=2):
 
 class CutOffEdges:
     """
-    Computes cutoff-based edges to connect observation nodes to mesh nodes 
+    Computes cutoff-based edges to connect observation nodes to mesh nodes
     based on a geodesic distance threshold.
 
     Attributes:
@@ -234,9 +234,9 @@ class CutOffEdges:
     Methods:
         get_cutoff_radius(mesh_latlon_rad):
             Computes the cutoff radius using the maximum geodesic neighbor distance.
-        
+
         add_edges(graph, obs_latlon_rad, mesh_latlon_rad):
-            Establishes directional edges from observations to mesh nodes based 
+            Establishes directional edges from observations to mesh nodes based
             on the computed cutoff radius.
     """
 
@@ -249,15 +249,15 @@ class CutOffEdges:
         """
         self.cutoff_factor = cutoff_factor
         self.radius = None
-    
+
     @timing_decorator
     def get_cutoff_radius(self, mesh_latlon_rad):
         """
-        Computes the cutoff radius using the Haversine metric, based on the 
+        Computes the cutoff radius using the Haversine metric, based on the
         maximum distance between mesh node neighbors.
 
         Parameters:
-            mesh_latlon_rad (numpy.ndarray): Array of shape (N, 2) containing 
+            mesh_latlon_rad (numpy.ndarray): Array of shape (N, 2) containing
                                              mesh node coordinates (latitude, longitude in radians).
 
         Returns:
@@ -266,7 +266,7 @@ class CutOffEdges:
         knn = NearestNeighbors(n_neighbors=2, metric="haversine")
         knn.fit(mesh_latlon_rad)
         dists, _ = knn.kneighbors(mesh_latlon_rad)
-        self.radius = dists[dists > 0].max() * self.cutoff_factor  
+        self.radius = dists[dists > 0].max() * self.cutoff_factor
         return self.radius
 
     def add_edges(self, graph, obs_latlon_rad, mesh_latlon_rad):
@@ -275,13 +275,13 @@ class CutOffEdges:
 
         Parameters:
             graph (networkx.DiGraph): The directed graph where edges will be added.
-            obs_latlon_rad (numpy.ndarray): Array of shape (M, 2) containing 
+            obs_latlon_rad (numpy.ndarray): Array of shape (M, 2) containing
                                             observation node coordinates (lat, lon in radians).
-            mesh_latlon_rad (numpy.ndarray): Array of shape (N, 2) containing 
+            mesh_latlon_rad (numpy.ndarray): Array of shape (N, 2) containing
                                              mesh node coordinates (lat, lon in radians).
 
         Returns:
-            torch.Tensor: Edge index tensor in PyTorch Geometric COO format (2, E), 
+            torch.Tensor: Edge index tensor in PyTorch Geometric COO format (2, E),
                           where each column represents a directed edge (obs → mesh).
         """
         if self.radius is None:
@@ -323,10 +323,10 @@ class MultiScaleEdges:
     Methods:
         add_edges_from_mesh(mesh_graph):
             Connects nodes that are exactly `x_hops` apart while preserving the original edges for `x_hops=1`.
-        
+
         get_adjacency_matrix(mesh_graph):
             Converts the updated mesh graph to a sparse adjacency matrix.
-        
+
         update_graph(graph, mesh_graph):
             Updates the input graph with multi-scale edges and returns the modified PyG `HeteroData` object.
     """
@@ -341,7 +341,7 @@ class MultiScaleEdges:
             source_name (str): Name of the source node type (must match `target_name`).
             target_name (str): Name of the target node type (must match `source_name`).
             x_hops (int): Number of hops for defining multi-scale connectivity.
-        
+
         Raises:
             AssertionError: If source and target names do not match or if `x_hops` is not a positive integer.
         """
@@ -367,7 +367,7 @@ class MultiScaleEdges:
         new_edges = []
         existing_edges = mesh_graph.edges
         print(f"Before x_hops={self.x_hops}, edges: {mesh_graph.number_of_edges()}")  # Debugging
-        
+
         for node in mesh_graph.nodes:
             # Get nodes that are `x_hops` away
             neighbors = nx.single_source_shortest_path_length(mesh_graph, node, cutoff=self.x_hops)
@@ -410,7 +410,7 @@ class MultiScaleEdges:
             tuple:
                 - HeteroData: The updated PyG heterogeneous data object with multi-scale edges.
                 - networkx.Graph: The modified mesh graph with multi-scale connectivity.
-        
+
         Raises:
             AssertionError: If `source_name` is missing in the `HeteroData` object.
         """
@@ -429,9 +429,10 @@ class MultiScaleEdges:
 
         return graph, mesh_graph
 
+
 class KNNEdges:
     """
-    Computes K-Nearest Neighbors (KNN)-based edges for decoding 
+    Computes K-Nearest Neighbors (KNN)-based edges for decoding
     (connecting hidden mesh nodes to target data nodes).
 
     Attributes:
@@ -440,7 +441,7 @@ class KNNEdges:
     Methods:
         add_edges(mesh_graph, target_latlon_rad, mesh_latlon_rad):
             Connects each target observation location to its K-nearest mesh nodes.
-        
+
         create_edge_index(edge_list, edge_weights):
             Converts edge list to PyTorch Geometric `edge_index` format with associated edge weights.
     """
@@ -465,14 +466,14 @@ class KNNEdges:
 
         Parameters:
             mesh_graph (networkx.Graph): The mesh graph containing node connectivity.
-            target_latlon_rad (numpy.ndarray): Array of shape (M, 2) containing target node 
+            target_latlon_rad (numpy.ndarray): Array of shape (M, 2) containing target node
                                                coordinates (latitude, longitude in radians).
-            mesh_latlon_rad (numpy.ndarray): Array of shape (N, 2) containing mesh node 
+            mesh_latlon_rad (numpy.ndarray): Array of shape (N, 2) containing mesh node
                                              coordinates (latitude, longitude in radians).
 
         Returns:
             tuple:
-                - torch.Tensor: Edge index tensor of shape (2, E), where each column represents 
+                - torch.Tensor: Edge index tensor of shape (2, E), where each column represents
                                 an edge from a mesh node to a target node.
                 - torch.Tensor: Edge attribute tensor containing distance weights for each edge.
         """
@@ -491,6 +492,7 @@ class KNNEdges:
                 edge_weights.append(distances[target_idx, i])  # Distance weight
 
         return self.create_edge_index(edge_list, edge_weights)
+
 
     def create_edge_index(self, edge_list, edge_weights):
         """
@@ -581,8 +583,9 @@ class GNNModel(nn.Module):
         target_indices = torch.unique(data.edge_index_target[1])  # Get target node indices
         x_out = self.decoder(x_hidden, data.edge_index_target)  # Decode using target edges
         x_out = x_out[target_indices]  # Extract only target predictions
-    
+
         return x_out
+
 
 @timing_decorator
 def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
@@ -615,17 +618,17 @@ def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
         optimizer.zero_grad()
 
         # Forward pass
-        output = model(data)  
+        output = model(data)
 
         # Select only **unique** target nodes
         # target_indices = torch.unique(target_edge_index[1])  # Get unique target node indices
-        predicted_target = output # Select corresponding predictions
+        predicted_target = output  # Select corresponding predictions
 
         # Keep lat/lon separate for evaluation
         target_latlon = target_y[:predicted_target.shape[0], :2]
 
         # Ensure `target_y` only contains relevant rows
-        target_y = target_y[:predicted_target.shape[0], :]  
+        target_y = target_y[:predicted_target.shape[0], :]
 
         # Compute loss
         loss = criterion(predicted_target, target_y)
@@ -637,6 +640,7 @@ def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
         print(f"Epoch {epoch + 1}, Loss: {loss.item():.4f}")
 
     return model
+
 
 @timing_decorator
 def main():
@@ -655,23 +659,23 @@ def main():
 
     # for now, we only train for first time step--bin1 which its data are available in data_summary['bin1']
 
-    #Generates an icosahedral mesh
+    # Generates an icosahedral mesh
     hetero_data, mesh_graph, mesh_latlon_rad, mesh_coords = create_icosahedral_mesh(resolution=2)
     print("\n--- Generated Mesh Info ---")
     print(f"Total Nodes: {len(mesh_latlon_rad)}")  # Number of nodes
     print(f"Total Edges: {mesh_graph.number_of_edges()}")  # Number of edges
-    print(f"Edge Index Shape: {hetero_data['hidden', 'to', 'hidden'].edge_index.shape}") # PyG edge index shape
+    print(f"Edge Index Shape: {hetero_data['hidden', 'to', 'hidden'].edge_index.shape}")  # PyG edge index shape
     print("\n--- HeteroData Structure ---")
     print(hetero_data)
 
-    #now start making graphs using above icosahedral mesh
+    # now start making graphs using above icosahedral mesh
     encoder_graph = nx.DiGraph()  # Ensure only directed (No bidirectional edges) connections for encoder graph
 
     # Initialize CutOffEdges
     cutoff_encoder = CutOffEdges(cutoff_factor=0.6)
-    #get lat and lon from input features
-    obs_latlon_rad=data_summary['bin1']['input_features_final'][:,-2:]
-    # Apply encoding (mapping observations to hidden mesh) 
+    # get lat and lon from input features
+    obs_latlon_rad = data_summary['bin1']['input_features_final'][:, -2:]
+    # Apply encoding (mapping observations to hidden mesh)
     adj_matrix_encoding = cutoff_encoder.add_edges(encoder_graph, obs_latlon_rad, mesh_latlon_rad)
 
     # For processor graph, apply multi-scale edges with x_hops=3 (3 number of hops for connectivity between nodes)
@@ -691,7 +695,7 @@ def main():
     mesh_graph = mesh_graph.to_undirected()
 
     # Extract lat/lon of target needd for decoder graph
-    target_latlon_rad = data_summary['bin1']['target_features_final'][:,-2:]
+    target_latlon_rad = data_summary['bin1']['target_features_final'][:, -2:]
 
     # Initialize KNNEdges for decoding
     knn_decoder = KNNEdges(num_nearest_neighbours=3)
@@ -703,13 +707,13 @@ def main():
     hetero_data["hidden", "to", "target"].edge_index = edge_index_knn
     hetero_data["hidden", "to", "target"].edge_attr = edge_attr_knn
 
-    #here we are done defining our graphs and can not start to train the model using pytorch
+    # here we are done defining our graphs and can not start to train the model using pytorch
 
     # Define pytorch model parameters
     input_dim = 27
     hidden_dim = 128  # Reduced hidden dimension to avoid memory issuesa
-    output_dim = 24 
-    num_layers=16
+    output_dim = 24
+    num_layers = 16
 
     # Instantiate the model
     gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
@@ -723,14 +727,14 @@ def main():
 
     # Convert to PyG Data object using stacked_x
     hidden_data = Data(
-        x=stacked_x,  
+        x=stacked_x,
         edge_index=hetero_data["hidden", "to", "hidden"].edge_index,
-        edge_index_target=hetero_data["hidden", "to", "target"].edge_index, 
-        y=stacked_y   
+        edge_index_target=hetero_data["hidden", "to", "target"].edge_index,
+        y=stacked_y
     )
 
     # Assign filtered target edges & ground truth to `hidden_data`
-    edge_index_target = hetero_data["hidden", "to", "target"].edge_index 
+    edge_index_target = hetero_data["hidden", "to", "target"].edge_index
 
     # Train Model
     trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=10, lr=1e-4)
