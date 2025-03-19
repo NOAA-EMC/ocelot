@@ -493,7 +493,6 @@ class KNNEdges:
 
         return self.create_edge_index(edge_list, edge_weights)
 
-
     def create_edge_index(self, edge_list, edge_weights):
         """
         Converts an edge list to PyTorch Geometric `edge_index` format with edge attributes.
@@ -510,6 +509,7 @@ class KNNEdges:
         edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(edge_weights, dtype=torch.float32)
         return edge_index, edge_attr
+
 
 class GNNModel(nn.Module):
     """
@@ -738,6 +738,7 @@ def main():
 
     # Train Model
     trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=10, lr=1e-4)
+
 
 if __name__ == "__main__":
     main()
