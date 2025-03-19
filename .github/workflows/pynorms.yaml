@@ -15,4 +15,3 @@ jobs:
           pip install --upgrade pip
           pip install pycodestyle
       - uses: actions/checkout@v4
-      - uses: pre-commit/action@v3.0.1
