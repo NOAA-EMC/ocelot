@@ -15,3 +15,5 @@ jobs:
           pip install --upgrade pip
           pip install pycodestyle
       - uses: actions/checkout@v4
+      - name: Run pycodestyle
+        run: pycodestyle
