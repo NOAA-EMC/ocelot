@@ -16,4 +16,4 @@ jobs:
           pip install pycodestyle
       - uses: actions/checkout@v4
       - name: Run pycodestyle
-        run: pycodestyle
+        run: pycodestyle $GITHUB_WORKSPACE/ocelot
