@@ -1,0 +1,19 @@
+name: pynorms
+on: [push, pull_request]
+
+jobs:
+  check_norms:
+    runs-on: ubuntu-latest
+    name: Check Python coding norms
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install (upgrade) python dependencies (pycodestyle)
+        run: |
+          pip install --upgrade pip
+          pip install pycodestyle
+      - uses: actions/checkout@v4
+      - name: Run pycodestyle
+        run: pycodestyle $GITHUB_WORKSPACE --config=$GITHUB_WORKSPACE/.pycodestyle
