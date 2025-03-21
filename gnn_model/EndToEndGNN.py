@@ -41,7 +41,7 @@ def timing_resource_decorator(func):
         # Record system resource usage AFTER execution
         mem_after = process.memory_info().rss / (1024**3)
         disk_after = psutil.disk_usage('/').used / (1024**3)
-        cpu_after = psutil.cpu_percent(interval=None) # Snapshot after execution
+        cpu_after = psutil.cpu_percent(interval=None)  # Snapshot after execution
 
         execution_time = end_time - start_time
 
