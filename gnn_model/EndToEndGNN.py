@@ -77,11 +77,11 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     satellite_ids = z["satelliteId"][:]
 
     # Select data based on the given time range and satellite ID
-    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == 224))[0]
+    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
 
     # Filter data for the specified week and satellite
     df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times]})
-    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == 224))[0]
+    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
     df["time_bin"] = df["time"].dt.floor("12h")
 
     # Sort by time
@@ -674,11 +674,11 @@ def main():
     ############################################################################################
     # Define parameters
     start_date = "2024-04-01"
-    end_date = "2024-04-07"
+    end_date = "2024-04-02"
     selected_satelliteId = 224
 
     # Open Zarr dataset
-    z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr", mode="r")
+    z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms_small.zarr", mode="r")
 
     # make pair of input-target data for each time step
     data_summary = organize_bins_times(z, start_date, end_date, selected_satelliteId)
@@ -738,9 +738,9 @@ def main():
 
     # Define pytorch model parameters
     input_dim = 27
-    hidden_dim = 128  # Reduced hidden dimension to avoid memory issues
+    hidden_dim = 64  # Reduced hidden dimension to avoid memory issues
     output_dim = 24
-    num_layers = 16
+    num_layers = 8
 
     # Instantiate the model
     gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
@@ -764,7 +764,7 @@ def main():
     edge_index_target = hetero_data["hidden", "to", "target"].edge_index
 
     # Train Model
-    trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=10, lr=1e-4)
+    trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=3, lr=1e-3)
 
 
 if __name__ == "__main__":
