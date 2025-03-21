@@ -28,20 +28,23 @@ def timing_resource_decorator(func):
     """
     def wrapper(*args, **kwargs):
         process = psutil.Process(os.getpid())
+
+        # Record system resource usage BEFORE execution
+        mem_before = process.memory_info().rss / (1024**3)  # GB
+        disk_before = psutil.disk_usage('/').used / (1024**3)
+        cpu_before = psutil.cpu_percent(interval=None)  # Snapshot before execution
+
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
+
+        # Record system resource usage AFTER execution
+        mem_after = process.memory_info().rss / (1024**3)
+        disk_after = psutil.disk_usage('/').used / (1024**3)
+        cpu_after = psutil.cpu_percent(interval=None) # Snapshot after execution
+
         execution_time = end_time - start_time
 
-        # Record system resource usage before execution
-        mem_before = process.memory_info().rss / (1024**3)  # Convert bytes to GB
-        cpu_before = psutil.cpu_percent(interval=None)  # Don't wait for interval
-        disk_before = psutil.disk_usage('/').used / (1024**3)  # Disk in GB
-
-        # Record system resource usage after execution
-        mem_after = process.memory_info().rss / (1024**3)
-        cpu_after = psutil.cpu_percent(interval=None)
-        disk_after = psutil.disk_usage('/').used / (1024**3)
         # Print execution time and resource usage
         print(f"Function '{func.__name__}' took {execution_time:.6f} seconds to execute.")
         print(f"  Execution Time: {execution_time:.6f} seconds")
@@ -49,6 +52,7 @@ def timing_resource_decorator(func):
         print(f"  CPU Usage: {cpu_before:.2f}% → {cpu_after:.2f}%")
         print(f"  Disk Usage: {disk_before:.2f} GB → {disk_after:.2f} GB\n")
         return result
+
     return wrapper
 
 
