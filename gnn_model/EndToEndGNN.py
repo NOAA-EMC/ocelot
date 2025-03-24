@@ -47,7 +47,6 @@ def timing_resource_decorator(func):
 
         # Print execution time and resource usage
         print(f"Function '{func.__name__}' took {execution_time:.6f} seconds to execute.")
-        print(f"  Execution Time: {execution_time:.6f} seconds")
         print(f"  Memory Usage: {mem_before:.2f} GB → {mem_after:.2f} GB")
         print(f"  CPU Usage: {cpu_before:.2f}% → {cpu_after:.2f}%")
         print(f"  Disk Usage: {disk_before:.2f} GB → {disk_after:.2f} GB\n")
