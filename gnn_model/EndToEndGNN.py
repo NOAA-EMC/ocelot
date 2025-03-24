@@ -1,3 +1,6 @@
+import psutil
+import os
+import time
 import zarr
 import numpy as np
 import pandas as pd
@@ -18,18 +21,41 @@ import torch.optim as optim
 from sklearn.preprocessing import MinMaxScaler
 
 
-def timing_decorator(func):
+def timing_resource_decorator(func):
+    """
+    A decorator that tracks execution time, memory usage, disk usage, and CPU usage
+    before and after function execution.
+    """
     def wrapper(*args, **kwargs):
+        process = psutil.Process(os.getpid())
+
+        # Record system resource usage BEFORE execution
+        mem_before = process.memory_info().rss / (1024**3)  # GB
+        disk_before = psutil.disk_usage('/').used / (1024**3)
+        cpu_before = psutil.cpu_percent(interval=None)  # Snapshot before execution
+
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
+
+        # Record system resource usage AFTER execution
+        mem_after = process.memory_info().rss / (1024**3)
+        disk_after = psutil.disk_usage('/').used / (1024**3)
+        cpu_after = psutil.cpu_percent(interval=None)  # Snapshot after execution
+
         execution_time = end_time - start_time
+
+        # Print execution time and resource usage
         print(f"Function '{func.__name__}' took {execution_time:.6f} seconds to execute.")
+        print(f"  Memory Usage: {mem_before:.2f} GB → {mem_after:.2f} GB")
+        print(f"  CPU Usage: {cpu_before:.2f}% → {cpu_after:.2f}%")
+        print(f"  Disk Usage: {disk_before:.2f} GB → {disk_after:.2f} GB\n")
         return result
+
     return wrapper
 
 
-@timing_decorator
+@timing_resource_decorator
 def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     """
     Organizes satellite observation times into 12-hour bins and creates input-target pairs
@@ -50,11 +76,11 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     satellite_ids = z["satelliteId"][:]
 
     # Select data based on the given time range and satellite ID
-    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == 224))[0]
+    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
 
     # Filter data for the specified week and satellite
     df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times]})
-    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == 224))[0]
+    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
     df["time_bin"] = df["time"].dt.floor("12h")
 
     # Sort by time
@@ -78,7 +104,7 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     return data_summary
 
 
-@timing_decorator
+@timing_resource_decorator
 def extract_features(z, data_summary):
     """
     Extracts and normalizes input and target features for each time bin in the dataset.
@@ -170,7 +196,7 @@ def cartesian_to_latlon_rad(cartesian_coords):
     return np.column_stack((lat, lon))
 
 
-@timing_decorator
+@timing_resource_decorator
 def create_icosahedral_mesh(resolution=2):
     """
     Generates an icosahedral mesh, converts its nodes from Cartesian coordinates to latitude/longitude,
@@ -250,7 +276,7 @@ class CutOffEdges:
         self.cutoff_factor = cutoff_factor
         self.radius = None
 
-    @timing_decorator
+    @timing_resource_decorator
     def get_cutoff_radius(self, mesh_latlon_rad):
         """
         Computes the cutoff radius using the Haversine metric, based on the
@@ -587,7 +613,7 @@ class GNNModel(nn.Module):
         return x_out
 
 
-@timing_decorator
+@timing_resource_decorator
 def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
     """
     Trains a Graph Neural Network (GNN) model using Mean Squared Error (MSE) loss.
@@ -642,16 +668,16 @@ def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
     return model
 
 
-@timing_decorator
+@timing_resource_decorator
 def main():
     ############################################################################################
     # Define parameters
     start_date = "2024-04-01"
-    end_date = "2024-04-07"
+    end_date = "2024-04-02"
     selected_satelliteId = 224
 
     # Open Zarr dataset
-    z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr", mode="r")
+    z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms_small.zarr", mode="r")
 
     # make pair of input-target data for each time step
     data_summary = organize_bins_times(z, start_date, end_date, selected_satelliteId)
@@ -711,9 +737,9 @@ def main():
 
     # Define pytorch model parameters
     input_dim = 27
-    hidden_dim = 128  # Reduced hidden dimension to avoid memory issuesa
+    hidden_dim = 64  # Reduced hidden dimension to avoid memory issues
     output_dim = 24
-    num_layers = 16
+    num_layers = 8
 
     # Instantiate the model
     gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
@@ -737,7 +763,7 @@ def main():
     edge_index_target = hetero_data["hidden", "to", "target"].edge_index
 
     # Train Model
-    trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=10, lr=1e-4)
+    trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=3, lr=1e-3)
 
 
 if __name__ == "__main__":
