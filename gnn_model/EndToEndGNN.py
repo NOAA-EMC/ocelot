@@ -12,6 +12,9 @@ import networkx as nx
 from sklearn.neighbors import NearestNeighbors
 import joblib
 import torch.nn as nn
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+
 from torch_geometric.data import HeteroData, Data
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader, NeighborLoader
@@ -537,7 +540,7 @@ class KNNEdges:
         return edge_index, edge_attr
 
 
-class GNNModel(nn.Module):
+class GNNLightning(pl.LightningModule):
     """
     A Graph Neural Network (GNN) model for processing structured spatial data.
 
@@ -546,20 +549,20 @@ class GNNModel(nn.Module):
     - A processor with multiple GATConv layers for message passing between hidden nodes.
     - A decoder that maps hidden node embeddings back to target node predictions.
 
-    Attributes:
-        input_dim (int): Dimension of the input node features.
-        hidden_dim (int): Dimension of the hidden layer representations.
-        output_dim (int): Dimension of the output predictions.
-        num_layers (int): Number of message-passing layers (default: 16).
-        encoder (GCNConv): Graph convolution layer for initial feature encoding.
-        processor_layers (nn.ModuleList): List of GATConv layers for message passing.
-        decoder (GCNConv): Graph convolution layer for decoding hidden node features to output space.
+    Attributes: input_dim (int): Dimension of the input node features.
+                hidden_dim (int): Dimension of the hidden layer representations.
+                output_dim (int): Dimension of the output predictions.
+                num_layers (int): Number of message-passing layers (default: 16).
+                encoder (GCNConv): Graph convolution layer for initial feature encoding.
+                processor_layers (nn.ModuleList): List of GATConv layers for message passing.
+                decoder (GCNConv): Graph convolution layer for decoding hidden node features to output space.
 
     Methods:
         forward(data):
             Defines the forward pass of the model, applying the encoder, processor, and decoder.
     """
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16):
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4):
         """
         Initializes the GNN model.
 
@@ -569,9 +572,9 @@ class GNNModel(nn.Module):
             output_dim (int): Number of output features per node.
             num_layers (int, optional): Number of GATConv message-passing layers (default: 16).
         """
-        super(GNNModel, self).__init__()
-        self.num_layers = num_layers
-        self.hidden_dim = hidden_dim
+        super().__init__()
+        self.save_hyperparameters()
+        self.lr = lr
 
         # Encoder: Maps data nodes to hidden nodes
         self.encoder = GCNConv(input_dim, hidden_dim)
@@ -584,16 +587,10 @@ class GNNModel(nn.Module):
         # Decoder: Maps hidden nodes back to target nodes
         self.decoder = GCNConv(hidden_dim, output_dim)
 
-    def forward(self, data):
-        """
-        Initializes the GNN model.
+        # Define loss function
+        self.loss_fn = nn.MSELoss()
 
-        Parameters:
-            input_dim (int): Number of input features per node.
-            hidden_dim (int): Number of hidden dimensions in the graph layers.
-            output_dim (int): Number of output features per node.
-            num_layers (int, optional): Number of GATConv message-passing layers (default: 16).
-        """
+    def forward(self, data):
         x, edge_index = data.x, data.edge_index  # Hidden node connections
 
         # Encoding: Input → Hidden
@@ -612,158 +609,226 @@ class GNNModel(nn.Module):
 
         return x_out
 
+    def training_step(self, batch, batch_idx):
+        y_pred = self(batch)
+        y_true = batch.y[:y_pred.shape[0], :]
+        loss = self.loss_fn(y_pred, y_true)
+        self.log("train_loss", loss)  # prog_bar=True)
+        return {'loss': loss}
 
-@timing_resource_decorator
-def train_model(model, data, target_edge_index, target_y, epochs=10, lr=0.001):
-    """
-    Trains a Graph Neural Network (GNN) model using Mean Squared Error (MSE) loss.
+    # def validation_step(self, batch, batch_idx):
+    #     y_pred = self(batch)
+    #     y_true = batch.y  # batch.y[:y_hat.shape[0], :]
+    #     loss = self.loss_fn(y_pred, y_true)
+    #     self.log("val_loss", loss)
+    #     return {'val_loss': loss}
 
-    Parameters:
-        model (nn.Module): The GNN model to be trained.
-        data (torch_geometric.data.Data): Input graph data containing:
-            - x (torch.Tensor): Node feature matrix.
-            - edge_index (torch.Tensor): Edge connectivity matrix.
-        target_edge_index (torch.Tensor): Edge index tensor connecting hidden nodes to target nodes.
-        target_y (torch.Tensor): Ground truth values for target nodes.
-        epochs (int, optional): Number of training epochs (default: 10).
-        lr (float, optional): Learning rate for the optimizer (default: 0.001).
+    def configure_optimizers(self):
+        return Adam(self.parameters(), lr=self.lr)
 
-    Returns:
-        nn.Module: The trained GNN model.
 
-    Notes:
-        - Uses Adam optimizer and MSE loss.
-        - Selects only unique target nodes for training.
-        - Performs a forward pass, computes loss, and updates gradients in each epoch.
-    """
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.MSELoss()
+class GNNDataModule(pl.LightningDataModule):
+    def __init__(
+            self,
+            data_path,
+            start_date,
+            end_date,
+            satellite_id,
+            batch_size=1,
+            mesh_resolution=2,
+            cutoff_factor=0.6,
+            num_neighbors=3,
+            num_hops=3
+    ):
+        super().__init__()
+        # Store parameters
+        self.data_path = data_path
+        self.start_date = pd.to_datetime(start_date)
+        self.end_date = pd.to_datetime(end_date)
+        self.satellite_id = satellite_id
+        self.batch_size = batch_size
 
-    for epoch in range(epochs):
-        model.train()
-        optimizer.zero_grad()
+        # Graph parameters
+        self.mesh_resolution = mesh_resolution
+        self.cutoff_factor = cutoff_factor
+        self.num_neighbors = num_neighbors
+        self.num_hops = num_hops
 
-        # Forward pass
-        output = model(data)
+        # Will be set in setup()
+        self.data_summary = None
+        self.train_data = None
+        self.val_data = None
+        self.z = None
 
-        # Select only **unique** target nodes
-        # target_indices = torch.unique(target_edge_index[1])  # Get unique target node indices
-        predicted_target = output  # Select corresponding predictions
+    def prepare_data(self):
+        """
+        Check if Zarr dataset exists.
+        """
+        try:
+            zarr.open(self.data_path, mode="r")
+        except Exception as e:
+            raise RuntimeError(f"Failed to open Zarr dataset at {self.data_path}: {e}")
 
-        # Keep lat/lon separate for evaluation
-        target_latlon = target_y[:predicted_target.shape[0], :2]
+    def setup(self, stage=None):
+        """
+        Prepare data for training/validation.
+        """
+        # Open Zarr dataset
+        self.z = zarr.open(self.data_path, mode="r")
 
-        # Ensure `target_y` only contains relevant rows
-        target_y = target_y[:predicted_target.shape[0], :]
+        # Process time bins and features
+        self.data_summary = organize_bins_times(
+            self.z, self.start_date, self.end_date, self.satellite_id
+        )
+        self.data_summary = extract_features(self.z, self.data_summary)
 
-        # Compute loss
-        loss = criterion(predicted_target, target_y)
+        # Create graph structure for first bin (can be extended to handle multiple bins)
+        hetero_data = self._create_graph_structure(self.data_summary['bin1'])
 
-        # Backward pass
-        loss.backward()
-        optimizer.step()
+        # # Generate icosahedral mesh
+        # hetero_data, mesh_graph, mesh_latlon_rad, mesh_coords = create_icosahedral_mesh(resolution=2)
 
-        print(f"Epoch {epoch + 1}, Loss: {loss.item():.4f}")
+        # Split data into train/val
+        total_samples = len(hetero_data["hidden"].x)
+        train_size = int(0.8 * total_samples)
 
-    return model
+        # Create train/val splits
+        self.train_data = self._create_data_object(hetero_data, slice(0, total_samples))
+        # self.val_data = self._create_data_object(hetero_data, slice(train_size, total_samples))
+        # TODO make validation work
+
+    def _create_graph_structure(self, bin_data):
+        """
+        Create the graph structure for the model.
+        """
+        # Create icosahedral mesh
+        hetero_data, mesh_graph, mesh_latlon_rad, _ = create_icosahedral_mesh(
+            resolution=self.mesh_resolution
+        )
+
+        # Get input and target coordinates
+        obs_latlon_rad = bin_data['input_features_final'][:, -2:]
+        target_latlon_rad = bin_data['target_features_final'][:, -2:]
+
+        # Create encoder edges
+        encoder_graph = nx.DiGraph()
+        cutoff_encoder = CutOffEdges(cutoff_factor=self.cutoff_factor)
+        adj_matrix_encoding = cutoff_encoder.add_edges(
+            encoder_graph, obs_latlon_rad, mesh_latlon_rad
+        )
+
+        # Create processor edges
+        multi_scale_processor = MultiScaleEdges(
+            source_name="hidden",
+            target_name="hidden",
+            x_hops=self.num_hops
+        )
+        hetero_data, mesh_graph = multi_scale_processor.update_graph(hetero_data, mesh_graph)
+
+        # Generate adjacency matrix of processor graph
+        adj_matrix = multi_scale_processor.get_adjacency_matrix(mesh_graph)
+
+        # Convert adjacency matrix to PyG edge index
+        edge_index = torch.tensor(np.vstack([adj_matrix.row, adj_matrix.col]), dtype=torch.long)
+
+        # Assign multi-scale edges to the HeteroData object
+        hetero_data["hidden", "to", "hidden"].edge_index = edge_index
+        mesh_graph = mesh_graph.to_undirected()
+
+        # Create decoder edges
+        knn_decoder = KNNEdges(num_nearest_neighbours=self.num_neighbors)
+        edge_index_knn, edge_attr_knn = knn_decoder.add_edges(
+            mesh_graph, target_latlon_rad, mesh_latlon_rad
+        )
+
+        # Assign to HeteroData
+        hetero_data["hidden"].x = bin_data['input_features_final']
+        hetero_data["hidden", "to", "target"].edge_index = edge_index_knn
+        hetero_data["hidden", "to", "target"].edge_attr = edge_attr_knn
+        hetero_data["hidden"].y = bin_data['target_features_final']
+        return hetero_data
+
+    def _create_data_object(self, hetero_data, idx_slice):
+        """
+        Create a PyG Data object from HeteroData for the given indices.
+        """
+        return Data(
+            x=hetero_data["hidden"].x[idx_slice],
+            edge_index=hetero_data["hidden", "to", "hidden"].edge_index,
+            edge_index_target=hetero_data["hidden", "to", "target"].edge_index,
+            y=hetero_data["hidden"].y[idx_slice]  # Using same features as target for now
+        )
+
+    def train_dataloader(self):
+        return DataLoader([self.train_data], batch_size=self.batch_size, shuffle=True)
+
+    # def val_dataloader(self) -> DataLoader:
+    #     return DataLoader([self.val_data], batch_size=self.batch_size)
 
 
 @timing_resource_decorator
 def main():
-    ############################################################################################
-    # Define parameters
+    # Data parameters
+    data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
     start_date = "2024-04-01"
-    end_date = "2024-04-02"
-    selected_satelliteId = 224
+    end_date = "2024-04-07"
+    satellite_id = 224
 
-    # Open Zarr dataset
-    z = zarr.open("/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms_small.zarr", mode="r")
+    mesh_resolution = 2
 
-    # make pair of input-target data for each time step
-    data_summary = organize_bins_times(z, start_date, end_date, selected_satelliteId)
-    data_summary = extract_features(z, data_summary)
-
-    # for now, we only train for first time step--bin1 which its data are available in data_summary['bin1']
-
-    # Generates an icosahedral mesh
-    hetero_data, mesh_graph, mesh_latlon_rad, mesh_coords = create_icosahedral_mesh(resolution=2)
-    print("\n--- Generated Mesh Info ---")
-    print(f"Total Nodes: {len(mesh_latlon_rad)}")  # Number of nodes
-    print(f"Total Edges: {mesh_graph.number_of_edges()}")  # Number of edges
-    print(f"Edge Index Shape: {hetero_data['hidden', 'to', 'hidden'].edge_index.shape}")  # PyG edge index shape
-    print("\n--- HeteroData Structure ---")
-    print(hetero_data)
-
-    # now start making graphs using above icosahedral mesh
-    encoder_graph = nx.DiGraph()  # Ensure only directed (No bidirectional edges) connections for encoder graph
-
-    # Initialize CutOffEdges
-    cutoff_encoder = CutOffEdges(cutoff_factor=0.6)
-    # get lat and lon from input features
-    obs_latlon_rad = data_summary['bin1']['input_features_final'][:, -2:]
-    # Apply encoding (mapping observations to hidden mesh)
-    adj_matrix_encoding = cutoff_encoder.add_edges(encoder_graph, obs_latlon_rad, mesh_latlon_rad)
-
-    # For processor graph, apply multi-scale edges with x_hops=3 (3 number of hops for connectivity between nodes)
-    multi_scale_processor = MultiScaleEdges(source_name="hidden", target_name="hidden", x_hops=3)
-
-    # Pass the updated mesh_graph-- update processor graph
-    hetero_data, mesh_graph = multi_scale_processor.update_graph(hetero_data, mesh_graph)
-
-    # Generate adjacency matrix of processor graph
-    adj_matrix = multi_scale_processor.get_adjacency_matrix(mesh_graph)
-
-    # Convert adjacency matrix to PyG edge index
-    edge_index = torch.tensor(np.vstack([adj_matrix.row, adj_matrix.col]), dtype=torch.long)
-
-    # Assign multi-scale edges to the HeteroData object
-    hetero_data["hidden", "to", "hidden"].edge_index = edge_index
-    mesh_graph = mesh_graph.to_undirected()
-
-    # Extract lat/lon of target needd for decoder graph
-    target_latlon_rad = data_summary['bin1']['target_features_final'][:, -2:]
-
-    # Initialize KNNEdges for decoding
-    knn_decoder = KNNEdges(num_nearest_neighbours=3)
-
-    # add decoder edges from mesh to target node
-    edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, mesh_latlon_rad)
-
-    # Assign to HeteroData for PyTorch Geometric
-    hetero_data["hidden", "to", "target"].edge_index = edge_index_knn
-    hetero_data["hidden", "to", "target"].edge_attr = edge_attr_knn
-
-    # here we are done defining our graphs and can not start to train the model using pytorch
-
-    # Define pytorch model parameters
+    # Define model parameters
     input_dim = 27
-    hidden_dim = 64  # Reduced hidden dimension to avoid memory issues
+    hidden_dim = 256
     output_dim = 24
-    num_layers = 8
+    num_layers = 16
+    lr = 1e-4
 
-    # Instantiate the model
-    gnn_model = GNNModel(input_dim, hidden_dim, output_dim, num_layers)
-    stacked_x = data_summary['bin1']['input_features_final']
-    stacked_y = data_summary['bin1']['target_features_final']
+    # Training parameters
+    max_epochs = 100
+    batch_size = 1
 
-    # Assign to HeteroData
-    hetero_data["hidden"].x = stacked_x  # Use the structured tensor
-    hetero_data["hidden", "to", "hidden"].edge_index = edge_index.to(torch.long)  # Processor edges
-    hetero_data["hidden", "to", "target"].edge_index = edge_index_knn.to(torch.long)  # Decoder edges
-
-    # Convert to PyG Data object using stacked_x
-    hidden_data = Data(
-        x=stacked_x,
-        edge_index=hetero_data["hidden", "to", "hidden"].edge_index,
-        edge_index_target=hetero_data["hidden", "to", "target"].edge_index,
-        y=stacked_y
+    # Instantiate model & data module
+    model = GNNLightning(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        output_dim=output_dim,
+        num_layers=num_layers,
+        lr=lr
     )
 
-    # Assign filtered target edges & ground truth to `hidden_data`
-    edge_index_target = hetero_data["hidden", "to", "target"].edge_index
+    data_module = GNNDataModule(
+        data_path=data_path,
+        start_date=start_date,
+        end_date=end_date,
+        satellite_id=satellite_id,
+        batch_size=batch_size,
+        mesh_resolution=mesh_resolution
+    )
 
-    # Train Model
-    trained_model = train_model(gnn_model, hidden_data, edge_index_target, hidden_data.y, epochs=3, lr=1e-3)
+    # Setup callbacks
+    checkpoint_callback = ModelCheckpoint(
+        dirpath='checkpoints',
+        filename='gnn-{epoch:02d}-{val_loss:.2f}',
+        save_top_k=3,
+        monitor='val_loss',
+        mode='min'
+    )
+
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=3,
+        mode='min'
+    )
+
+    # Train with PyTorch Lightning
+    trainer = pl.Trainer(
+        max_epochs=max_epochs,
+        # callbacks=[checkpoint_callback, early_stopping],  #TODO make this work
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        devices=1,
+        log_every_n_steps=1
+    )
+    trainer.fit(model, data_module)
 
 
 if __name__ == "__main__":
