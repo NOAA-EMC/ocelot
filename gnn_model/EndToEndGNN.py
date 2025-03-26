@@ -15,7 +15,7 @@ import torch.nn as nn
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 
-from torch_geometric.data import HeteroData, Data, DataLoader
+from torch_geometric.data import HeteroData, Data
 import torch.nn.functional as F
 from torch_geometric.loader import DataLoader, NeighborLoader
 from torch.optim import Adam
