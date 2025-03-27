@@ -87,7 +87,7 @@ class ScriptRunner(Runner):
         self.obs_builder = self.script.make_obs_builder()
 
     def get_encoder_description(self) -> bufr.encoders.Description:
-        return self.obs_builder.make_description()
+        return self.obs_builder.description
 
     def _make_obs(self, comm, input_path:str) -> bufr.DataContainer:
         return self.obs_builder.make_obs(comm, input_path)
