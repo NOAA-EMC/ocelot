@@ -16,14 +16,16 @@ class RadiosondeObsBuilder(ObsBuilder):
     def make_obs(self, comm, input_path):
         container = super().make_obs(comm, input_path)
 
+        # Replace virtual temperature with computed air temperature values
         temp = container.get('airTemperature')
         temp_event_code = container.get('temperatureEventCode')
-
-        # Replace virtual temperature with air temperature values
-        virt_temp_mask = temp_event_code == 8
         specific_humidity = container.get('specificHumidity')
+
+        virt_temp_mask = temp_event_code == 8
+
         mixing_ratio = specific_humidity / (1 - specific_humidity)
         temp[virt_temp_mask] = temp[virt_temp_mask] / (1 + 0.61 * mixing_ratio[virt_temp_mask])
+
         container.replace('airTemperature', temp)
 
         return container
