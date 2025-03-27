@@ -12,8 +12,8 @@ from bufr.obs_builder import ObsBuilder, add_main_functions
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-ADPUPA_MAPPING = os.path.join(script_dir, 'bufr_adpupa_mapping.yaml')
-ADPSFC_SFCSHP_MAPPING = os.path.join(script_dir, 'bufr_adpsfc_sfcshp_mapping.yaml')
+ADPUPA_MAPPING = os.path.join(script_dir, 'bufr_surface_pressure_adpupa.yaml')
+ADPSFC_SFCSHP_MAPPING = os.path.join(script_dir, 'bufr_surface_pressure_adpsfc_sfcshp.yaml')
 
 OBS_TYPES = np.array([180, 181, 183, 187, 120])
 

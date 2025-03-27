@@ -1,6 +1,6 @@
 bufr:
   variables:
-    # MetaData
+    # MetaData Values
     timestamp:
       datetime:
         year: "*/YEAR"
@@ -31,8 +31,13 @@ bufr:
     sensorChannelNumber:
       query: "*/ATMSCH/CHNM"
 
+    # Observation Values
     brightnessTemperature:
-      query: "*/ATMSCH/TMANT"
+      query: "*/ATMSCH/TMBR"
+
+    # Quality Information
+    qualityFlags:
+      query: "*/ATMSCH/ATMSCHQ"
 
 encoder:
   dimensions:
