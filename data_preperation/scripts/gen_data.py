@@ -21,13 +21,13 @@ def _make_sbatch_cmd(idx:int,
 
     cmd += f'--ntasks={ntasks} '
     cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
-    cmd += f'--wrap="python {runner_path} {start.strftime('%Y-%m-%d')} {end.strftime('%Y-%m-%d')} {type} '
+    cmd += f'--wrap="python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
 
     if output_name:
         cmd += f'-o {output_name} '
 
     if not append:
-        cmd += '-a False '
+        cmd += '--append False '
 
     cmd += '" | awk \'{print $4}\')'
 
@@ -45,22 +45,28 @@ def _split_datetime_range(start:datetime, end:datetime, num_days:int):
         ranges.append((new_start, new_end))
     return ranges
 
-def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, output_name:str=None, append=True):
+def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, output_name:str=None):
     ranges = _split_datetime_range(start, end, max_days)
 
+    cmds = []
     for idx, (start, end) in enumerate(ranges):
-        cmd = _make_sbatch_cmd(idx, start, end, ntasks, gen_type)
-        print(cmd)
-        os.system(cmd)
+        if idx == 0:
+            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, output_name=output_name, append=False))
+        else:
+            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, output_name=output_name))
 
-def _gen_atms(start : datetime, end :datetime, output_name:str=None, append=True):
-    _gen(start, end, 15, 24, 'atms', output_name=output_name, append=append)
+    cmd = '\n'.join(cmds)
+    print(cmd)
+    os.system(cmd)
+
+def _gen_atms(start : datetime, end :datetime, output_name:str=None):
+    _gen(start, end, 15, 24, 'atms', output_name=output_name)
 
 def _gen_radiosonde(start : datetime, end :datetime, output_name:str=None, append=True):
-    _gen(start, end, 30, 4, 'radiosonde', output_name=output_name, append=append)
+    _gen(start, end, 30, 4, 'radiosonde', output_name=output_name)
 
 def _gen_surface_pressure(start : datetime, end :datetime, output_name:str=None, append=True):
-    _gen(start, end, 30, 4, 'surface_pressure', output_name=output_name, append=append)
+    _gen(start, end, 30, 4, 'surface_pressure', output_name=output_name)
 
 if __name__ == "__main__":
     gen_dict = {
@@ -76,7 +82,6 @@ if __name__ == "__main__":
     parser.add_argument('end_date')
     parser.add_argument('type', choices=choices)
     parser.add_argument('-o', '--output_name', required=False)
-    parser.add_argument('-a', '--append', required=False, default=True)
 
     args = parser.parse_args()
 
@@ -88,8 +93,6 @@ if __name__ == "__main__":
         gen_kwargs = {}
         if args.output_name:
             gen_kwargs['output_name'] = args.output_name
-        if args.append:
-            gen_kwargs['append'] = args.append
 
         print(gen_args)
         gen_dict[gen_type](*gen_args, **gen_kwargs)
