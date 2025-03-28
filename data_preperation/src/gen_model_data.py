@@ -13,18 +13,8 @@ from zarr_encoder import Encoder
 import data_reader
 import settings
 
-def filter_data(container, mask):
-    filtered = bufr.DataContainer()
-    for var_name in container.list():
-        paths = container.get_paths(var_name)
-        vals = container.get(var_name)[mask]
-        filtered.add(var_name, vals, paths)
-    return filtered
 
-def create_data_for_day(date:datetime, type:str, output_name:str=None, append=True):
-    bufr.mpi.App(sys.argv)
-    comm = bufr.mpi.Comm("world")
-
+def create_data_for_day(comm, date:datetime, type:str, output_name:str=None, append=True):
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
@@ -70,6 +60,9 @@ def create_data(start_date: datetime, end_date: datetime, type:str, output_name:
     date = start_date
     day = timedelta(days=1)
 
+    bufr.mpi.App(sys.argv)
+    comm = bufr.mpi.Comm("world")
+
     while date <= end_date:
-        create_data_for_day(date, type, output_name, append)
+        create_data_for_day(comm, date, type, output_name, append)
         date += day
