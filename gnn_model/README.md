@@ -13,15 +13,15 @@ This project implements a Graph Neural Network (GNN) pipeline to predict observa
 The pipeline uses PyTorch Lightning and PyTorch Geometric, with modular components for preprocessing, mesh generation, edge creation, model definition, and training.
 
 ## Modular Structure (Flat Files)
-`gnn_model.py`             GNNLightning model (encoder → processor → decoder)
-`gnn_datamodule.py`        Graph construction and PyTorch Lightning DataModule
-`train_gnn.py`             Main training script
-`obs_to_mesh.py`           Cutoff-based encoder edges
-`mesh_to_mesh.py`          Multi-scale mesh processor edges
-`mesh_to_target.py`        KNN-based decoder edges
-`mesh_creation.py`         Mesh and graph construction
-`process_timeseries.py`    Zarr binning + feature extraction
-`timing_utils.py`          Resource-logging decorator
+- `gnn_model.py`             GNNLightning model (encoder → processor → decoder)
+- `gnn_datamodule.py`        Graph construction and PyTorch Lightning DataModule
+- `train_gnn.py`             Main training script
+- `obs_to_mesh.py`           Cutoff-based encoder edges
+- `mesh_to_mesh.py`          Multi-scale mesh processor edges
+- `mesh_to_target.py`        KNN-based decoder edges
+- `mesh_creation.py`         Mesh and graph construction
+- `process_timeseries.py`    Zarr binning + feature extraction
+- `timing_utils.py`          Resource-logging decorator
 
 ## Installation
 Ensure you have the following dependencies installed:
