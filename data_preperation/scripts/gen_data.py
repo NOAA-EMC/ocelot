@@ -1,7 +1,7 @@
 import sys
 import os
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 base_path = os.path.split(os.path.realpath(__file__))[0]
 runner_path = os.path.realpath(os.path.join(base_path, '../src/gen_model_data.py'))
@@ -35,14 +35,18 @@ def _make_sbatch_cmd(idx:int,
 
 def _split_datetime_range(start:datetime, end:datetime, num_days:int):
     """
-    Split the datetime range into smaller ranges of num_days days each.
+    Split the datetime range into chunks of num_days days.
     """
-    delta = (end - start) / num_days
+    delta = end - start
+    num_chunks = delta.days // num_days + (1 if delta.days % num_days > 0 else 0)
+    num_chunks = max(1, num_chunks)
+
     ranges = []
-    for i in range(num_days):
-        new_start = start + i * delta
-        new_end = start + (i + 1) * delta
-        ranges.append((new_start, new_end))
+    for i in range(num_chunks):
+        chunk_start = start + i * timedelta(days=num_days)
+        chunk_end = min(end, chunk_start + timedelta(days=num_days))
+        ranges.append((chunk_start, chunk_end))
+
     return ranges
 
 def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, output_name:str=None):
@@ -94,7 +98,6 @@ if __name__ == "__main__":
         if args.output_name:
             gen_kwargs['output_name'] = args.output_name
 
-        print(gen_args)
         gen_dict[gen_type](*gen_args, **gen_kwargs)
 
     if args.type == 'all':
