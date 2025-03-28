@@ -19,9 +19,9 @@ def _make_sbatch_cmd(idx:int,
     if idx > 0:
         cmd += f'--dependency=afterok:$job_{idx} '
 
-    cmd += f'--ntasks={ntasks} \
-             --job-name="gen_ocelot_{type}_{idx+1}" \
-             --wrap="python {runner_path} {start.strftime('%Y-%m-%d')} {end.strftime('%Y-%m-%d')} {type} '
+    cmd += f'--ntasks={ntasks} '
+    cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
+    cmd += f'--wrap="python {runner_path} {start.strftime('%Y-%m-%d')} {end.strftime('%Y-%m-%d')} {type} '
 
     if output_name:
         cmd += f'-o {output_name} '
@@ -53,14 +53,14 @@ def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, output
         print(cmd)
         os.system(cmd)
 
-def _gen_atms(start : datetime, end :datetime):
-    _gen(start, end, 15, 24, 'atms')
+def _gen_atms(start : datetime, end :datetime, output_name:str=None, append=True):
+    _gen(start, end, 15, 24, 'atms', output_name=output_name, append=append)
 
-def _gen_radiosonde(start : datetime, end :datetime):
-    _gen(start, end, 30, 4, 'radiosonde')
+def _gen_radiosonde(start : datetime, end :datetime, output_name:str=None, append=True):
+    _gen(start, end, 30, 4, 'radiosonde', output_name=output_name, append=append)
 
-def _gen_surface_pressure(start : datetime, end :datetime):
-    _gen(start, end, 30, 4, 'surface_pressure')
+def _gen_surface_pressure(start : datetime, end :datetime, output_name:str=None, append=True):
+    _gen(start, end, 30, 4, 'surface_pressure', output_name=output_name, append=append)
 
 if __name__ == "__main__":
     gen_dict = {
@@ -85,12 +85,14 @@ if __name__ == "__main__":
 
     def call_generator(gen_type):
         gen_args = (start_date, end_date,)
+        gen_kwargs = {}
         if args.output_name:
-            gen_args += (args.output_name,)
+            gen_kwargs['output_name'] = args.output_name
         if args.append:
-            gen_args += (args.append,)
+            gen_kwargs['append'] = args.append
 
-        gen_dict[gen_type](*gen_args)
+        print(gen_args)
+        gen_dict[gen_type](*gen_args, **gen_kwargs)
 
     if args.type == 'all':
         for gen_type in gen_dict.keys():
