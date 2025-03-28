@@ -1,26 +1,26 @@
-import psutil
 import os
 import time
-import zarr
+
+import lightning.pytorch as pl
+import networkx as nx
 import numpy as np
 import pandas as pd
+import psutil
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import trimesh
+import zarr
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from networkx import Graph
-import networkx as nx
 from scipy.sparse import coo_matrix
 from sklearn.neighbors import NearestNeighbors
-import torch.nn as nn
-from torch_scatter import scatter_mean, scatter_add
-import lightning.pytorch as pl
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-
-from torch_geometric.data import HeteroData, Data
-import torch.nn.functional as F
-from torch_geometric.loader import DataLoader, NeighborLoader
-from torch.optim import Adam
-from torch_geometric.nn import GCNConv, GATConv, MessagePassing
 from sklearn.preprocessing import MinMaxScaler
+from torch.optim import Adam
+from torch_geometric.data import Data, HeteroData
+from torch_geometric.loader import DataLoader
+from torch_geometric.nn import GATConv
+from torch_scatter import scatter_add, scatter_mean
 
 
 def timing_resource_decorator(func):
@@ -28,12 +28,13 @@ def timing_resource_decorator(func):
     A decorator that tracks execution time, memory usage, disk usage, and CPU usage
     before and after function execution.
     """
+
     def wrapper(*args, **kwargs):
         process = psutil.Process(os.getpid())
 
         # Record system resource usage BEFORE execution
         mem_before = process.memory_info().rss / (1024**3)  # GB
-        disk_before = psutil.disk_usage('/').used / (1024**3)
+        disk_before = psutil.disk_usage("/").used / (1024**3)
         cpu_before = psutil.cpu_percent(interval=None)  # Snapshot before execution
 
         start_time = time.time()
@@ -42,7 +43,7 @@ def timing_resource_decorator(func):
 
         # Record system resource usage AFTER execution
         mem_after = process.memory_info().rss / (1024**3)
-        disk_after = psutil.disk_usage('/').used / (1024**3)
+        disk_after = psutil.disk_usage("/").used / (1024**3)
         cpu_after = psutil.cpu_percent(interval=None)  # Snapshot after execution
 
         execution_time = end_time - start_time
@@ -78,11 +79,15 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     satellite_ids = z["satelliteId"][:]
 
     # Select data based on the given time range and satellite ID
-    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
+    selected_times = np.where(
+        (time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId)
+    )[0]
 
     # Filter data for the specified week and satellite
     df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times]})
-    df["index"] = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
+    df["index"] = np.where(
+        (time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId)
+    )[0]
     df["time_bin"] = df["time"].dt.floor("12h")
 
     # Sort by time
@@ -97,10 +102,10 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
         input_times = df[df["time_bin"] == unique_bins[i]]["zar_time"].values
         target_times = df[df["time_bin"] == unique_bins[i + 1]]["zar_time"].values
         data_summary[f"bin{i+1}"] = {
-            'input_time': unique_bins[i],
-            'target_time': unique_bins[i+1],
-            'input_time_index': input_times,
-            'target_time_index': target_times
+            "input_time": unique_bins[i],
+            "target_time": unique_bins[i + 1],
+            "input_time_index": input_times,
+            "target_time_index": target_times,
         }
 
     return data_summary
@@ -144,41 +149,51 @@ def extract_features(z, data_summary):
 
     for bin_name in data_summary.keys():  # Process all bins
         # Find indices for input and target times
-        input_mask = np.isin(all_times, data_summary[bin_name]['input_time_index'])
-        target_mask = np.isin(all_times, data_summary[bin_name]['target_time_index'])
+        input_mask = np.isin(all_times, data_summary[bin_name]["input_time_index"])
+        target_mask = np.isin(all_times, data_summary[bin_name]["target_time_index"])
 
         # Prepare input features (batch extraction, avoid repeated indexing)
-        input_features_orig = np.column_stack([
-            sensor_zenith[input_mask],
-            solar_zenith[input_mask],
-            solar_azimuth[input_mask],
-            bt_channels[input_mask]
-        ])
+        input_features_orig = np.column_stack(
+            [
+                sensor_zenith[input_mask],
+                solar_zenith[input_mask],
+                solar_azimuth[input_mask],
+                bt_channels[input_mask],
+            ]
+        )
         input_features_normalized = minmax_scaler_input.fit_transform(input_features_orig)
 
-        input_features_final = np.hstack([
-            latitude_rad[input_mask],
-            longitude_rad[input_mask],
-            input_features_normalized
-        ])
+        input_features_final = np.hstack(
+            [
+                latitude_rad[input_mask],
+                longitude_rad[input_mask],
+                input_features_normalized,
+            ]
+        )
 
         # Prepare target features
         target_features_orig = bt_channels[target_mask]
         target_features_normalized = minmax_scaler_target.fit_transform(target_features_orig)
 
-        target_features_final = np.hstack([
-            latitude_rad[target_mask],
-            longitude_rad[target_mask],
-            target_features_normalized
-        ])
+        target_features_final = np.hstack(
+            [
+                latitude_rad[target_mask],
+                longitude_rad[target_mask],
+                target_features_normalized,
+            ]
+        )
 
         # Convert to tensors at the end
-        data_summary[bin_name]['input_features_final'] = torch.tensor(input_features_final, dtype=torch.float32)
-        data_summary[bin_name]['target_features_final'] = torch.tensor(target_features_final, dtype=torch.float32)
+        data_summary[bin_name]["input_features_final"] = torch.tensor(
+            input_features_final, dtype=torch.float32
+        )
+        data_summary[bin_name]["target_features_final"] = torch.tensor(
+            target_features_final, dtype=torch.float32
+        )
 
         # Store min/max values for later unnormalization
-        data_summary[bin_name]['target_scaler_min'] = minmax_scaler_target.data_min_
-        data_summary[bin_name]['target_scaler_max'] = minmax_scaler_target.data_max_
+        data_summary[bin_name]["target_scaler_min"] = minmax_scaler_target.data_min_
+        data_summary[bin_name]["target_scaler_max"] = minmax_scaler_target.data_max_
     return data_summary
 
 
@@ -219,12 +234,11 @@ def create_icosahedral_mesh(resolution=2):
 
     #  Generate an icosahedral mesh with highest given resolution
     finest_sphere = trimesh.creation.icosphere(subdivisions=resolution, radius=1.0)
-    finest_mesh_coords = finest_sphere.vertices 
+    finest_mesh_coords = finest_sphere.vertices
     finest_mesh_latlon_rad = cartesian_to_latlon_rad(finest_mesh_coords)
 
     for i, coord in enumerate(finest_mesh_latlon_rad):
         mesh_graph.add_node(i, pos=tuple(coord))  # Store lat/lon as node attributes
-
 
     # Stats tracking
     stats = {
@@ -244,11 +258,16 @@ def create_icosahedral_mesh(resolution=2):
         # Add edges based on triangular faces
         edge_set = set()
         for face in this_mesh_faces:
-            edge_set.update([
-                (face[0], face[1]), (face[1], face[0]),
-                (face[1], face[2]), (face[2], face[1]),
-                (face[2], face[0]), (face[0], face[2]),
-            ])
+            edge_set.update(
+                [
+                    (face[0], face[1]),
+                    (face[1], face[0]),
+                    (face[1], face[2]),
+                    (face[2], face[1]),
+                    (face[2], face[0]),
+                    (face[0], face[2]),
+                ]
+            )
 
         # Store edge count for this level
         stats["edge_counts_per_level"][f"resolution_{reso}"] = len(edge_set)
@@ -320,7 +339,7 @@ class ObsMeshCutoffConnector:
         knn.fit(mesh_latlon_rad)
         dists, _ = knn.kneighbors(mesh_latlon_rad)
         self.radius = dists[dists > 0].max() * self.cutoff_factor
-        return self.radius 
+        return self.radius
 
     def add_edges(self, obs_latlon_rad, mesh_latlon_rad, return_edge_attr=False):
         """
@@ -357,15 +376,17 @@ class ObsMeshCutoffConnector:
                     edge_weights.append(dist)
 
         if len(obs_to_mesh_edges) == 0:
-            print("Warning: No obs-to-mesh edges were created. Check cutoff radius or input coordinates.")
-        
+            print(
+                "Warning: No obs-to-mesh edges were created. Check cutoff radius or input coordinates."
+            )
+
         edge_index_obs_to_mesh = torch.tensor(obs_to_mesh_edges, dtype=torch.long).t().contiguous()
 
         if return_edge_attr:
             edge_attr = torch.tensor(edge_weights, dtype=torch.float32)
             return edge_index_obs_to_mesh, edge_attr
-        
-        return edge_index_obs_to_mesh  
+
+        return edge_index_obs_to_mesh
 
 
 class MeshSelfConnectivity:
@@ -384,7 +405,7 @@ class MeshSelfConnectivity:
             Updates the PyTorch Geometric HeteroData object with edge indices from the mesh graph.
     """
 
-    VALID_NODES = ["hidden"] 
+    VALID_NODES = ["hidden"]
 
     def __init__(self, source_name: str, target_name: str, relation: str = "to"):
         """
@@ -397,16 +418,19 @@ class MeshSelfConnectivity:
         Raises:
             AssertionError: If source and target names don't match.
         """
-        assert source_name in self.VALID_NODES, f"Invalid source_name: {source_name}. Must be one of: {self.VALID_NODES}"
-        assert target_name in self.VALID_NODES, f"Invalid target_name: {target_name}. Must be one of: {self.VALID_NODES}"
-        assert source_name == target_name, f"{self.__class__.__name__} requires source and target names to be the same."
-
-
+        assert (
+            source_name in self.VALID_NODES
+        ), f"Invalid source_name: {source_name}. Must be one of: {self.VALID_NODES}"
+        assert (
+            target_name in self.VALID_NODES
+        ), f"Invalid target_name: {target_name}. Must be one of: {self.VALID_NODES}"
+        assert (
+            source_name == target_name
+        ), f"{self.__class__.__name__} requires source and target names to be the same."
 
         self.source_name = source_name
         self.target_name = target_name
         self.relation = relation
-
 
     def get_adjacency_matrix(self, mesh_graph: Graph) -> coo_matrix:
         """
@@ -440,12 +464,12 @@ class MeshSelfConnectivity:
         adj_matrix = self.get_adjacency_matrix(mesh_graph)
         edge_index = torch.tensor(np.vstack([adj_matrix.row, adj_matrix.col]), dtype=torch.long)
 
-        print(f"Added {edge_index.shape[1]} intra-mesh edges to graph: {self.source_name} -> {self.target_name}")
-
+        print(
+            f"Added {edge_index.shape[1]} intra-mesh edges to graph: {self.source_name} -> {self.target_name}"
+        )
 
         # Assign edges to graph
         graph[self.source_name, self.relation, self.target_name].edge_index = edge_index
-
 
         return graph, mesh_graph
 
@@ -572,13 +596,13 @@ class GNNLightning(pl.LightningModule):
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim)
+            nn.Linear(hidden_dim, hidden_dim),
         )
 
         # Processor: Message passing layers (Hidden ↔ Hidden)
-        self.processor_layers = nn.ModuleList([
-            GATConv(hidden_dim, hidden_dim) for _ in range(num_layers)
-        ])
+        self.processor_layers = nn.ModuleList(
+            [GATConv(hidden_dim, hidden_dim) for _ in range(num_layers)]
+        )
 
         # Decoder: Maps hidden nodes back to target nodes
         self.decoder_mlp = nn.Sequential(
@@ -586,23 +610,29 @@ class GNNLightning(pl.LightningModule):
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
             nn.Dropout(0.1),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(hidden_dim, output_dim),
         )
 
         # Define loss function
         self.loss_fn = nn.MSELoss()
 
     def forward(self, data):
-        x, edge_index_encoder, edge_attr_encoder, edge_index_processor, edge_index_decoder, y = (
-        data.x,
-        data.edge_index_encoder,
-        data.edge_attr_encoder,
-        data.edge_index_processor,
-        data.edge_index_decoder,
-        data.y
-    )
+        (
+            x,
+            edge_index_encoder,
+            edge_attr_encoder,
+            edge_index_processor,
+            edge_index_decoder,
+            y,
+        ) = (
+            data.x,
+            data.edge_index_encoder,
+            data.edge_attr_encoder,
+            data.edge_index_processor,
+            data.edge_index_decoder,
+            data.y,
+        )
 
-        
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
         tgt_encoder = edge_index_encoder[1]
@@ -623,9 +653,9 @@ class GNNLightning(pl.LightningModule):
         # Decoding: Hidden → Target (MLP using mesh → target edges with edge_attr)
         src_decoder = edge_index_decoder[0]  # mesh node indices
         tgt_decoder = edge_index_decoder[1]  # target node indices
-        mesh_feats = x_hidden[src_decoder]   # Features of mesh nodes sending messages
+        mesh_feats = x_hidden[src_decoder]  # Features of mesh nodes sending messages
         dist_feats = data.edge_attr_decoder.unsqueeze(1)  # Haversine distance
-        
+
         decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
         decoded = self.decoder_mlp(decoder_input)
 
@@ -633,20 +663,20 @@ class GNNLightning(pl.LightningModule):
         # Aggregate per target using scatter mean
         weights = 1.0 / (dist_feats + 1e-8)  # Avoid division by zero
         weighted = decoded * weights
-        
+
         # Normalize by total weights per target
         norm_weights = scatter_add(weights, tgt_decoder, dim=0, dim_size=y.shape[0])
         x_out = scatter_add(weighted, tgt_decoder, dim=0, dim_size=y.shape[0])
-        x_out = x_out / (norm_weights + 1e-8) 
+        x_out = x_out / (norm_weights + 1e-8)
 
         return x_out
 
     def training_step(self, batch, batch_idx):
         y_pred = self(batch)
-        y_true = batch.y[:y_pred.shape[0], :]
+        y_true = batch.y[: y_pred.shape[0], :]
         loss = self.loss_fn(y_pred, y_true)
         self.log("train_loss", loss)  # prog_bar=True)
-        return {'loss': loss}
+        return {"loss": loss}
 
     # def validation_step(self, batch, batch_idx):
     #     y_pred = self(batch)
@@ -661,15 +691,15 @@ class GNNLightning(pl.LightningModule):
 
 class GNNDataModule(pl.LightningDataModule):
     def __init__(
-            self,
-            data_path,
-            start_date,
-            end_date,
-            satellite_id,
-            batch_size=1,
-            mesh_resolution=2,
-            cutoff_factor=0.6,
-            num_neighbors=3,
+        self,
+        data_path,
+        start_date,
+        end_date,
+        satellite_id,
+        batch_size=1,
+        mesh_resolution=2,
+        cutoff_factor=0.6,
+        num_neighbors=3,
     ):
         super().__init__()
         # Store parameters
@@ -713,8 +743,7 @@ class GNNDataModule(pl.LightningDataModule):
         self.data_summary = extract_features(self.z, self.data_summary)
 
         # Create graph structure for first bin (can be extended to handle multiple bins)
-        data_dict = self._create_graph_structure(self.data_summary['bin1'])
-
+        data_dict = self._create_graph_structure(self.data_summary["bin1"])
 
         # Split data into train/val
         total_samples = len(data_dict["x"])
@@ -729,13 +758,13 @@ class GNNDataModule(pl.LightningDataModule):
         """
         Create the graph structure for the model with global indexing and padded features.
         """
-        input_features = bin_data['input_features_final']
-        target_features = bin_data['target_features_final']
+        input_features = bin_data["input_features_final"]
+        target_features = bin_data["target_features_final"]
         obs_latlon_rad = input_features[:, -2:]
         target_latlon_rad = target_features[:, -2:]
 
         # Create icosahedral mesh
-        hetero_data, mesh_graph, mesh_latlon_rad, stats  = create_icosahedral_mesh(
+        hetero_data, mesh_graph, mesh_latlon_rad, stats = create_icosahedral_mesh(
             resolution=self.mesh_resolution
         )
 
@@ -752,7 +781,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # === ENCODER EDGES ===
         cutoff_encoder = ObsMeshCutoffConnector(cutoff_factor=self.cutoff_factor)
-        edge_index_encoder, edge_attr_encoder  = cutoff_encoder.add_edges(
+        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(
             obs_latlon_rad, mesh_latlon_rad, return_edge_attr=True
         )
 
@@ -770,7 +799,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Get edge index for processor edges
         edge_index_processor = hetero_data["hidden", "to", "hidden"].edge_index
-        
+
         # === DECODER EDGES ===
         knn_decoder = MeshTargetKNNConnector(num_nearest_neighbours=self.num_neighbors)
         edge_index_knn, edge_attr_knn = knn_decoder.add_edges(
@@ -802,13 +831,13 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Store everything in a dictionary (to be converted to Data later)
         data_dict = {
-            'x': stacked_x,
-            'edge_index_encoder': edge_index_encoder_global.to(torch.long),
-            'edge_attr_encoder': edge_attr_encoder,
-            'edge_index_processor': edge_index_processor_global.to(torch.long),
-            'edge_index_decoder': edge_index_decoder_global.to(torch.long),
-            'edge_attr_decoder': edge_attr_knn,
-            'y': target_features
+            "x": stacked_x,
+            "edge_index_encoder": edge_index_encoder_global.to(torch.long),
+            "edge_attr_encoder": edge_attr_encoder,
+            "edge_index_processor": edge_index_processor_global.to(torch.long),
+            "edge_index_decoder": edge_index_decoder_global.to(torch.long),
+            "edge_attr_decoder": edge_attr_knn,
+            "y": target_features,
         }
         return data_dict
 
@@ -823,9 +852,8 @@ class GNNDataModule(pl.LightningDataModule):
             edge_index_processor=data_dict["edge_index_processor"],
             edge_index_decoder=data_dict["edge_index_decoder"],
             edge_attr_decoder=data_dict["edge_attr_decoder"],
-            y=data_dict["y"]
+            y=data_dict["y"],
         )
-
 
     def train_dataloader(self):
         return DataLoader([self.train_data], batch_size=self.batch_size, shuffle=True)
@@ -861,7 +889,7 @@ def main():
         hidden_dim=hidden_dim,
         output_dim=output_dim,
         num_layers=num_layers,
-        lr=lr
+        lr=lr,
     )
 
     data_module = GNNDataModule(
@@ -870,23 +898,19 @@ def main():
         end_date=end_date,
         satellite_id=satellite_id,
         batch_size=batch_size,
-        mesh_resolution=mesh_resolution
+        mesh_resolution=mesh_resolution,
     )
 
     # Setup callbacks
     checkpoint_callback = ModelCheckpoint(
-        dirpath='checkpoints',
-        filename='gnn-{epoch:02d}-{val_loss:.2f}',
+        dirpath="checkpoints",
+        filename="gnn-{epoch:02d}-{val_loss:.2f}",
         save_top_k=3,
-        monitor='val_loss',
-        mode='min'
+        monitor="val_loss",
+        mode="min",
     )
 
-    early_stopping = EarlyStopping(
-        monitor='val_loss',
-        patience=3,
-        mode='min'
-    )
+    early_stopping = EarlyStopping(monitor="val_loss", patience=3, mode="min")
 
     # Train with PyTorch Lightning
     trainer = pl.Trainer(
@@ -894,7 +918,7 @@ def main():
         # callbacks=[checkpoint_callback, early_stopping],  #TODO make this work
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        log_every_n_steps=1
+        log_every_n_steps=1,
     )
     trainer.fit(model, data_module)
 
