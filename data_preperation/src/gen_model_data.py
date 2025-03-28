@@ -21,7 +21,7 @@ def filter_data(container, mask):
         filtered.add(var_name, vals, paths)
     return filtered
 
-def create_data_for_day(date:datetime, type:str):
+def create_data_for_day(date:datetime, type:str, output_name:str=None, append=True):
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
@@ -37,45 +37,39 @@ def create_data_for_day(date:datetime, type:str):
     if container is None:
         raise ValueError("No data found")
 
-    latitudes = container.get('latitude')
-    longitudes = container.get('longitude')
 
-    mask = np.array([True] * len(latitudes))
-    mask[latitudes < settings.LAT_RANGE[0]] = False
-    mask[latitudes > settings.LAT_RANGE[1]] = False
-    mask[longitudes < settings.LON_RANGE[0]] = False
-    mask[longitudes > settings.LON_RANGE[1]] = False
+    # Filter data based on the specified latitude and longitude ranges
+    # if the settings have been defined
+    if hasattr(settings, 'LAT_RANGE') and hasattr(settings, 'LON_RANGE'):
+        latitudes = container.get('latitude')
+        longitudes = container.get('longitude')
 
-    if not np.any(mask):
-        return # No data in the region
+        mask = np.array([True] * len(latitudes))
+        mask[latitudes < settings.LAT_RANGE[0]] = False
+        mask[latitudes > settings.LAT_RANGE[1]] = False
+        mask[longitudes < settings.LON_RANGE[0]] = False
+        mask[longitudes > settings.LON_RANGE[1]] = False
 
-    container = filter_data(container, mask)
+        if not np.any(mask):
+            return # No data in the region
+
+        container = container.apply_mask(mask)
 
     if comm.rank() == 0:
-        output_path = os.path.join(settings.OUTPUT_PATH, f'{type}.zarr')
-        Encoder(description).encode(container, output_path, append=True)
+        if output_name:
+            output_path = os.path.join(settings.OUTPUT_PATH, f'{output_name}.zarr')
+        else:
+            output_path = os.path.join(settings.OUTPUT_PATH, f'{type}.zarr')
+
+        Encoder(description).encode(container, output_path, append=append)
         print(f"Output written to {output_path}")
         sys.stdout.flush()
 
 
-def create_data(start_date: datetime, end_date: datetime, type:str):
+def create_data(start_date: datetime, end_date: datetime, type:str, output_name:str=None, append=True):
     date = start_date
     day = timedelta(days=1)
 
     while date <= end_date:
-        create_data_for_day(date, type)
+        create_data_for_day(date, type, output_name, append)
         date += day
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('start_date')
-    parser.add_argument('end_date')
-    parser.add_argument('type')
-
-    args = parser.parse_args()
-
-    start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
-    end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
-
-    create_data(start_date, end_date, args.type)

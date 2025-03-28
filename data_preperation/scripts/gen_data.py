@@ -14,11 +14,13 @@ if __name__ == "__main__":
     parser.add_argument('start_date')
     parser.add_argument('end_date')
     parser.add_argument('type')
+    parser.add_argument('-o', '--output_name', required=False)
+    parser.add_argument('-a', '--append', required=False, default=True)
 
     args = parser.parse_args()
 
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
-    create_data(start_date, end_date, args.type)
+    create_data(start_date, end_date, args.type, args.output_name, args.append)
 
