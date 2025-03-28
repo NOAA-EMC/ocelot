@@ -1,15 +1,16 @@
-import torch
+import lightning.pytorch as pl
 import pandas as pd
+import torch
 import zarr
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
-import lightning.pytorch as pl
 
-from process_timeseries import organize_bins_times, extract_features
 from mesh_creation import create_icosahedral_mesh
-from obs_to_mesh import ObsMeshCutoffConnector
 from mesh_to_mesh import MeshSelfConnectivity
 from mesh_to_target import MeshTargetKNNConnector
+from obs_to_mesh import ObsMeshCutoffConnector
+from process_timeseries import extract_features, organize_bins_times
+
 
 class GNNDataModule(pl.LightningDataModule):
     def __init__(
@@ -69,7 +70,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Split data into train/val
         total_samples = len(data_dict["x"])
-        train_size = int(0.8 * total_samples)
+        int(0.8 * total_samples)
 
         # Create train/val splits
         self.train_data = self._create_data_object(data_dict, slice(0, len(data_dict["x"])))

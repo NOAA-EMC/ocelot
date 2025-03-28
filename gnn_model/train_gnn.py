@@ -1,10 +1,11 @@
-import torch
 import lightning.pytorch as pl
+import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
-from gnn_model import GNNLightning
 from gnn_datamodule import GNNDataModule
+from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
+
 
 @timing_resource_decorator
 def main():

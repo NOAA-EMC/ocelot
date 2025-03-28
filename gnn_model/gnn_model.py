@@ -1,10 +1,11 @@
+import lightning.pytorch as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import lightning.pytorch as pl
 from torch.optim import Adam
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter_add, scatter_mean
+
 
 class GNNLightning(pl.LightningModule):
     """

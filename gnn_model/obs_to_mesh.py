@@ -1,7 +1,8 @@
 import torch
-import numpy as np
 from sklearn.neighbors import NearestNeighbors
+
 from timing_utils import timing_resource_decorator
+
 
 class ObsMeshCutoffConnector:
     """

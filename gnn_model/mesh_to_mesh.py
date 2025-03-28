@@ -1,9 +1,10 @@
+import networkx as nx
 import numpy as np
 import torch
-import networkx as nx
 from networkx import Graph
-from torch_geometric.data import HeteroData
 from scipy.sparse import coo_matrix
+from torch_geometric.data import HeteroData
+
 
 class MeshSelfConnectivity:
     """
