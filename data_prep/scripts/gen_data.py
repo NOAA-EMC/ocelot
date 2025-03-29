@@ -20,6 +20,7 @@ def _make_sbatch_cmd(idx:int,
         cmd += f'--dependency=afterok:$job_{idx} '
 
     cmd += f'--ntasks={ntasks} '
+    cmd += f'--time=02:00:00 '
     cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
     cmd += f'--wrap="python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
 
