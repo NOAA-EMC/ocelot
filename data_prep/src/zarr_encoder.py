@@ -109,16 +109,32 @@ class Encoder(bufr.encoders.EncoderBase):
         def add_variable(var, var_name, var_data):
             comp_level = var['compressionLevel'] if 'compressionLevel' in var else 3
 
-            # Create the zarr dataset
-            store = root.create_dataset(var_name,
-                                        shape=var_data.shape,
-                                        # chunks=dims.chunks_for_var(var['name']),
-                                        chunks=(DEFAULT_CHUNK_SIZE),
-                                        dtype=var_data.dtype,
-                                        compression='blosc',
-                                        compression_opts=dict(cname='lz4',
-                                                              clevel=comp_level,
-                                                              shuffle=1))
+            # if var_data type is a string type set the object_codec field
+            if var_data.dtype.kind in ('U', 'S') or var_data.dtype == np.object_:
+                # Create string zarr dataset
+                store = root.create_dataset(var_name,
+                                            shape=var_data.shape,
+                                            # chunks=dims.chunks_for_var(var['name']),
+                                            chunks=(DEFAULT_CHUNK_SIZE),
+                                            dtype=object,
+                                            object_codec=VLenUTF8(),
+                                            compression='blosc',
+                                            compression_opts=dict(cname='lz4',
+                                                                  clevel=comp_level,
+                                                                  shuffle=1))
+
+            else:
+                # Create the zarr dataset
+                store = root.create_dataset(var_name,
+                                            shape=var_data.shape,
+                                            # chunks=dims.chunks_for_var(var['name']),
+                                            chunks=(DEFAULT_CHUNK_SIZE),
+                                            dtype=var_data.dtype,
+                                            compression='blosc',
+                                            compression_opts=dict(cname='lz4',
+                                                                  clevel=comp_level,
+                                                                  shuffle=1))
+
             store[:] = var_data
 
             # Add the attributes
