@@ -24,6 +24,11 @@ class RadiosondeObsBuilder(ObsBuilder):
         reference_time = self._get_reference_time(input_path)
         self._add_timestamp(container, reference_time)
 
+        # Convert stationIdentification from string to int
+        stationIdentification = container.get('stationIdentification')
+        stationIdentification = np.array([int(station) for station in stationIdentification])
+        container.replace('stationIdentification', stationIdentification)
+
         # Replace virtual temperature with computed air temperature values
         temp = container.get('airTemperature')
         temp_event_code = container.get('temperatureEventCode')
