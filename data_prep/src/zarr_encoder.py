@@ -117,7 +117,7 @@ class Encoder(bufr.encoders.EncoderBase):
                                             # chunks=dims.chunks_for_var(var['name']),
                                             chunks=(DEFAULT_CHUNK_SIZE),
                                             dtype=object,
-                                            object_codec=VLenUTF8(),
+                                            object_codec=zarr.VLenUTF8(),
                                             compression='blosc',
                                             compression_opts=dict(cname='lz4',
                                                                   clevel=comp_level,
