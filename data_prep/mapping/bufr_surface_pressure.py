@@ -3,12 +3,12 @@
 import os
 import numpy as np
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
+
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
