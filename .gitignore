@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.DS_Store
+
+# Ignore platform-specific or compiled binary files
+*.bin
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+
+# Optional: Ignore virtual environments
+.venv/
+venv/
+
