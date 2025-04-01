@@ -1,8 +1,11 @@
-from pickle import LONG1
+import os
+
+config_dir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
+
 
 # Path to the configuration yaml file for the BUFR tank
 # (example: '/install_dir/spoc/tank/conf/hera_test_tank.yaml')
-BUFR_TANK_YAML = ''
+BUFR_TANK_YAML = os.path.join(config_dir, 'hera.yaml')
 
 # Path to the root directory for the BUFR tank
 # (example: '/data_dir/ops/prod/dcom')
@@ -14,7 +17,7 @@ DATETIME_DIR_FORMAT = '%Y%m%d'
 
 # Path to the directory that holds the BUFR mapping files
 # (example: '/install_dir/src/spoc/tank/mapping')
-MAPPING_FILE_DIR = ''
+MAPPING_FILE_DIR = os.path.realpath(os.path.join(config_dir, '..', 'mapping'))
 
 OUTPUT_DIR = ''
 
