@@ -30,6 +30,14 @@ class DataTypeConfig:
         return self.config['mapping']
 
     @property
+    def num_tasks(self):
+        return self.config['num_tasks']
+
+    @property
+    def batch_days(self):
+        return self.config['batch_days']
+
+    @property
     def paths(self):
         return self.config['paths']
 
@@ -52,11 +60,11 @@ class Config:
     def get_data_type_names(self):
         return [data_type.name for data_type in self.data_types]
 
-    def get_data_type(self, name):
+    def get_data_type(self, name) -> DataTypeConfig:
         for data_type in self.data_types:
             if data_type.name == name:
                 return data_type
-        return None
+        assert False, f"Data type {name} not found in config"
 
     def get_map_path(self, name):
         type_config = self.get_data_type(name)

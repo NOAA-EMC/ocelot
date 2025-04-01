@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 base_path = os.path.split(os.path.realpath(__file__))[0]
 runner_path = os.path.realpath(os.path.join(base_path, '../src/gen_model_data.py'))
 
+sys.path.append(os.path.realpath(os.path.join(base_path, '..', 'src')))
+
 def _make_sbatch_cmd(idx:int,
                      start:datetime,
                      end:datetime,
@@ -64,23 +66,13 @@ def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, output
     print(cmd)
     os.system(cmd)
 
-def _gen_atms(start : datetime, end :datetime, output_name:str=None):
-    _gen(start, end, 15, 24, 'atms', output_name=output_name)
-
-def _gen_radiosonde(start : datetime, end :datetime, output_name:str=None, append=True):
-    _gen(start, end, 30, 4, 'radiosonde', output_name=output_name)
-
-def _gen_surface_pressure(start : datetime, end :datetime, output_name:str=None, append=True):
-    _gen(start, end, 30, 4, 'surface_pressure', output_name=output_name)
 
 if __name__ == "__main__":
-    gen_dict = {
-        'atms': _gen_atms,
-        'radiosonde': _gen_radiosonde,
-        'surface_pressure': _gen_surface_pressure
-    }
+    from data_reader import Config
+    config = Config()
 
-    choices = ['all'] + list(gen_dict.keys())
+    data_types = config.get_data_type_names()
+    choices = ['all'] + data_types
 
     parser = argparse.ArgumentParser()
     parser.add_argument('start_date')
@@ -90,6 +82,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    type_config = config.get_data_type(args.type)
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
@@ -99,10 +92,14 @@ if __name__ == "__main__":
         if args.output_name:
             gen_kwargs['output_name'] = args.output_name
 
-        gen_dict[gen_type](*gen_args, **gen_kwargs)
+        _gen(start_date,
+             end_date,
+             type_config.batch_days,
+             type_config.num_tasks,
+             type_config.name, output_name=args.output_name)
 
     if args.type == 'all':
-        for gen_type in gen_dict.keys():
+        for gen_type in data_types:
             call_generator(gen_type)
     else:
         call_generator(args.type)
