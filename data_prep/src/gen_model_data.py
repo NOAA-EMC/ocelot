@@ -14,7 +14,7 @@ import data_reader
 import settings
 
 
-def create_data_for_day(comm, date:datetime, type:str, output_name:str=None, append=True):
+def create_data_for_day(comm, date:datetime, type:str, suffix:str=None, append=True):
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
@@ -46,8 +46,8 @@ def create_data_for_day(comm, date:datetime, type:str, output_name:str=None, app
         container = container.apply_mask(mask)
 
     if comm.rank() == 0:
-        if output_name:
-            output_path = os.path.join(settings.OUTPUT_PATH, f'{output_name}.zarr')
+        if suffix:
+            output_path = os.path.join(settings.OUTPUT_PATH, f'{type}_{suffix}.zarr')
         else:
             output_path = os.path.join(settings.OUTPUT_PATH, f'{type}.zarr')
 
@@ -56,7 +56,7 @@ def create_data_for_day(comm, date:datetime, type:str, output_name:str=None, app
         sys.stdout.flush()
 
 
-def create_data(start_date: datetime, end_date: datetime, type:str, output_name:str=None, append=True):
+def create_data(start_date: datetime, end_date: datetime, type:str, suffix:str=None, append=True):
     date = start_date
     day = timedelta(days=1)
 
@@ -64,7 +64,7 @@ def create_data(start_date: datetime, end_date: datetime, type:str, output_name:
     comm = bufr.mpi.Comm("world")
 
     while date <= end_date:
-        create_data_for_day(comm, date, type, output_name, append)
+        create_data_for_day(comm, date, type, suffix, append)
         date += day
 
 if __name__ == "__main__":
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     parser.add_argument('start_date')
     parser.add_argument('end_date')
     parser.add_argument('type')
-    parser.add_argument('-o', '--output_name', required=False)
+    parser.add_argument('-s', '--suffix', required=False)
     parser.add_argument('-a', '--append', required=False, default=True)
 
     args = parser.parse_args()
@@ -80,4 +80,4 @@ if __name__ == "__main__":
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
-    create_data(start_date, end_date, args.type, args.output_name, args.append)
+    create_data(start_date, end_date, args.type, args.suffix, args.append)

@@ -13,7 +13,7 @@ def _make_sbatch_cmd(idx:int,
                      end:datetime,
                      ntasks:int,
                      type:str,
-                     output_name:str=None,
+                     suffix:str=None,
                      append=True):
 
     cmd = f'job_{idx+1}=$(sbatch ' \
@@ -26,8 +26,8 @@ def _make_sbatch_cmd(idx:int,
     cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
     cmd += f'--wrap="srun -n{ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
 
-    if output_name:
-        cmd += f'-o {output_name} '
+    if suffix:
+        cmd += f'-s {suffix} '
 
     if not append:
         cmd += '--append False '
@@ -52,15 +52,15 @@ def _split_datetime_range(start:datetime, end:datetime, num_days:int):
 
     return ranges
 
-def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, output_name:str=None):
+def _gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, suffix:str=None):
     ranges = _split_datetime_range(start, end, max_days)
 
     cmds = []
     for idx, (start, end) in enumerate(ranges):
         if idx == 0:
-            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, output_name=output_name, append=False))
+            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, suffix=suffix, append=False))
         else:
-            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, output_name=output_name))
+            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, suffix=suffix))
 
     cmd = '\n'.join(cmds)
     print(cmd)
@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument('start_date')
     parser.add_argument('end_date')
     parser.add_argument('type', choices=choices)
-    parser.add_argument('-o', '--output_name', required=False)
+    parser.add_argument('-s', '--suffix', required=False)
 
     args = parser.parse_args()
 
@@ -87,16 +87,12 @@ if __name__ == "__main__":
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
     def call_generator(gen_type):
-        gen_args = (start_date, end_date,)
-        gen_kwargs = {}
-        if args.output_name:
-            gen_kwargs['output_name'] = args.output_name
-
         _gen(start_date,
              end_date,
              type_config.batch_days,
              type_config.num_tasks,
-             type_config.name, output_name=args.output_name)
+             type_config.name,
+             suffix=args.suffix)
 
     if args.type == 'all':
         for gen_type in data_types:
