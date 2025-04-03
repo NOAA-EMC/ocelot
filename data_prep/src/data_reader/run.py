@@ -36,6 +36,7 @@ class Runner(object):
                 input_path = os.path.join(settings.TANK_PATH, day_str, path)
 
                 if not os.path.exists(input_path):
+                    print (f"Input path {input_path} does not exist!")
                     continue
 
                 container = self._make_obs(comm, input_path)
