@@ -25,7 +25,8 @@ def _make_sbatch_cmd(idx:int,
                      ntasks:int,
                      type:str,
                      suffix:str=None,
-                     append=True):
+                     append=True,
+                     slurm_account:str=None):
 
     if not _is_slurm_available():
         raise RuntimeError("SLURM is not available. Please check your environment.")
@@ -47,6 +48,9 @@ def _make_sbatch_cmd(idx:int,
         cmd += '--append False '
 
     cmd += '" | awk \'{print $4}\')'
+
+    if slurm_account:
+        cmd += f' --account={slurm_account} '
 
     return cmd
 
@@ -145,9 +149,10 @@ if __name__ == "__main__":
     parser.add_argument('end_date', help='End date in YYYY-MM-DD format')
     parser.add_argument('type', choices=choices, help='Data type to generate. "all" generates all data types.')
     parser.add_argument('-s', '--suffix', required=False, help='Suffix for the output file(s)')
-    parser.add_argument('-p', '--parallel', action='store_true', help='Run in parallel (using either srun or mpirun). Chunks the data into multiple tasks if needed.')
-    parser.add_argument('-b', '--batch', action='store_true', help='Run in batch mode (using sbatch)')
+    parser.add_argument('-p', '--parallel', action='store_true', help='Run in parallel (using either srun or mpirun).')
+    parser.add_argument('-b', '--batch', action='store_true', help='Run in batch mode (using sbatch). Chunks the data into multiple tasks if needed.')
     parser.add_argument('-a', '--append', action='store_true', help='Append to existing data')
+    parser.add_argument('--slurm_account', required=False, help='SLURM account name for batch jobs')
 
     args = parser.parse_args()
 
@@ -163,7 +168,8 @@ if __name__ == "__main__":
                        type_config.num_tasks,
                        gen_type,
                        suffix=args.suffix,
-                       append=args.append)
+                       append=args.append,
+                       slurm_account=args.slurm_account)
         elif args.parallel:
             _parallel_gen(start_date,
                           end_date,
