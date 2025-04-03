@@ -7,6 +7,6 @@ sys.path.append(os.path.realpath(os.path.join(pathlib.Path(__file__).parent.reso
 try:
     from local_settings import *  # noqa: F401, F403
 except ImportError:
-    raise ImportError("configs/settings.py was not found!.")
+    raise ImportError("configs/local_settings.py was not found!.")
 finally:
     sys.path.pop(0)

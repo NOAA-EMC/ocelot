@@ -17,7 +17,7 @@ def _is_slurm_available() -> bool:
         import subprocess
         result = subprocess.run(['srun', '-h'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return result.returncode == 0
-    except FileNotFoundError:
+    except Exception:
         return False
 
 
@@ -49,10 +49,10 @@ def _make_sbatch_cmd(idx: int,
     if not append:
         cmd += '--append False '
 
-    cmd += '" | awk \'{print $4}\')'
-
     if slurm_account:
         cmd += f' --account={slurm_account} '
+
+    cmd += '" | awk \'{print $4}\')'
 
     return cmd
 
