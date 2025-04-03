@@ -50,7 +50,7 @@ def _make_sbatch_cmd(idx: int,
         cmd += '--append False '
 
     if slurm_account:
-        cmd += f' --account={slurm_account} '
+        cmd += f'--account={slurm_account} '
 
     cmd += '" | awk \'{print $4}\')'
 
