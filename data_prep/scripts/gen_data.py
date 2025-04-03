@@ -8,6 +8,7 @@ runner_path = os.path.realpath(os.path.join(base_path, '../src/create_data.py'))
 
 sys.path.append(os.path.realpath(os.path.join(base_path, '..', 'src')))
 
+
 def _is_slurm_available() -> bool:
     """
     Check if SLURM is available.
@@ -19,14 +20,15 @@ def _is_slurm_available() -> bool:
     except FileNotFoundError:
         return False
 
-def _make_sbatch_cmd(idx:int,
-                     start:datetime,
-                     end:datetime,
-                     ntasks:int,
-                     type:str,
-                     suffix:str=None,
-                     append=True,
-                     slurm_account:str=None):
+
+def _make_sbatch_cmd(idx: int,
+                     start: datetime,
+                     end: datetime,
+                     ntasks: int,
+                     type: str,
+                     suffix: str = None,
+                     append: bool = True,
+                     slurm_account: str = None) -> str:
 
     if not _is_slurm_available():
         raise RuntimeError("SLURM is not available. Please check your environment.")
@@ -37,7 +39,7 @@ def _make_sbatch_cmd(idx:int,
         cmd += f'--dependency=afterok:$job_{idx} '
 
     cmd += f'--ntasks={ntasks} '
-    cmd += f'--time=02:00:00 '
+    cmd += '--time=02:00:00 '
     cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
     cmd += f'--wrap="srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
 
@@ -54,12 +56,13 @@ def _make_sbatch_cmd(idx:int,
 
     return cmd
 
-def _make_parallel_cmd( start:datetime,
-                        end:datetime,
-                        ntasks:int,
-                        type:str,
-                        suffix:str=None,
-                        append=True):
+
+def _make_parallel_cmd(start: datetime,
+                       end: datetime,
+                       ntasks: int,
+                       type: str,
+                       suffix: str = None,
+                       append: bool = True) -> str:
 
     if _is_slurm_available():
         cmd = f'srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
@@ -79,11 +82,12 @@ def _make_parallel_cmd( start:datetime,
 
     return cmd
 
+
 def _make_serial_cmd(start: datetime,
                      end: datetime,
                      type: str,
                      suffix: str = None,
-                     append=True):
+                     append=True) -> str:
 
     cmd = f'python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
 
@@ -96,7 +100,7 @@ def _make_serial_cmd(start: datetime,
     return cmd
 
 
-def _split_datetime_range(start:datetime, end:datetime, num_days:int):
+def _split_datetime_range(start: datetime, end: datetime, num_days: int) -> list:
     """
     Split the datetime range into chunks of num_days days.
     """
@@ -112,26 +116,60 @@ def _split_datetime_range(start:datetime, end:datetime, num_days:int):
 
     return ranges
 
-def _batch_gen(start : datetime, end :datetime, max_days, ntasks, gen_type:str, suffix:str=None, append=True):
+
+def _batch_gen(start: datetime,
+               end: datetime,
+               max_days: int,
+               ntasks: int,
+               gen_type: str,
+               suffix: str = None,
+               append: bool = True,
+               slurm_account: str = None) -> None:
     ranges = _split_datetime_range(start, end, max_days)
 
     cmds = []
     for idx, (start, end) in enumerate(ranges):
         if idx == 0:
-            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, suffix=suffix, append=append))
+            cmds.append(
+                _make_sbatch_cmd(idx,
+                                 start,
+                                 end,
+                                 ntasks,
+                                 gen_type,
+                                 suffix=suffix,
+                                 append=append,
+                                 slurm_account=slurm_account))
         else:
-            cmds.append(_make_sbatch_cmd(idx, start, end, ntasks, gen_type, suffix=suffix))
+            cmds.append(
+                _make_sbatch_cmd(idx,
+                                 start,
+                                 end,
+                                 ntasks,
+                                 gen_type,
+                                 suffix=suffix,
+                                 slurm_account=slurm_account))
 
     cmd = '\n'.join(cmds)
     print(cmd)
     os.system(cmd)
 
-def _parallel_gen(start : datetime, end :datetime, ntasks, gen_type:str, suffix:str=None, append=True):
+
+def _parallel_gen(start: datetime,
+                  end: datetime,
+                  ntasks: int,
+                  gen_type: str,
+                  suffix: str = None,
+                  append: bool = True) -> None:
     cmd = _make_parallel_cmd(start, end, ntasks, gen_type, suffix=suffix, append=append)
     print(cmd)
     os.system(cmd)
 
-def _serial_gen(start : datetime, end :datetime, gen_type:str, suffix:str=None, append=True):
+
+def _serial_gen(start: datetime,
+                end: datetime,
+                gen_type: str,
+                suffix: str = None,
+                append: bool = True) -> None:
     cmd = _make_serial_cmd(start, end, gen_type, suffix=suffix, append=append)
     print(cmd)
     os.system(cmd)

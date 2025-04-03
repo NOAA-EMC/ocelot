@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import pathlib
 import shutil
 
@@ -13,4 +12,3 @@ if not os.path.exists(settings_path):
     shutil.copyfile(template_path, settings_path)
 
 os.system(f"vi {settings_path}")
-
