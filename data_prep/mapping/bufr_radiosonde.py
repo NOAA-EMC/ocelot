@@ -38,7 +38,7 @@ class RadiosondeObsBuilder(ObsBuilder):
 
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
-        
+
         return container
 
     def _make_description(self):
