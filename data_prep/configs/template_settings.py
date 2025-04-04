@@ -1,7 +1,6 @@
 import os
 
-config_dir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
-
+config_dir = os.path.split(os.path.abspath(__file__))[0]
 
 # Path to the configuration yaml file for the BUFR tank
 # (example: '/install_dir/spoc/tank/conf/hera_test_tank.yaml')
