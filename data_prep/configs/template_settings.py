@@ -19,7 +19,7 @@ DATETIME_DIR_FORMAT = 'gdas.%Y%m%d'
 # (example: '/install_dir/src/spoc/tank/mapping')
 MAPPING_FILE_DIR = os.path.realpath(os.path.join(config_dir, '..', 'mapping'))
 
-OUTPUT_DIR = ''
+OUTPUT_PATH = ''
 
 # # The range of latitude and longitude for the continental US
 # LAT_RANGE = (24, 51)
