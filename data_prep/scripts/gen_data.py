@@ -38,6 +38,9 @@ def _make_sbatch_cmd(idx: int,
     if idx > 0:
         cmd += f'--dependency=afterok:$job_{idx} '
 
+    if slurm_account:
+        cmd += f'--account={slurm_account} '
+
     cmd += f'--ntasks={ntasks} '
     cmd += '--time=02:00:00 '
     cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
@@ -48,9 +51,6 @@ def _make_sbatch_cmd(idx: int,
 
     if not append:
         cmd += '--append False '
-
-    if slurm_account:
-        cmd += f'--account={slurm_account} '
 
     cmd += '" | awk \'{print $4}\')'
 
