@@ -1,8 +1,5 @@
-
-import os
 import re
 from typing import Union
-
 import zarr
 import numpy as np
 
@@ -23,11 +20,11 @@ class Encoder(bufr.encoders.EncoderBase):
         super(Encoder, self).__init__(self.description)
 
     def encode(self,
-               container:bufr.DataContainer,
-               output_template_path:str,
-               append=False) -> dict[tuple[str],zarr.Group]:
+               container: bufr.DataContainer,
+               output_template_path: str,
+               append: bool = False) -> dict:
 
-        result:dict[tuple[str], zarr.Group] = {}
+        result: dict = {}
         for category in container.all_sub_categories():
             cat_idx = 0
             substitutions = {}
@@ -55,19 +52,16 @@ class Encoder(bufr.encoders.EncoderBase):
 
         return result
 
-    # def _init_zarr_file(self, output_path):
-
-
-    def _add_attrs(self, root:zarr.Group):
+    def _add_attrs(self, root: zarr.Group):
         # Adds globals as attributes to the root group
         for key, data in self.description.get_globals().items():
             root.attrs[key] = data
 
     def _init_dimensions(self,
-                         root:zarr.Group,
+                         root: zarr.Group,
                          container: bufr.DataContainer,
-                         category:[str],
-                         dims:bufr.encoders.EncoderDimensions):
+                         category: list,
+                         dims: bufr.encoders.EncoderDimensions):
 
         # Add the time dimension as the primary dimension
         timestamps = container.get('variables/timestamp', category)
@@ -101,10 +95,10 @@ class Encoder(bufr.encoders.EncoderBase):
             dim_store.attrs['_ARRAY_DIMENSIONS'] = [dim.name().lower()]
 
     def _init_variables(self,
-                        root:zarr.Group,
+                        root: zarr.Group,
                         container: bufr.DataContainer,
-                        category:[str],
-                        dims:bufr.encoders.EncoderDimensions):
+                        category: list,
+                        dims: bufr.encoders.EncoderDimensions):
 
         def add_variable(var, var_name, var_data):
             comp_level = var['compressionLevel'] if 'compressionLevel' in var else 3
@@ -149,7 +143,6 @@ class Encoder(bufr.encoders.EncoderBase):
 
             store.attrs['_ARRAY_DIMENSIONS'] = ['time']
 
-
         for var in self.description.get_variables():
             # Associate the dimensions
             dim_names = dims.dim_names_for_var(var["name"])
@@ -159,7 +152,7 @@ class Encoder(bufr.encoders.EncoderBase):
             _, var_name = self._split_source_str(var['name'])
 
             if var_name.lower() == 'dateTime' or var_name.lower() == 'time':
-                continue # Skip the time variable as it is a dimension
+                continue  # Skip the time variable as it is a dimension
 
             if var["source"].split('/')[-1] not in container.list():
                 raise ValueError(f'Variable {var["source"]} not found in the container')
@@ -176,10 +169,10 @@ class Encoder(bufr.encoders.EncoderBase):
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
     def _append_data(self,
-                     root:zarr.Group,
+                     root: zarr.Group,
                      container: bufr.DataContainer,
-                     category:[str],
-                     dims:bufr.encoders.EncoderDimensions):
+                     category: list,
+                     dims: bufr.encoders.EncoderDimensions) -> None:
 
         for var in self.description.get_variables():
             _, var_name = self._split_source_str(var['name'])
@@ -201,18 +194,19 @@ class Encoder(bufr.encoders.EncoderBase):
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
-    def _make_path(self, prototype_path:str, sub_dict:dict[str, str]):
+    def _make_path(self, prototype_path: str, sub_dict: dict) -> str:
         subs = re.findall(r'\{(?P<sub>\w+\/\w+)\}', prototype_path)
         for sub in subs:
             prototype_path = prototype_path.replace(f'{{{sub}}}', sub_dict[sub])
 
         return prototype_path
 
-    def _split_source_str(self, source:str) -> (str, str):
+    def _split_source_str(self, source: str) -> (str, str):
         components = source.split('/')
         group_name = components[0] if len(components) > 1 else ""
         variable_name = components[-1]
 
         return (group_name, variable_name)
+
 
 add_encoder_type('zarr-ocelot', Encoder)

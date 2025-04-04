@@ -1,22 +1,21 @@
 import os
 import sys
+import importlib.util
+from datetime import datetime, timedelta
+import bufr
+
 sys.path.insert(0, os.path.realpath('.'))
 sys.path.insert(0, os.path.realpath('..'))
 
-import sys
-import importlib.util
-from datetime import datetime, timedelta
-import argparse
+from . import config  # noqa: E402
+import settings  # noqa: E402
 
-import bufr
-
-from . import config
-import settings
 
 class Parameters:
     def __init__(self):
         self.start_time = None
         self.stop_time = None
+
 
 class Runner(object):
     def __init__(self, data_type, config):
@@ -28,7 +27,7 @@ class Runner(object):
         self.type_config = self.tank_config .get_data_type(data_type)
         self.map_path = os.path.join(settings.MAPPING_FILE_DIR, self.type_config.mapping)
 
-    def run(self, comm, parameters:Parameters) -> bufr.DataContainer:
+    def run(self, comm, parameters: Parameters) -> bufr.DataContainer:
         # Parse the relevant BUFR files
         combined_container = bufr.DataContainer()
         for path in self.type_config.paths:
@@ -36,7 +35,7 @@ class Runner(object):
                 input_path = os.path.join(settings.TANK_PATH, day_str, path)
 
                 if not os.path.exists(input_path):
-                    print (f"Input path {input_path} does not exist!")
+                    print(f"Input path {input_path} does not exist!")
                     continue
 
                 container = self._make_obs(comm, input_path)
@@ -52,10 +51,10 @@ class Runner(object):
     def get_encoder_description(self) -> bufr.encoders.Description:
         raise NotImplementedError
 
-    def _make_obs(self, comm, input_path:str) -> bufr.DataContainer:
+    def _make_obs(self, comm, input_path: str) -> bufr.DataContainer:
         raise NotImplementedError
 
-    def _day_strs(self, start: datetime, end: datetime) -> list[str]:
+    def _day_strs(self, start: datetime, end: datetime) -> list:
         '''
         Loop through each day in the window and return a list of formatted strings
         :return:
@@ -77,12 +76,12 @@ class YamlRunner(Runner):
     def get_encoder_description(self) -> bufr.encoders.Description:
         return bufr.encoders.Description(self.map_path)
 
-    def _make_obs(self, comm, input_path:str) -> bufr.DataContainer:
+    def _make_obs(self, comm, input_path: str) -> bufr.DataContainer:
         return bufr.Parser(input_path, self.map_path).parse(comm)
 
 
 class ScriptRunner(Runner):
-    def __init__(self,data_type:str, config=config.Config()):
+    def __init__(self, data_type: str, config=config.Config()):
         super().__init__(data_type, config)
         self.script = self._load_script()
         self.obs_builder = self.script.make_obs_builder()
@@ -90,7 +89,7 @@ class ScriptRunner(Runner):
     def get_encoder_description(self) -> bufr.encoders.Description:
         return self.obs_builder.description
 
-    def _make_obs(self, comm, input_path:str) -> bufr.DataContainer:
+    def _make_obs(self, comm, input_path: str) -> bufr.DataContainer:
         return self.obs_builder.make_obs(comm, input_path)
 
     def _load_script(self):
@@ -106,34 +105,13 @@ class ScriptRunner(Runner):
         return module
 
 
-def run(comm, data_type, parameters:Parameters, tank_config = config.Config()) -> (bufr.encoders.Description, bufr.DataContainer):
+def run(comm, data_type, parameters: Parameters, tank_config=config.Config()) -> (bufr.encoders.Description, bufr.DataContainer):
     if data_type not in tank_config.get_data_type_names():
         raise ValueError(f"Data type {data_type} not found in tank")
 
-    if  os.path.splitext(tank_config.get_data_type(data_type).mapping)[1] == '.py':
+    if os.path.splitext(tank_config.get_data_type(data_type).mapping)[1] == '.py':
         runner = ScriptRunner(data_type, tank_config)
     else:
         runner = YamlRunner(data_type, tank_config)
 
     return (runner.get_encoder_description(), runner.run(comm, parameters))
-
-
-if __name__ == '__main__':
-    sys.path.insert(0, os.path.realpath('..'))
-    from zarr_encoder import Encoder as ZarrEncoder
-
-    bufr.mpi.App(sys.argv)
-    comm = bufr.mpi.Comm("world")
-
-    parameters = Parameters()
-    parameters.start_time = datetime(2020, 10, 12)
-    parameters.stop_time = datetime(2020, 10, 13)
-
-    description, combined_container = run(comm, 'atms', parameters)
-
-    if combined_container is None:
-        raise ValueError("No data found")
-
-    if comm.rank() == 0:
-        ZarrEncoder(description).encode(combined_container, "output_atms.zarr", append=True)
-        print("Output written to output_atms.zarr")

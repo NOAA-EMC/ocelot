@@ -2,11 +2,11 @@
 
 import os
 
-import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 MAPPING_PATH = os.path.join(script_dir, 'bufr_atms.yaml')
+
 
 class AtmsObsBuilder(ObsBuilder):
     def __init__(self):
@@ -23,5 +23,6 @@ class AtmsObsBuilder(ObsBuilder):
         container.replace('brightnessTemperature', brightness_temp.filled())
 
         return container
+
 
 add_main_functions(AtmsObsBuilder)

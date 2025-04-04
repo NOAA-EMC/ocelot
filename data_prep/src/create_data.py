@@ -1,20 +1,17 @@
-from zarr_encoder import Encoder
-
 import os
 import sys
-sys.path.insert(0, os.path.realpath('./'))
-
 import argparse
 from datetime import datetime, timedelta
 import numpy as np
-
 import bufr
-from zarr_encoder import Encoder
-import data_reader
-import settings
+
+sys.path.insert(0, os.path.realpath('./'))
+from zarr_encoder import Encoder  # noqa: E402
+import data_reader  # noqa: E402
+import settings  # noqa: E402
 
 
-def create_data_for_day(comm, date:datetime, type:str, suffix:str=None, append=True):
+def create_data_for_day(comm, date: datetime, type: str, suffix: str = None, append: bool = True):
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
@@ -26,7 +23,6 @@ def create_data_for_day(comm, date:datetime, type:str, suffix:str=None, append=T
 
     if container is None:
         raise ValueError("No data found")
-
 
     # Filter data based on the specified latitude and longitude ranges
     # if the settings have been defined
@@ -41,7 +37,7 @@ def create_data_for_day(comm, date:datetime, type:str, suffix:str=None, append=T
         mask[longitudes > settings.LON_RANGE[1]] = False
 
         if not np.any(mask):
-            return # No data in the region
+            return  # No data in the region
 
         container = container.apply_mask(mask)
 
@@ -56,7 +52,11 @@ def create_data_for_day(comm, date:datetime, type:str, suffix:str=None, append=T
         sys.stdout.flush()
 
 
-def create_data(start_date: datetime, end_date: datetime, type:str, suffix:str=None, append=True):
+def create_data(start_date: datetime,
+                end_date: datetime,
+                type: str,
+                suffix: str = None,
+                append: bool = True):
     date = start_date
     day = timedelta(days=1)
 
@@ -66,6 +66,7 @@ def create_data(start_date: datetime, end_date: datetime, type:str, suffix:str=N
     while date <= end_date:
         create_data_for_day(comm, date, type, suffix, append)
         date += day
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

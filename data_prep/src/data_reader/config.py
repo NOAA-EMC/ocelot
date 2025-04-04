@@ -43,7 +43,7 @@ class DataTypeConfig:
 
     @property
     def operations(self):
-        if not 'operations' in self.config:
+        if 'operations' not in self.config:
             return []
 
         return [OperationConfig(op) for op in self.config['operations']]
