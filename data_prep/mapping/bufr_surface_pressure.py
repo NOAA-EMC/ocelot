@@ -41,8 +41,6 @@ class PressureObsBuilder(ObsBuilder):
         adpupa_container.apply_mask(data_level_cat == 0)
 
         # Remove uneeded data fields (make all containers the same)
-        container.remove('obsTimeMinusCycleTime')
-        adpupa_container.remove('obsTimeMinusCycleTime')
         adpupa_container.remove('dataLevelCategory')
 
         # Merge containers
