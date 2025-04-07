@@ -52,6 +52,9 @@ class PressureObsBuilder(ObsBuilder):
         obs_type = container.get('observationType')
         container.apply_mask(np.isin(obs_type, OBS_TYPES))
 
+        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
+        container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
+
         return container
 
     def _make_description(self):
