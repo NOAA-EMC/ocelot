@@ -5,6 +5,7 @@ import numpy as np
 import re
 from datetime import datetime
 from pathlib import Path
+from sklearn.preprocessing import LabelEncoder
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
@@ -38,6 +39,15 @@ class RadiosondeObsBuilder(ObsBuilder):
 
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
+
+        # Convert stationIdentification into integer field
+        stationIdentification = container.get('stationIdentification')
+        encoder = LabelEncoder()
+        stationIdentification = encoder.fit_transform(stationIdentification)
+        container.replace('stationIdentification', stationIdentification)
+
+        # Add global attribute for stationIdentification labels
+        self.description.add_global('stationIdentificationLabels', encoder.classes_)
 
         return container
 
