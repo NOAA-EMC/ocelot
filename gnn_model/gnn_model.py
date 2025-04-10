@@ -125,7 +125,10 @@ class GNNLightning(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         y_pred = self(batch)
-        y_true = batch.y[: y_pred.shape[0], :]
+        # === Extract metadata (lat/lon) and predictions ===
+        lat_lon_meta = batch.y[: y_pred.shape[0], :2].cpu().numpy()    # for evaluation or trace-back
+        pred_bt = y_pred.detach().cpu().numpy()
+        y_true = batch.y[: y_pred.shape[0], 2:] # Skip lat/lon, use BTs only
         loss = self.loss_fn(y_pred, y_true)
         self.log("train_loss", loss)  # prog_bar=True)
         return {"loss": loss}

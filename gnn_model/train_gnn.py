@@ -18,14 +18,14 @@ def main():
     mesh_resolution = 6
 
     # Define model parameters
-    input_dim = 27
+    input_dim = 25
     hidden_dim = 256
-    output_dim = 24
+    output_dim = 20
     num_layers = 16
     lr = 1e-4
 
     # Training parameters
-    max_epochs = 100
+    max_epochs = 50
     batch_size = 1
 
     # Instantiate model & data module
