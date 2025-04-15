@@ -6,7 +6,7 @@ import numpy as np
 import bufr
 from bufr.obs_builder import add_encoder_type
 
-DEFAULT_CHUNK_SIZE = 5000
+DEFAULT_CHUNK_SIZE = 5_000_000
 
 
 # Encoder for Zarr format
