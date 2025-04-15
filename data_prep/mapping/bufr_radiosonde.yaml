@@ -1,0 +1,155 @@
+bufr:
+  group_by_variable: height
+  subsets:
+    - ADPUPA
+  variables:
+    # MetaData Variables
+    obsTimeMinusCycleTime:
+      query: "*/PRSLEVEL/DRFTINFO/HRDR"
+
+    latitude:
+      query: "*/PRSLEVEL/DRFTINFO/YDR"
+
+    longitude:
+      query: "*/PRSLEVEL/DRFTINFO/XDR"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    stationIdentification:
+      query: "*/SID"
+
+    stationElevation:
+      query: "*/ELV"
+
+    temperatureEventCode:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TPC"
+
+    # Observation Variables
+    airTemperature:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TOB"
+
+    specificHumidity:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QOB"
+
+    dewPointTemperature:
+      query: "*/PRSLEVEL/Q___INFO/TDO"
+
+    eastwardWind:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/UOB"
+
+    northwardWind:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/VOB"
+
+    airPressure:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
+
+    height:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
+
+    # Quality Markers
+    airTemperatureQuality:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
+
+    specificHumidityQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
+
+    dewPointTemperatureQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
+
+    airPressureQuality:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
+
+    heightQuality:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZQM"
+
+encoder:
+  variables:
+    # MetaData Values
+    - name: "latitude"
+      source: latitude
+      longName: "Latitude"
+      units: "degree_north"
+      range: [-90, 90]
+
+    - name: "longitude"
+      source: longitude
+      longName: "Longitude"
+      units: "degree_east"
+
+    - name: "stationIdentification"
+      source: stationIdentification
+      longName: "Station Identification"
+
+    - name: "stationElevation"
+      source: stationElevation
+      longName: "Station Elevation"
+      units: "meters"
+      range: [-100, 5000]
+
+    - name: "temperatureEventCode"
+      source: temperatureEventCode
+      longName: "Temperature Event Code"
+
+    # Observation Values
+    - name: "airTemperature"
+      source: airTemperature
+      longName: "Air Temperature"
+      units: "deg C"
+      range: [-100, 100]
+
+    - name: "specificHumidity"
+      source: specificHumidity
+      longName: "Specific Humidity"
+      units: "mg/kg"
+      range: [0, 50000]
+
+    - name: "dewPointTemperature"
+      source: dewPointTemperature
+      longName: "Dew Point Temperature"
+      units: "deg C"
+      range: [-100, 100]
+
+    - name: "eastwardWind"
+      source: eastwardWind
+      longName: "Eastward Wind"
+      units: "m/s"
+      range: [-150, 150]
+
+    - name: "northwardWind"
+      source: northwardWind
+      longName: "Northward Wind"
+      units: "m/s"
+      range: [-150, 150]
+
+    - name: "airPressure"
+      source: airPressure
+      longName: "Air Pressure"
+      units: "hPa"
+      range: [0, 1200]
+
+    - name: "height"
+      source: height
+      longName: "Height"
+      units: "meters"
+      range: [0, 60000]
+
+    # Quality Markers
+    - name: "airTemperatureQuality"
+      source: airTemperatureQuality
+      longName: "Air Temperature Quality Marker"
+
+    - name: "specificHumidityQuality"
+      source: specificHumidityQuality
+      longName: "Specific Humidity Quality Marker"
+
+    - name: "dewPointTemperatureQuality"
+      source: dewPointTemperatureQuality
+      longName: "Dew Point Temperature Quality Marker"
+
+    - name: "airPressureQuality"
+      source: airPressureQuality
+      longName: "Air Pressure Quality Marker"
+
+    - name: "heightQuality"
+      source: heightQuality
+      longName: "Height Quality Marker"

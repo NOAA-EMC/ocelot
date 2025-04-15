@@ -40,7 +40,7 @@ z = zarr.open("/path/to/.zarr", mode="r")
 
 ### 3. Train the GNN Model
 ```bash
-python train_gnn.py
+sbatch run_gnn.sh
 ```
 ### Model Architecture
 The Graph Neural Network (GNN) consists of:
