@@ -47,7 +47,7 @@ class RadiosondeObsBuilder(ObsBuilder):
         container.replace('stationIdentification', stationIdentification)
 
         # Add global attribute for stationIdentification labels
-        self.description.add_global('stationIdentificationLabels', encoder.classes_)
+        self.description.add_global('stationIdentificationLabels', list(encoder.classes_))
 
         return container
 
