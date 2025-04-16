@@ -44,7 +44,7 @@ class GNNDataModule(pl.LightningDataModule):
         self.test_data = None
         self.predict_data = None
         self.z = None
-        
+
         # New flags for setup tracking
         self.data_processed = False
         self.data_dict = None
@@ -72,21 +72,21 @@ class GNNDataModule(pl.LightningDataModule):
              *remove single bin: 1 bin- use the entire bin for train, nothing for val
         """
         # Common operations for all stages - only execute once
-        # data_processed flag prevents unnecessarily reading ZARR multiple times 
-        if not self.data_processed:  
+        # data_processed flag prevents unnecessarily reading ZARR multiple times
+        if not self.data_processed: 
             # Open Zarr dataset
             self.z = zarr.open(self.data_path, mode="r")
-            
+ 
             # Process time bins and features
             self.data_summary = organize_bins_times(
                 self.z, self.start_date, self.end_date, self.satellite_id
             )
             self.data_summary = extract_features(self.z, self.data_summary)
-            
-            # Check bins number 
+
+            # Check bins number
             num_bins = len(self.data_summary.keys())
             print(f"Found {num_bins} time bins in the dataset")
-            
+
             # Process all available bins
             # Multi-bin case: Create a data object for each bin
             self.processed_data = []
@@ -95,15 +95,15 @@ class GNNDataModule(pl.LightningDataModule):
                 data_dict = self._create_graph_structure(self.data_summary[bin_name])
                 data_obj = self._create_data_object(data_dict)
                 self.processed_data.append(data_obj)
-            
+
             # Set flag to indicate data has been processed
             self.data_processed = True
 
         # Now prepare the appropriate splits based on what we have
         # Multiple bins case - split by bins
         num_bins = len(self.processed_data)
-        train_size = 1 if num_bins==1 else int(0.8 * num_bins)
-        
+        train_size = 1 if num_bins == 1 else int(0.8 * num_bins)
+
         if stage == 'fit' or stage is None:
             self.train_data = self.processed_data[:train_size]
             self.val_data = self.processed_data[train_size:]
@@ -228,4 +228,3 @@ class GNNDataModule(pl.LightningDataModule):
 
     def predict_dataloader(self):
         return DataLoader(self.predict_data, batch_size=self.batch_size)
-
