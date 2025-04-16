@@ -73,10 +73,10 @@ class GNNDataModule(pl.LightningDataModule):
         """
         # Common operations for all stages - only execute once
         # data_processed flag prevents unnecessarily reading ZARR multiple times
-        if not self.data_processed: 
+        if not self.data_processed:
             # Open Zarr dataset
             self.z = zarr.open(self.data_path, mode="r")
- 
+
             # Process time bins and features
             self.data_summary = organize_bins_times(
                 self.z, self.start_date, self.end_date, self.satellite_id
