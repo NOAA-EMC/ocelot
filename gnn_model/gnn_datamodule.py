@@ -38,10 +38,17 @@ class GNNDataModule(pl.LightningDataModule):
         self.num_neighbors = num_neighbors
 
         # Will be set in setup()
-        self.data_summary = None
+        self.data_summary = None    # Contains organized time bins and feature data
+        self.data_dict = None       # Stores the graph structure with global indexing
+        self.processed_data = None  # Stores the processed data in PyG Data format
         self.train_data = None
         self.val_data = None
+        self.test_data = None
+        self.predict_data = None
         self.z = None
+
+        # Flags for setup tracking
+        self.data_processed = False
 
     def prepare_data(self):
         """
@@ -54,28 +61,54 @@ class GNNDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         """
-        Prepare data for training/validation.
+        Prepare data for training/validation/test/predict.
+        When only 1 time bin, the bin is assigned to training (val set is empty).
         """
-        # Open Zarr dataset
-        self.z = zarr.open(self.data_path, mode="r")
+        # Common operations for all stages - only execute once
+        # data_processed flag prevents unnecessarily reading ZARR multiple times
+        if not self.data_processed:
+            # Open Zarr dataset
+            self.z = zarr.open(self.data_path, mode="r")
 
-        # Process time bins and features
-        self.data_summary = organize_bins_times(
-            self.z, self.start_date, self.end_date, self.satellite_id
-        )
-        self.data_summary = extract_features(self.z, self.data_summary)
+            # Process time bins and features
+            self.data_summary = organize_bins_times(
+                self.z, self.start_date, self.end_date, self.satellite_id
+            )
+            self.data_summary = extract_features(self.z, self.data_summary)
 
-        # Create graph structure for first bin (can be extended to handle multiple bins)
-        data_dict = self._create_graph_structure(self.data_summary["bin1"])
+            # Check bins number
+            num_bins = len(self.data_summary.keys())
+            print(f"Found {num_bins} time bins in the dataset")
 
-        # Split data into train/val
-        total_samples = len(data_dict["x"])
-        int(0.8 * total_samples)
+            # Process all available bins
+            # Multi-bin case: Create a data object for each bin
+            self.processed_data = []
+            for bin_name in self.data_summary.keys():
+                print(f"Processing {bin_name}...")
+                data_dict = self._create_graph_structure(self.data_summary[bin_name])
+                data_obj = self._create_data_object(data_dict)
+                self.processed_data.append(data_obj)
 
-        # Create train/val splits
-        self.train_data = self._create_data_object(data_dict, slice(0, len(data_dict["x"])))
-        # self.val_data = self._create_data_object(hetero_data, slice(train_size, total_samples))
-        # TODO make validation work
+            # Set flag to indicate data has been processed
+            self.data_processed = True
+
+        # Split time bins
+        # "fit": first 80% of time bins used for training, remaining 20% for validation
+        # "validate": only the last 20% of time bins used for validation
+        # "test" and "predict": all available time bins are used
+        num_bins = len(self.processed_data)
+        train_size = 1 if num_bins == 1 else int(0.8 * num_bins)
+
+        if stage == 'fit' or stage is None:
+            self.train_data = self.processed_data[:train_size]
+            self.val_data = self.processed_data[train_size:]
+            print(f"Split data into {len(self.train_data)} training bins and {len(self.val_data)} validation bins")
+        elif stage == 'validate':
+            self.val_data = self.processed_data[train_size:]
+        elif stage == 'test':
+            self.test_data = self.processed_data
+        elif stage == 'predict':
+            self.predict_data = self.processed_data
 
     def _create_graph_structure(self, bin_data):
         """
@@ -164,9 +197,10 @@ class GNNDataModule(pl.LightningDataModule):
         }
         return data_dict
 
-    def _create_data_object(self, data_dict, idx_slice):
+    def _create_data_object(self, data_dict):
         """
         Create a PyG Data object from the combined data_dict.
+        MK: remove <idx_slice>, unused param
         """
         return Data(
             x=data_dict["x"],
@@ -179,4 +213,13 @@ class GNNDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
-        return DataLoader([self.train_data], batch_size=self.batch_size, shuffle=True)
+        return DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_data, batch_size=self.batch_size)
+
+    def test_dataloader(self):
+        return DataLoader(self.test_data, batch_size=self.batch_size)
+
+    def predict_dataloader(self):
+        return DataLoader(self.predict_data, batch_size=self.batch_size)
