@@ -38,9 +38,9 @@ class GNNDataModule(pl.LightningDataModule):
         self.num_neighbors = num_neighbors
 
         # Will be set in setup()
-        self.data_summary = None # Contains organized time bins and feature data
-        self.data_dict = None # Stores the graph structure with global indexing
-        self.processed_data = None # Stores the processed data in PyG Data format
+        self.data_summary = None    # Contains organized time bins and feature data
+        self.data_dict = None       # Stores the graph structure with global indexing
+        self.processed_data = None  # Stores the processed data in PyG Data format
         self.train_data = None
         self.val_data = None
         self.test_data = None
