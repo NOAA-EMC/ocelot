@@ -38,21 +38,17 @@ class GNNDataModule(pl.LightningDataModule):
         self.num_neighbors = num_neighbors
 
         # Will be set in setup()
-        self.data_summary = None
+        self.data_summary = None # Contains organized time bins and feature data
+        self.data_dict = None # Stores the graph structure with global indexing
+        self.processed_data = None # Stores the processed data in PyG Data format
         self.train_data = None
         self.val_data = None
         self.test_data = None
         self.predict_data = None
         self.z = None
 
-        # New flags for setup tracking
+        # Flags for setup tracking
         self.data_processed = False
-        self.data_dict = None
-        self.processed_data = None
-        """
-        [2025-04-11]
-        MKo: added test_data, predict_data, and new flags
-        """
 
     def prepare_data(self):
         """
@@ -65,11 +61,8 @@ class GNNDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         """
-        Prepare data for training/validation.
-        [2025-04-16]
-        MKo: Add train/validate/test/predict states
-             multi-bins: 80% bins for training, 20% bins for validation
-             *remove single bin: 1 bin- use the entire bin for train, nothing for val
+        Prepare data for training/validation/test/predict.
+        When only 1 time bin, the bin is assigned to training (val set is empty).
         """
         # Common operations for all stages - only execute once
         # data_processed flag prevents unnecessarily reading ZARR multiple times
@@ -99,8 +92,10 @@ class GNNDataModule(pl.LightningDataModule):
             # Set flag to indicate data has been processed
             self.data_processed = True
 
-        # Now prepare the appropriate splits based on what we have
-        # Multiple bins case - split by bins
+        # Split time bins
+        # "fit": first 80% of time bins used for training, remaining 20% for validation
+        # "validate": only the last 20% of time bins used for validation
+        # "test" and "predict": all available time bins are used
         num_bins = len(self.processed_data)
         train_size = 1 if num_bins == 1 else int(0.8 * num_bins)
 
@@ -111,9 +106,9 @@ class GNNDataModule(pl.LightningDataModule):
         elif stage == 'validate':
             self.val_data = self.processed_data[train_size:]
         elif stage == 'test':
-            self.test_data = self.processed_data  # Use all bins for testing
+            self.test_data = self.processed_data
         elif stage == 'predict':
-            self.predict_data = self.processed_data  # Use all bins for prediction
+            self.predict_data = self.processed_data
 
     def _create_graph_structure(self, bin_data):
         """
