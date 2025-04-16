@@ -47,12 +47,11 @@ class GNNDataModule(pl.LightningDataModule):
         
         # New flags for setup tracking
         self.data_processed = False
-        self.single_bin = None
         self.data_dict = None
         self.processed_data = None
         """
         [2025-04-11]
-        MKo: added test_data, Predict_data, and new flags
+        MKo: added test_data, predict_data, and new flags
         """
 
     def prepare_data(self):
@@ -67,12 +66,10 @@ class GNNDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         """
         Prepare data for training/validation.
-        [2025-04-11]
+        [2025-04-16]
         MKo: Add train/validate/test/predict states
-             Enable both single-bin and multi-bin scenarios intelligently.
-                single-bin: 80% data points for training, 20% for validation 
-                multi-bins: 80% bins for training, 20% bins for validation
-                [so that we can still run quick tests with single-bin]
+             multi-bins: 80% bins for training, 20% bins for validation
+             *remove single bin: 1 bin- use the entire bin for train, nothing for val
         """
         # Common operations for all stages - only execute once
         # data_processed flag prevents unnecessarily reading ZARR multiple times 
@@ -86,62 +83,37 @@ class GNNDataModule(pl.LightningDataModule):
             )
             self.data_summary = extract_features(self.z, self.data_summary)
             
-            # Check if we have multiple bins or just one
+            # Check bins number 
             num_bins = len(self.data_summary.keys())
             print(f"Found {num_bins} time bins in the dataset")
             
-            self.single_bin = (num_bins <= 1)
-
             # Process all available bins
-            if not self.single_bin:
-                # Multi-bin case: Create a data object for each bin
-                self.processed_data = []
-                for bin_name in self.data_summary.keys():
-                    print(f"Processing {bin_name}...")
-                    data_dict = self._create_graph_structure(self.data_summary[bin_name])
-                    data_obj = self._create_data_object(data_dict, slice(0, len(data_dict["x"])))
-                    self.processed_data.append(data_obj)
-            else:
-                # Single-bin case: Create one data dictionary and store it
-                print("Single bin detected. Will split data points within the bin.")
-                bin_name = list(self.data_summary.keys())[0]  # Get the only bin
-                self.data_dict = self._create_graph_structure(self.data_summary[bin_name])
+            # Multi-bin case: Create a data object for each bin
+            self.processed_data = []
+            for bin_name in self.data_summary.keys():
+                print(f"Processing {bin_name}...")
+                data_dict = self._create_graph_structure(self.data_summary[bin_name])
+                data_obj = self._create_data_object(data_dict)
+                self.processed_data.append(data_obj)
             
             # Set flag to indicate data has been processed
             self.data_processed = True
 
         # Now prepare the appropriate splits based on what we have
-        if not self.single_bin:
-            # Multiple bins case - split by bins
-            num_bins = len(self.processed_data)
-            train_size = int(0.8 * num_bins)
-            
-            if stage == 'fit' or stage is None:
-                self.train_data = self.processed_data[:train_size]
-                self.val_data = self.processed_data[train_size:]
-                print(f"Split data into {len(self.train_data)} training bins and {len(self.val_data)} validation bins")
-            elif stage == 'validate':
-                self.val_data = self.processed_data[train_size:]
-            elif stage == 'test':
-                self.test_data = self.processed_data  # Use all bins for testing
-            elif stage == 'predict':
-                self.predict_data = self.processed_data  # Use all bins for prediction
-        else:
-            # Single bin case - split by data points
-            total_samples = len(self.data_dict["x"])
-            train_size = int(0.8 * total_samples)
-            
-            if stage == 'fit' or stage is None:
-                self.train_data = self._create_data_object(self.data_dict, slice(0, train_size))
-                self.val_data = self._create_data_object(self.data_dict, slice(train_size, total_samples))
-                print(f"Split data into {train_size} training points and {total_samples - train_size} validation points")
-            elif stage == 'validate':
-                self.val_data = self._create_data_object(self.data_dict, slice(train_size, total_samples))
-            elif stage == 'test':
-                self.test_data = self._create_data_object(self.data_dict, slice(0, total_samples))
-            elif stage == 'predict':
-                self.predict_data = self._create_data_object(self.data_dict, slice(0, total_samples))
-
+        # Multiple bins case - split by bins
+        num_bins = len(self.processed_data)
+        train_size = 1 if num_bins==1 else int(0.8 * num_bins)
+        
+        if stage == 'fit' or stage is None:
+            self.train_data = self.processed_data[:train_size]
+            self.val_data = self.processed_data[train_size:]
+            print(f"Split data into {len(self.train_data)} training bins and {len(self.val_data)} validation bins")
+        elif stage == 'validate':
+            self.val_data = self.processed_data[train_size:]
+        elif stage == 'test':
+            self.test_data = self.processed_data  # Use all bins for testing
+        elif stage == 'predict':
+            self.predict_data = self.processed_data  # Use all bins for prediction
 
     def _create_graph_structure(self, bin_data):
         """
@@ -230,12 +202,10 @@ class GNNDataModule(pl.LightningDataModule):
         }
         return data_dict
 
-    #MK: idc_slice not used => fit, val, test, pred are all the same for single bin
-    #    perhaps <from torch_geometric.utils import subgraph> should work for getting
-    #    certain amount of data point  out for training.
-    def _create_data_object(self, data_dict, idx_slice):
+    def _create_data_object(self, data_dict):
         """
         Create a PyG Data object from the combined data_dict.
+        MK: remove <idx_slice>, unused param
         """
         return Data(
             x=data_dict["x"],
@@ -248,46 +218,14 @@ class GNNDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
-        """
-        Returns the training dataloader, handling both single-bin and multi-bin cases.
-        """
-        if self.single_bin:
-            # Single-bin case
-            return DataLoader([self.train_data], batch_size=self.batch_size, shuffle=True)
-        else:
-            # Multi-bin case
-            return DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True)
+        return DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True)
 
     def val_dataloader(self):
-        """
-        Returns the validation dataloader, handling both single-bin and multi-bin cases.
-        """
-        if self.single_bin:
-            # Single-bin case
-            return DataLoader([self.val_data], batch_size=self.batch_size)
-        else:
-            # Multi-bin case
-            return DataLoader(self.val_data, batch_size=self.batch_size)
+        return DataLoader(self.val_data, batch_size=self.batch_size)
 
     def test_dataloader(self):
-        """
-        Returns the test dataloader, handling both single-bin and multi-bin cases.
-        """
-        if self.single_bin:
-            # Single-bin case
-            return DataLoader([self.test_data], batch_size=self.batch_size)
-        else:
-            # Multi-bin case
-            return DataLoader(self.test_data, batch_size=self.batch_size)
+        return DataLoader(self.test_data, batch_size=self.batch_size)
 
     def predict_dataloader(self):
-        """
-        Returns the prediction dataloader, handling both single-bin and multi-bin cases.
-        """
-        if self.single_bin:
-            # Single-bin case
-            return DataLoader([self.predict_data], batch_size=self.batch_size)
-        else:
-            # Multi-bin case
-            return DataLoader(self.predict_data, batch_size=self.batch_size)
+        return DataLoader(self.predict_data, batch_size=self.batch_size)
 
