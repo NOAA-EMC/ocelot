@@ -1,9 +1,8 @@
-import networkx as nx
 import numpy as np
 import torch
+import networkx as nx
 import trimesh
 from torch_geometric.data import Data, HeteroData
-
 from timing_utils import timing_resource_decorator
 
 
@@ -38,11 +37,11 @@ def create_icosahedral_mesh(resolution=2):
             - HeteroData: PyTorch Geometric HeteroData object containing the graph representation.
             - networkx.DiGraph: The directed graph representation of the mesh.
             - numpy.ndarray: Array of mesh node coordinates in (latitude, longitude) radians.
-            - numpy.ndarray: Array of mesh node coordinates in Cartesian (x, y, z) format.
+            - dict: Statistics of the mesh such as node count and edge count.
     """
     mesh_graph = nx.DiGraph()
 
-    #  Generate an icosahedral mesh with highest given resolution
+    # Generate an icosahedral mesh with highest given resolution
     finest_sphere = trimesh.creation.icosphere(subdivisions=resolution, radius=1.0)
     finest_mesh_coords = finest_sphere.vertices
     finest_mesh_latlon_rad = cartesian_to_latlon_rad(finest_mesh_coords)
@@ -70,12 +69,9 @@ def create_icosahedral_mesh(resolution=2):
         for face in this_mesh_faces:
             edge_set.update(
                 [
-                    (face[0], face[1]),
-                    (face[1], face[0]),
-                    (face[1], face[2]),
-                    (face[2], face[1]),
-                    (face[2], face[0]),
-                    (face[0], face[2]),
+                    (face[0], face[1]), (face[1], face[0]),
+                    (face[1], face[2]), (face[2], face[1]),
+                    (face[2], face[0]), (face[0], face[2]),
                 ]
             )
 
