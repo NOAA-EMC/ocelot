@@ -98,6 +98,8 @@ class GNNLightning(pl.LightningModule):
 
         x_hidden = scatter_mean(encoded, tgt_encoder, dim=0, dim_size=x.shape[0])
         x_hidden = F.relu(x_hidden)
+
+        # === Processor: mesh ↔ mesh ===
         x_hidden.requires_grad_(True)
 
         for i in range(0, len(self.processor_layers), 2):
@@ -118,14 +120,17 @@ class GNNLightning(pl.LightningModule):
 
         x_hidden = x_hidden.detach().requires_grad_()
 
+        # === Decoder: Hidden → Target ===
         src_decoder = edge_index_decoder[0]
         tgt_decoder = edge_index_decoder[1]
         global_ids = data.global_mesh_node_ids
 
+        # Ensure all decoder targets are present in this batch's mesh node IDs
         id_map = {g.item(): i for i, g in enumerate(global_ids)}
         missing_ids = [g.item() for g in tgt_decoder if g.item() not in id_map]
         assert not missing_ids, f"Some decoder target IDs not in global_mesh_node_ids: {missing_ids[:5]}"
 
+        # Map global target IDs to local mesh node indices
         tgt_decoder_local = torch.tensor([id_map[g.item()] for g in tgt_decoder], device=tgt_decoder.device)
 
         mesh_feats = x_hidden[src_decoder]

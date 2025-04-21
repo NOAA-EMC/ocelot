@@ -246,6 +246,7 @@ class GNNDataModule(pl.LightningDataModule):
             sub_data.global_mesh_node_ids = mesh_node_ids
             data_objs.append(sub_data)
 
+            # Log GPU memory usage after creating each chunk
             if torch.cuda.is_available():
                 mem = torch.cuda.memory_allocated() / 1024 ** 3
                 print(f"[Rank {dist.get_rank()}] Data chunk {i+1}/{chunks} | Memory allocated: {mem:.2f} GB")

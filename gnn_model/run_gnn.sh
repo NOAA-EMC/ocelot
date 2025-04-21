@@ -12,6 +12,7 @@
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 
+# Load Conda environment
 source /scratch1/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 

@@ -48,6 +48,7 @@ def main():
         satellite_id=satellite_id,
         batch_size=batch_size,
         mesh_resolution=mesh_resolution,
+        num_neighbors=3,
     )
 
     # data_module.setup(stage="fit")  # Manually call setup to prepare data

@@ -71,10 +71,12 @@ def extract_features(z, data_summary):
         sensor_zenith_target = z["sensorZenithAngle"][target_idx]
         solar_zenith_target = z["solarZenithAngle"][target_idx]
         solar_azimuth_target = z["solarAzimuthAngle"][target_idx]
-
+        
+        # Load BT channels only for those indices
         bt_input = np.stack([z[f"bt_channel_{i}"][input_idx] for i in range(1, 23)], axis=1)
         bt_target = np.stack([z[f"bt_channel_{i}"][target_idx] for i in range(1, 23)], axis=1)
 
+        # Normalize features
         input_features_orig = np.column_stack([
             sensor_zenith_input,
             solar_zenith_input,
