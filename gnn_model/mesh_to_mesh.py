@@ -35,9 +35,15 @@ class MeshSelfConnectivity:
         Raises:
             AssertionError: If source and target names don't match.
         """
-        assert source_name in self.VALID_NODES, f"Invalid source_name: {source_name}. Must be one of: {self.VALID_NODES}"
-        assert target_name in self.VALID_NODES, f"Invalid target_name: {target_name}. Must be one of: {self.VALID_NODES}"
-        assert source_name == target_name, f"{self.__class__.__name__} requires source and target names to be the same."
+        assert (
+            source_name in self.VALID_NODES
+        ), f"Invalid source_name: {source_name}. Must be one of: {self.VALID_NODES}"
+        assert (
+            target_name in self.VALID_NODES
+        ), f"Invalid target_name: {target_name}. Must be one of: {self.VALID_NODES}"
+        assert (
+            source_name == target_name
+        ), f"{self.__class__.__name__} requires source and target names to be the same."
 
         self.source_name = source_name
         self.target_name = target_name
@@ -76,7 +82,8 @@ class MeshSelfConnectivity:
         edge_index = torch.tensor(np.vstack([adj_matrix.row, adj_matrix.col]), dtype=torch.long)
 
         if print_once:
-            print(f"Added {edge_index.shape[1]} intra-mesh edges to graph: {self.source_name} -> {self.target_name}")
+            print(f"Added {edge_index.shape[1]} intra-mesh edges to graph: {self.source_name} -> {self.target_name}"
+        )
 
         # Assign edges to graph
         graph[self.source_name, self.relation, self.target_name].edge_index = edge_index

@@ -8,28 +8,35 @@ from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 
-
 @timing_resource_decorator
 def main():
+    import sys
+    import faulthandler
+    faulthandler.enable()
+    sys.stderr.write("===> ENTERED MAIN\n")
     # Data parameters
+    # CONUS data path:
     # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
-    data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
+    # One week Global data path:
+    # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
+    # Three months Global data path:
+    data_path="/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms.zarr"
 
     start_date = "2024-04-01"
-    end_date = "2024-04-04"
+    end_date = "2024-06-30"
     satellite_id = 224
 
     mesh_resolution = 6
 
     # Define model parameters
     input_dim = 25
-    hidden_dim = 48
+    hidden_dim = 32
     output_dim = 22
     num_layers = 8
     lr = 1e-4
 
     # Training parameters
-    max_epochs = 10
+    max_epochs = 5
     batch_size = 1
 
     # Instantiate model & data module
@@ -51,10 +58,12 @@ def main():
         num_neighbors=3,
     )
 
-    # data_module.setup(stage="fit")  # Manually call setup to prepare data
 
     # Safety check: skip validation-related callbacks if no val_data exists
-    has_val_data = data_module.val_data is not None and len(data_module.val_data) > 0
+    data_module.setup("fit")
+    val_loader = data_module.val_dataloader()
+    has_val_data = val_loader is not None and len(val_loader.dataset) > 0
+    print(f"Validation loader has {len(val_loader.dataset)} bins")
 
     logger = CSVLogger(save_dir="logs", name="ocelot_gnn")
     # Setup callbacks
@@ -76,13 +85,12 @@ def main():
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
         "devices": 4,
-        "num_nodes": 2,
-        "strategy": "ddp",  # Use DistributedDataParallel
+        "num_nodes": 4,
+        "strategy": "ddp_find_unused_parameters_true",  # Use DistributedDataParallel
         "precision": "16-mixed",  # Mixed precision for memory efficiency
         "log_every_n_steps": 1,
         "callbacks": callbacks,
         "logger": logger,
-        "accumulate_grad_batches": 4,
         "num_sanity_val_steps": 0,  # Skip sanity check
         "gradient_clip_val": 0.5,
         "enable_progress_bar": False,

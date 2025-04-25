@@ -53,7 +53,10 @@ class GNNLightning(pl.LightningModule):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-        self.processor_layers = nn.ModuleList([GATConv(hidden_dim, hidden_dim) for _ in range(num_layers)])
+        # Processor: Message passing layers (Hidden ↔ Hidden)
+        self.processor_layers = nn.ModuleList(
+            [GATConv(hidden_dim, hidden_dim) for _ in range(num_layers)]
+        )
 
         # Decoder: Maps hidden nodes back to target nodes
         self.decoder_mlp = nn.Sequential(
@@ -64,11 +67,12 @@ class GNNLightning(pl.LightningModule):
             nn.Linear(hidden_dim, output_dim),
         )
 
+        # Define loss function
         self.loss_fn = nn.MSELoss()
 
     def on_train_epoch_start(self):
         if self.trainer.is_global_zero:
-            print("Starting new training epoch...")
+            print(f"=== Starting Epoch {self.current_epoch} ===")
         train_loader = self.trainer.train_dataloader
         if hasattr(train_loader, 'sampler') and isinstance(train_loader.sampler, DistributedSampler):
             train_loader.sampler.set_epoch(self.current_epoch)
@@ -78,9 +82,19 @@ class GNNLightning(pl.LightningModule):
         return tensor * (max_vals - min_vals) + min_vals
 
     def forward(self, data):
-        x, edge_index_encoder, edge_attr_encoder, edge_index_processor, edge_index_decoder, y = (
-            data.x, data.edge_index_encoder, data.edge_attr_encoder,
-            data.edge_index_processor, data.edge_index_decoder, data.y)
+        if torch.cuda.is_available():
+            print(f"[Forward] Batch x shape: {data.x.shape}")
+            print(f"[Forward] CUDA Mem: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
+
+        x = data.x
+        edge_index_encoder = data.edge_index_encoder
+        edge_attr_encoder = data.edge_attr_encoder
+        edge_index_processor = data.edge_index_processor
+        edge_index_decoder = data.edge_index_decoder
+        edge_attr_decoder = data.edge_attr_decoder
+        y = data.y
+        y_min = data.target_scaler_min
+        y_max = data.target_scaler_max
 
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
@@ -88,21 +102,19 @@ class GNNLightning(pl.LightningModule):
         obs_feats = x[src_encoder]
         edge_feats = data.edge_attr_encoder.unsqueeze(1)
 
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-
         encoder_input = torch.cat([obs_feats, edge_feats], dim=1)
-        encoder_input.requires_grad_(True)
+        # Pass through MLP
         encoded = self.encoder_mlp(encoder_input)
-
         x_hidden = scatter_mean(encoded, tgt_encoder, dim=0, dim_size=x.shape[0])
         x_hidden = F.relu(x_hidden)
+        if self.trainer.is_global_zero:
+            print("[After Encoding]", torch.cuda.memory_allocated() / 1e9, "GB")
 
         # === Processor: mesh ↔ mesh ===
         x_hidden.requires_grad_(True)
 
         for i in range(0, len(self.processor_layers), 2):
+            assert len(self.processor_layers) % 2 == 0, "Processor layers must be even for paired execution"
             layer1 = self.processor_layers[i]
             if self.training:
                 x_hidden = checkpoint(layer1, x_hidden, edge_index_processor)
@@ -119,48 +131,64 @@ class GNNLightning(pl.LightningModule):
                 x_hidden = F.relu(x_hidden)
 
         x_hidden = x_hidden.detach().requires_grad_()
+        if self.trainer.is_global_zero:
+            print("[After Processor]", torch.cuda.memory_allocated() / 1e9, "GB")
 
         # === Decoder: Hidden → Target ===
-        src_decoder = edge_index_decoder[0]
-        tgt_decoder = edge_index_decoder[1]
-        global_ids = data.global_mesh_node_ids
+        src_decoder = edge_index_decoder[0]  # mesh node indices
+        tgt_decoder = edge_index_decoder[1]  # target node indices
 
-        # Ensure all decoder targets are present in this batch's mesh node IDs
-        id_map = {g.item(): i for i, g in enumerate(global_ids)}
-        missing_ids = [g.item() for g in tgt_decoder if g.item() not in id_map]
-        assert not missing_ids, f"Some decoder target IDs not in global_mesh_node_ids: {missing_ids[:5]}"
+        src_decoder_local = src_decoder
+        tgt_decoder_local = tgt_decoder
 
-        # Map global target IDs to local mesh node indices
-        tgt_decoder_local = torch.tensor([id_map[g.item()] for g in tgt_decoder], device=tgt_decoder.device)
+        # Decoder input and aggregation
+        mesh_feats = x_hidden[src_decoder_local]  # Features of mesh nodes sending messages
+        dist_feats = data.edge_attr_decoder.unsqueeze(1)  # Haversine distance
 
-        mesh_feats = x_hidden[src_decoder]
-        dist_feats = data.edge_attr_decoder.unsqueeze(1)
         decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
-        decoder_input.requires_grad_(True)
         decoded = self.decoder_mlp(decoder_input)
+        if self.trainer.is_global_zero:
+            print("[After Decoder]", torch.cuda.memory_allocated() / 1e9, "GB")
 
-        weights = 1.0 / (dist_feats + 1e-8)
+        # === Weighted aggregation using inverse distance ===
+        # Aggregate per target using scatter mean
+        weights = 1.0 / (dist_feats + 1e-8)  # Avoid division by zero
         weighted = decoded * weights
+
+        # Sanity check
         assert tgt_decoder.max().item() < y.shape[0], "Decoder index out of bounds"
 
+        # Aggregate using scatter
         norm_weights = scatter_add(weights, tgt_decoder_local, dim=0, dim_size=y.shape[0])
         x_out = scatter_add(weighted, tgt_decoder_local, dim=0, dim_size=y.shape[0])
         x_out = x_out / (norm_weights + 1e-8)
+
+        if self.trainer.is_global_zero:
+            print(torch.cuda.memory_summary())
 
         return x_out
 
     def training_step(self, batch, batch_idx):
         if torch.cuda.is_available():
+            torch.autograd.set_detect_anomaly(True)
             gpu_id = torch.cuda.current_device()
             allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
         y_pred = self(batch)
-        lat_lon_meta = batch.y[: y_pred.shape[0], :2].cpu().numpy()
-        y_pred.detach().cpu().numpy()
         y_true = batch.y
-        loss = self.loss_fn(y_pred, y_true)
 
+        assert y_pred.shape == y_true.shape, f"Mismatch: {y_pred.shape} vs {y_true.shape}"
+        rank = self.trainer.global_rank if hasattr(self.trainer, "global_rank") else 0
+        print(f"[Rank {rank}] y shape: {y_true.shape}, pred shape: {y_pred.shape}")
+
+        if torch.isnan(y_pred).any() or torch.isnan(batch.y).any():
+            print(f"NaNs detected at batch {batch_idx} on rank {self.trainer.global_rank}")
+            print(f"y_pred min: {y_pred.min()}, max: {y_pred.max()}")
+            print(f"y_true min: {batch.y.min()}, max: {batch.y.max()}")
+
+
+        loss = self.loss_fn(y_pred, y_true)
         self.log("train_loss", loss)
 
         if self.trainer.is_global_zero and batch_idx % 2 == 0:
@@ -170,39 +198,45 @@ class GNNLightning(pl.LightningModule):
                 f"Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB"
             )
 
+        # Clean up and return
+        del y_pred, y_true, batch
         return {"loss": loss}
+
 
     def validation_step(self, batch, batch_idx):
         y_pred = self(batch)
         y_true = batch.y
         loss = self.loss_fn(y_pred, y_true)
-        self.log("val_loss", loss.detach(), prog_bar=True, sync_dist=True, on_epoch=True)
+        self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
 
+        # Unnormalize
         min_vals = batch.target_scaler_min.to(self.device)
         max_vals = batch.target_scaler_max.to(self.device)
         y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
         y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
 
-        rmse = torch.sqrt(F.mse_loss(y_pred, y_true, reduction="none")).mean(dim=0)
+        # Metrics
+        rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
         mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
         bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
-        for i, rmse_val in enumerate(rmse):
-            self.log(f"val_rmse_ch_{i+1}", rmse_val.item(), sync_dist=True, on_epoch=True)
-            self.log(f"val_mae_ch_{i+1}", mae[i], on_epoch=True, sync_dist=True)
-            self.log(f"val_bias_ch_{i+1}", bias[i], on_epoch=True, sync_dist=True)
+        for i in range(rmse.shape[0]):
+            self.log(f"val_rmse_ch_{i+1}", rmse[i].item(), sync_dist=True, on_epoch=True)
+            self.log(f"val_mae_ch_{i+1}", mae[i].item(), on_epoch=True, sync_dist=True)
+            self.log(f"val_bias_ch_{i+1}", bias[i].item(), on_epoch=True, sync_dist=True)
 
+        # Save CSV for visual inspection
         if batch_idx == 0 and self.trainer.is_global_zero:
             import pandas as pd
-            df = pd.DataFrame(
-                {
-                    "lat": batch.y[:, 0].cpu().numpy(),
-                    "lon": batch.y[:, 1].cpu().numpy(),
-                    **{f"true_bt_{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(22)},
-                    **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
-                }
-            )
-            df.to_csv("bt_predictions.csv", index=False)
+            df = pd.DataFrame({
+                "lat_deg": batch.target_lat_deg.cpu().numpy(),
+                "lon_deg": batch.target_lon_deg.cpu().numpy(),
+                **{f"true_bt_{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(22)},
+                **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
+            })
+            df.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
 
+        # Cleanup
+        del y_pred, y_true, y_pred_unnorm, y_true_unnorm, batch
         return loss
 
     def configure_optimizers(self):

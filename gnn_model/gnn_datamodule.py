@@ -98,6 +98,8 @@ class BinDataset(Dataset):
             y=data_dict["y"],
             target_scaler_min=data_dict["target_scaler_min"],
             target_scaler_max=data_dict["target_scaler_max"],
+            target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
+            target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
         )
 
 class GNNDataModule(pl.LightningDataModule):
@@ -214,7 +216,7 @@ class GNNDataModule(pl.LightningDataModule):
         - Global indexing is applied to combine observation and mesh nodes.
         - Node features are padded to maintain consistent dimensionality.
 
-        Returns:f
+        Returns:
             dict: A dictionary of all graph components including edges, node features,
                 targets, and min/max scalers for unnormalization.
         """
@@ -291,6 +293,8 @@ class GNNDataModule(pl.LightningDataModule):
             "y": target_features,
             "target_scaler_min": torch.tensor(bin_data["target_scaler_min"], dtype=torch.float32),
             "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
+            "target_lat_deg": bin_data["target_lat_deg"],
+            "target_lon_deg": bin_data["target_lon_deg"],
         }
 
     def _create_data_object(self, data_dict):
@@ -309,6 +313,8 @@ class GNNDataModule(pl.LightningDataModule):
             y=data_dict["y"],
             target_scaler_min=data_dict["target_scaler_min"],
             target_scaler_max=data_dict["target_scaler_max"],
+            target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
+            target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
         )
 
     def train_dataloader(self):

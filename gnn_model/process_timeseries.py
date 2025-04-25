@@ -160,4 +160,10 @@ def extract_features(z, data_summary):
         # Store min/max values for later unnormalization
         data_summary[bin_name]["target_scaler_min"] = minmax_scaler_target.data_min_
         data_summary[bin_name]["target_scaler_max"] = minmax_scaler_target.data_max_
+        
+        # Save lat/lon degrees separately for CSV and visualization
+        data_summary[bin_name]["input_lat_deg"] = z["latitude"][input_idx]
+        data_summary[bin_name]["input_lon_deg"] = z["longitude"][input_idx]
+        data_summary[bin_name]["target_lat_deg"] = z["latitude"][target_idx]
+        data_summary[bin_name]["target_lon_deg"] = z["longitude"][target_idx]
     return data_summary
