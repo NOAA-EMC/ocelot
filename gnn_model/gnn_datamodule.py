@@ -16,25 +16,89 @@ from mesh_to_target import MeshTargetKNNConnector
 from obs_to_mesh import ObsMeshCutoffConnector
 from process_timeseries import extract_features, organize_bins_times
 from torch.utils.data.distributed import DistributedSampler
-
-
-def get_num_workers():
-    return min(int(os.environ.get("SLURM_CPUS_PER_TASK", 4)), 4)
+from torch.utils.data import Dataset
 
 
 @rank_zero_only
 def log_system_info():
+    """
+    Logs CPU and SLURM environment info on rank 0.
+
+    Helps verify the computational environment across distributed jobs.
+    """
     import multiprocessing
     print(f"[Rank 0] SLURM_CPUS_PER_TASK: {os.environ.get('SLURM_CPUS_PER_TASK')}")
     print(f"[Rank 0] SLURM_NTASKS: {os.environ.get('SLURM_NTASKS')}")
     print(f"[Rank 0] Detected CPU count: {multiprocessing.cpu_count()}")
 
+class BinDataset(Dataset):
+    """
+    A PyTorch Dataset that lazily loads and processes individual bins from a Zarr dataset.
 
-@rank_zero_only
-def print_dataset_lengths(train_data, val_data):
-    print("Training dataset length:", len(train_data))
-    print("Validation dataset length:", len(val_data))
+    For each bin:
+    - Extracts necessary features on demand.
+    - Constructs graph structure using obs-mesh-target connectors.
+    - Converts to PyG Data object for GNN processing.
 
+    Args:
+        bin_names (list): List of bin identifiers (e.g., ["bin1", "bin2"]).
+        data_summary (dict): Metadata containing input/target time indices per bin.
+        zarr_store (zarr.Group): The loaded Zarr dataset object.
+        create_graph_fn (function): Function that creates the graph structure per bin.
+    """
+
+    def __init__(self, bin_names, data_summary, zarr_store, create_graph_fn):
+        self.bin_names = bin_names
+        self.data_summary = data_summary
+        self.z = zarr_store
+        self.create_graph_fn = create_graph_fn
+
+    def __len__(self):
+        return len(self.bin_names)
+
+    def __getitem__(self, idx):
+        bin_name = self.bin_names[idx]
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        print(f"[Rank {dist.get_rank()}] Fetching {bin_name}...")
+        print(f"[Rank {rank}] Fetching bin {bin_name}")
+
+        try:
+            bin = self.data_summary[bin_name]
+            print(f"[{bin_name}] Input indices: {len(bin['input_time_index'])}, Target indices: {len(bin['target_time_index'])}")
+            bin = extract_features(self.z, {bin_name: bin})[bin_name]
+            print(f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}")
+            data_dict = self.create_graph_fn(bin)
+        except Exception as e:
+            print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
+            raise
+
+        return self._to_data(data_dict)
+
+        #  Memory + tensor tracking block
+        if torch.cuda.is_available():
+            print(f"[BinDataset] Processed {bin_name}")
+            print(f"[BinDataset] CUDA Memory allocated: {torch.cuda.memory_allocated() / 1e6:.2f} MB")
+            print(f"Fetching bin {bin_name} with shape {bin['input_time_index'].shape}")
+
+        #   This ensures any unused tensors are cleared after every bin 
+        import gc
+        print(f"[BinDataset] Live tensors after {bin_name}:",
+            len([obj for obj in gc.get_objects() if torch.is_tensor(obj)]))
+
+        return self._to_data(data_dict)
+
+    def _to_data(self, data_dict):
+        return Data(
+            x=data_dict["x"],
+            edge_index_encoder=data_dict["edge_index_encoder"],
+            edge_attr_encoder=data_dict["edge_attr_encoder"],
+            edge_index_processor=data_dict["edge_index_processor"],
+            edge_index_decoder=data_dict["edge_index_decoder"],
+            edge_attr_decoder=data_dict["edge_attr_decoder"],
+            y=data_dict["y"],
+            target_scaler_min=data_dict["target_scaler_min"],
+            target_scaler_max=data_dict["target_scaler_max"],
+        )
 
 class GNNDataModule(pl.LightningDataModule):
     def __init__(
@@ -66,23 +130,36 @@ class GNNDataModule(pl.LightningDataModule):
 
         self.data_summary = None
         self.data_dict = None
-        self.processed_data = None
-        self.train_data = None
-        self.val_data = None
-        self.test_data = None
-        self.predict_data = None
         self.z = None
 
         # Flags for setup tracking
         self.data_processed = False
 
+    @staticmethod
+    def get_num_workers():
+        return min(int(os.environ.get("SLURM_CPUS_PER_TASK", 4)), 4)
+
     def prepare_data(self):
+        """
+        Sanity check: ensures that the Zarr dataset path exists and is readable.
+
+        Called once by PyTorch Lightning before training begins.
+        """
         try:
             zarr.open(self.data_path, mode="r")
         except Exception as e:
             raise RuntimeError(f"Failed to open Zarr dataset at {self.data_path}: {e}")
 
     def setup(self, stage=None):
+        """
+        Sets up the dataset by organizing time bins and deferring feature extraction.
+
+        - Loads the Zarr file using LRU cache to reduce memory spikes.
+        - Calls `organize_bins_times` to generate bin metadata.
+        - Clears any pre-computed features (ensuring lazy evaluation).
+        - Splits bins into train, val, test, or predict depending on stage.
+        - Synchronizes across ranks if running under DDP.
+        """
         if self.z is None:
             self.z = zarr.open(LRUStoreCache(zarr.DirectoryStore(self.data_path), max_size=2_000_000_000), mode="r")
             rank_zero_info("Opened Zarr file.")
@@ -94,56 +171,59 @@ class GNNDataModule(pl.LightningDataModule):
             dist.barrier()
 
         if not self.data_processed:
-            self.data_summary = organize_bins_times(self.z, self.start_date, self.end_date, self.satellite_id)
+            self.data_summary = organize_bins_times(
+                self.z, self.start_date, self.end_date, self.satellite_id
+            )
             for bin_name in self.data_summary:
                 for key in ["input_features_final", "target_features_final"]:
                     if key in self.data_summary[bin_name]:
                         del self.data_summary[bin_name][key]
 
-            self.data_summary = extract_features(self.z, self.data_summary)
-
             print(f"Found {len(self.data_summary)} time bins in the dataset")
 
-            self.processed_data = []
-            for bin_name in self.data_summary.keys():
-                print(f"Processing {bin_name}...")
-                data_dict = self._create_graph_structure(self.data_summary[bin_name])
-                data_obj = self._create_data_object(data_dict)
-                self.processed_data.extend(self._split_data_object(data_obj, chunks=16))
+            self.train_bin_names = list(self.data_summary.keys())
+            train_size = 1 if len(self.train_bin_names) == 1 else int(0.8 * len(self.train_bin_names))
+            self.train_bin_names = self.train_bin_names[:train_size]
+            self.val_bin_names = self.train_bin_names[train_size:]
 
-            self.data_processed = True
+            if stage == "fit" or stage is None:
+                print(f"Train bins: {len(self.train_bin_names)}, Val bins: {len(self.val_bin_names)}")
+                self._log_dataset_split()
 
-        num_bins = len(self.processed_data)
-        train_size = 1 if num_bins == 1 else int(0.8 * num_bins)
+            elif stage == "validate":
+                pass
 
-        if stage == "fit" or stage is None:
-            self.train_data = self.processed_data[:train_size]
-            self.val_data = self.processed_data[train_size:]
-            self._log_dataset_split()
-            if len(self.val_data) > 0:
-                assert isinstance(self.val_data[0], Data), "Validation data is not a torch_geometric Data object"
-            else:
-                rank_zero_info("Validation set is empty. Sanity check will be skipped.")
+            elif stage == "test":
+                self.test_bin_names = self.train_bin_names + self.val_bin_names
 
-        elif stage == "validate":
-            self.val_data = self.processed_data[train_size:]
-        elif stage == "test":
-            self.test_data = self.processed_data
-        elif stage == "predict":
-            self.predict_data = self.processed_data
+            elif stage == "predict":
+                self.predict_bin_names = self.train_bin_names + self.val_bin_names
 
     @rank_zero_only
     def _log_dataset_split(self):
-        print(f"Split data into {len(self.train_data)} training bins and {len(self.val_data)} validation bins")
-        print("Training dataset length:", len(self.train_data))
-        print("Validation dataset length:", len(self.val_data))
+        print(f"Split data into {len(self.train_bin_names)} training bins and {len(self.val_bin_names)} validation bins")
+
 
     def _create_graph_structure(self, bin_data):
+        """
+        Builds the PyG-compatible graph structure for a single time bin.
+
+        - Encoder edges connect observation points to nearby mesh nodes.
+        - Processor edges connect mesh nodes using pre-built connectivity.
+        - Decoder edges connect mesh nodes to target prediction locations.
+        - Global indexing is applied to combine observation and mesh nodes.
+        - Node features are padded to maintain consistent dimensionality.
+
+        Returns:f
+            dict: A dictionary of all graph components including edges, node features,
+                targets, and min/max scalers for unnormalization.
+        """
         input_features = bin_data["input_features_final"]
         target_features = bin_data["target_features_final"]
         obs_latlon_rad = input_features[:, -2:]
         target_latlon_rad = target_features[:, -2:]
 
+        # Print mesh statistics
         if not self._printed_mesh_stats:
             print("\n Mesh Statistics:")
             print(f"  - Mesh Resolution: {self.mesh_stats['resolution']}")
@@ -156,34 +236,45 @@ class GNNDataModule(pl.LightningDataModule):
             print("")
             self._printed_mesh_stats = True
 
+        # === ENCODER EDGES ===
         cutoff_encoder = ObsMeshCutoffConnector(cutoff_factor=self.cutoff_factor)
-        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(obs_latlon_rad, self.mesh_latlon_rad, return_edge_attr=True)
+        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(
+            obs_latlon_rad, self.mesh_latlon_rad, return_edge_attr=True
+        )
 
         if edge_index_encoder.numel() == 0:
             raise ValueError("No encoder edges were created. Try increasing cutoff_factor.")
-
+        # === PROCESSOR EDGES ===
         multi_scale_processor = MeshSelfConnectivity("hidden", "hidden")
         print_processor_edges = not self._printed_processor_edges
         hetero_data, mesh_graph = multi_scale_processor.update_graph(self.hetero_data, self.mesh_graph, print_once=print_processor_edges)
         self._printed_processor_edges = True
 
         mesh_graph = mesh_graph.to_undirected()
+        # Get edge index for processor edges
         edge_index_processor = hetero_data["hidden", "to", "hidden"].edge_index
 
+        # === DECODER EDGES ===
         knn_decoder = MeshTargetKNNConnector(num_nearest_neighbours=self.num_neighbors)
-        edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, self.mesh_latlon_rad)
-        print(f"[{bin_data['input_time']}] Decoder edge count: {edge_index_knn.shape[1]}")
+        edge_index_knn, edge_attr_knn = knn_decoder.add_edges(
+            mesh_graph, target_latlon_rad, self.mesh_latlon_rad
+        )
 
+        # === GLOBAL INDEXING ===
         num_obs_nodes = input_features.shape[0]
         num_mesh_nodes = hetero_data["hidden"].x.shape[0]
         mesh_offset = num_obs_nodes
 
-        mesh_feats = hetero_data["hidden"].x
+        # Move to CPU to avoid accumulating static mesh data on GPU across bins
+        mesh_feats = hetero_data["hidden"].x.cpu()
         input_dim = input_features.shape[1]
         pad_feats = torch.zeros((num_mesh_nodes, input_dim - mesh_feats.shape[1]))
         mesh_feats_padded = torch.cat([mesh_feats, pad_feats], dim=1)
+
+        # Stack input and mesh features
         stacked_x = torch.cat([input_features, mesh_feats_padded], dim=0)
 
+        # Update edge indices with global offsets
         edge_index_encoder_global = edge_index_encoder.clone()
         edge_index_encoder_global[1] += mesh_offset
         edge_index_processor_global = edge_index_processor + mesh_offset
@@ -203,6 +294,11 @@ class GNNDataModule(pl.LightningDataModule):
         }
 
     def _create_data_object(self, data_dict):
+        """
+        Converts a graph dictionary into a PyG `Data` object with attached scalers.
+
+        Adds additional fields needed for later unnormalization (e.g., for evaluation).
+        """
         return Data(
             x=data_dict["x"],
             edge_index_encoder=data_dict["edge_index_encoder"],
@@ -215,87 +311,73 @@ class GNNDataModule(pl.LightningDataModule):
             target_scaler_max=data_dict["target_scaler_max"],
         )
 
-    def _split_data_object(self, data_obj, chunks=8):
-        from torch_geometric.data import Data
-        mesh_node_ids = torch.arange(
-            data_obj.x.shape[0] - data_obj.y.shape[0],
-            data_obj.x.shape[0],
-            dtype=torch.long
-        )
-        x = data_obj.x
-        y = data_obj.y
-        total_obs = y.shape[0]
-        chunk_size = total_obs // chunks
-
-        data_objs = []
-        for i in range(chunks):
-            start = i * chunk_size
-            end = total_obs if i == chunks - 1 else (i + 1) * chunk_size
-
-            sub_data = Data(
-                x=x,
-                edge_index_encoder=data_obj.edge_index_encoder,
-                edge_attr_encoder=data_obj.edge_attr_encoder,
-                edge_index_processor=data_obj.edge_index_processor,
-                edge_index_decoder=data_obj.edge_index_decoder[:, start:end],
-                edge_attr_decoder=data_obj.edge_attr_decoder[start:end],
-                y=y[start:end],
-                target_scaler_min=data_obj.target_scaler_min,
-                target_scaler_max=data_obj.target_scaler_max,
-            )
-            sub_data.global_mesh_node_ids = mesh_node_ids
-            data_objs.append(sub_data)
-
-            # Log GPU memory usage after creating each chunk
-            if torch.cuda.is_available():
-                mem = torch.cuda.memory_allocated() / 1024 ** 3
-                print(f"[Rank {dist.get_rank()}] Data chunk {i+1}/{chunks} | Memory allocated: {mem:.2f} GB")
-
-        return data_objs
-
     def train_dataloader(self):
-        sampler = DistributedSampler(self.train_data, shuffle=True)
+        """
+        Returns the training DataLoader with a DistributedSampler.
+
+        - One bin per batch (batch_size=1).
+        - Enables parallel processing across GPUs using DDP.
+        - Uses persistent workers for better performance.
+        """
+        dataset = BinDataset(self.train_bin_names, self.data_summary, self.z, self._create_graph_structure)
+        sampler = DistributedSampler(dataset, shuffle=True)
         return DataLoader(
-            self.train_data,
+            dataset,
             batch_size=1,
             sampler=sampler,
-            num_workers=get_num_workers(),
+            num_workers=self.get_num_workers(),
             pin_memory=True,
             persistent_workers=True,
         )
 
     def val_dataloader(self):
-        from torch.utils.data import Dataset
+        """
+        Returns the validation DataLoader.
 
-        if self.val_data is None or len(self.val_data) == 0:
+        - If validation set is empty on a given rank (e.g., non-zero rank under DDP),
+        an empty dataset is returned to prevent sync errors.
+        """
+        if self.val_bin_names is None or len(self.val_bin_names) == 0:
             if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
                 class EmptyDataset(Dataset):
                     def __len__(self): return 0
                     def __getitem__(self, idx): return {}
                 return DataLoader(EmptyDataset(), batch_size=4)
-
+        dataset = BinDataset(self.val_bin_names, self.data_summary, self.z, self._create_graph_structure)
         return DataLoader(
-            self.val_data,
+            dataset,
             batch_size=1,
-            num_workers=get_num_workers(),
+            num_workers=self.get_num_workers(),
             pin_memory=True,
             persistent_workers=True,
         )
 
     def test_dataloader(self):
+        """
+        Returns the test DataLoader.
+
+        Loads and evaluates all test bins, one per batch.
+        """
+        dataset = BinDataset(self.test_bin_names, self.data_summary, self.z, self._create_graph_structure)
         return DataLoader(
-            self.test_data,
+            dataset,
             batch_size=1,
-            num_workers=get_num_workers(),
+            num_workers=self.get_num_workers(),
             pin_memory=True,
             persistent_workers=True,
         )
 
     def predict_dataloader(self):
+        """
+        Returns the prediction DataLoader.
+
+        Reuses the train+val bins for inference unless otherwise specified.
+        """
+        dataset = BinDataset(self.predict_bin_names, self.data_summary, self.z, self._create_graph_structure)
         return DataLoader(
-            self.predict_data,
+            dataset,
             batch_size=1,
-            num_workers=get_num_workers(),
+            num_workers=self.get_num_workers(),
             pin_memory=True,
             persistent_workers=True,
         )
