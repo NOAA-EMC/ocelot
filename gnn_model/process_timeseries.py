@@ -2,13 +2,24 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import MinMaxScaler
+
 from timing_utils import timing_resource_decorator
 
 
 @timing_resource_decorator
 def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     """
-    Organizes satellite observation times into 12-hour bins and creates input-target pairs.
+    Organizes satellite observation times into time bins and creates input-target pairs
+    for time-series prediction.
+
+    - Reads observation times and filters data for a specific period of time
+    - Groups observations into time bins.
+    - Creates a mapping of input and target time indices for each bin, forming sequential
+      input-target pairs for model training.
+
+    Returns:
+    dict: A dictionary where each key represents a time bin (e.g., 'bin1', 'bin2') and
+            contains input-target time indices and corresponding timestamps.
     """
     # Read time and convert to pandas datetime
     time = pd.to_datetime(z["time"][:], unit="s")
@@ -25,6 +36,11 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
         "index": selected_times
     })
     df["time_bin"] = df["time"].dt.floor("12h")
+    print("Filtered observation times:")
+    print("  - Start:", df["time"].min())
+    print("  - End:", df["time"].max())
+    print("  - Unique time bins:", len(df["time_bin"].unique()))
+    print(df["time_bin"].value_counts().sort_index())  # show how full each bin is
 
     # Sort by time
     df = df.sort_values(by="zar_time")
@@ -42,15 +58,36 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
             "input_time_index": input_indices,
             "target_time_index": target_indices,
         }
-
+    print(f"Created {len(data_summary)} input-target bin pairs.")
     return data_summary
 
 
 @timing_resource_decorator
 def extract_features(z, data_summary):
     """
-    Efficiently loads and normalizes features using only the necessary indices per bin.
+    Loads and normalizes input and target features for each time bin individually.
+
+    This function processes one bin at a time to minimize memory usage. For each bin, 
+    it extracts only the necessary indices from the Zarr dataset, normalizes the features 
+    using MinMax scaling, and attaches both the normalized features and metadata 
+    (e.g., lat/lon and angles) to the corresponding entry in `data_summary`.
+
+    This per-bin loading strategy ensures compatibility with large-scale, distributed 
+    training by avoiding full-array preloading into memory.
+
+    Parameters:
+        z (zarr.Group): The Zarr dataset containing satellite observation data.
+        data_summary (dict): Dictionary containing input and target indices for each bin.
+
+    Returns:
+        dict: Updated data_summary with:
+            - 'input_features_final': Normalized input features.
+            - 'target_features_final': Normalized target features.
+            - 'input_metadata', 'target_metadata': Metadata arrays.
+            - 'target_scaler_min', 'target_scaler_max': Min/max for unnormalization.
+
     """
+    # Initialize scalers
     minmax_scaler_input = MinMaxScaler()
     minmax_scaler_target = MinMaxScaler()
 
@@ -106,11 +143,21 @@ def extract_features(z, data_summary):
         print(f"[{bin_name}] input_features_final shape: {input_features_norm.shape}")
         print(f"[{bin_name}] target_features_final shape: {target_features_norm.shape}")
 
-        data_summary[bin_name]["input_features_final"] = torch.tensor(input_features_norm, dtype=torch.float32)
-        data_summary[bin_name]["target_features_final"] = torch.tensor(target_features_norm, dtype=torch.float32)
-        data_summary[bin_name]["input_metadata"] = torch.tensor(input_metadata, dtype=torch.float32)
-        data_summary[bin_name]["target_metadata"] = torch.tensor(target_metadata, dtype=torch.float32)
+        # Convert to tensors at the end
+        data_summary[bin_name]["input_features_final"] = torch.tensor(
+            input_features_norm, dtype=torch.float32
+        )
+        data_summary[bin_name]["target_features_final"] = torch.tensor(
+            target_features_norm, dtype=torch.float32
+        )
+        data_summary[bin_name]["input_metadata"] = torch.tensor(
+            input_metadata, dtype=torch.float32
+        )
+        data_summary[bin_name]["target_metadata"] = torch.tensor(
+            target_metadata, dtype=torch.float32
+        )
+    
+        # Store min/max values for later unnormalization
         data_summary[bin_name]["target_scaler_min"] = minmax_scaler_target.data_min_
         data_summary[bin_name]["target_scaler_max"] = minmax_scaler_target.data_max_
-
     return data_summary
