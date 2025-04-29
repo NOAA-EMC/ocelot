@@ -4,8 +4,7 @@
 #SBATCH -p fge
 #SBATCH -q gpuwf
 #SBATCH -J gnn_train
-#SBATCH -N 4
-#SBATCH -n 8
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH -t 03:30:00
