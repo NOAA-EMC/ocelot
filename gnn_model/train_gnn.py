@@ -77,7 +77,7 @@ def main():
             EarlyStopping(monitor="val_loss", patience=3, mode="min"),
             ModelCheckpoint(
                 dirpath="checkpoints",
-                filename="gnn-{epoch:02d}-{val_loss:.2f}",
+                filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
                 save_top_k=1,
                 monitor="val_loss",
                 mode="min",
