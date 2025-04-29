@@ -2,12 +2,11 @@ import lightning.pytorch as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from torch.optim import Adam
 from torch.utils.checkpoint import checkpoint
+from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter_add, scatter_mean
-from torch.utils.data.distributed import DistributedSampler
 
 
 class GNNLightning(pl.LightningModule):
@@ -55,9 +54,7 @@ class GNNLightning(pl.LightningModule):
         )
 
         # Processor: Message passing layers (Hidden ↔ Hidden)
-        self.processor_layers = nn.ModuleList(
-            [GATConv(hidden_dim, hidden_dim) for _ in range(num_layers)]
-        )
+        self.processor_layers = nn.ModuleList([GATConv(hidden_dim, hidden_dim) for _ in range(num_layers)])
 
         # Decoder: Maps hidden nodes back to target nodes
         self.decoder_mlp = nn.Sequential(
@@ -75,7 +72,7 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero:
             print(f"=== Starting Epoch {self.current_epoch} ===")
         train_loader = self.trainer.train_dataloader
-        if hasattr(train_loader, 'sampler') and isinstance(train_loader.sampler, DistributedSampler):
+        if hasattr(train_loader, "sampler") and isinstance(train_loader.sampler, DistributedSampler):
             train_loader.sampler.set_epoch(self.current_epoch)
 
     @staticmethod
@@ -89,13 +86,13 @@ class GNNLightning(pl.LightningModule):
 
         x = data.x
         edge_index_encoder = data.edge_index_encoder
-        edge_attr_encoder = data.edge_attr_encoder
+        data.edge_attr_encoder
         edge_index_processor = data.edge_index_processor
         edge_index_decoder = data.edge_index_decoder
-        edge_attr_decoder = data.edge_attr_decoder
+        data.edge_attr_decoder
         y = data.y
-        y_min = data.target_scaler_min
-        y_max = data.target_scaler_max
+        data.target_scaler_min
+        data.target_scaler_max
 
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
@@ -171,7 +168,6 @@ class GNNLightning(pl.LightningModule):
         dist_feats = dist_feats[mask]
         decoded = decoded[mask]
 
-
         # Aggregate using scatter
         norm_weights = scatter_add(weights, tgt_decoder_local, dim=0, dim_size=y.shape[0])
         x_out = scatter_add(weighted, tgt_decoder_local, dim=0, dim_size=y.shape[0])
@@ -224,7 +220,6 @@ class GNNLightning(pl.LightningModule):
         # === Step 7: Return loss for Lightning to perform backward + optimizer step
         return {"loss": loss}
 
-
     def validation_step(self, batch, batch_idx):
         y_pred = self(batch)
         y_true = batch.y
@@ -247,14 +242,17 @@ class GNNLightning(pl.LightningModule):
             self.log(f"val_bias_ch_{i+1}", bias[i].item(), on_epoch=True, sync_dist=True)
 
         # Save CSV for visual inspection
-        if self.trainer.is_global_zero and not hasattr(self, "_saved_csv") :
+        if self.trainer.is_global_zero and not hasattr(self, "_saved_csv"):
             import pandas as pd
-            df = pd.DataFrame({
-                "lat_deg": batch.target_lat_deg.cpu().numpy(),
-                "lon_deg": batch.target_lon_deg.cpu().numpy(),
-                **{f"true_bt_{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(22)},
-                **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
-            })
+
+            df = pd.DataFrame(
+                {
+                    "lat_deg": batch.target_lat_deg.cpu().numpy(),
+                    "lon_deg": batch.target_lon_deg.cpu().numpy(),
+                    **{f"true_bt_{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(22)},
+                    **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
+                }
+            )
             df.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
             self._saved_csv = True
 

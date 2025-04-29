@@ -5,18 +5,18 @@ import pandas as pd
 import torch
 import torch.distributed as dist
 import zarr
-from zarr.storage import LRUStoreCache
 from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_only
+from torch.utils.data import Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
+from zarr.storage import LRUStoreCache
 
 from mesh_creation import create_icosahedral_mesh
 from mesh_to_mesh import MeshSelfConnectivity
 from mesh_to_target import MeshTargetKNNConnector
 from obs_to_mesh import ObsMeshCutoffConnector
 from process_timeseries import extract_features, organize_bins_times
-from torch.utils.data.distributed import DistributedSampler
-from torch.utils.data import Dataset
 
 
 @rank_zero_only
@@ -27,9 +27,11 @@ def log_system_info():
     Helps verify the computational environment across distributed jobs.
     """
     import multiprocessing
+
     print(f"[Rank 0] SLURM_CPUS_PER_TASK: {os.environ.get('SLURM_CPUS_PER_TASK')}")
     print(f"[Rank 0] SLURM_NTASKS: {os.environ.get('SLURM_NTASKS')}")
     print(f"[Rank 0] Detected CPU count: {multiprocessing.cpu_count()}")
+
 
 class BinDataset(Dataset):
     """
@@ -65,7 +67,9 @@ class BinDataset(Dataset):
             bin = self.data_summary[bin_name]
             print(f"[{bin_name}] Input indices: {len(bin['input_time_index'])}, Target indices: {len(bin['target_time_index'])}")
             data_dict = self.create_graph_fn(bin)
-            print(f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}")
+            print(
+                f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
+            )
         except Exception as e:
             print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
             raise
@@ -86,6 +90,7 @@ class BinDataset(Dataset):
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
         )
+
 
 class GNNDataModule(pl.LightningDataModule):
     def __init__(
@@ -146,9 +151,7 @@ class GNNDataModule(pl.LightningDataModule):
             dist.barrier()
 
         if not self.data_processed:
-            self.data_summary = organize_bins_times(
-                self.z, self.start_date, self.end_date, self.satellite_id
-            )
+            self.data_summary = organize_bins_times(self.z, self.start_date, self.end_date, self.satellite_id)
             self.data_summary = extract_features(self.z, self.data_summary)
 
             all_bin_names = list(self.data_summary.keys())
@@ -172,8 +175,6 @@ class GNNDataModule(pl.LightningDataModule):
     @rank_zero_only
     def _log_dataset_split(self):
         print(f"Split data into {len(self.train_bin_names)} training bins and {len(self.val_bin_names)} validation bins")
-
-
 
     def _create_graph_structure(self, bin_data):
         """
@@ -209,9 +210,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # === ENCODER EDGES ===
         cutoff_encoder = ObsMeshCutoffConnector(cutoff_factor=self.cutoff_factor)
-        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(
-            obs_latlon_rad, self.mesh_latlon_rad, return_edge_attr=True
-        )
+        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(obs_latlon_rad, self.mesh_latlon_rad, return_edge_attr=True)
 
         if edge_index_encoder.numel() == 0:
             raise ValueError("No encoder edges were created. Try increasing cutoff_factor.")
@@ -228,9 +227,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # === DECODER EDGES ===
         knn_decoder = MeshTargetKNNConnector(num_nearest_neighbours=self.num_neighbors)
-        edge_index_knn, edge_attr_knn = knn_decoder.add_edges(
-            mesh_graph, target_latlon_rad, self.mesh_latlon_rad
-        )
+        edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, self.mesh_latlon_rad)
 
         # === GLOBAL INDEXING ===
         num_obs_nodes = input_features.shape[0]
@@ -315,9 +312,14 @@ class GNNDataModule(pl.LightningDataModule):
         """
         if self.val_bin_names is None or len(self.val_bin_names) == 0:
             if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+
                 class EmptyDataset(Dataset):
-                    def __len__(self): return 0
-                    def __getitem__(self, idx): return {}
+                    def __len__(self):
+                        return 0
+
+                    def __getitem__(self, idx):
+                        return {}
+
                 return DataLoader(EmptyDataset(), batch_size=4)
         dataset = BinDataset(self.val_bin_names, self.data_summary, self.z, self._create_graph_structure)
         return DataLoader(

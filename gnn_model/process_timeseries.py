@@ -26,13 +26,9 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     satellite_ids = z["satelliteId"][:]
 
     # Select data based on the given time range and satellite ID
-    selected_times = np.where(
-        (time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId)
-    )[0]
+    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
 
-    df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times],
-        "index": selected_times
-    })
+    df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times], "index": selected_times})
     df["time_bin"] = df["time"].dt.floor("12h")
 
     # Sort by time
@@ -44,7 +40,6 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     print("  - End:", df["time"].max())
     print("Unique time bins:", unique_bins)
     print(df["time_bin"].value_counts().sort_index())  # show how full each bin is
-
 
     data_summary = {}
     for i in range(len(unique_bins) - 1):  # Exclude last bin (no target)
@@ -65,12 +60,12 @@ def extract_features(z, data_summary):
     """
     Loads and normalizes input and target features for each time bin individually.
 
-    This function processes one bin at a time to minimize memory usage. For each bin, 
-    it extracts only the necessary indices from the Zarr dataset, normalizes the features 
-    using MinMax scaling, and attaches both the normalized features and metadata 
+    This function processes one bin at a time to minimize memory usage. For each bin,
+    it extracts only the necessary indices from the Zarr dataset, normalizes the features
+    using MinMax scaling, and attaches both the normalized features and metadata
     (e.g., lat/lon and angles) to the corresponding entry in `data_summary`.
 
-    This per-bin loading strategy ensures compatibility with large-scale, distributed 
+    This per-bin loading strategy ensures compatibility with large-scale, distributed
     training by avoiding full-array preloading into memory.
 
     Parameters:
@@ -108,17 +103,18 @@ def extract_features(z, data_summary):
         solar_zenith_target = z["solarZenithAngle"][target_idx]
         solar_azimuth_target = z["solarAzimuthAngle"][target_idx]
 
-
         bt_input = np.stack([z[f"bt_channel_{i}"][input_idx] for i in range(1, 23)], axis=1)
         bt_target = np.stack([z[f"bt_channel_{i}"][target_idx] for i in range(1, 23)], axis=1)
 
         # === Normalize features ===
-        input_features_orig = np.column_stack([
-            sensor_zenith_input,
-            solar_zenith_input,
-            solar_azimuth_input,
-            bt_input,
-        ])
+        input_features_orig = np.column_stack(
+            [
+                sensor_zenith_input,
+                solar_zenith_input,
+                solar_azimuth_input,
+                bt_input,
+            ]
+        )
         input_scaler = MinMaxScaler()
         input_features_norm = input_scaler.fit_transform(input_features_orig)
 
@@ -127,45 +123,40 @@ def extract_features(z, data_summary):
         target_features_norm = target_scaler.fit_transform(target_features_orig)
 
         # === Metadata ===
-        input_metadata = np.column_stack([
-            lat_rad_input,
-            lon_rad_input,
-            sensor_zenith_input[:, None],
-            solar_zenith_input[:, None],
-            solar_azimuth_input[:, None],
-        ])
-        target_metadata = np.column_stack([
-            lat_rad_target,
-            lon_rad_target,
-            sensor_zenith_target[:, None],
-            solar_zenith_target[:, None],
-            solar_azimuth_target[:, None],
-        ])
+        input_metadata = np.column_stack(
+            [
+                lat_rad_input,
+                lon_rad_input,
+                sensor_zenith_input[:, None],
+                solar_zenith_input[:, None],
+                solar_azimuth_input[:, None],
+            ]
+        )
+        target_metadata = np.column_stack(
+            [
+                lat_rad_target,
+                lon_rad_target,
+                sensor_zenith_target[:, None],
+                solar_zenith_target[:, None],
+                solar_azimuth_target[:, None],
+            ]
+        )
 
         # === Save ===
-        data_summary[bin_name]["input_features_final"] = torch.tensor(
-            input_features_norm, dtype=torch.float32
-        )
-        data_summary[bin_name]["target_features_final"] = torch.tensor(
-            target_features_norm, dtype=torch.float32
-        )
-        data_summary[bin_name]["input_metadata"] = torch.tensor(
-            input_metadata, dtype=torch.float32
-        )
-        data_summary[bin_name]["target_metadata"] = torch.tensor(
-            target_metadata, dtype=torch.float32
-        )  
+        data_summary[bin_name]["input_features_final"] = torch.tensor(input_features_norm, dtype=torch.float32)
+        data_summary[bin_name]["target_features_final"] = torch.tensor(target_features_norm, dtype=torch.float32)
+        data_summary[bin_name]["input_metadata"] = torch.tensor(input_metadata, dtype=torch.float32)
+        data_summary[bin_name]["target_metadata"] = torch.tensor(target_metadata, dtype=torch.float32)
         # Store min/max values for later unnormalization
         data_summary[bin_name]["target_scaler_min"] = target_scaler.data_min_
         data_summary[bin_name]["target_scaler_max"] = target_scaler.data_max_
-        
+
         # Save lat/lon degrees separately for CSV and evaluation
         data_summary[bin_name]["input_lat_deg"] = z["latitude"][input_idx]
         data_summary[bin_name]["input_lon_deg"] = z["longitude"][input_idx]
         data_summary[bin_name]["target_lat_deg"] = z["latitude"][target_idx]
         data_summary[bin_name]["target_lon_deg"] = z["longitude"][target_idx]
 
-        
         print(f"[{bin_name}] input_features_final shape: {input_features_norm.shape}")
         print(f"[{bin_name}] target_features_final shape: {target_features_norm.shape}")
     return data_summary
