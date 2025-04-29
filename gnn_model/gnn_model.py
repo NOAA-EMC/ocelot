@@ -9,6 +9,7 @@ from torch_geometric.nn import GATConv
 from torch_scatter import scatter_add, scatter_mean
 from torch.utils.data.distributed import DistributedSampler
 
+
 class GNNLightning(pl.LightningModule):
     """
     A Graph Neural Network (GNN) model for processing structured spatiotemporal data.
@@ -100,9 +101,9 @@ class GNNLightning(pl.LightningModule):
         src_encoder = edge_index_encoder[0]
         tgt_encoder = edge_index_encoder[1]
         obs_feats = x[src_encoder]
-        edge_feats = data.edge_attr_encoder.unsqueeze(1)
-
+        edge_feats = data.edge_attr_encoder.unsqueeze(1)  # Shape [E, 1]
         encoder_input = torch.cat([obs_feats, edge_feats], dim=1)
+
         # Pass through MLP
         encoded = self.encoder_mlp(encoder_input)
         x_hidden = scatter_mean(encoded, tgt_encoder, dim=0, dim_size=x.shape[0])
@@ -112,7 +113,9 @@ class GNNLightning(pl.LightningModule):
 
         # === Processor: mesh ↔ mesh ===
         x_hidden.requires_grad_(True)
-
+        # We process two processor layers at a time to improve memory efficiency with checkpointing.
+        # Therefore, the number of processor layers must be even to avoid leaving a layer unpaired.
+        # Assert here ensures that each iteration handles exactly two layers.
         for i in range(0, len(self.processor_layers), 2):
             assert len(self.processor_layers) % 2 == 0, "Processor layers must be even for paired execution"
             layer1 = self.processor_layers[i]
@@ -138,6 +141,9 @@ class GNNLightning(pl.LightningModule):
         src_decoder = edge_index_decoder[0]  # mesh node indices
         tgt_decoder = edge_index_decoder[1]  # target node indices
 
+        # Make local copies of src and tgt decoder indices to safely apply masking.
+        # We will filter out invalid edges (e.g., edges pointing to non-existent target indices)
+        # without modifying the original global decoder edge_index stored in the data object.
         src_decoder_local = src_decoder
         tgt_decoder_local = tgt_decoder
 
@@ -158,6 +164,14 @@ class GNNLightning(pl.LightningModule):
         # Sanity check
         assert tgt_decoder.max().item() < y.shape[0], "Decoder index out of bounds"
 
+        # Remove any edges that point to invalid target indices before aggregation.
+        mask = tgt_decoder_local < y.shape[0]
+        tgt_decoder_local = tgt_decoder_local[mask]
+        src_decoder_local = src_decoder_local[mask]
+        dist_feats = dist_feats[mask]
+        decoded = decoded[mask]
+
+
         # Aggregate using scatter
         norm_weights = scatter_add(weights, tgt_decoder_local, dim=0, dim_size=y.shape[0])
         x_out = scatter_add(weighted, tgt_decoder_local, dim=0, dim_size=y.shape[0])
@@ -169,16 +183,21 @@ class GNNLightning(pl.LightningModule):
         return x_out
 
     def training_step(self, batch, batch_idx):
+        # === Step 1: Enable anomaly detection (only once, for debugging backward passes)
         if torch.cuda.is_available():
             torch.autograd.set_detect_anomaly(True)
+            # Prints how much GPU memory is being used before you run the forward pass.
             gpu_id = torch.cuda.current_device()
             allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
+        # === Step 2: Run forward pass (predict outputs from input batch)
         y_pred = self(batch)
         y_true = batch.y
 
+        # === Step 3: Sanity checks (shape match and NaN checks)
         assert y_pred.shape == y_true.shape, f"Mismatch: {y_pred.shape} vs {y_true.shape}"
+
         rank = self.trainer.global_rank if hasattr(self.trainer, "global_rank") else 0
         print(f"[Rank {rank}] y shape: {y_true.shape}, pred shape: {y_pred.shape}")
 
@@ -187,10 +206,11 @@ class GNNLightning(pl.LightningModule):
             print(f"y_pred min: {y_pred.min()}, max: {y_pred.max()}")
             print(f"y_true min: {batch.y.min()}, max: {batch.y.max()}")
 
-
+        # === Step 4: Compute loss and log it
         loss = self.loss_fn(y_pred, y_true)
         self.log("train_loss", loss)
 
+        # === Step 5: Optional memory usage print (every 2 batches by rank 0 only)
         if self.trainer.is_global_zero and batch_idx % 2 == 0:
             print(
                 f"[Rank 0 GPU Mem] Step {batch_idx} | "
@@ -198,8 +218,10 @@ class GNNLightning(pl.LightningModule):
                 f"Reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB"
             )
 
-        # Clean up and return
+        # === Step 6: Clean up memory (free GPU memory manually)
         del y_pred, y_true, batch
+
+        # === Step 7: Return loss for Lightning to perform backward + optimizer step
         return {"loss": loss}
 
 
@@ -225,7 +247,7 @@ class GNNLightning(pl.LightningModule):
             self.log(f"val_bias_ch_{i+1}", bias[i].item(), on_epoch=True, sync_dist=True)
 
         # Save CSV for visual inspection
-        if batch_idx == 0 and self.trainer.is_global_zero:
+        if self.trainer.is_global_zero and not hasattr(self, "_saved_csv") :
             import pandas as pd
             df = pd.DataFrame({
                 "lat_deg": batch.target_lat_deg.cpu().numpy(),
@@ -234,6 +256,7 @@ class GNNLightning(pl.LightningModule):
                 **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
             })
             df.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
+            self._saved_csv = True
 
         # Cleanup
         del y_pred, y_true, y_pred_unnorm, y_true_unnorm, batch

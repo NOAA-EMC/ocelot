@@ -59,31 +59,16 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(f"[Rank {dist.get_rank()}] Fetching {bin_name}...")
-        print(f"[Rank {rank}] Fetching bin {bin_name}")
+        print(f"[Rank {rank}] Fetching {bin_name}...")
 
         try:
             bin = self.data_summary[bin_name]
             print(f"[{bin_name}] Input indices: {len(bin['input_time_index'])}, Target indices: {len(bin['target_time_index'])}")
-            bin = extract_features(self.z, {bin_name: bin})[bin_name]
-            print(f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}")
             data_dict = self.create_graph_fn(bin)
+            print(f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}")
         except Exception as e:
             print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
             raise
-
-        return self._to_data(data_dict)
-
-        #  Memory + tensor tracking block
-        if torch.cuda.is_available():
-            print(f"[BinDataset] Processed {bin_name}")
-            print(f"[BinDataset] CUDA Memory allocated: {torch.cuda.memory_allocated() / 1e6:.2f} MB")
-            print(f"Fetching bin {bin_name} with shape {bin['input_time_index'].shape}")
-
-        #   This ensures any unused tensors are cleared after every bin 
-        import gc
-        print(f"[BinDataset] Live tensors after {bin_name}:",
-            len([obj for obj in gc.get_objects() if torch.is_tensor(obj)]))
 
         return self._to_data(data_dict)
 
@@ -121,46 +106,33 @@ class GNNDataModule(pl.LightningDataModule):
         self.end_date = pd.to_datetime(end_date)
         self.satellite_id = satellite_id
         self.batch_size = batch_size
-        self._printed_mesh_stats = False
-        self._printed_processor_edges = False
 
-        # Graph parameters
+        # Mesh and graph parameters
         self.mesh_resolution = mesh_resolution
         self.cutoff_factor = cutoff_factor
         self.num_neighbors = num_neighbors
+
         self.hetero_data, self.mesh_graph, self.mesh_latlon_rad, self.mesh_stats = create_icosahedral_mesh(resolution=self.mesh_resolution)
 
-        self.data_summary = None
-        self.data_dict = None
+        # Placeholders for data
         self.z = None
+        self.data_summary = None
+        self.train_bin_names = None
+        self.val_bin_names = None
+        self.test_bin_names = None
+        self.predict_bin_names = None
 
-        # Flags for setup tracking
+        self._printed_mesh_stats = False
+        self._printed_processor_edges = False
         self.data_processed = False
 
     @staticmethod
     def get_num_workers():
         return min(int(os.environ.get("SLURM_CPUS_PER_TASK", 4)), 4)
 
-    def prepare_data(self):
-        """
-        Sanity check: ensures that the Zarr dataset path exists and is readable.
-
-        Called once by PyTorch Lightning before training begins.
-        """
-        try:
-            zarr.open(self.data_path, mode="r")
-        except Exception as e:
-            raise RuntimeError(f"Failed to open Zarr dataset at {self.data_path}: {e}")
-
     def setup(self, stage=None):
         """
-        Sets up the dataset by organizing time bins and deferring feature extraction.
-
-        - Loads the Zarr file using LRU cache to reduce memory spikes.
-        - Calls `organize_bins_times` to generate bin metadata.
-        - Clears any pre-computed features (ensuring lazy evaluation).
-        - Splits bins into train, val, test, or predict depending on stage.
-        - Synchronizes across ranks if running under DDP.
+        Sets up the dataset by organizing time bins and extracting features.
         """
         if self.z is None:
             self.z = zarr.open(LRUStoreCache(zarr.DirectoryStore(self.data_path), max_size=2_000_000_000), mode="r")
@@ -169,6 +141,7 @@ class GNNDataModule(pl.LightningDataModule):
         if hasattr(self.trainer, "global_rank") and self.trainer.global_rank == 0:
             log_system_info()
             _ = list(self.z.array_keys())
+
         if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
             dist.barrier()
 
@@ -176,34 +149,30 @@ class GNNDataModule(pl.LightningDataModule):
             self.data_summary = organize_bins_times(
                 self.z, self.start_date, self.end_date, self.satellite_id
             )
-            for bin_name in self.data_summary:
-                for key in ["input_features_final", "target_features_final"]:
-                    if key in self.data_summary[bin_name]:
-                        del self.data_summary[bin_name][key]
+            self.data_summary = extract_features(self.z, self.data_summary)
 
-            print(f"Found {len(self.data_summary)} time bins in the dataset")
+            all_bin_names = list(self.data_summary.keys())
+            train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
 
-            self.train_bin_names = list(self.data_summary.keys())
-            train_size = 1 if len(self.train_bin_names) == 1 else int(0.8 * len(self.train_bin_names))
-            self.train_bin_names = self.train_bin_names[:train_size]
-            self.val_bin_names = self.train_bin_names[train_size:]
+            self.train_bin_names = all_bin_names[:train_size]
+            self.val_bin_names = all_bin_names[train_size:]
 
             if stage == "fit" or stage is None:
                 print(f"Train bins: {len(self.train_bin_names)}, Val bins: {len(self.val_bin_names)}")
                 self._log_dataset_split()
 
-            elif stage == "validate":
-                pass
-
-            elif stage == "test":
+            if stage == "test":
                 self.test_bin_names = self.train_bin_names + self.val_bin_names
 
-            elif stage == "predict":
+            if stage == "predict":
                 self.predict_bin_names = self.train_bin_names + self.val_bin_names
+
+            self.data_processed = True
 
     @rank_zero_only
     def _log_dataset_split(self):
         print(f"Split data into {len(self.train_bin_names)} training bins and {len(self.val_bin_names)} validation bins")
+
 
 
     def _create_graph_structure(self, bin_data):
@@ -222,8 +191,8 @@ class GNNDataModule(pl.LightningDataModule):
         """
         input_features = bin_data["input_features_final"]
         target_features = bin_data["target_features_final"]
-        obs_latlon_rad = input_features[:, -2:]
-        target_latlon_rad = target_features[:, -2:]
+        obs_latlon_rad = bin_data["input_metadata"][:, :2]  # latitude (rad), longitude (rad)
+        target_latlon_rad = bin_data["target_metadata"][:, :2]  # latitude (rad), longitude (rad)
 
         # Print mesh statistics
         if not self._printed_mesh_stats:
@@ -246,6 +215,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         if edge_index_encoder.numel() == 0:
             raise ValueError("No encoder edges were created. Try increasing cutoff_factor.")
+
         # === PROCESSOR EDGES ===
         multi_scale_processor = MeshSelfConnectivity("hidden", "hidden")
         print_processor_edges = not self._printed_processor_edges
