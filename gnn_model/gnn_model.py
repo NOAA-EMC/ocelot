@@ -86,13 +86,9 @@ class GNNLightning(pl.LightningModule):
 
         x = data.x
         edge_index_encoder = data.edge_index_encoder
-        data.edge_attr_encoder
         edge_index_processor = data.edge_index_processor
         edge_index_decoder = data.edge_index_decoder
-        data.edge_attr_decoder
         y = data.y
-        data.target_scaler_min
-        data.target_scaler_max
 
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
