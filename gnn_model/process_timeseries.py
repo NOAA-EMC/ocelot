@@ -111,32 +111,43 @@ def extract_features(z, data_summary):
         )
         input_features_normalized = minmax_scaler_input.fit_transform(input_features_orig)
 
-        input_features_final = np.hstack(
-            [
-                latitude_rad[input_mask],
-                longitude_rad[input_mask],
-                input_features_normalized,
-            ]
-        )
+        input_features_final = input_features_normalized
+
+        # Metadata = lat, lon, and original (non-normalized) angles
+        input_metadata = np.column_stack([
+            latitude_rad[input_mask],
+            longitude_rad[input_mask],
+            sensor_zenith[input_mask],
+            solar_zenith[input_mask],
+            solar_azimuth[input_mask],
+        ])
 
         # Prepare target features
         target_features_orig = bt_channels[target_mask]
         target_features_normalized = minmax_scaler_target.fit_transform(target_features_orig)
 
-        target_features_final = np.hstack(
-            [
-                latitude_rad[target_mask],
-                longitude_rad[target_mask],
-                target_features_normalized,
-            ]
-        )
-
+        # Final target = only normalized BTs
+        target_features_final = target_features_normalized
+        # Metadata = lat/lon only (you can include angles if needed)
+        target_metadata = np.column_stack([
+            latitude_rad[target_mask],
+            longitude_rad[target_mask],
+            sensor_zenith[target_mask],
+            solar_zenith[target_mask],
+            solar_azimuth[target_mask],
+        ])
         # Convert to tensors at the end
         data_summary[bin_name]["input_features_final"] = torch.tensor(
             input_features_final, dtype=torch.float32
         )
         data_summary[bin_name]["target_features_final"] = torch.tensor(
             target_features_final, dtype=torch.float32
+        )
+        data_summary[bin_name]["input_metadata"] = torch.tensor(
+            input_metadata, dtype=torch.float32
+        )
+        data_summary[bin_name]["target_metadata"] = torch.tensor(
+            target_metadata, dtype=torch.float32
         )
 
         # Store min/max values for later unnormalization
