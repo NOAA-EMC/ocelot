@@ -88,9 +88,7 @@ class ObsMeshCutoffConnector:
                     edge_weights.append(dist)
 
         if len(obs_to_mesh_edges) == 0:
-            print(
-                "Warning: No obs-to-mesh edges were created. Check cutoff radius or input coordinates."
-            )
+            print("Warning: No obs-to-mesh edges were created. Check cutoff radius or input coordinates.")
 
         edge_index_obs_to_mesh = torch.tensor(obs_to_mesh_edges, dtype=torch.long).t().contiguous()
 
