@@ -155,22 +155,22 @@ class GNNDataModule(pl.LightningDataModule):
             self.data_summary = extract_features(self.z, self.data_summary)
 
             all_bin_names = list(self.data_summary.keys())
-            train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
-
-            self.train_bin_names = all_bin_names[:train_size]
-            self.val_bin_names = all_bin_names[train_size:]
 
             if stage == "fit" or stage is None:
+                train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
+                self.train_bin_names = all_bin_names[:train_size]
+                self.val_bin_names = all_bin_names[train_size:]
                 print(f"Train bins: {len(self.train_bin_names)}, Val bins: {len(self.val_bin_names)}")
                 self._log_dataset_split()
 
             if stage == "test":
-                self.test_bin_names = self.train_bin_names + self.val_bin_names
+                self.test_bin_names = all_bin_names
 
             if stage == "predict":
-                self.predict_bin_names = self.train_bin_names + self.val_bin_names
+                self.predict_bin_names = all_bin_names
 
             self.data_processed = True
+
 
     @rank_zero_only
     def _log_dataset_split(self):

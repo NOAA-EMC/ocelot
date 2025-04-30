@@ -26,7 +26,7 @@ def organize_bins_times(z, start_date, end_date, selected_satelliteId):
     satellite_ids = z["satelliteId"][:]
 
     # Select data based on the given time range and satellite ID
-    selected_times = np.where((time >= start_date) & (time <= end_date) & (satellite_ids == selected_satelliteId))[0]
+    selected_times = np.where((time >= start_date) & (time < end_date) & (satellite_ids == selected_satelliteId))[0]
 
     df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times], "index": selected_times})
     df["time_bin"] = df["time"].dt.floor("12h")
