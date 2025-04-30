@@ -171,7 +171,6 @@ class GNNDataModule(pl.LightningDataModule):
 
             self.data_processed = True
 
-
     @rank_zero_only
     def _log_dataset_split(self):
         print(f"Split data into {len(self.train_bin_names)} training bins and {len(self.val_bin_names)} validation bins")
