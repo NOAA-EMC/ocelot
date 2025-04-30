@@ -15,6 +15,9 @@
 source /scratch1/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 
+# PYTHONPATH
+export PYTHONPATH=/scratch1/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
+
 # Debug + performance
 export OMP_NUM_THREADS=1
 export PYTORCH_ENABLE_MPS_FALLBACK=1
