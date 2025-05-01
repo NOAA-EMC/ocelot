@@ -113,7 +113,7 @@ def extract_features(z, data_summary):
         input_dayofyear = np.array([
             (timestamp.timetuple().tm_yday - 1 +
              (timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second) / 86400) / 365.24219
-             for timestamp in input_timestamps])[:, None]
+            for timestamp in input_timestamps])[:, None]
 
         sensor_zenith_input = z["sensorZenithAngle"][input_idx][:, None]
         solar_zenith_input = z["solarZenithAngle"][input_idx][:, None]
