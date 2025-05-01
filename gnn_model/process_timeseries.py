@@ -4,6 +4,7 @@ import torch
 from sklearn.preprocessing import MinMaxScaler
 from timing_utils import timing_resource_decorator
 
+
 @timing_resource_decorator
 def organize_bins_times(z, start_date, end_date, selected_satids):
     """
@@ -24,7 +25,7 @@ def organize_bins_times(z, start_date, end_date, selected_satids):
     satids = z["satelliteId"][:]
 
     # Select data based on the given time range and satellite ID
-    time_cond=(time >= start_date) & (time < end_date)
+    time_cond = (time >= start_date) & (time < end_date)
     if selected_satids is None:
         selected_times = np.where(time_cond)[0]
     else:
@@ -58,6 +59,7 @@ def organize_bins_times(z, start_date, end_date, selected_satids):
         }
     print(f"Created {len(data_summary)} input-target bin pairs.")
     return data_summary
+
 
 @timing_resource_decorator
 def extract_features(z, data_summary):
@@ -110,9 +112,8 @@ def extract_features(z, data_summary):
         input_timestamps = pd.to_datetime(input_times, unit='s')
         input_dayofyear = np.array([
             (timestamp.timetuple().tm_yday - 1 +
-            (timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second) / 86400)/
-            365.24219
-            for timestamp in input_timestamps])[:, None]
+             (timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second) / 86400) / 365.24219
+             for timestamp in input_timestamps])[:, None]
 
         sensor_zenith_input = z["sensorZenithAngle"][input_idx][:, None]
         solar_zenith_input = z["solarZenithAngle"][input_idx][:, None]
@@ -152,16 +153,16 @@ def extract_features(z, data_summary):
         input_metadata = np.column_stack([
                 lat_rad_input,
                 lon_rad_input,
-                sensor_zenith_input, #[:, None],
-                solar_zenith_input,  #[:, None],
-                solar_azimuth_input, #[:, None],
+                sensor_zenith_input,
+                solar_zenith_input,
+                solar_azimuth_input,
             ])
         target_metadata = np.column_stack([
                 lat_rad_target,
                 lon_rad_target,
-                sensor_zenith_target, #[:, None],
-                solar_zenith_target,  #[:, None],
-                solar_azimuth_target, #[:, None],
+                sensor_zenith_target,
+                solar_zenith_target,
+                solar_azimuth_target,
             ])
 
         # === Save ===
