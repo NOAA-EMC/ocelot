@@ -18,18 +18,18 @@ def main():
     sys.stderr.write("===> ENTERED MAIN\n")
     # Data parameters
     # CONUS data path:
-    # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
+    #data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
     # One week Global data path:
     data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
 
     start_date = "2024-04-01"
-    end_date = "2024-04-07"
-    satellite_id = 224
+    end_date = "2024-04-03"
+    satellite_id = None
 
     mesh_resolution = 6
 
     # Define model parameters
-    input_dim = 25
+    input_dim = 30
     hidden_dim = 64
     output_dim = 22
     num_layers = 16
