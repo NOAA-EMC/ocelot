@@ -29,7 +29,7 @@ def main():
     mesh_resolution = 6
 
     # Define model parameters
-    input_dim = 25
+    input_dim = 30
     hidden_dim = 64
     output_dim = 22
     num_layers = 16
