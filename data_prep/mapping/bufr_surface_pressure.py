@@ -41,8 +41,6 @@ class PressureObsBuilder(ObsBuilder):
         adpupa_container.apply_mask(data_level_cat == 0)
 
         # Remove uneeded data fields (make all containers the same)
-        container.remove('obsTimeMinusCycleTime')
-        adpupa_container.remove('obsTimeMinusCycleTime')
         adpupa_container.remove('dataLevelCategory')
 
         # Merge containers
@@ -51,6 +49,9 @@ class PressureObsBuilder(ObsBuilder):
         # Filter according to thw obs type
         obs_type = container.get('observationType')
         container.apply_mask(np.isin(obs_type, OBS_TYPES))
+
+        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
+        container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         return container
 

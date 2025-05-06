@@ -25,7 +25,7 @@ def _make_sbatch_cmd(idx: int,
                      start: datetime,
                      end: datetime,
                      ntasks: int,
-                     type: str,
+                     data_type: str,
                      suffix: str = None,
                      append: bool = True,
                      slurm_account: str = None) -> str:
@@ -33,18 +33,18 @@ def _make_sbatch_cmd(idx: int,
     if not _is_slurm_available():
         raise RuntimeError("SLURM is not available. Please check your environment.")
 
-    cmd = f'job_{idx+1}=$(sbatch ' \
+    cmd = f'job_{data_type}_{idx+1}=$(sbatch ' \
 
     if idx > 0:
-        cmd += f'--dependency=afterok:$job_{idx} '
+        cmd += f'--dependency=afterok:$job_{data_type}_{idx} '
 
     if slurm_account:
         cmd += f'--account={slurm_account} '
 
     cmd += f'--ntasks={ntasks} '
     cmd += '--time=02:00:00 '
-    cmd += f'--job-name="gen_ocelot_{type}_{idx+1}" '
-    cmd += f'--wrap="srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
+    cmd += f'--job-name="gen_ocelot_{data_type}_{idx+1}" '
+    cmd += f'--wrap="srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
 
     if suffix:
         cmd += f'-s {suffix} '
@@ -60,12 +60,12 @@ def _make_sbatch_cmd(idx: int,
 def _make_parallel_cmd(start: datetime,
                        end: datetime,
                        ntasks: int,
-                       type: str,
+                       data_type: str,
                        suffix: str = None,
                        append: bool = True) -> str:
 
     if _is_slurm_available():
-        cmd = f'srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
+        cmd = f'srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
         if suffix:
             cmd += f'-s {suffix} '
 
@@ -73,7 +73,7 @@ def _make_parallel_cmd(start: datetime,
             cmd += '--append False '
 
     else:
-        cmd = f'mpirun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
+        cmd = f'mpirun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
         if suffix:
             cmd += f'-s {suffix} '
 
@@ -85,11 +85,11 @@ def _make_parallel_cmd(start: datetime,
 
 def _make_serial_cmd(start: datetime,
                      end: datetime,
-                     type: str,
+                     data_type: str,
                      suffix: str = None,
                      append=True) -> str:
 
-    cmd = f'python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {type} '
+    cmd = f'python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
 
     if suffix:
         cmd += f'-s {suffix} '
@@ -194,11 +194,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    type_config = config.get_data_type(args.type)
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
     def call_generator(gen_type):
+        type_config = config.get_data_type(gen_type)
         if args.batch:
             _batch_gen(start_date,
                        end_date,
