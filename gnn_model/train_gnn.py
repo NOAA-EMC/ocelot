@@ -1,4 +1,5 @@
 import lightning.pytorch as pl
+import argparse
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
@@ -6,6 +7,7 @@ from lightning.pytorch.loggers import CSVLogger
 from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
+from weight_utils import load_weights_from_yaml
 
 
 @timing_resource_decorator
@@ -14,26 +16,32 @@ def main():
     import sys
     import time
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
     # Data parameters
     # CONUS data path:
     # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
     # One week Global data path:
-    data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
+    data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/atms_small.zarr"
+    weights_config_path = "configs/weights_config.yaml"
+    instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 
     start_date = "2024-04-01"
-    end_date = "2024-04-07"
+    end_date = "2024-04-7"
     satellite_id = 224
 
     mesh_resolution = 6
 
     # Define model parameters
-    input_dim = 30
-    hidden_dim = 64
+    input_dim = 32
+    hidden_dim = 32
     output_dim = 22
-    num_layers = 16
-    lr = 1e-4
+    num_layers = 4
+    lr = 1e-3
 
     # Training parameters
     max_epochs = 10
@@ -46,6 +54,9 @@ def main():
         output_dim=output_dim,
         num_layers=num_layers,
         lr=lr,
+        instrument_weights=instrument_weights,
+        channel_weights=channel_weights,
+        verbose=args.verbose,
     )
 
     data_module = GNNDataModule(
@@ -90,7 +101,7 @@ def main():
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
         "devices": 2,
         "num_nodes": 4,
-        "strategy": "ddp_find_unused_parameters_true",  # Use DistributedDataParallel
+        "strategy": "ddp_find_unused_parameters_true",
         "precision": "16-mixed",  # Mixed precision for memory efficiency
         "log_every_n_steps": 1,
         "callbacks": callbacks,

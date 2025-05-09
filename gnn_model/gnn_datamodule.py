@@ -89,6 +89,7 @@ class BinDataset(Dataset):
             target_scaler_max=data_dict["target_scaler_max"],
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
+            instrument_ids=data_dict["instrument_ids"]
         )
 
 
@@ -234,7 +235,7 @@ class GNNDataModule(pl.LightningDataModule):
         mesh_offset = num_obs_nodes
 
         # Move to CPU to avoid accumulating static mesh data on GPU across bins
-        mesh_feats = hetero_data["hidden"].x.cpu()
+        mesh_feats = hetero_data["hidden"].x.to(input_features.device)
         input_dim = input_features.shape[1]
         pad_feats = torch.zeros((num_mesh_nodes, input_dim - mesh_feats.shape[1]))
         mesh_feats_padded = torch.cat([mesh_feats, pad_feats], dim=1)
@@ -261,6 +262,7 @@ class GNNDataModule(pl.LightningDataModule):
             "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
             "target_lat_deg": bin_data["target_lat_deg"],
             "target_lon_deg": bin_data["target_lon_deg"],
+            "instrument_ids": torch.tensor(bin_data["instrument_ids"], dtype=torch.long),
         }
 
     def _create_data_object(self, data_dict):
@@ -269,7 +271,12 @@ class GNNDataModule(pl.LightningDataModule):
 
         Adds additional fields needed for later unnormalization (e.g., for evaluation).
         """
-        return Data(
+        if "instrument_ids" in data_dict:
+            instrument_ids = torch.tensor(data_dict["instrument_ids"], dtype=torch.long)
+        else:
+            instrument_ids = None
+
+        data_args = dict(
             x=data_dict["x"],
             edge_index_encoder=data_dict["edge_index_encoder"],
             edge_attr_encoder=data_dict["edge_attr_encoder"],
@@ -282,6 +289,11 @@ class GNNDataModule(pl.LightningDataModule):
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
         )
+        # Optional: add instrument_ids only if present
+        if "instrument_ids" in data_dict:
+            data_args["instrument_ids"] = torch.tensor(data_dict["instrument_ids"], dtype=torch.long)
+
+        return Data(**data_args)
 
     def train_dataloader(self):
         """
