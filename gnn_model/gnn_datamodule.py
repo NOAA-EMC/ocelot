@@ -262,7 +262,7 @@ class GNNDataModule(pl.LightningDataModule):
             "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
             "target_lat_deg": bin_data["target_lat_deg"],
             "target_lon_deg": bin_data["target_lon_deg"],
-            "instrument_ids": torch.tensor(bin_data["instrument_ids"], dtype=torch.long), 
+            "instrument_ids": torch.tensor(bin_data["instrument_ids"], dtype=torch.long),
         }
 
     def _create_data_object(self, data_dict):

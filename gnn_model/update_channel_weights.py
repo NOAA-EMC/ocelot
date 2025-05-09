@@ -1,6 +1,7 @@
 import pandas as pd
 import yaml
 
+
 def compute_channel_weights(metrics_path, output_yaml, rmse_output_csv, instrument_id=0, use_best_epoch=True):
     # Load metrics.csv
     df = pd.read_csv(metrics_path)
@@ -34,6 +35,7 @@ def compute_channel_weights(metrics_path, output_yaml, rmse_output_csv, instrume
     with open(output_yaml, "w") as f:
         yaml.dump(weights_config, f)
     print(f"Saved normalized channel weights to: {output_yaml}")
+
 
 # Example usage
 if __name__ == "__main__":

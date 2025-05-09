@@ -285,7 +285,7 @@ class GNNLightning(pl.LightningModule):
 
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=self.lr)
-    
+
     def ocelot_loss(self, y_pred, y_true, instrument_ids):
         """
         Custom weighted loss that applies per-instrument and per-channel weights.

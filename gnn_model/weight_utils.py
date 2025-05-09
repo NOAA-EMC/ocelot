@@ -1,6 +1,7 @@
 import yaml
 import torch
 
+
 def load_weights_from_yaml(path):
     with open(path, 'r') as f:
         config = yaml.safe_load(f)

@@ -14,6 +14,7 @@ def load_rmse_from_metrics(metrics_csv):
 
     return df_valid[rmse_cols].iloc[-1].to_dict()
 
+
 # Load both versions
 rmse_v0 = load_rmse_from_metrics("logs/ocelot_gnn/version_0/metrics.csv")
 rmse_v1 = load_rmse_from_metrics("logs/ocelot_gnn/version_1/metrics.csv")
