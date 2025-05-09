@@ -16,15 +16,40 @@ def main():
 
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
+
     # Data parameters
-    # CONUS data path:
-    # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
-    # One week Global data path:
-    data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
+    region = "conus"
+    if region == "conus":
+        # CONUS data path:
+        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
+    else:
+        # One week Global data path:
+        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small"
 
     start_date = "2024-04-01"
-    end_date = "2024-04-07"
-    satellite_id = 224
+    end_date = "2024-04-04"
+
+    # Observation configuration, will move to a config file later.
+    observation_config = {
+        "satellite": {
+            'atms': {
+                "sat_ids": [224, 225],
+                "features": [f"bt_channel_{i}" for i in range(1, 23)],
+                "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"]
+            },
+            # "iasi": ,
+            # "goes":,
+            # "ascat":
+        },
+        "conventional": {
+            # "radiosonde": ,
+            "pressure": {
+                "features": ["height", "stationPressure"]
+            },
+            # "surface_marine": ,
+            # "surface_land":
+        }
+    }
 
     mesh_resolution = 6
 
@@ -52,7 +77,7 @@ def main():
         data_path=data_path,
         start_date=start_date,
         end_date=end_date,
-        satellite_id=satellite_id,
+        observation_config=observation_config,
         batch_size=batch_size,
         mesh_resolution=mesh_resolution,
         num_neighbors=3,

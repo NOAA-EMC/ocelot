@@ -98,7 +98,7 @@ class GNNDataModule(pl.LightningDataModule):
         data_path,
         start_date,
         end_date,
-        satellite_id,
+        observation_config,
         batch_size=1,
         mesh_resolution=2,
         cutoff_factor=0.6,
@@ -109,7 +109,7 @@ class GNNDataModule(pl.LightningDataModule):
         self.data_path = data_path
         self.start_date = pd.to_datetime(start_date)
         self.end_date = pd.to_datetime(end_date)
-        self.satellite_id = satellite_id
+        self.observation_config = observation_config
         self.batch_size = batch_size
 
         # Mesh and graph parameters
@@ -140,19 +140,25 @@ class GNNDataModule(pl.LightningDataModule):
         Sets up the dataset by organizing time bins and extracting features.
         """
         if self.z is None:
-            self.z = zarr.open(LRUStoreCache(zarr.DirectoryStore(self.data_path), max_size=2_000_000_000), mode="r")
-            rank_zero_info("Opened Zarr file.")
+            self.z = {}
+            for obs_type in self.observation_config.keys():
+                self.z[obs_type] = {}
+                for key in self.observation_config[obs_type].keys():
+                    data_path = os.path.join(self.data_path, key) + ".zarr"
+                    print(f'path: {data_path}')
+                    self.z[obs_type][key] = zarr.open(LRUStoreCache(zarr.DirectoryStore(data_path), max_size=2_000_000_000), mode="r")
+                    rank_zero_info(f"Opened Zarr files for {data_path}.")
 
         if hasattr(self.trainer, "global_rank") and self.trainer.global_rank == 0:
             log_system_info()
-            _ = list(self.z.array_keys())
+            _ = list(self.z["radar"].array_keys())
 
         if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
             dist.barrier()
 
         if not self.data_processed:
-            self.data_summary = organize_bins_times(self.z, self.start_date, self.end_date, self.satellite_id)
-            self.data_summary = extract_features(self.z, self.data_summary)
+            self.data_summary = organize_bins_times(self.z, self.start_date, self.end_date, self.observation_config)
+            self.data_summary = extract_features(self.z, self.data_summary, self.observation_config)
 
             all_bin_names = list(self.data_summary.keys())
 
