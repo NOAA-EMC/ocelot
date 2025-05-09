@@ -1,0 +1,10 @@
+instrument_weights:
+  0: 1.0   # ATMS
+# 1: 1.0   # Surface Pressure
+# 2: 1.0   # Radiosonde
+
+channel_weights:
+  0: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]       # length 22
+# 1: [1.0]                           # Surface Pressure
+# 2: [...]       # Radiosonde
+

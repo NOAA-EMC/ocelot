@@ -182,4 +182,14 @@ def extract_features(z, data_summary):
 
         print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
         print(f"[{bin_name}] target_features_final shape: {target_features_norm.shape}")
+
+        # === Add instrument IDs ===
+        instrument_id = 0  # ATMS default; need to be dynamic when more instruments are added
+        instrument_ids = np.full(
+            shape=(target_features_norm.shape[0],),
+            fill_value=instrument_id,
+            dtype=np.int64
+        )
+        data_summary[bin_name]["instrument_ids"] = instrument_ids
+
     return data_summary

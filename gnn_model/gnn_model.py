@@ -1,5 +1,6 @@
 import lightning.pytorch as pl
 import torch
+import yaml
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
@@ -29,7 +30,7 @@ class GNNLightning(pl.LightningModule):
             weighted aggregation to produce target predictions.
     """
 
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4, instrument_weights=None, channel_weights=None):
         """
         Initializes the GNNLightning model with an encoder, processor, and decoder.
 
@@ -43,6 +44,13 @@ class GNNLightning(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
+        self.instrument_weights = instrument_weights
+        self.channel_weights = channel_weights
+        self.channel_masks = {}
+        for inst_id, weights in self.channel_weights.items():
+            weights_tensor = torch.tensor(weights)
+            mask = weights_tensor > 0
+            self.channel_masks[int(inst_id)] = mask
 
         # Encoder: Maps data nodes to hidden nodes
         self.encoder_mlp = nn.Sequential(
@@ -199,8 +207,9 @@ class GNNLightning(pl.LightningModule):
             print(f"y_true min: {batch.y.min()}, max: {batch.y.max()}")
 
         # === Step 4: Compute loss and log it
-        loss = self.loss_fn(y_pred, y_true)
-        self.log("train_loss", loss)
+        # loss = self.loss_fn(y_pred, y_true)
+        loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
         # === Step 5: Optional memory usage print (every 2 batches by rank 0 only)
         if self.trainer.is_global_zero and batch_idx % 2 == 0:
@@ -214,12 +223,30 @@ class GNNLightning(pl.LightningModule):
         del y_pred, y_true, batch
 
         # === Step 7: Return loss for Lightning to perform backward + optimizer step
-        return {"loss": loss}
+        return loss
 
     def validation_step(self, batch, batch_idx):
         y_pred = self(batch)
         y_true = batch.y
-        loss = self.loss_fn(y_pred, y_true)
+        # loss = self.loss_fn(y_pred, y_true)
+        loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids)
+        self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
+        instrument_ids = batch.instrument_ids
+
+        # Per-instrument loss logging
+        for inst_id in instrument_ids.unique():
+            mask = instrument_ids == inst_id
+            if mask.sum() == 0:
+                continue
+            inst_loss = F.mse_loss(y_pred[mask], y_true[mask])
+            self.log(
+                f"val_loss_inst_{inst_id.item()}",
+                inst_loss.item(),
+                prog_bar=False,
+                sync_dist=True,
+                on_epoch=True
+            )
+
         self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
 
         # Unnormalize
@@ -258,3 +285,39 @@ class GNNLightning(pl.LightningModule):
 
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=self.lr)
+    
+    def ocelot_loss(self, y_pred, y_true, instrument_ids):
+        """
+        Custom weighted loss that applies per-instrument and per-channel weights.
+
+        Args:
+            y_pred (Tensor): Predicted outputs of shape [N, C]
+            y_true (Tensor): Ground truth targets of shape [N, C]
+            instrument_ids (Tensor): Tensor of shape [N] with instrument ID per observation
+
+        Returns:
+            loss (Tensor): Scalar loss value
+        """
+        loss = 0.0
+        total = 0
+
+        for inst_id in instrument_ids.unique():
+            inst_idx = instrument_ids == inst_id
+            y_p = y_pred[inst_idx]
+            y_t = y_true[inst_idx]
+
+            w_i = self.instrument_weights.get(int(inst_id.item()), 1.0)
+            w_c = self.channel_weights.get(int(inst_id.item()), torch.ones(y_p.shape[1])).to(y_p.device)
+
+            # Apply mask if channel_weights is not full-length (pad if needed)
+            if w_c.shape[0] != y_p.shape[1]:
+                pad_len = y_p.shape[1] - w_c.shape[0]
+                if pad_len > 0:
+                    # Pad with zeros for missing channels
+                    w_c = torch.cat([w_c, torch.zeros(pad_len, device=w_c.device)])
+
+            weighted_sq_error = ((y_p - y_t) ** 2) * w_c.view(1, -1)
+            loss += w_i * weighted_sq_error.sum()
+            total += y_p.numel()
+
+        return loss / (total + 1e-8)
