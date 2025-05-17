@@ -9,8 +9,9 @@ from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter, scatter_add
 
-#MK
+# MK
 from loss import level_weighted_mse
+
 
 class GNNLightning(pl.LightningModule):
     """
