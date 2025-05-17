@@ -7,13 +7,11 @@ def normalized_level_weights(pressure_levels):
 def level_weighted_mse(predictions, targets, pressure_levels=None):
     """
     Compute level-weighted MSE loss.
-    
     Args:
         predictions (torch.Tensor): Predicted values
         targets (torch.Tensor): Target values
         pressure_levels (torch.Tensor, optional): Pressure values for each channel.
             If None, will use default values from 1000mb to 200mb for 22 channels.
-            
     Returns:
         torch.Tensor: Scalar loss value
     """
@@ -21,7 +19,7 @@ def level_weighted_mse(predictions, targets, pressure_levels=None):
     # We don't have data with levels now. Using 22channels as levels to trick it
     # modify accordingly when dealing with data with levels
     if pressure_levels is None:
-        level_num = predictions.shape[-1] #22
+        level_num = predictions.shape[-1]  # 22
         # For 22 channels, create evenly spaced values from 1000 to 200
         pressure_levels = torch.linspace(1000, 200, level_num).to(predictions.device)
 
@@ -45,12 +43,12 @@ def level_weighted_mse(predictions, targets, pressure_levels=None):
     weighted_squared_diff = squared_diff * weights
 
     print(f"squared error shape: {squared_diff.shape}")
-    print(squared_diff[:5,:])
+    print(squared_diff[:5, :])
     print(f"weighted squared error shape: {weighted_squared_diff.shape}")
-    print(weighted_squared_diff[:5,:])
+    print(weighted_squared_diff[:5, :])
 
     # Calculate mean loss
     loss = weighted_squared_diff.mean()
     print(f"loss shape: {loss.shape} \n loss: {loss}")
-    
+
     return loss

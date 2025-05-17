@@ -8,8 +8,9 @@ from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter_add, scatter_mean
 
-#MK
+# MK
 from loss import level_weighted_mse
+
 
 class GNNLightning(pl.LightningModule):
     """
@@ -202,8 +203,8 @@ class GNNLightning(pl.LightningModule):
 
         # === Step 4: Compute loss and log it
         # loss = self.loss_fn(y_pred, y_true)
-        #MK
-        pressure_levels=None
+        # MK
+        pressure_levels = None
         loss = level_weighted_mse(y_pred, y_true, pressure_levels)
         self.log("train_loss", loss)
 
