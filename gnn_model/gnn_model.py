@@ -12,8 +12,9 @@ import torch.utils.checkpoint
 import matplotlib.pyplot as plt
 import pandas as pd
 
-#MK
+# MK
 from loss import level_weighted_mse
+
 
 class GNNLightning(pl.LightningModule):
     """
