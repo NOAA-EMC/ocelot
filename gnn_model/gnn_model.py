@@ -9,6 +9,8 @@ from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter, scatter_add
 
+#MK
+from loss import level_weighted_mse
 
 class GNNLightning(pl.LightningModule):
     """
@@ -396,6 +398,12 @@ class GNNLightning(pl.LightningModule):
             loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids)
         else:
             loss = self.loss_fn(y_pred, y_true)
+
+        # MK: level weighting (commented out for now)
+        # pressure_levels=None
+        # loss = level_weighted_mse(y_pred, y_true, pressure_levels)
+
+        self.log("train_loss", loss)
 
         if self.trainer.is_global_zero:
             self.debug(f"[DEBUG] MSE loss at batch {batch_idx}: {loss.item():.6f}")
