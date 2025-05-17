@@ -12,6 +12,8 @@ import torch.utils.checkpoint
 import matplotlib.pyplot as plt
 import pandas as pd
 
+#MK
+from loss import level_weighted_mse
 
 class GNNLightning(pl.LightningModule):
     """
@@ -427,6 +429,12 @@ class GNNLightning(pl.LightningModule):
         else:
             # loss = self.loss_fn(y_pred, y_true)
             loss = self.huber(y_pred, y_true).mean()  # fallback
+
+        # MK: level weighting (commented out for now)
+        # pressure_levels=None
+        # loss = level_weighted_mse(y_pred, y_true, pressure_levels)
+
+        self.log("train_loss", loss)
 
         if self.trainer.is_global_zero:
             self.debug(f"[DEBUG] MSE loss at batch {batch_idx}: {loss.item():.6f}")
