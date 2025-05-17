@@ -1,8 +1,10 @@
 import torch
 
+
 def normalized_level_weights(pressure_levels):
     """Weights proportional to pressure at each level."""
     return pressure_levels / pressure_levels.mean()
+
 
 def level_weighted_mse(predictions, targets, pressure_levels=None):
     """
