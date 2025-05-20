@@ -11,11 +11,7 @@ import data_reader  # noqa: E402
 import settings  # noqa: E402
 
 
-def create_data_for_day(comm,
-                        date: datetime,
-                        type: str,
-                        suffix: str = None,
-                        append: bool = True):
+def create_data_for_day(comm, date: datetime, type: str, suffix: str = None, append: bool = True):
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
@@ -59,24 +55,18 @@ def create_data_for_day(comm,
 def create_data(start_date: datetime,
                 end_date: datetime,
                 type: str,
-                suffix: str = None):
+                suffix: str = None,
+                append: bool = True):
     date = start_date
     day = timedelta(days=1)
-    week = timedelta(weeks=1)
 
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
     while date <= end_date:
-        current_start_date = date
-        append = False
+        create_data_for_day(comm, date, type, suffix, append)
+        date += day
 
-        while date < current_start_date + week and date <= end_date:
-            new_suffix = f'{suffix}_' if suffix else ''
-            new_suffix = f'{new_suffix}{date.strftime("%Y%m%d")}_{(date + week).strftime("%Y%m%d")}'
-            create_data_for_day(comm, date, type, new_suffix, append)
-            append = True
-            date += day
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -84,10 +74,11 @@ if __name__ == "__main__":
     parser.add_argument('end_date')
     parser.add_argument('type')
     parser.add_argument('-s', '--suffix', required=False)
+    parser.add_argument('-a', '--append', required=False, default=True)
 
     args = parser.parse_args()
 
     start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
-    create_data(start_date, end_date, args.type, args.suffix)
+    create_data(start_date, end_date, args.type, args.suffix, args.append)
