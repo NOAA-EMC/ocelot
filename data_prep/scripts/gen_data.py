@@ -67,7 +67,7 @@ def _make_parallel_cmd(start: datetime,
     else:
         cmd = f'mpirun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
         if suffix:
-            cmd += f'-s {suffix} ''
+            cmd += f'-s {suffix} '
 
     return cmd
 
