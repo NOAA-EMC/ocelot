@@ -1,7 +1,7 @@
 data types:
   - name: atms
     num_tasks: 24
-    batch_days: 7
+    batch_days: 15
     mapping: bufr_atms.py
     paths:
       - 00/atmos/gdas.t00z.atms.tm00.bufr_d
@@ -11,7 +11,7 @@ data types:
 
   - name: surface_obs
     num_tasks: 4
-    batch_days: 7
+    batch_days: 30
     mapping: bufr_surface_obs.py
     paths:
       - 00/atmos/gdas.t00z.prepbufr
@@ -21,7 +21,7 @@ data types:
 
   - name: radiosonde
     num_tasks: 4
-    batch_days: 7
+    batch_days: 30
     mapping: bufr_radiosonde.py
     paths:
       - 00/atmos/gdas.t00z.prepbufr
