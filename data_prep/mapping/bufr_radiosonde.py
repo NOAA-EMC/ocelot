@@ -8,10 +8,9 @@ from pathlib import Path
 from sklearn.preprocessing import LabelEncoder
 
 import bufr
-from bufr.obs_builder import ObsBuilder, add_main_functions
+from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-MAP_PATH = os.path.join(script_dir, 'bufr_radiosonde.yaml')
+MAP_PATH = map_path('bufr_radiosonde.yaml')
 
 
 class RadiosondeObsBuilder(ObsBuilder):
@@ -20,6 +19,22 @@ class RadiosondeObsBuilder(ObsBuilder):
 
     def make_obs(self, comm, input_path):
         container = super().make_obs(comm, input_path)
+
+        # Apply Masks
+
+        # Mask out bad time values
+        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
+        container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
+
+        # Mask out values with invalid quality flags
+        quality_mask = container.get('airTemperatureQuality') <= 3 & \
+                       container.get('specificHumidityQuality') <= 3 & \
+                       container.get('windQuality') <= 3 & \
+                       container.get('airPressureQuality') <= 3 & \
+                       container.get('heightQuality') <= 3
+
+        container.apply_mask(quality_mask)
+
 
         # Add timestamps
         reference_time = self._get_reference_time(input_path)
@@ -31,14 +46,9 @@ class RadiosondeObsBuilder(ObsBuilder):
         specific_humidity = container.get('specificHumidity')
 
         virt_temp_mask = temp_event_code == 8
-
         mixing_ratio = specific_humidity / (1 - specific_humidity)
         temp[virt_temp_mask] = temp[virt_temp_mask] / (1 + 0.61 * mixing_ratio[virt_temp_mask])
-
         container.replace('airTemperature', temp)
-
-        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
-        container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         # Convert stationIdentification into integer field
         stationIdentification = container.get('stationIdentification')

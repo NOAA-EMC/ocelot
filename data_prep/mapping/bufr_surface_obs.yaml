@@ -1,0 +1,187 @@
+bufr:
+  subsets:
+    - ADPSFC
+    - SFCSHP
+  variables:
+    observationTime:
+      query: "*/PRESLEVEL/DRIFTING/HRDR"
+
+    observationType:
+      query: "*/TYP"
+
+    latitude:
+      query: "*/YOB"
+
+    longitude:
+      query: "*/XOB"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    stationIdentification:
+      query: "*/SID"
+
+    stationElevation:
+      query: "*/ELV"
+
+    temperatureEventCode:
+      query: "*/T___INFO/T__EVENT{1}/TPC"
+
+    airTemperature:
+      query: "*/T___INFO/T__EVENT{1}/TOB"
+
+    virtualTemperature:
+      query: "*/T___INFO/T__EVENT{1}/TOB"
+
+    specificHumidity:
+      query: "*/Q___INFO/Q__EVENT{1}/QOB"
+
+    dewPointTemperature:
+      query: "*/Q___INFO/TDO"
+
+    eastwardWind:
+      query: "*/W___INFO/W__EVENT{1}/UOB"
+
+    northwardWind:
+      query: "*/W___INFO/W__EVENT{1}/VOB"
+
+    airPressure:
+      query: "*/P___INFO/P__EVENT{1}/POB"
+      transforms:
+        - scale: 100
+
+    height:
+      query: "*/Z___INFO/Z__EVENT{1}/ZOB"
+
+    seaTemperature:
+      query: "*/SST___INFO/SST__EVENT{1}/SST1"
+
+    # Quality Markers
+    airTemperatureQuality:
+      query: "*/T___INFO/T__EVENT{1}/TQM"
+
+    specificHumidityQuality:
+      query: "*/Q___INFO/Q__EVENT{1}/QQM"
+
+    dewPointTemperatureQuality:
+      query: "*/Q___INFO/Q__EVENT{1}/QQM"
+
+    windQuality:
+      query: "*/W___INFO/W__EVENT{1}/WQM"
+
+    airPressureQuality:
+      query: "*/P___INFO/P__EVENT{1}/PQM"
+
+    heightQuality:
+      query: "*/Z___INFO/Z__EVENT{1}/ZQM"
+
+    seaTemperatureQuality:
+      query: "*/SST___INFO/SST__EVENT{1}/SSTQM"
+
+encoder:
+  variables:
+    # MetaData
+    - name: "latitude"
+      source: variables/latitude
+      longName: "Latitude"
+      units: "degree_north"
+      range: [-90, 90]
+
+    - name: "longitude"
+      source: variables/longitude
+      longName: "Longitude"
+      units: "degree_east"
+
+    - name: "stationIdentification"
+      source: variables/stationIdentification
+      longName: "Station Identification"
+
+    - name: "stationElevation"
+      source: variables/stationElevation
+      longName: "Station Elevation"
+      units: "meters"
+      range: [-100, 5000]
+
+    - name: "temperatureEventCode"
+      source: variables/temperatureEventCode
+      longName: "Temperature Event Code"
+
+    - name: "airTemperature"
+      source: variables/airTemperature
+      longName: "Air Temperature"
+      units: "deg C"
+
+    - name: "virtualTemperature"
+      source: variables/virtualTemperature
+      longName: "Virtual Temperature"
+      units: "deg C"
+
+    - name: "specificHumidity"
+      source: variables/specificHumidity
+      longName: "Specific Humidity"
+      units: "mg/kg"
+
+    - name: "dewPointTemperature"
+      source: variables/dewPointTemperature
+      longName: "Dew Point Temperature"
+      units: "deg C"
+      range: [-100, 100]
+
+    - name: "eastwardWind"
+      source: variables/eastwardWind
+      longName: "Eastward Wind"
+      units: "m/s"
+      range: [-150, 150]
+
+    - name: "northwardWind"
+      source: variables/northwardWind
+      longName: "Northward Wind"
+      units: "m/s"
+      range: [-150, 150]
+
+    - name: "airPressure"
+      source: variables/airPressure
+      longName: "Air Pressure"
+      units: "hPa"
+
+    - name: "height"
+      source: variables/height
+      longName: "Height"
+      units: "meters"
+
+    - name: "seaTemperature"
+      source: variables/seaTemperature
+      longName: "Sea Temperature"
+      units: "deg C"
+
+    # Quality Markers
+    - name: "airTemperatureQuality"
+      source: variables/airTemperatureQuality
+      longName: "Air Temperature Quality"
+
+    - name: "specificHumidityQuality"
+      source: variables/specificHumidityQuality
+      longName: "Specific Humidity Quality"
+
+    - name: "dewPointTemperatureQuality"
+      source: variables/dewPointTemperatureQuality
+      longName: "Dew Point Temperature Quality"
+
+    - name: "eastwardWindQuality"
+      source: variables/windQuality
+      longName: "Eastward Wind Quality"
+
+    - name: "northwardWindQuality"
+      source: variables/windQuality
+      longName: "Northward Wind Quality"
+
+    - name: "airPressureQuality"
+      source: variables/airPressureQuality
+      longName: "Air Pressure Quality"
+
+    - name: "heightQuality"
+      source: variables/heightQuality
+      longName: "Height Quality"
+
+    - name: "seaTemperatureQuality"
+      source: variables/seaTemperatureQuality
+      longName: "Sea Temperature Quality"
