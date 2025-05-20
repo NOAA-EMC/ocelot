@@ -8,9 +8,10 @@ from pathlib import Path
 from sklearn.preprocessing import LabelEncoder
 
 import bufr
-from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
+from bufr.obs_builder import ObsBuilder, add_main_functions
 
-MAP_PATH = map_path('bufr_radiosonde.yaml')
+script_dir = os.path.dirname(os.path.abspath(__file__))
+MAP_PATH = os.path.join(script_dir, 'bufr_radiosonde.yaml')
 
 
 class RadiosondeObsBuilder(ObsBuilder):
