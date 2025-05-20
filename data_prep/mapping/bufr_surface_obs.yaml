@@ -154,34 +154,34 @@ encoder:
       units: "deg C"
 
     # Quality Markers
-    - name: "airTemperatureQuality"
-      source: variables/airTemperatureQuality
-      longName: "Air Temperature Quality"
-
-    - name: "specificHumidityQuality"
-      source: variables/specificHumidityQuality
-      longName: "Specific Humidity Quality"
-
-    - name: "dewPointTemperatureQuality"
-      source: variables/dewPointTemperatureQuality
-      longName: "Dew Point Temperature Quality"
-
-    - name: "eastwardWindQuality"
-      source: variables/windQuality
-      longName: "Eastward Wind Quality"
-
-    - name: "northwardWindQuality"
-      source: variables/windQuality
-      longName: "Northward Wind Quality"
-
-    - name: "airPressureQuality"
-      source: variables/airPressureQuality
-      longName: "Air Pressure Quality"
-
-    - name: "heightQuality"
-      source: variables/heightQuality
-      longName: "Height Quality"
-
-    - name: "seaTemperatureQuality"
-      source: variables/seaTemperatureQuality
-      longName: "Sea Temperature Quality"
+#    - name: "airTemperatureQuality"
+#      source: variables/airTemperatureQuality
+#      longName: "Air Temperature Quality"
+#
+#    - name: "specificHumidityQuality"
+#      source: variables/specificHumidityQuality
+#      longName: "Specific Humidity Quality"
+#
+#    - name: "dewPointTemperatureQuality"
+#      source: variables/dewPointTemperatureQuality
+#      longName: "Dew Point Temperature Quality"
+#
+#    - name: "eastwardWindQuality"
+#      source: variables/windQuality
+#      longName: "Eastward Wind Quality"
+#
+#    - name: "northwardWindQuality"
+#      source: variables/windQuality
+#      longName: "Northward Wind Quality"
+#
+#    - name: "airPressureQuality"
+#      source: variables/airPressureQuality
+#      longName: "Air Pressure Quality"
+#
+#    - name: "heightQuality"
+#      source: variables/heightQuality
+#      longName: "Height Quality"
+#
+#    - name: "seaTemperatureQuality"
+#      source: variables/seaTemperatureQuality
+#      longName: "Sea Temperature Quality"
