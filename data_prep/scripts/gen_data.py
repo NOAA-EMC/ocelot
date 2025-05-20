@@ -27,7 +27,6 @@ def _make_sbatch_cmd(idx: int,
                      ntasks: int,
                      data_type: str,
                      suffix: str = None,
-                     append: bool = True,
                      slurm_account: str = None) -> str:
 
     if not _is_slurm_available():
@@ -49,9 +48,6 @@ def _make_sbatch_cmd(idx: int,
     if suffix:
         cmd += f'-s {suffix} '
 
-    if not append:
-        cmd += '--append False '
-
     cmd += '" | awk \'{print $4}\')'
 
     return cmd
@@ -61,24 +57,17 @@ def _make_parallel_cmd(start: datetime,
                        end: datetime,
                        ntasks: int,
                        data_type: str,
-                       suffix: str = None,
-                       append: bool = True) -> str:
+                       suffix: str = None) -> str:
 
     if _is_slurm_available():
         cmd = f'srun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
         if suffix:
             cmd += f'-s {suffix} '
 
-        if not append:
-            cmd += '--append False '
-
     else:
         cmd = f'mpirun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
         if suffix:
-            cmd += f'-s {suffix} '
-
-        if not append:
-            cmd += '--append False '
+            cmd += f'-s {suffix} ''
 
     return cmd
 
@@ -86,16 +75,12 @@ def _make_parallel_cmd(start: datetime,
 def _make_serial_cmd(start: datetime,
                      end: datetime,
                      data_type: str,
-                     suffix: str = None,
-                     append=True) -> str:
+                     suffix: str = None) -> str:
 
     cmd = f'python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
 
     if suffix:
         cmd += f'-s {suffix} '
-
-    if not append:
-        cmd += '--append False '
 
     return cmd
 
@@ -123,7 +108,6 @@ def _batch_gen(start: datetime,
                ntasks: int,
                gen_type: str,
                suffix: str = None,
-               append: bool = True,
                slurm_account: str = None) -> None:
     ranges = _split_datetime_range(start, end, max_days)
 
@@ -137,7 +121,6 @@ def _batch_gen(start: datetime,
                                  ntasks,
                                  gen_type,
                                  suffix=suffix,
-                                 append=append,
                                  slurm_account=slurm_account))
         else:
             cmds.append(
@@ -158,9 +141,8 @@ def _parallel_gen(start: datetime,
                   end: datetime,
                   ntasks: int,
                   gen_type: str,
-                  suffix: str = None,
-                  append: bool = True) -> None:
-    cmd = _make_parallel_cmd(start, end, ntasks, gen_type, suffix=suffix, append=append)
+                  suffix: str = None) -> None:
+    cmd = _make_parallel_cmd(start, end, ntasks, gen_type, suffix=suffix)
     print(cmd)
     os.system(cmd)
 
@@ -168,9 +150,8 @@ def _parallel_gen(start: datetime,
 def _serial_gen(start: datetime,
                 end: datetime,
                 gen_type: str,
-                suffix: str = None,
-                append: bool = True) -> None:
-    cmd = _make_serial_cmd(start, end, gen_type, suffix=suffix, append=append)
+                suffix: str = None) -> None:
+    cmd = _make_serial_cmd(start, end, gen_type, suffix=suffix)
     print(cmd)
     os.system(cmd)
 
@@ -189,7 +170,6 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--suffix', required=False, help='Suffix for the output file(s)')
     parser.add_argument('-p', '--parallel', action='store_true', help='Run in parallel (using either srun or mpirun).')
     parser.add_argument('-b', '--batch', action='store_true', help='Run in batch mode (using sbatch). Chunks the data into multiple tasks if needed.')
-    parser.add_argument('-a', '--append', action='store_true', help='Append to existing data')
     parser.add_argument('--slurm_account', required=False, help='SLURM account name for batch jobs')
 
     args = parser.parse_args()
@@ -206,21 +186,18 @@ if __name__ == "__main__":
                        type_config.num_tasks,
                        gen_type,
                        suffix=args.suffix,
-                       append=args.append,
                        slurm_account=args.slurm_account)
         elif args.parallel:
             _parallel_gen(start_date,
                           end_date,
                           type_config.num_tasks,
                           gen_type,
-                          suffix=args.suffix,
-                          append=args.append)
+                          suffix=args.suffix)
         else:
             _serial_gen(start_date,
                         end_date,
                         gen_type,
-                        suffix=args.suffix,
-                        append=args.append)
+                        suffix=args.suffix)
 
     if args.type == 'all':
         for gen_type in data_types:
