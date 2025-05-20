@@ -53,6 +53,9 @@ class PressureObsBuilder(ObsBuilder):
         stationIdentification = encoder.fit_transform(stationIdentification)
         container.replace('stationIdentification', stationIdentification)
 
+        # Add global attribute for stationIdentification labels
+        self.description.add_global('stationIdentificationLabels', list(encoder.classes_))
+
         return container
 
     def _make_description(self):
