@@ -28,11 +28,13 @@ class RadiosondeObsBuilder(ObsBuilder):
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         # Mask out values with invalid quality flags
-        quality_mask = container.get('airTemperatureQuality') <= 3 & \
-                       container.get('specificHumidityQuality') <= 3 & \
-                       container.get('windQuality') <= 3 & \
-                       container.get('airPressureQuality') <= 3 & \
-                       container.get('heightQuality') <= 3
+        quality_mask = (
+            (container.get('airTemperatureQuality') <= 3)
+            & (container.get('specificHumidityQuality') <= 3)
+            & (container.get('windQuality') <= 3)
+            & (container.get('airPressureQuality') <= 3)
+            & (container.get('heightQuality') <= 3)
+        )
 
         container.apply_mask(quality_mask)
 
