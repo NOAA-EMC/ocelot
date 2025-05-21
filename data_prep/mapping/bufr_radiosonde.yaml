@@ -56,7 +56,7 @@ bufr:
     dewPointTemperatureQuality:
       query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
-    windSpeedQuality:
+    windQuality:
       query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
 
     airPressureQuality:
