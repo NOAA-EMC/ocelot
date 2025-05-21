@@ -31,7 +31,7 @@ class RadiosondeObsBuilder(ObsBuilder):
         quality_mask = (
             (container.get('airTemperatureQuality') <= 3)
             & (container.get('specificHumidityQuality') <= 3)
-            & (container.get('windQuality') <= 3)
+            & (container.get('windSpeedQuality') <= 3)
             & (container.get('airPressureQuality') <= 3)
             & (container.get('heightQuality') <= 3)
         )
