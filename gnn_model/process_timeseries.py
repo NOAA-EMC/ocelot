@@ -245,3 +245,131 @@ def extract_features(z_dict, data_summary, observation_config):
                 print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
                 print(f"[{bin_name}] target_features_final shape: {target_features_norm.shape}")
     return data_summary
+
+
+def flatten_data_summary(data_summary):
+    """Flatten data_summary from extract_features by padding missing columns with zeros
+    and adding instrument IDs as additional features.
+    
+    Args:
+        data_summary (dict): Dictionary of bin data from extract_features
+        
+    Returns:
+        dict: Flattened data with consistent features across all bins and instrument IDs,
+              along with an instrument mapping dictionary
+    """
+    # Find maximum feature dimensions across all bins and collect unique instruments
+    max_input_features = 0
+    max_target_features = 0
+    max_input_metadata = 0
+    max_target_metadata = 0
+    unique_instruments = set()
+    
+    # First pass: find maximum dimensions and collect instruments
+    for bin_name, bin_data in data_summary.items():
+        for obs_type in bin_data.keys():
+            for inst_name in bin_data[obs_type].keys():
+                unique_instruments.add((obs_type, inst_name))
+                curr_data = bin_data[obs_type][inst_name]
+                
+                if 'input_features_final' in curr_data:
+                    max_input_features = max(max_input_features, curr_data['input_features_final'].shape[1])
+                if 'target_features_final' in curr_data:
+                    max_target_features = max(max_target_features, curr_data['target_features_final'].shape[1])
+                if 'input_metadata' in curr_data:
+                    max_input_metadata = max(max_input_metadata, curr_data['input_metadata'].shape[1])
+                if 'target_metadata' in curr_data:
+                    max_target_metadata = max(max_target_metadata, curr_data['target_metadata'].shape[1])
+    
+    # Create instrument ID mapping
+    instrument_mapping = {}
+    for idx, (obs_type, inst_name) in enumerate(sorted(unique_instruments)):
+        instrument_mapping[f"{obs_type}_{inst_name}"] = idx
+    
+    num_instruments = len(instrument_mapping)
+    flattened_data = {}
+    
+    # Second pass: pad and flatten
+    for bin_name, bin_data in data_summary.items():
+        bin_flat = {}
+         # Create one-hot encoding for instrument ID
+        input_inst_encoding = torch.tensor([])
+        target_inst_encoding = torch.tensor([])
+        
+        for obs_type in bin_data.keys():
+            for inst_name in bin_data[obs_type].keys():
+                curr_data = bin_data[obs_type][inst_name]
+                inst_id = instrument_mapping[f"{obs_type}_{inst_name}"]
+                
+                # Pad input features and add instrument encoding
+                if 'input_features_final' in curr_data:
+                    current_features = curr_data['input_features_final']
+                    if current_features.shape[1] < max_input_features:
+                        padding = torch.zeros(
+                            (current_features.shape[0], max_input_features - current_features.shape[1]),
+                            dtype=current_features.dtype,
+                            device=current_features.device
+                        )
+                        padded_features = torch.cat([current_features, padding], dim=1)
+                    else:
+                        padded_features = current_features
+                    
+                    # Add instrument encodingt
+                    inst_tensor = torch.full((current_features.shape[0], 1), 
+                                             fill_value=instrument_mapping[inst_id],
+                                             dtype=current_features.dtype,
+                                             device=current_features.device)
+                    input_inst_encoding = 
+                    bin_flat['input_features_final'] = torch.cat([padded_features, inst_tensor], dim=1)
+                
+                # Pad target features
+                if 'target_features_final' in curr_data:
+                    current_features = curr_data['target_features_final']
+                    if current_features.shape[1] < max_target_features:
+                        padding = torch.zeros(
+                            (current_features.shape[0], max_target_features - current_features.shape[1]),
+                            dtype=current_features.dtype,
+                            device=current_features.device
+                        )
+                        bin_flat['target_features_final'] = torch.cat([current_features, padding], dim=1)
+                    else:
+                        bin_flat['target_features_final'] = current_features
+                
+                # Pad input metadata
+                if 'input_metadata' in curr_data:
+                    current_metadata = curr_data['input_metadata']
+                    if current_metadata.shape[1] < max_input_metadata:
+                        padding = torch.zeros(
+                            (current_metadata.shape[0], max_input_metadata - current_metadata.shape[1]),
+                            dtype=current_metadata.dtype,
+                            device=current_metadata.device
+                        )
+                        bin_flat['input_metadata'] = torch.cat([current_metadata, padding], dim=1)
+                    else:
+                        bin_flat['input_metadata'] = current_metadata
+                
+                # Pad target metadata
+                if 'target_metadata' in curr_data:
+                    current_metadata = curr_data['target_metadata']
+                    if current_metadata.shape[1] < max_target_metadata:
+                        padding = torch.zeros(
+                            (current_metadata.shape[0], max_target_metadata - current_metadata.shape[1]),
+                            dtype=current_metadata.dtype,
+                            device=current_metadata.device
+                        )
+                        bin_flat['target_metadata'] = torch.cat([current_metadata, padding], dim=1)
+                    else:
+                        bin_flat['target_metadata'] = current_metadata
+                
+                # Copy non-tensor data directly
+                for key in ['target_scaler_min', 'target_scaler_max', 'input_lat_deg',
+                           'input_lon_deg', 'target_lat_deg', 'target_lon_deg']:
+                    if key in curr_data:
+                        bin_flat[key] = curr_data[key]
+        
+        flattened_data[bin_name] = bin_flat
+    
+    # Add instrument mapping to the flattened data
+    flattened_data['instrument_mapping'] = instrument_mapping
+    
+    return flattened_data

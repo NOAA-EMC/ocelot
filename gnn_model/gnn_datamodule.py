@@ -16,7 +16,7 @@ from mesh_creation import create_icosahedral_mesh
 from mesh_to_mesh import MeshSelfConnectivity
 from mesh_to_target import MeshTargetKNNConnector
 from obs_to_mesh import ObsMeshCutoffConnector
-from process_timeseries import extract_features, organize_bins_times
+from process_timeseries import extract_features, organize_bins_times, flatten_data_summary
 
 
 @rank_zero_only
@@ -65,7 +65,7 @@ class BinDataset(Dataset):
 
         try:
             bin = self.data_summary[bin_name]
-            print(f"[{bin_name}] Input indices: {len(bin['input_time_index'])}, Target indices: {len(bin['target_time_index'])}")
+            print(f"{bin_name}")
             data_dict = self.create_graph_fn(bin)
             print(
                 f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
@@ -110,14 +110,19 @@ class GNNDataModule(pl.LightningDataModule):
         self.start_date = pd.to_datetime(start_date)
         self.end_date = pd.to_datetime(end_date)
         self.observation_config = observation_config
+        self.obs_types = list(observation_config.keys())
+        self.target_types = ['temperature', 'salinity']  # Fixed target types
+        
+        # Graph parameters
         self.batch_size = batch_size
-
-        # Mesh and graph parameters
         self.mesh_resolution = mesh_resolution
         self.cutoff_factor = cutoff_factor
         self.num_neighbors = num_neighbors
 
-        self.hetero_data, self.mesh_graph, self.mesh_latlon_rad, self.mesh_stats = create_icosahedral_mesh(resolution=self.mesh_resolution)
+        # Create mesh structure (shared across all types)
+        self.hetero_data, self.mesh_graph, self.mesh_latlon_rad, self.mesh_stats = create_icosahedral_mesh(
+            resolution=self.mesh_resolution
+        )
 
         # Placeholders for data
         self.z = None
@@ -137,11 +142,19 @@ class GNNDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         """
-        Sets up the dataset by organizing time bins and extracting features.
+        Sets up the dataset by organizing time bins, extracting features, and flattening data.
+        
+        The setup process:
+        1. Opens Zarr stores for each observation type
+        2. Organizes data into time bins
+        3. Extracts features for each bin
+        4. Flattens data structure and adds instrument IDs
+        5. Splits data into train/val/test sets
         """
         if self.z is None:
+            # Open Zarr stores
             self.z = {}
-            for obs_type in self.observation_config.keys():
+            for obs_type in self.obs_types:
                 self.z[obs_type] = {}
                 for key in self.observation_config[obs_type].keys():
                     data_path = os.path.join(self.data_path, key) + ".zarr"
@@ -157,25 +170,41 @@ class GNNDataModule(pl.LightningDataModule):
             dist.barrier()
 
         if not self.data_processed:
-            self.data_summary = organize_bins_times(self.z, self.start_date, self.end_date, self.observation_config)
-            self.data_summary = extract_features(self.z, self.data_summary, self.observation_config)
+                # Organize time bins with type-specific data
+                self.data_summary = organize_bins_times(
+                    self.z,
+                    self.start_date,
+                    self.end_date,
+                    self.observation_config,
+                )
 
-            all_bin_names = list(self.data_summary.keys())
+                # Extract features for each bin and observation type
+                self.data_summary = extract_features(
+                    self.z,
+                    self.data_summary,
+                    self.observation_config,
+                )
 
-            if stage == "fit" or stage is None:
-                train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
-                self.train_bin_names = all_bin_names[:train_size]
-                self.val_bin_names = all_bin_names[train_size:]
-                print(f"Train bins: {len(self.train_bin_names)}, Val bins: {len(self.val_bin_names)}")
-                self._log_dataset_split()
+                # Flatten data structure and add instrument IDs
+                self.data_summary = flatten_data_summary(self.data_summary)
 
-            if stage == "test":
-                self.test_bin_names = all_bin_names
+                # Split bins into train/val/test sets
+                all_bin_names = sorted(list(self.data_summary.keys()))
 
-            if stage == "predict":
-                self.predict_bin_names = all_bin_names
+        if stage == "fit" or stage is None:
+            train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
+            self.train_bin_names = all_bin_names[:train_size]
+            self.val_bin_names = all_bin_names[train_size:]
+            print(f"Train bins: {len(self.train_bin_names)}, Val bins: {len(self.val_bin_names)}")
+            self._log_dataset_split()
 
-            self.data_processed = True
+        if stage == "test":
+            self.test_bin_names = all_bin_names
+
+        if stage == "predict":
+            self.predict_bin_names = all_bin_names
+
+        self.data_processed = True
 
     @rank_zero_only
     def _log_dataset_split(self):
@@ -183,24 +212,28 @@ class GNNDataModule(pl.LightningDataModule):
 
     def _create_graph_structure(self, bin_data):
         """
-        Builds the PyG-compatible graph structure for a single time bin.
+        Builds the PyG-compatible graph structure for a single time bin using flattened data.
 
-        - Encoder edges connect observation points to nearby mesh nodes.
-        - Processor edges connect mesh nodes using pre-built connectivity.
-        - Decoder edges connect mesh nodes to target prediction locations.
-        - Global indexing is applied to combine observation and mesh nodes.
-        - Node features are padded to maintain consistent dimensionality.
+        The flattened data includes:
+        - Combined features from all observation types
+        - Instrument IDs encoded as one-hot vectors
+        - Consistent feature dimensions through zero-padding
+        - Shared mesh connectivity
 
         Returns:
-            dict: A dictionary of all graph components including edges, node features,
-                targets, and min/max scalers for unnormalization.
+            dict: A dictionary containing graph components with flattened features
         """
-        input_features = bin_data["input_features_final"]
+        # Get flattened features and metadata
+        input_features = bin_data["input_features_final"]  # Already includes instrument IDs
         target_features = bin_data["target_features_final"]
-        obs_latlon_rad = bin_data["input_metadata"][:, :2]  # latitude (rad), longitude (rad)
-        target_latlon_rad = bin_data["target_metadata"][:, :2]  # latitude (rad), longitude (rad)
+        input_metadata = bin_data["input_metadata"]
+        target_metadata = bin_data["target_metadata"]
+        
+        # Extract lat/lon from metadata (first two columns)
+        obs_latlon_rad = input_metadata[:, :2]  # latitude (rad), longitude (rad)
+        target_latlon_rad = target_metadata[:, :2]  # latitude (rad), longitude (rad)
 
-        # Print mesh statistics
+        # Print mesh statistics once
         if not self._printed_mesh_stats:
             print("\n Mesh Statistics:")
             print(f"  - Mesh Resolution: {self.mesh_stats['resolution']}")
@@ -214,20 +247,29 @@ class GNNDataModule(pl.LightningDataModule):
             self._printed_mesh_stats = True
 
         # === ENCODER EDGES ===
+        # Create edges from flattened observation points to mesh nodes
         cutoff_encoder = ObsMeshCutoffConnector(cutoff_factor=self.cutoff_factor)
-        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(obs_latlon_rad, self.mesh_latlon_rad, return_edge_attr=True)
+        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(
+            obs_latlon_rad, 
+            self.mesh_latlon_rad, 
+            return_edge_attr=True
+        )
 
         if edge_index_encoder.numel() == 0:
             raise ValueError("No encoder edges were created. Try increasing cutoff_factor.")
 
         # === PROCESSOR EDGES ===
+        # Create mesh-to-mesh connectivity (shared across all types)
         multi_scale_processor = MeshSelfConnectivity("hidden", "hidden")
         print_processor_edges = not self._printed_processor_edges
-        hetero_data, mesh_graph = multi_scale_processor.update_graph(self.hetero_data, self.mesh_graph, print_once=print_processor_edges)
+        hetero_data, mesh_graph = multi_scale_processor.update_graph(
+            self.hetero_data, 
+            self.mesh_graph, 
+            print_once=print_processor_edges
+        )
         self._printed_processor_edges = True
 
         mesh_graph = mesh_graph.to_undirected()
-        # Get edge index for processor edges
         edge_index_processor = hetero_data["hidden", "to", "hidden"].edge_index
 
         # === DECODER EDGES ===
@@ -235,17 +277,18 @@ class GNNDataModule(pl.LightningDataModule):
         edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, self.mesh_latlon_rad)
 
         # === GLOBAL INDEXING ===
+        # Calculate dimensions for combined features
         num_obs_nodes = input_features.shape[0]
         num_mesh_nodes = hetero_data["hidden"].x.shape[0]
         mesh_offset = num_obs_nodes
 
-        # Move to CPU to avoid accumulating static mesh data on GPU across bins
+        # Move mesh features to CPU and pad to match input dimension
         mesh_feats = hetero_data["hidden"].x.cpu()
         input_dim = input_features.shape[1]
         pad_feats = torch.zeros((num_mesh_nodes, input_dim - mesh_feats.shape[1]))
         mesh_feats_padded = torch.cat([mesh_feats, pad_feats], dim=1)
 
-        # Stack input and mesh features
+        # Stack flattened input features with padded mesh features
         stacked_x = torch.cat([input_features, mesh_feats_padded], dim=0)
 
         # Update edge indices with global offsets
@@ -255,14 +298,15 @@ class GNNDataModule(pl.LightningDataModule):
         edge_index_decoder_global = edge_index_knn.clone()
         edge_index_decoder_global[0] += mesh_offset
 
+        # Return flattened graph structure
         return {
-            "x": stacked_x,
+            "x": stacked_x,  # Combined features including instrument IDs
             "edge_index_encoder": edge_index_encoder_global.to(torch.long),
             "edge_attr_encoder": edge_attr_encoder,
             "edge_index_processor": edge_index_processor_global.to(torch.long),
             "edge_index_decoder": edge_index_decoder_global.to(torch.long),
             "edge_attr_decoder": edge_attr_knn,
-            "y": target_features,
+            "y": target_features,  # Flattened target features
             "target_scaler_min": torch.tensor(bin_data["target_scaler_min"], dtype=torch.float32),
             "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
             "target_lat_deg": bin_data["target_lat_deg"],
