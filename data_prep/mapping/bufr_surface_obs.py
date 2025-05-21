@@ -36,12 +36,14 @@ class PressureObsBuilder(ObsBuilder):
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         # Apply Quality Masks
-        quality_mask = container.get('airTemperatureQuality') <= 3 & \
-                       container.get('specificHumidityQuality') <= 3 & \
-                       container.get('windQuality') <= 3 & \
-                       container.get('airPressureQuality') <= 3 & \
-                       container.get('heightQuality') <= 3 & \
-                       container.get('seaTemperatureQuality') <= 3
+        quality_mask = (
+            (container.get('airTemperatureQuality') <= 3)
+            & (container.get('specificHumidityQuality') <= 3)
+            & (container.get('windQuality') <= 3)
+            & (container.get('airPressureQuality') <= 3)
+            & (container.get('heightQuality') <= 3)
+            & (container.get('seaTemperatureQuality') <= 3)
+        )
 
         container.apply_mask(quality_mask)
 
