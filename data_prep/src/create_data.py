@@ -13,7 +13,7 @@ import settings  # noqa: E402
 
 def create_data_for_day(comm,
                         date: datetime,
-                        type: str,
+                        data_type: str,
                         output_path: str,
                         append: bool = True) -> None:
     start_datetime = date
@@ -23,7 +23,7 @@ def create_data_for_day(comm,
     parameters.start_time = start_datetime
     parameters.stop_time = end_datetime
 
-    description, container = data_reader.run(comm, type, parameters)
+    description, container = data_reader.run(comm, data_type, parameters)
 
     if container is None:
         raise ValueError("No data found")
@@ -53,7 +53,7 @@ def create_data_for_day(comm,
 
 def create_data(start_date: datetime,
                 end_date: datetime,
-                type: str,
+                data_type: str,
                 suffix: str = None,
                 append: bool = True) -> None:
     """Create zarr files from BUFR data in week long chunks."""
@@ -73,9 +73,9 @@ def create_data(start_date: datetime,
     output_paths = {}
     for wstart, wend in week_ranges:
         if suffix:
-            file_name = f"{type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+            file_name = f"{data_type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
         else:
-            file_name = f"{type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+            file_name = f"{data_type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
         output_paths[(wstart, wend)] = os.path.join(settings.OUTPUT_PATH, file_name)
 
     if comm.rank() == 0:
@@ -99,7 +99,7 @@ def create_data(start_date: datetime,
         exists = os.path.exists(os.path.join(out_path, '.zgroup'))
         append_flag = append and exists
 
-        create_data_for_day(comm, date, type, out_path, append=append_flag)
+        create_data_for_day(comm, date, data_type, out_path, append=append_flag)
         date += day
 
 
