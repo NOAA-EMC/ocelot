@@ -15,9 +15,8 @@ class AtmsObsBuilder(ObsBuilder):
     def make_obs(self, comm, input_path):
         container = super().make_obs(comm, input_path)
 
-        quality_flags = container.get('qualityFlags')
-
         # Mask out values with non-zero quality flags
+        quality_flags = container.get('qualityFlags')
         container.apply_mask(quality_flags == 0)
 
         return container

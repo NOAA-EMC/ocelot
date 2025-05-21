@@ -38,7 +38,6 @@ class RadiosondeObsBuilder(ObsBuilder):
 
         container.apply_mask(quality_mask)
 
-
         # Add timestamps
         reference_time = self._get_reference_time(input_path)
         self._add_timestamp(container, reference_time)
