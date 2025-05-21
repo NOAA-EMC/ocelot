@@ -101,11 +101,6 @@ encoder:
     - name: "sensorAzimuthAngle"
       source: variables/sensorAzimuthAngle
       longName: "Sensor Azimuth Angle"
-      units: ""
-
-    - name: "sensorAzimuthAngle"
-      source: variables/sensorAzimuthAngle
-      longName: "Sensor Azimuth Angle"
       units: "degree"
 
     - name: "bt"
