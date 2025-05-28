@@ -27,16 +27,12 @@ class RadiosondeObsBuilder(ObsBuilder):
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
-        # Mask out values with invalid quality flags
-        quality_mask = (
-            (container.get('airTemperatureQuality') <= 3)
-            & (container.get('specificHumidityQuality') <= 3)
-            & (container.get('windQuality') <= 3)
-            & (container.get('airPressureQuality') <= 3)
-            & (container.get('heightQuality') <= 3)
-        )
-
-        container.apply_mask(quality_mask)
+        self._apply_quality_flag(container, 'airTemperature', 'airTemperatureQuality')
+        self._apply_quality_flag(container, 'specificHumidity', 'specificHumidityQuality')
+        self._apply_quality_flag(container, 'northwardWind', 'windQuality')
+        self._apply_quality_flag(container, 'eastwardWind',  'windQuality')
+        self._apply_quality_flag(container, 'airPressure', 'airPressureQuality')
+        self._apply_quality_flag(container, 'height', 'heightQuality')
 
         # Add timestamps
         reference_time = self._get_reference_time(input_path)
@@ -93,6 +89,11 @@ class RadiosondeObsBuilder(ObsBuilder):
         cycle_times = np.array([3600 * t for t in container.get('obsTimeMinusCycleTime')]).astype('timedelta64[s]')
         time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add('timestamp', time, ['*'])
+
+    def _apply_quality_flag(self, container, target_field_name, quality_field_name):
+        data = container.get(target_field_name)
+        data.mask = (container.get(quality_field_name) <= 3) & data.mask
+        container.replace(target_field_name, data)
 
 
 add_main_functions(RadiosondeObsBuilder)
