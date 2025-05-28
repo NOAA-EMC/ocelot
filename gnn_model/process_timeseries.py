@@ -249,20 +249,17 @@ def extract_features(z_dict, data_summary, observation_config):
 
 def flatten_data_summary(data_summary):
     """Flatten data_summary from extract_features by padding missing columns with zeros
-    and adding instrument IDs as additional features.
+    and stacking different observation types together. Instrument IDs are kept in separate tensors.
     
     Args:
         data_summary (dict): Dictionary of bin data from extract_features
         
     Returns:
-        dict: Flattened data with consistent features across all bins and instrument IDs,
+        dict: Flattened and stacked data with consistent features across all bins,
               along with an instrument mapping dictionary
     """
-    # Find maximum feature dimensions across all bins and collect unique instruments
-    max_input_features = 0
-    max_target_features = 0
-    max_input_metadata = 0
-    max_target_metadata = 0
+    flattened_variables = ("input_features_final", "target_features_final", "input_metadata", "target_metadata")
+    max_features = {var: 0 for var in flattened_variables}
     unique_instruments = set()
     
     # First pass: find maximum dimensions and collect instruments
@@ -271,105 +268,98 @@ def flatten_data_summary(data_summary):
             for inst_name in bin_data[obs_type].keys():
                 unique_instruments.add((obs_type, inst_name))
                 curr_data = bin_data[obs_type][inst_name]
-                
-                if 'input_features_final' in curr_data:
-                    max_input_features = max(max_input_features, curr_data['input_features_final'].shape[1])
-                if 'target_features_final' in curr_data:
-                    max_target_features = max(max_target_features, curr_data['target_features_final'].shape[1])
-                if 'input_metadata' in curr_data:
-                    max_input_metadata = max(max_input_metadata, curr_data['input_metadata'].shape[1])
-                if 'target_metadata' in curr_data:
-                    max_target_metadata = max(max_target_metadata, curr_data['target_metadata'].shape[1])
+                for var in flattened_variables:
+                    if var in curr_data:
+                        max_features[var] = max(max_features[var], curr_data[var].shape[1])
     
     # Create instrument ID mapping
     instrument_mapping = {}
     for idx, (obs_type, inst_name) in enumerate(sorted(unique_instruments)):
         instrument_mapping[f"{obs_type}_{inst_name}"] = idx
     
-    num_instruments = len(instrument_mapping)
+    def pad_and_stack_tensor(tensor, max_dim, device):
+        """Helper function to pad a tensor to max_dim along dimension 1"""
+        if tensor.shape[1] < max_dim:
+            padding = torch.zeros(
+                (tensor.shape[0], max_dim - tensor.shape[1]),
+                dtype=tensor.dtype,
+                device=device
+            )
+            return torch.cat([tensor, padding], dim=1)
+        return tensor
+    
     flattened_data = {}
     
-    # Second pass: pad and flatten
+    # Second pass: pad, flatten, and stack
     for bin_name, bin_data in data_summary.items():
-        bin_flat = {}
-         # Create one-hot encoding for instrument ID
-        input_inst_encoding = torch.tensor([])
-        target_inst_encoding = torch.tensor([])
+        # Initialize data collection dictionaries
+        feature_lists = {
+            'input_features_final': [],
+            'target_features_final': [],
+            'input_metadata': [],
+            'target_metadata': [],
+            'input_instrument_ids': [],
+            'target_instrument_ids': []
+        }
+        
+        scalar_lists = {
+            'target_scaler_min': [],
+            'target_scaler_max': [],
+            'input_lat_deg': [],
+            'input_lon_deg': [],
+            'target_lat_deg': [],
+            'target_lon_deg': []
+        }
         
         for obs_type in bin_data.keys():
             for inst_name in bin_data[obs_type].keys():
                 curr_data = bin_data[obs_type][inst_name]
                 inst_id = instrument_mapping[f"{obs_type}_{inst_name}"]
+                device = next((v.device for v in curr_data.values() if isinstance(v, torch.Tensor)), 'cpu')
                 
-                # Pad input features and add instrument encoding
-                if 'input_features_final' in curr_data:
-                    current_features = curr_data['input_features_final']
-                    if current_features.shape[1] < max_input_features:
-                        padding = torch.zeros(
-                            (current_features.shape[0], max_input_features - current_features.shape[1]),
-                            dtype=current_features.dtype,
-                            device=current_features.device
-                        )
-                        padded_features = torch.cat([current_features, padding], dim=1)
-                    else:
-                        padded_features = current_features
-                    
-                    # Add instrument encodingt
-                    inst_tensor = torch.full((current_features.shape[0], 1), 
-                                             fill_value=instrument_mapping[inst_id],
-                                             dtype=current_features.dtype,
-                                             device=current_features.device)
-                    input_inst_encoding = 
-                    bin_flat['input_features_final'] = torch.cat([padded_features, inst_tensor], dim=1)
-                
-                # Pad target features
-                if 'target_features_final' in curr_data:
-                    current_features = curr_data['target_features_final']
-                    if current_features.shape[1] < max_target_features:
-                        padding = torch.zeros(
-                            (current_features.shape[0], max_target_features - current_features.shape[1]),
-                            dtype=current_features.dtype,
-                            device=current_features.device
-                        )
-                        bin_flat['target_features_final'] = torch.cat([current_features, padding], dim=1)
-                    else:
-                        bin_flat['target_features_final'] = current_features
-                
-                # Pad input metadata
-                if 'input_metadata' in curr_data:
-                    current_metadata = curr_data['input_metadata']
-                    if current_metadata.shape[1] < max_input_metadata:
-                        padding = torch.zeros(
-                            (current_metadata.shape[0], max_input_metadata - current_metadata.shape[1]),
-                            dtype=current_metadata.dtype,
-                            device=current_metadata.device
-                        )
-                        bin_flat['input_metadata'] = torch.cat([current_metadata, padding], dim=1)
-                    else:
-                        bin_flat['input_metadata'] = current_metadata
-                
-                # Pad target metadata
-                if 'target_metadata' in curr_data:
-                    current_metadata = curr_data['target_metadata']
-                    if current_metadata.shape[1] < max_target_metadata:
-                        padding = torch.zeros(
-                            (current_metadata.shape[0], max_target_metadata - current_metadata.shape[1]),
-                            dtype=current_metadata.dtype,
-                            device=current_metadata.device
-                        )
-                        bin_flat['target_metadata'] = torch.cat([current_metadata, padding], dim=1)
-                    else:
-                        bin_flat['target_metadata'] = current_metadata
-                
-                # Copy non-tensor data directly
-                for key in ['target_scaler_min', 'target_scaler_max', 'input_lat_deg',
-                           'input_lon_deg', 'target_lat_deg', 'target_lon_deg']:
-                    if key in curr_data:
-                        bin_flat[key] = curr_data[key]
+                # Process features and metadata
+                for var in flattened_variables:
+                    if var in curr_data:
+                        current_tensor = curr_data[var]
+                        num_samples = current_tensor.shape[0]
+                        padded_tensor = pad_and_stack_tensor(current_tensor, max_features[var], device)
+                        feature_lists[var].append(padded_tensor)
+                        
+                        # Add corresponding instrument IDs
+                        if var == 'input_features_final':
+                            feature_lists['input_instrument_ids'].append(
+                                torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
+                            )
+                            # Process scalar values for input features
+                            for key in scalar_lists.keys():
+                                if key in curr_data:
+                                    if key in ['input_lat_deg', 'input_lon_deg', 'target_lat_deg', 'target_lon_deg']:
+                                        # For lat/lon, use actual values without repeating
+                                        scalar_lists[key].append(torch.tensor(curr_data[key], dtype=torch.float32, device=device))
+                                    else:
+                                        # For other scalars (like scaler min/max), repeat for each sample
+                                        scalar_lists[key].append(
+                                            torch.full((num_samples,), curr_data[key],
+                                                      dtype=torch.float32, device=device)
+                                        )
+                        elif var == 'target_features_final':
+                            feature_lists['target_instrument_ids'].append(
+                                torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
+                            )
+        
+        # Stack all collected data for this bin
+        bin_flat = {}
+        
+        # Stack features, metadata, and their instrument IDs
+        for key, tensor_list in feature_lists.items():
+            if tensor_list:  # Only stack if we have values
+                bin_flat[key] = torch.cat(tensor_list, dim=0)
+        
+        # Stack scalar values
+        for key, values in scalar_lists.items():
+            if values:  # Only stack if we have values
+                bin_flat[key] = torch.cat(values, dim=0)
         
         flattened_data[bin_name] = bin_flat
     
-    # Add instrument mapping to the flattened data
-    flattened_data['instrument_mapping'] = instrument_mapping
-    
-    return flattened_data
+    return flattened_data, instrument_mapping
