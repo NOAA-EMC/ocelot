@@ -3,7 +3,7 @@ bufr:
     - ADPSFC
     - SFCSHP
   variables:
-    observationTime:
+    obsTimeMinusCycleTime:
       query: "*/PRESLEVEL/DRIFTING/HRDR"
 
     observationType:
