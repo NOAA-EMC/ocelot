@@ -108,8 +108,8 @@ if __name__ == "__main__":
     parser.add_argument('start_date')
     parser.add_argument('end_date')
     parser.add_argument('type')
-    parser.add_argument('-s', '--suffix', required=False)
-    parser.add_argument('-a', '--append', required=False, default=True)
+    parser.add_argument('-s', '--suffix', required=False, help='Suffix for the output file(s)')
+    parser.add_argument('-a', '--append', action='store_true', help='Append to existing data')
 
     args = parser.parse_args()
 
