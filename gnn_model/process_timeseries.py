@@ -115,6 +115,15 @@ def extract_features(z, data_summary):
              (timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second) / 86400) / 365.24219
             for timestamp in input_timestamps])[:, None]
 
+        # Time of day as fraction [0, 1]
+        input_time_fraction = np.array([
+            (ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400
+            for ts in input_timestamps
+        ])
+
+        input_sin_time = np.sin(2 * np.pi * input_time_fraction)[:, None]
+        input_cos_time = np.cos(2 * np.pi * input_time_fraction)[:, None]
+
         sensor_zenith_input = z["sensorZenithAngle"][input_idx][:, None]
         solar_zenith_input = z["solarZenithAngle"][input_idx][:, None]
         solar_azimuth_input = z["solarAzimuthAngle"][input_idx][:, None]
@@ -146,6 +155,8 @@ def extract_features(z, data_summary):
                 sin_lon,
                 cos_lon,
                 input_dayofyear,
+                input_sin_time,
+                input_cos_time,
                 input_features_norm,
             ])
 
@@ -182,4 +193,14 @@ def extract_features(z, data_summary):
 
         print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
         print(f"[{bin_name}] target_features_final shape: {target_features_norm.shape}")
+
+        # === Add instrument IDs ===
+        instrument_id = 0  # ATMS default; need to be dynamic when more instruments are added
+        instrument_ids = np.full(
+            shape=(target_features_norm.shape[0],),
+            fill_value=instrument_id,
+            dtype=np.int64
+        )
+        data_summary[bin_name]["instrument_ids"] = instrument_ids
+
     return data_summary

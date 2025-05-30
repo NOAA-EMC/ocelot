@@ -24,7 +24,12 @@ The pipeline uses PyTorch Lightning and PyTorch Geometric, with modular componen
 - `timing_utils.py`          Resource-logging decorator
 
 ## Installation
-Ensure you have the following dependencies installed:
+Recommended (exact versions used in the paper / experiments):
+```bash
+pip install -r requirements.txt
+
+```
+Or a minimalist install
 ```bash
 pip install numpy pandas scipy torch trimesh networkx torch-geometric scikit-learn zarr joblib lightning psutil
 
@@ -38,13 +43,52 @@ end_date = "2024-04-07"
 z = zarr.open("/path/to/.zarr", mode="r")
 ```
 
-### 3. Train the GNN Model
+### 3. Launch training
 ```bash
 sbatch run_gnn.sh
 ```
+
+### 4. Debug & plots (optional)
+Pass the `--verbose` flag to `train_gnn.py`:
+```bash
+sbatch run_gnn.sh --verbose
+```
+
 ### Model Architecture
 The Graph Neural Network (GNN) consists of:
 
 1. Encoder: MLP to project observation features (with distance edge_attr) → mesh nodes
 2. Processor: Multiple GATConv layers on the icosahedral mesh
 3. Decoder: MLP decoder that maps mesh → target nodes using inverse-distance weighted
+
+         ┌───────────┐   obs→mesh (cutoff)
+         │ Observations │────┐
+         └───────────┘    │
+                          ▼
+               ┌───────────────────┐
+               │  Encoder  (MLP)   │
+               └───────────────────┘
+                          │
+                 scatter **add**
+                          ▼
+               ┌───────────────────┐
+               │  Mesh  Features   │
+               └───────────────────┘
+                          │
+              multi-layer GATConv (processor)
+                          ▼
+               ┌───────────────────┐
+               │  Hidden  Mesh     │
+               └───────────────────┘
+                          │
+          mesh→target edges (KNN) │
+                          ▼
+               ┌───────────────────┐
+               │  Decoder  (MLP)   │
+               └───────────────────┘
+                          │
+                 scatter **mean**
+                          ▼
+               ┌───────────────────┐
+               │  Target Outputs   │
+               └───────────────────┘
