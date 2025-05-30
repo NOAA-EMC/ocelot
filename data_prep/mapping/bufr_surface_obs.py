@@ -91,9 +91,8 @@ class PressureObsBuilder(ObsBuilder):
 
     def _apply_quality_flag(self, container, target_field_name, quality_field_name):
         data = container.get(target_field_name)
-        data.mask = (container.get(quality_field_name) > 3) | data.mask  # True means to mask out
+        data.mask[container.get(quality_field_name) > 3] = True  # True means mask out
         container.replace(target_field_name, data)
 
 
-# Add main functions create_obs_file and create_obs_group
 add_main_functions(PressureObsBuilder)
