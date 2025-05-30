@@ -301,10 +301,7 @@ def flatten_data_summary(data_summary):
             'input_instrument_ids': [],
             'target_instrument_ids': []
         }
-        
         scalar_lists = {
-            'target_scaler_min': [],
-            'target_scaler_max': [],
             'input_lat_deg': [],
             'input_lon_deg': [],
             'target_lat_deg': [],
@@ -330,22 +327,16 @@ def flatten_data_summary(data_summary):
                             feature_lists['input_instrument_ids'].append(
                                 torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
                             )
-                            # Process scalar values for input features
-                            for key in scalar_lists.keys():
-                                if key in curr_data:
-                                    if key in ['input_lat_deg', 'input_lon_deg', 'target_lat_deg', 'target_lon_deg']:
-                                        # For lat/lon, use actual values without repeating
-                                        scalar_lists[key].append(torch.tensor(curr_data[key], dtype=torch.float32, device=device))
-                                    else:
-                                        # For other scalars (like scaler min/max), repeat for each sample
-                                        scalar_lists[key].append(
-                                            torch.full((num_samples,), curr_data[key],
-                                                      dtype=torch.float32, device=device)
-                                        )
+                            
                         elif var == 'target_features_final':
                             feature_lists['target_instrument_ids'].append(
                                 torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
                             )
+                # Process scalar values for input features
+                for key in scalar_lists.keys():
+                    if key in curr_data:
+                        # For lat/lon, use actual values without repeating
+                        scalar_lists[key].append(torch.tensor(curr_data[key], dtype=torch.float32, device=device))                    
         
         # Stack all collected data for this bin
         bin_flat = {}

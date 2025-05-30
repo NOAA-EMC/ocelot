@@ -131,6 +131,7 @@ class GNNDataModule(pl.LightningDataModule):
         self.val_bin_names = None
         self.test_bin_names = None
         self.predict_bin_names = None
+        self.instrument_mapping = None
 
         self._printed_mesh_stats = False
         self._printed_processor_edges = False
@@ -186,7 +187,7 @@ class GNNDataModule(pl.LightningDataModule):
                 )
 
                 # Flatten data structure and add instrument IDs
-                self.data_summary = flatten_data_summary(self.data_summary)
+                self.data_summary, self.instrument_mapping = flatten_data_summary(self.data_summary)
 
                 # Split bins into train/val/test sets
                 all_bin_names = sorted(list(self.data_summary.keys()))
