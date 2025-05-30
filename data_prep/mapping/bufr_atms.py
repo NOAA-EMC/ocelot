@@ -17,7 +17,10 @@ class AtmsObsBuilder(ObsBuilder):
 
         # Mask out values with non-zero quality flags
         quality_flags = container.get('qualityFlags')
-        container.apply_mask(quality_flags == 0)
+
+        brightnessTemperature = container.get('brightnessTemperature')
+        brightnessTemperature[quality_flags != 0].mask = True  # True means mask out. 
+        container.replace('brightnessTemperature', brightnessTemperature)
 
         return container
 

@@ -4,7 +4,7 @@ bufr:
     - SFCSHP
   variables:
     obsTimeMinusCycleTime:
-      query: "*/PRESLEVEL/DRIFTING/HRDR"
+      query: "*/DHR"
 
     observationType:
       query: "*/TYP"
@@ -53,7 +53,7 @@ bufr:
       query: "*/Z___INFO/Z__EVENT{1}/ZOB"
 
     seaTemperature:
-      query: "*/SST___INFO/SST__EVENT{1}/SST1"
+      query: "*/SST_INFO/SSTEVENT{1}/SST1"
 
     # Quality Markers
     airTemperatureQuality:
@@ -75,7 +75,7 @@ bufr:
       query: "*/Z___INFO/Z__EVENT{1}/ZQM"
 
     seaTemperatureQuality:
-      query: "*/SST___INFO/SST__EVENT{1}/SSTQM"
+      query: "*/SST_INFO/SSTEVENT{1}/SSTQM"
 
 encoder:
   variables:
