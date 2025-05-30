@@ -54,6 +54,8 @@ bufr:
 
     seaTemperature:
       query: "*/SST_INFO/SSTEVENT{1}/SST1"
+      transforms:
+        - offset: -273.15
 
     # Quality Markers
     airTemperatureQuality:
