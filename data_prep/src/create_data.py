@@ -95,11 +95,7 @@ def create_data(start_date: datetime,
         week_end = week_start + timedelta(days=6)
         out_path = output_paths[(week_start, week_end)]
 
-        # Determine if the file already contains data
-        exists = os.path.exists(os.path.join(out_path, '.zgroup'))
-        append_flag = append and exists
-
-        create_data_for_day(comm, date, data_type, out_path, append=append_flag)
+        create_data_for_day(comm, date, data_type, out_path)
         date += day
 
 
