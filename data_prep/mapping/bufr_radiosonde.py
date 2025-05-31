@@ -43,7 +43,7 @@ class RadiosondeObsBuilder(ObsBuilder):
         temp_event_code = container.get('temperatureEventCode')
         specific_humidity = container.get('specificHumidity')
 
-        virt_temp_mask = temp_event_code == 8
+        virt_temp_mask = (temp_event_code == 8) & ~temp.mask
         mixing_ratio = specific_humidity / (1 - specific_humidity)
         temp[virt_temp_mask] = temp[virt_temp_mask] / (1 + 0.61 * mixing_ratio[virt_temp_mask])
         container.replace('airTemperature', temp)
