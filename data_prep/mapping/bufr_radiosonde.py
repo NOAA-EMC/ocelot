@@ -41,7 +41,7 @@ class RadiosondeObsBuilder(ObsBuilder):
         # Replace virtual temperature with computed air temperature values
         temp = container.get('airTemperature')
         temp_event_code = container.get('temperatureEventCode')
-        specific_humidity = container.get('specificHumidity')
+        specific_humidity = container.get('specificHumidity') * 1e-6  # convert to kg/kg
 
         virt_temp_mask = (temp_event_code == 8) & ~temp.mask & ~specific_humidity.mask
         mixing_ratio = specific_humidity / (1 - specific_humidity)

@@ -85,7 +85,7 @@ def create_data(start_date: datetime,
                 import shutil
                 shutil.rmtree(path)
             os.makedirs(path, exist_ok=True)
-    comm.barrier()
+    #comm.barrier()
 
     # Process each day and append to the appropriate weekly file
     day = timedelta(days=1)

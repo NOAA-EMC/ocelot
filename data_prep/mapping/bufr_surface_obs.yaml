@@ -46,8 +46,6 @@ bufr:
 
     airPressure:
       query: "*/P___INFO/P__EVENT{1}/POB"
-      transforms:
-        - scale: 100
 
     height:
       query: "*/Z___INFO/Z__EVENT{1}/ZOB"
