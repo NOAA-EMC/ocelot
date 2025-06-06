@@ -36,7 +36,7 @@ class GNNLightning(pl.LightningModule):
             weighted aggregation to produce target predictions.
     """
 
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4, instrument_weights=None, channel_weights=None, verbose=False):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4, instrument_weights=None, channel_weights=None, verbose=False, max_rollout_steps=1, rollout_schedule='step'):
         """
         Initializes the GNNLightning model with an encoder, processor, and decoder.
 
@@ -58,6 +58,8 @@ class GNNLightning(pl.LightningModule):
             weights_tensor = torch.tensor(weights)
             mask = weights_tensor > 0
             self.channel_masks[int(inst_id)] = mask
+        self.max_rollout_steps = max_rollout_steps  # MK: goal is 3 days
+        self.rollout_schedule = rollout_schedule    # MK
 
         # Encoder: Maps data nodes to hidden nodes
         self.encoder_mlp = nn.Sequential(
@@ -129,7 +131,8 @@ class GNNLightning(pl.LightningModule):
     def unnormalize(tensor, min_vals, max_vals):
         return tensor * (max_vals - min_vals) + min_vals
 
-    def forward(self, data):
+    # MK: add latent rollout
+    def forward(self, data, n_steps=1):
         self.debug(f"[DEBUG] [forward] self.training = {self.training}, grad_enabled = {torch.is_grad_enabled()}")
         if torch.cuda.is_available():
             self.debug(f"[Forward] Batch x shape: {data.x.shape}")
@@ -154,7 +157,8 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[Forward] CUDA Mem: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
         edge_index_encoder = data.edge_index_encoder
         edge_index_processor = data.edge_index_processor
-        edge_index_decoder = data.edge_index_decoder
+        #edge_index_decoder = data.edge_index_decoder
+        y = data.y
 
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
@@ -262,141 +266,365 @@ class GNNLightning(pl.LightningModule):
 
         edge_index_processor = torch.searchsorted(unique_tgt_nodes_sorted, edge_index_processor)
 
-        # === Processor: mesh ↔ mesh ===
-        if self.trainer.is_global_zero:
-            self.debug(f"[DEBUG] encoded.requires_grad: {encoded.requires_grad}")
-            self.debug(f"[DEBUG] encoded.grad_fn: {encoded.grad_fn}")
-            self.debug(f"[DEBUG] x_hidden.requires_grad BEFORE processor: {x_hidden.requires_grad}")
-            self.debug(f"[DEBUG] x_hidden.grad_fn BEFORE processor: {x_hidden.grad_fn}")
-            self.debug(f"[DEBUG] x_hidden.is_leaf: {x_hidden.is_leaf}")
-
-        self.debug(f"[DEBUG] x_hidden shape before processor: {x_hidden.shape}")
-        self.debug(f"[DEBUG] edge_index_processor shape: {edge_index_processor.shape}")
-        self.debug(f"[DEBUG] edge_index_processor max: {edge_index_processor.max().item()}, min: {edge_index_processor.min().item()}")
-        assert edge_index_processor.max().item() < x_hidden.size(0), "[ERROR] edge_index_processor has out-of-bounds indices"
-
-        try:
-            for i, layer in enumerate(self.processor_layers):
-                self.debug(f"[DEBUG] Processor layer {i} input shape: {x_hidden.shape}")
-                x_before_processor = x_hidden.detach().clone()
-
-                if i == 0:
-                    x_new, (edge_idx, attn_weights) = layer(x_hidden, edge_index_processor, return_attention_weights=True)
-                    self.debug(f"[DEBUG] GAT attention weights layer {i} min/max: {attn_weights.min().item()} / {attn_weights.max().item()}")
-                    for name, param in layer.named_parameters():
-                        self.debug(f"[DEBUG] GATConv param {name} norm: {param.norm().item()}")
-                else:
-                    x_new = layer(x_hidden, edge_index_processor)
-                x_hidden = x_hidden + x_new
-
-                delta = (x_hidden - x_before_processor).abs().mean().item()
-                self.debug(f"[DEBUG] Mean change in x_hidden from processor: {delta:.6e}")
-        except Exception as e:
-            print(f"[ERROR] Processor failed at layer {i}: {e}")
-            raise
-
-        if self.trainer.is_global_zero:
-            self.debug(f"[DEBUG] x_hidden.requires_grad AFTER processor: {x_hidden.requires_grad}")
-            self.debug(f"[DEBUG] x_hidden.grad_fn AFTER processor: {x_hidden.grad_fn}")
-            self.debug(f"[DEBUG] x_hidden.grad is None AFTER processor: {x_hidden.grad is None}")
-
-        # === Decoder: Hidden → Target ===
-        src_decoder = edge_index_decoder[0]  # mesh node indices
-        tgt_decoder = edge_index_decoder[1]  # target node indices
-
-        # Sanity check: mesh ↔ mesh overlap
-        used_by_decoder = src_decoder.unique()
-        used_by_encoder = edge_index_encoder[1].unique()
-        overlap_ratio = torch.isin(used_by_decoder, used_by_encoder).float().mean()
-        self.debug(f"[DEBUG] Decoder/Encoder mesh overlap ratio: {overlap_ratio:.4f}")
-
-        # Remap src_decoder to local x_hidden indices
-        src_decoder_local = torch.searchsorted(unique_tgt_nodes_sorted, src_decoder)
-        tgt_decoder_local = tgt_decoder
-
-        # Mask invalid decoder edges
-        valid_src = src_decoder_local < x_hidden.shape[0]
-        valid_tgt = tgt_decoder_local < data.y.shape[0]
-        valid_mask = valid_src & valid_tgt
-        src_decoder_local = src_decoder_local[valid_mask]
-        tgt_decoder_local = tgt_decoder_local[valid_mask]
-        dist_feats = data.edge_attr_decoder[valid_mask].unsqueeze(1)
-
-        if src_decoder_local.max().item() >= x_hidden.size(0):
-            raise IndexError(f"[ERROR] src_decoder_local index {src_decoder_local.max().item()} exceeds x_hidden size {x_hidden.size(0)}")
-
-        max_idx, y_size = tgt_decoder_local.max().item(), data.y.size(0)
-        assert max_idx < y_size, f"[DEBUG] max={max_idx} > y={y_size}"
-
-        # === Build decoder input AFTER masking
-        mesh_feats = x_hidden[src_decoder_local]
-        decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
-
-        chunk_size = 1_500_000
-        if decoder_input.size(0) > chunk_size:
-            out_dim = self.decoder_mlp[-1].out_features
-            num_rows = decoder_input.size(0)
-            decoded_chunks = []
-
-            for start in range(0, num_rows, chunk_size):
-                end = min(start + chunk_size, num_rows)
-                chunk = decoder_input[start:end]  # stays on GPU
-                decoded_chunks.append(self.decoder_mlp(chunk))
-
-            decoded = torch.cat(decoded_chunks, dim=0)
+        # MK: Get both ground truth and target locations for all steps
+        if n_steps > 1:
+            ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
         else:
-            decoded = self.decoder_mlp(decoder_input)
+            # Single step: use original data
+            ground_truths = [data.y]
+            target_locations_list = [data.target_metadata[:, :2]]
 
-        out = decoded
+        predictions = []  # MK: add empty list to store predictions
 
-        # out = self.decoder_mlp(decoder_input)
-        # === Simple, non-chunked decoding (no gate, no scatter) ===
-        # decoded = self.decoder_mlp(decoder_input)
-        # out = decoded  # No gate, no norm, no scatter
+        # Rollout loop # MK: add for loop to go through steps
+        for step in range(n_steps):  # MK: indentation, code no change
+            # === Processor: mesh ↔ mesh ===
+            if self.trainer.is_global_zero:
+                self.debug(f"[DEBUG] encoded.requires_grad: {encoded.requires_grad}")
+                self.debug(f"[DEBUG] encoded.grad_fn: {encoded.grad_fn}")
+                self.debug(f"[DEBUG] x_hidden.requires_grad BEFORE processor: {x_hidden.requires_grad}")
+                self.debug(f"[DEBUG] x_hidden.grad_fn BEFORE processor: {x_hidden.grad_fn}")
+                self.debug(f"[DEBUG] x_hidden.is_leaf: {x_hidden.is_leaf}")
 
-        # Optional: log stats for first 5 channels
-        if self.trainer.is_global_zero:
-            self.debug("[DEBUG] Decoded shape:", out.shape)
-            for ch in range(min(5, out.shape[1])):
-                self.debug(
-                    f"[DEBUG] Ch{ch+1}: μ={out[:, ch].mean().item():.4f}, σ={out[:, ch].std().item():.4f}, "
-                    f"min={out[:, ch].min().item():.4f}, max={out[:, ch].max().item():.4f}"
-                )
+            self.debug(f"[DEBUG] x_hidden shape before processor: {x_hidden.shape}")
+            self.debug(f"[DEBUG] edge_index_processor shape: {edge_index_processor.shape}")
+            self.debug(f"[DEBUG] edge_index_processor max: {edge_index_processor.max().item()}, min: {edge_index_processor.min().item()}")
+            assert edge_index_processor.max().item() < x_hidden.size(0), "[ERROR] edge_index_processor has out-of-bounds indices"
 
-        # === Scatter aggregation
-        tgt_decoder_local = torch.clamp(tgt_decoder_local, max=data.y.shape[0] - 1)  # prevent out-of-bounds after remapping
-
-        # Optional bin count debug
-        bincounts = torch.bincount(tgt_decoder_local.cpu(), minlength=data.y.shape[0])
-        self.debug("[DEBUG] Max decoder count per target:", bincounts.max().item())
-        self.debug("[DEBUG] out std before scatter:", out.std().item())
-
-        x_out = scatter(out, tgt_decoder_local, dim=0, dim_size=data.y.shape[0], reduce="mean")
-
-        self.debug("[DEBUG] scatter_mean variance:", x_out.var().item())
-        self.debug(f"[DEBUG] Unique targets: {tgt_decoder_local.unique().numel()} / {data.y.shape[0]}")
-        self.debug(f"[DEBUG] x_out requires_grad: {x_out.requires_grad}, grad_fn: {x_out.grad_fn}")
-
-        if self.training and self.trainer.is_global_zero:
             try:
-                from torch.autograd import grad
+                for i, layer in enumerate(self.processor_layers):
+                    self.debug(f"[DEBUG] Processor layer {i} input shape: {x_hidden.shape}")
+                    x_before_processor = x_hidden.detach().clone()
 
-                probe = grad(self._x_hidden_ref.sum(), self._encoded_ref, retain_graph=True, allow_unused=True)[0]
-                if probe is None:
-                    self.debug("[DEBUG] (Sanity) x_hidden → encoded: no grad")
-                else:
-                    self.debug("[DEBUG] (Sanity) x_hidden → encoded grad norm:", probe.norm().item())
+                    if i == 0:
+                        x_new, (edge_idx, attn_weights) = layer(x_hidden, edge_index_processor, return_attention_weights=True)
+                        self.debug(f"[DEBUG] GAT attention weights layer {i} min/max: {attn_weights.min().item()} / {attn_weights.max().item()}")
+                        for name, param in layer.named_parameters():
+                            self.debug(f"[DEBUG] GATConv param {name} norm: {param.norm().item()}")
+                    else:
+                        x_new = layer(x_hidden, edge_index_processor)
+                    x_hidden = x_hidden + x_new
+
+                    delta = (x_hidden - x_before_processor).abs().mean().item()
+                    self.debug(f"[DEBUG] Mean change in x_hidden from processor: {delta:.6e}")
             except Exception as e:
-                self.debug("[DEBUG] grad probe failed:", e)
+                print(f"[ERROR] Processor failed at layer {i}: {e}")
+                raise
 
+            if self.trainer.is_global_zero:
+                self.debug(f"[DEBUG] x_hidden.requires_grad AFTER processor: {x_hidden.requires_grad}")
+                self.debug(f"[DEBUG] x_hidden.grad_fn AFTER processor: {x_hidden.grad_fn}")
+                self.debug(f"[DEBUG] x_hidden.grad is None AFTER processor: {x_hidden.grad is None}")
+
+            # MK === Decoder: Hidden → Target ===
+            # MK === Dynamic Decoder: Use target locations for this timestep ===
+            target_latlon_rad = target_locations_list[step]
+            current_target_size = target_locations_list[step].shape[0]
+
+            if step == 0:
+                # First step: use original decoder edges
+                edge_index_decoder = data.edge_index_decoder
+                edge_attr_decoder = data.edge_attr_decoder
+                src_decoder = edge_index_decoder[0]
+                tgt_decoder = edge_index_decoder[1]
+                self.debug(f"[DEBUG] Step {step}: Using original decoder, target nodes: {torch.unique(tgt_decoder).shape}")
+            else:
+                # Later steps: create new decoder edges for this timestep
+                edge_index_decoder, edge_attr_decoder = self._create_decoder_for_step(
+                    x_hidden, target_latlon_rad
+                )
+                src_decoder = edge_index_decoder[0]
+                tgt_decoder = edge_index_decoder[1]
+                self.debug(f"[DEBUG] Step {step}: Using new decoder, target nodes: {torch.unique(tgt_decoder).shape}")
+
+            # MK: core code below remains the same unless labeled
+
+            # Sanity check: mesh ↔ mesh overlap
+            used_by_decoder = src_decoder.unique()
+            used_by_encoder = edge_index_encoder[1].unique()
+            overlap_ratio = torch.isin(used_by_decoder, used_by_encoder).float().mean()
+            self.debug(f"[DEBUG] Decoder/Encoder mesh overlap ratio: {overlap_ratio:.4f}")
+
+            # Remap src_decoder to local x_hidden indices
+            src_decoder_local = torch.searchsorted(unique_tgt_nodes_sorted, src_decoder)
+            tgt_decoder_local = tgt_decoder
+
+            # Mask invalid decoder edges
+            valid_src = src_decoder_local < x_hidden.shape[0]
+            #valid_tgt = tgt_decoder_local < data.y.shape[0]
+            valid_tgt = tgt_decoder_local < current_target_size  # MK: Use current target size
+            valid_mask = valid_src & valid_tgt
+            src_decoder_local = src_decoder_local[valid_mask]
+            tgt_decoder_local = tgt_decoder_local[valid_mask]
+            # dist_feats = data.edge_attr_decoder[valid_mask].unsqueeze(1)
+            dist_feats = edge_attr_decoder[valid_mask].unsqueeze(1)  # MK: Use dynamic edge_attr
+
+            if len(src_decoder_local) > 0 and src_decoder_local.max().item() >= x_hidden.size(0):
+            # if src_decoder_local.max().item() >= x_hidden.size(0):
+                raise IndexError(f"[ERROR] src_decoder_local index {src_decoder_local.max().item()} exceeds x_hidden size {x_hidden.size(0)}")
+
+            max_idx, y_size = tgt_decoder_local.max().item(), data.y.size(0)
+            assert max_idx < y_size, f"[DEBUG] max={max_idx} > y={y_size}"
+
+            # === Build decoder input AFTER masking
+            mesh_feats = x_hidden[src_decoder_local]
+            decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
+
+            # === Simple, non-chunked decoding (no gate, no scatter) ===
+            # decoded = self.decoder_mlp(decoder_input)
+            chunk_size = 1_500_000
+            if decoder_input.size(0) > chunk_size:
+                out_dim = self.decoder_mlp[-1].out_features
+                num_rows = decoder_input.size(0)
+                decoded_chunks = []
+
+                for start in range(0, num_rows, chunk_size):
+                    end = min(start + chunk_size, num_rows)
+                    chunk = decoder_input[start:end]  # stays on GPU
+                    decoded_chunks.append(self.decoder_mlp(chunk))
+
+                decoded = torch.cat(decoded_chunks, dim=0)
+            else:
+                decoded = self.decoder_mlp(decoder_input)
+            out = decoded  # No gate, no norm, no scatter
+
+            # Optional: log stats for first 5 channels
+            if self.trainer.is_global_zero:
+                self.debug("[DEBUG] Decoded shape:", out.shape)
+                for ch in range(min(5, out.shape[1])):
+                    self.debug(
+                        f"[DEBUG] Ch{ch+1}: μ={out[:, ch].mean().item():.4f}, σ={out[:, ch].std().item():.4f}, "
+                        f"min={out[:, ch].min().item():.4f}, max={out[:, ch].max().item():.4f}"
+                    )
+
+            # === Scatter aggregation  # MK: rollout adapted
+            tgt_decoder_local = torch.clamp(tgt_decoder_local, max=data.y.shape[0] - 1)  # prevent out-of-bounds after remapping
+
+            # Optional bin count debug
+            bincounts = torch.bincount(tgt_decoder_local.cpu(), minlength=data.y.shape[0])
+            self.debug("[DEBUG] Max decoder count per target:", bincounts.max().item())
+            self.debug("[DEBUG] out std before scatter:", out.std().item())
+
+            x_out = scatter(out, tgt_decoder_local, dim=0, dim_size=data.y.shape[0], reduce="mean")
+
+            self.debug("[DEBUG] scatter_mean variance:", x_out.var().item())
+            self.debug(f"[DEBUG] Unique targets: {tgt_decoder_local.unique().numel()} / {data.y.shape[0]}")
+            self.debug(f"[DEBUG] x_out requires_grad: {x_out.requires_grad}, grad_fn: {x_out.grad_fn}")
+
+            if self.training and self.trainer.is_global_zero:
+                try:
+                    from torch.autograd import grad
+
+                    probe = grad(self._x_hidden_ref.sum(), self._encoded_ref, retain_graph=True, allow_unused=True)[0]
+                    if probe is None:
+                        self.debug("[DEBUG] (Sanity) x_hidden → encoded: no grad")
+                    else:
+                        self.debug("[DEBUG] (Sanity) x_hidden → encoded grad norm:", probe.norm().item())
+                except Exception as e:
+                    self.debug("[DEBUG] grad probe failed:", e)
+
+            if self.training:
+                mesh_feats.retain_grad()
+                self._mesh_feats_ref = mesh_feats
+                self._x_hidden_ref.retain_grad()
+                # Optional L2 regularization term to encourage small norms (acts as a probe for debugging)
+
+            # MK: store predictions
+            self.debug(f"[DEBUG] Step {step}: Final prediction shape: {x_out.shape}")
+            predictions.append(x_out)
+
+        # MK: Handle return value
         if self.training:
-            mesh_feats.retain_grad()
-            self._mesh_feats_ref = mesh_feats
-            self._x_hidden_ref.retain_grad()
-            # Optional L2 regularization term to encourage small norms (acts as a probe for debugging)
-            return x_out, 1e-6 * x_hidden.norm()
+            return predictions, 1e-6 * x_hidden.norm()  # Return tuple like main
+        else:
+            return predictions
 
-        return x_out
+    # MK: simple rollout steps for now
+    # Graphcast: 300,000 gradient descent updates - 1 autoregressive
+    #            300,001 to 311,000: add 1 per 1000 updates
+    #           (i.e., use 1000 steps for each autoregressive step)
+    def get_current_rollout_steps(self):
+        """
+        Determines the current number of rollout steps based on training progress.
+        Implements curriculum learning where rollout length increases over time.
+        """
+        if not hasattr(self, 'max_rollout_steps'):
+            return 1  # Default to single step
+
+        if not hasattr(self, 'rollout_schedule'):
+            return self.max_rollout_steps
+
+        # Progressive rollout schedule
+        current_epoch = self.current_epoch
+        current_step = self.global_step  # This tracks gradient descent updates
+
+        if self.rollout_schedule == 'graphcast':
+            # GraphCast schedule based on gradient descent updates
+            # testing functionality: train 1 rollout for 5 epochs [0-4], add 1 for every epoch
+            threshold = 5  # 300000 # MK: using 5 for testing
+            interval  = 1  # 1000
+            if current_step < threshold:
+                return 1
+            else:
+                # Add 1 rollout step per 1000 updates after 300k
+                additional_steps = 2 + (current_step - threshold) // interval
+                return min(additional_steps, self.max_rollout_steps)
+
+        elif self.rollout_schedule == 'linear':
+            # Linearly increase from 1 to max_rollout_steps over training
+            max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 100
+            progress = min(current_epoch / max_epochs, 1.0)
+            current_steps = 1 + int(progress * (self.max_rollout_steps - 1))
+            return current_steps
+
+        elif self.rollout_schedule == 'step':
+            # Step-wise increase (GraphCast style)
+            if current_epoch < 10:
+                return 1
+            elif current_epoch < 20:
+                return 2
+            else:
+                return min(self.max_rollout_steps, 3 + (current_epoch - 20) // 10)
+
+        else:
+            return self.max_rollout_steps
+
+    # MK
+    def _create_decoder_for_step(self, mesh_state, target_latlon_rad):
+        """
+        Create decoder edges connecting mesh nodes to target locations for this step.
+        """
+        from mesh_to_target import MeshTargetKNNConnector
+
+        # Get mesh locations (you'll need to store this from the data module)
+        data_module = self.trainer.datamodule
+        mesh_latlon_rad = data_module.mesh_latlon_rad
+
+        # Debug: verify we have access to what we need
+        print(f"[DEBUG DECODER] mesh_latlon_rad shape: {mesh_latlon_rad.shape}")
+        print(f"[DEBUG DECODER] target_latlon_rad shape: {target_latlon_rad.shape}")
+        print(f"[DEBUG DECODER] mesh_graph nodes: {data_module.mesh_graph.number_of_nodes()}")
+        print(f"[DEBUG DECODER] mesh_state shape: {mesh_state.shape}")
+
+        # Create KNN connector (same parameters as in your data module)
+        knn_decoder = MeshTargetKNNConnector(num_nearest_neighbours=3)
+
+        # Create edges for this timestep's target locations
+        edge_index, edge_attr = knn_decoder.add_edges(
+            mesh_graph=None,  # not used: data_module.mesh_graph,  # Pass the mesh graph
+            target_latlon_rad=target_latlon_rad.cpu().numpy(),  # Convert to numpy
+            mesh_latlon_rad=mesh_latlon_rad  # Already numpy from data module
+        )
+ 
+        # Calculate mesh offset
+        num_mesh_nodes = len(mesh_latlon_rad)  # 642
+        num_obs_nodes = mesh_state.shape[0] - num_mesh_nodes  # 28294 - 642 = 27652
+        mesh_offset = num_obs_nodes
+        
+        # Apply mesh offset to point to actual mesh nodes in mesh_state/x_hidden
+        edge_index_global = edge_index.clone()
+        edge_index_global[0] += mesh_offset  # Shift mesh indices
+
+        print(f"[DEBUG] Applied mesh offset {mesh_offset}")
+        print(f"[DEBUG] Mesh indices after offset: {edge_index_global[0].min()} to {edge_index_global[0].max()}")
+        print(f"[DEBUG] Expected mesh range: {mesh_offset} to {mesh_state.shape[0]-1}")
+
+        return edge_index_global.to(mesh_state.device), edge_attr.to(mesh_state.device)
+
+    # MK
+    def _get_sequential_ground_truth(self, batch, n_steps):
+        # Debug: Let's see what bin_name actually is
+        print(f"[DEBUG] batch.bin_name type: {type(batch.bin_name)}")
+        print(f"[DEBUG] batch.bin_name value: {batch.bin_name}")
+
+        if hasattr(batch.bin_name, '__len__'):
+            print(f"[DEBUG] batch.bin_name length: {len(batch.bin_name)}")
+            if len(batch.bin_name) > 0:
+                print(f"[DEBUG] batch.bin_name[0] type: {type(batch.bin_name[0])}")
+                print(f"[DEBUG] batch.bin_name[0] value: {batch.bin_name[0]}")
+
+        data_module = self.trainer.datamodule
+        current_bin_name = batch.bin_name
+#        if isinstance(current_bin_name, torch.Tensor):
+#            current_bin_name = current_bin_name.item() if current_bin_name.numel() == 1 else str(current_bin_name)
+        # bin_name is a list
+        if isinstance(current_bin_name, list):
+            current_bin_name = current_bin_name[0]  # Take the first element: 'bin1'
+
+        bin_num = int(current_bin_name.replace("bin", ""))
+
+        ground_truths = []
+        for step in range(n_steps):
+            target_bin_name = f"bin{bin_num + step}"
+
+            if target_bin_name in data_module.data_summary:
+                # Get target features for this time step
+                target_bin_data = data_module.data_summary[target_bin_name]
+                target_features = target_bin_data["target_features_final"]
+
+                # Move to same device as batch
+                target_features = target_features.to(batch.y.device)
+                ground_truths.append(target_features)
+            else:
+                if ground_truths:
+                    ground_truths.append(ground_truths[-1])
+                else:
+                    # This shouldn't happen in normal training, but just in case
+                    ground_truths.append(batch.y)
+                    print(f"Warning: No sequential ground truth found for {target_bin_name}")
+
+        return ground_truths
+
+    # MK:
+    def _get_sequential_targets_and_locations(self, batch, n_steps):
+        """
+        Gets sequential ground truth targets AND target locations for rollout training.
+
+        Returns:
+            tuple: (ground_truths, target_locations_list)
+                - ground_truths: List of ground truth tensors for each step
+                - target_locations_list: List of target location arrays for each step
+        """
+        data_module = self.trainer.datamodule
+        current_bin_name = batch.bin_name[0] if isinstance(batch.bin_name, list) else batch.bin_name
+        bin_num = int(current_bin_name.replace("bin", ""))
+
+        ground_truths = []
+        target_locations_list = []
+
+        for step in range(n_steps):
+            target_bin_name = f"bin{bin_num + step}"
+
+            if target_bin_name in data_module.data_summary:
+                target_bin_data = data_module.data_summary[target_bin_name]
+
+                # Get ground truth features
+                target_features = target_bin_data["target_features_final"].to(batch.y.device)
+                ground_truths.append(target_features)
+
+                # Get target locations (lat, lon in radians)
+                target_metadata = target_bin_data["target_metadata"]
+                target_latlon_rad = target_metadata[:, :2]  # lat, lon
+                target_locations_list.append(target_latlon_rad)
+
+            else:
+                # Fallback: use last available data
+                # TODO: Edge handling? update this to be stricker?
+                # If we don't have ground truth for this step, repeat the last one
+                if ground_truths:
+                    ground_truths.append(ground_truths[-1])
+                    target_locations_list.append(target_locations_list[-1])
+                else:
+                    # Ultimate fallback: use original batch data
+                    ground_truths.append(batch.y)
+                    target_locations_list.append(batch.target_metadata[:, :2])
+                    print(f"Warning: No sequential data found for {target_bin_name}")
+
+            # Debug: Check shapes
+            print(f"[DEBUG] Step {step}: ground truth shape {target_features.shape}")
+            print(f"[DEBUG] Step {step}: target locations shape {target_latlon_rad.shape}")
+
+        return ground_truths, target_locations_list
 
     def training_step(self, batch, batch_idx):
         # === Enable anomaly detection (only once, for debugging backward passes)
@@ -408,32 +636,84 @@ class GNNLightning(pl.LightningModule):
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
         # === Run forward pass (predict outputs from input batch)
-        y_true = batch.y
-        x_out, loss_probe = self(batch)
-        y_pred = x_out
+        # MK: update with rollout steps
+
+        current_rollout_steps = self.get_current_rollout_steps()
+        # MK: Log the tracking info here
+        self.log("MK_global_step", self.global_step)
+        self.log("MK_rollout_steps", float(current_rollout_steps))
+
+        # y_true = batch.y
+        # x_out, loss_probe = self(batch)
+        # y_pred = x_out
 
         # === Sanity checks (shape match and NaN checks)
-        assert y_pred.shape == y_true.shape, f"Mismatch: {y_pred.shape} vs {y_true.shape}"
+        # assert y_pred.shape == y_true.shape, f"Mismatch: {y_pred.shape} vs {y_true.shape}"
+
+        # Handle return format from forward method
+        forward_result = self(batch, n_steps=current_rollout_steps)
+        if isinstance(forward_result, tuple):
+            # Training mode: returns (predictions, loss_probe)
+            predictions, loss_probe = forward_result
+        else:
+            # Eval mode: returns just predictions
+            predictions = forward_result
+            loss_probe = 0.0
+
+        # Get ground truths for rollout
+        if current_rollout_steps > 1:
+            ground_truths, _ = self._get_sequential_targets_and_locations(batch, current_rollout_steps)
+        else:
+            ground_truths = [batch.y]
+
+        # === Sanity checks (shape match and NaN checks)
+        assert len(predictions) == len(ground_truths), f"Number of predictions {len(predictions)} != number of ground truths {len(ground_truths)}"
+
+        # Check shapes of individual predictions
+        for step, (prediction, ground_truth) in enumerate(zip(predictions, ground_truths)):
+            assert prediction.shape == ground_truth.shape, f"Step {step+1}: pred shape {prediction.shape} != truth shape {ground_truth.shape}"
 
         rank = self.trainer.global_rank if hasattr(self.trainer, "global_rank") else 0
-        print(f"[Rank {rank}] y shape: {y_true.shape}, pred shape: {y_pred.shape}")
-
-        if torch.isnan(y_pred).any() or torch.isnan(batch.y).any():
+        print(f"[Rank {rank}] Number of rollout steps: {len(predictions)}")
+        print(f"[Rank {rank}] Each prediction shape: {predictions[0].shape}, Each ground truth shape: {ground_truths[0].shape}")
+        
+        # Check for NaNs
+        has_nan_pred = any(torch.isnan(pred).any() for pred in predictions)
+        has_nan_truth = any(torch.isnan(truth).any() for truth in ground_truths)
+        
+        if has_nan_pred or has_nan_truth:
             print(f"NaNs detected at batch {batch_idx} on rank {self.trainer.global_rank}")
-            print(f"y_pred min: {y_pred.min()}, max: {y_pred.max()}")
-            print(f"y_true min: {batch.y.min()}, max: {batch.y.max()}")
+            for step, (pred, truth) in enumerate(zip(predictions, ground_truths)):
+                if torch.isnan(pred).any():
+                    print(f"  Step {step+1} prediction has NaNs: min={pred.min()}, max={pred.max()}")
+                if torch.isnan(truth).any():
+                    print(f"  Step {step+1} ground truth has NaNs: min={truth.min()}, max={truth.max()}")
 
         # === Compute loss and log it
-        if self.use_ocelot_loss:
-            # loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids)
-            loss = self.weighted_huber_loss(y_pred, y_true, batch.instrument_ids)
-        else:
-            # loss = self.loss_fn(y_pred, y_true)
-            loss = self.huber(y_pred, y_true).mean()  # fallback
+        # MK: update for rollout loss
+        total_loss = 0.0
+        for step, (prediction, ground_truth) in enumerate(zip(predictions, ground_truths)):
+            if prediction.shape[0] == ground_truth.shape[0]:
+                if self.use_ocelot_loss:
+                    # step_loss = self.ocelot_loss(prediction, ground_truth, batch.instrument_ids)
+                    step_loss = self.weighted_huber_loss(prediction, ground_truth, batch.instrument_ids)
+                else:
+                    # step_loss = self.loss_fn(prediction, ground_truth)
+                    loss = self.huber(prediction, ground_truth).mean()  # fallback
+                total_loss += step_loss
+                self.log(f"train_loss_step{step+1}", step_loss)
+            else:
+                print(f"Skipping step {step+1}: pred shape {prediction.shape} != truth shape {ground_truth.shape}")
+    
+        # Add the loss probe from main's forward method
+        if self.training and 'loss_probe' in locals():
+            total_loss += loss_probe
 
-        # MK: level weighting (commented out for now)
-        # pressure_levels=None
-        # loss = level_weighted_mse(y_pred, y_true, pressure_levels)
+        self.log("train_loss", total_loss)
+        self.log("rollout_steps", float(current_rollout_steps))
+        
+        # Set loss for the rest of main's training_step code
+        loss = total_loss
 
         self.log("train_loss", loss)
 
@@ -480,7 +760,10 @@ class GNNLightning(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        y_pred = self(batch)
+        # MK: small change for a quick test
+        #y_pred = self(batch)
+        y_pred_list = self(batch, n_steps=1)
+        y_pred = y_pred_list[0]
         y_true = batch.y
         # Choose appropriate loss
         if self.use_ocelot_loss:

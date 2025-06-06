@@ -65,7 +65,7 @@ def main():
         }
     }
 
-    mesh_resolution = 6
+    mesh_resolution = 6  # MK: Out of Mem but I need to test #6
 
     # === MODEL CONFIGURATION ===
     input_dim = 32
@@ -77,6 +77,9 @@ def main():
     # === TRAINING CONFIGURATION ===
     max_epochs = 10
     batch_size = 1
+    # MK: add for rollout
+    max_rollout_steps = 3  # Maximum rollout length
+    rollout_schedule = 'graphcast'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
@@ -88,6 +91,8 @@ def main():
         instrument_weights=instrument_weights,
         channel_weights=channel_weights,
         verbose=args.verbose,
+        max_rollout_steps=max_rollout_steps,
+        rollout_schedule=rollout_schedule,
     )
     # model = GNNLightning.load_from_checkpoint(
     #     checkpoint_path,

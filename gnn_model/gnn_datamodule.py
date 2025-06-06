@@ -67,6 +67,10 @@ class BinDataset(Dataset):
             bin = self.data_summary[bin_name]
             bin, _ = flatten_data(bin)
             data_dict = self.create_graph_fn(bin)
+            data_dict['bin_name'] = bin_name  # Add bin_name to data_dict
+            print(
+                f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
+            )
         except Exception as e:
             print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
             raise
@@ -87,6 +91,8 @@ class BinDataset(Dataset):
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
             instrument_ids=data_dict["target_instrument_ids"]
+            bin_name=data_dict["bin_name"],
+            target_metadata=torch.tensor(data_dict["target_metadata"], dtype=torch.float32),
         )
 
 
@@ -313,6 +319,7 @@ class GNNDataModule(pl.LightningDataModule):
             "target_lon_deg": bin_data["target_lon_deg"],
             "input_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
             "target_instrument_ids": torch.tensor(bin_data["target_instrument_ids"], dtype=torch.long),
+            "target_metadata": torch.tensor(bin_data["target_metadata"], dtype=torch.float32),
         }
 
     def _create_data_object(self, data_dict):
