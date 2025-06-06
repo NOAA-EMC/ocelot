@@ -18,15 +18,15 @@ def main():
     sys.stderr.write("===> ENTERED MAIN\n")
     # Data parameters
     # CONUS data path:
-    # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
+    data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
     # One week Global data path:
-    data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
+    # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/atms_small.zarr"
 
     start_date = "2024-04-01"
     end_date = "2024-04-07"
     satellite_id = 224
 
-    mesh_resolution = 6
+    mesh_resolution = 6  # MK: Out of Mem but I need to test #6
 
     # Define model parameters
     input_dim = 30
@@ -38,6 +38,9 @@ def main():
     # Training parameters
     max_epochs = 10
     batch_size = 1
+    # MK: add for rollout
+    max_rollout_steps = 3  # Maximum rollout length
+    rollout_schedule = 'graphcast'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # Instantiate model & data module
     model = GNNLightning(
@@ -46,6 +49,8 @@ def main():
         output_dim=output_dim,
         num_layers=num_layers,
         lr=lr,
+        max_rollout_steps=max_rollout_steps,
+        rollout_schedule=rollout_schedule,
     )
 
     data_module = GNNDataModule(

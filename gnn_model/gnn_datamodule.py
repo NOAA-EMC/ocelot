@@ -67,6 +67,7 @@ class BinDataset(Dataset):
             bin = self.data_summary[bin_name]
             print(f"[{bin_name}] Input indices: {len(bin['input_time_index'])}, Target indices: {len(bin['target_time_index'])}")
             data_dict = self.create_graph_fn(bin)
+            data_dict['bin_name'] = bin_name  # MK: Add bin name to data_dict for rollout to access
             print(
                 f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
             )
@@ -87,8 +88,10 @@ class BinDataset(Dataset):
             y=data_dict["y"],
             target_scaler_min=data_dict["target_scaler_min"],
             target_scaler_max=data_dict["target_scaler_max"],
-            target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
-            target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
+            target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),  #data_dict["target_lat_deg"],
+            target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),  #data_dict["target_lon_deg"],
+            bin_name=data_dict["bin_name"],  # MK: Add bin name for rollout to access
+            target_metadata=torch.tensor(data_dict["target_metadata"], dtype=torch.float32),  # MK: Add this for rollout to access
         )
 
 
@@ -261,6 +264,7 @@ class GNNDataModule(pl.LightningDataModule):
             "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
             "target_lat_deg": bin_data["target_lat_deg"],
             "target_lon_deg": bin_data["target_lon_deg"],
+            "target_metadata": torch.tensor(bin_data["target_metadata"], dtype=torch.float32),  # MK: Add this for rollout
         }
 
     def _create_data_object(self, data_dict):
