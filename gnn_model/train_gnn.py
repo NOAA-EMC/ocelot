@@ -23,9 +23,6 @@ def main():
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
 
-    weights_config_path = "configs/weights_config.yaml"
-    instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
-
     # Data parameters
     region = "conus"
     if region == "conus":
@@ -34,6 +31,11 @@ def main():
     else:
         # One week Global data path:
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/"
+        # URSA:
+        # data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3"
+
+    weights_config_path = "configs/weights_config.yaml"
+    instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 
     start_date = "2024-04-01"
     end_date = "2024-04-04"
@@ -61,7 +63,7 @@ def main():
         }
     }
 
-    mesh_resolution = 6
+    mesh_resolution = 6  # MK: Out of Mem but I need to test #6
 
     # Define model parameters
     input_dim = 32
@@ -73,6 +75,9 @@ def main():
     # Training parameters
     max_epochs = 10
     batch_size = 1
+    # MK: add for rollout
+    max_rollout_steps = 3  # Maximum rollout length
+    rollout_schedule = 'graphcast'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # Instantiate model & data module
     model = GNNLightning(
@@ -84,6 +89,8 @@ def main():
         instrument_weights=instrument_weights,
         channel_weights=channel_weights,
         verbose=args.verbose,
+        max_rollout_steps=max_rollout_steps,
+        rollout_schedule=rollout_schedule,
     )
 
     data_module = GNNDataModule(
