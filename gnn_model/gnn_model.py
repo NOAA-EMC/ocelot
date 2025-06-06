@@ -157,7 +157,7 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[Forward] CUDA Mem: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
         edge_index_encoder = data.edge_index_encoder
         edge_index_processor = data.edge_index_processor
-        #edge_index_decoder = data.edge_index_decoder
+        # edge_index_decoder = data.edge_index_decoder
         y = data.y
 
         # === Encoding: obs → mesh ===
@@ -462,7 +462,7 @@ class GNNLightning(pl.LightningModule):
             # GraphCast schedule based on gradient descent updates
             # testing functionality: train 1 rollout for 5 epochs [0-4], add 1 for every epoch
             threshold = 5  # 300000 # MK: using 5 for testing
-            interval  = 1  # 1000
+            interval = 1  # 1000
             if current_step < threshold:
                 return 1
             else:
@@ -515,12 +515,12 @@ class GNNLightning(pl.LightningModule):
             target_latlon_rad=target_latlon_rad.cpu().numpy(),  # Convert to numpy
             mesh_latlon_rad=mesh_latlon_rad  # Already numpy from data module
         )
- 
+
         # Calculate mesh offset
         num_mesh_nodes = len(mesh_latlon_rad)  # 642
         num_obs_nodes = mesh_state.shape[0] - num_mesh_nodes  # 28294 - 642 = 27652
         mesh_offset = num_obs_nodes
-        
+
         # Apply mesh offset to point to actual mesh nodes in mesh_state/x_hidden
         edge_index_global = edge_index.clone()
         edge_index_global[0] += mesh_offset  # Shift mesh indices
@@ -761,7 +761,7 @@ class GNNLightning(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # MK: small change for a quick test
-        #y_pred = self(batch)
+        # y_pred = self(batch)
         y_pred_list = self(batch, n_steps=1)
         y_pred = y_pred_list[0]
         y_true = batch.y
