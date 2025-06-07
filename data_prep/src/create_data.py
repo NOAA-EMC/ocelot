@@ -43,7 +43,7 @@ def create_data_for_day(comm,
         if not np.any(mask):
             return  # No data in the region
 
-        container = container.apply_mask(mask)
+        container.apply_mask(mask)
 
     if comm.rank() == 0:
         Encoder(description).encode(container, output_path, append=append)
