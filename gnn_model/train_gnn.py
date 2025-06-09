@@ -62,8 +62,7 @@ def main():
             # "surface_land":
         }
     }
-
-    mesh_resolution = 6  # MK: Out of Mem but I need to test #6
+    mesh_resolution = 6
 
     # Define model parameters
     input_dim = 32
@@ -75,8 +74,7 @@ def main():
     # Training parameters
     max_epochs = 10
     batch_size = 1
-    # MK: add for rollout
-    max_rollout_steps = 3  # Maximum rollout length
+    max_rollout_steps = 3  # Maximum rollout length; set 1 to have no rollout
     rollout_schedule = 'graphcast'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # Instantiate model & data module
