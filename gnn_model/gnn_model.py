@@ -157,8 +157,15 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[Forward] CUDA Mem: {torch.cuda.memory_allocated() / 1e6:.1f} MB")
         edge_index_encoder = data.edge_index_encoder
         edge_index_processor = data.edge_index_processor
-        # edge_index_decoder = data.edge_index_decoder
         y = data.y
+
+        # MK: Get both ground truth and target locations for all steps
+        if n_steps > 1:
+            ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
+        else:
+            # Single step: use original data
+            ground_truths = [data.y]
+            target_locations_list = [data.target_metadata[:, :2]]
 
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
@@ -170,6 +177,9 @@ class GNNLightning(pl.LightningModule):
         self.debug(f"[DEBUG] tgt_encoder shape: {tgt_encoder.shape}")
         self.debug(f"[DEBUG] src_encoder max: {src_encoder.max().item()}, min: {src_encoder.min().item()}")
         assert src_encoder.max().item() < x.shape[0], "[ERROR] src_encoder has out-of-bounds indices"
+
+        # === Get decoder edges for first step to determine used mesh nodes
+        edge_index_decoder = data.edge_index_decoder
 
         # === Mask edges whose target mesh nodes are not used downstream
         used_mesh_nodes = torch.cat([edge_index_decoder[0], edge_index_processor[0], edge_index_processor[1]]).unique()
@@ -266,14 +276,6 @@ class GNNLightning(pl.LightningModule):
 
         edge_index_processor = torch.searchsorted(unique_tgt_nodes_sorted, edge_index_processor)
 
-        # MK: Get both ground truth and target locations for all steps
-        if n_steps > 1:
-            ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
-        else:
-            # Single step: use original data
-            ground_truths = [data.y]
-            target_locations_list = [data.target_metadata[:, :2]]
-
         predictions = []  # MK: add empty list to store predictions
 
         # Rollout loop # MK: add for loop to go through steps
@@ -363,8 +365,11 @@ class GNNLightning(pl.LightningModule):
             # if src_decoder_local.max().item() >= x_hidden.size(0):
                 raise IndexError(f"[ERROR] src_decoder_local index {src_decoder_local.max().item()} exceeds x_hidden size {x_hidden.size(0)}")
 
-            max_idx, y_size = tgt_decoder_local.max().item(), data.y.size(0)
-            assert max_idx < y_size, f"[DEBUG] max={max_idx} > y={y_size}"
+            # Fix target size validation to use current target size
+            max_idx = tgt_decoder_local.max().item() if len(tgt_decoder_local) > 0 else -1
+            y_size = current_target_size
+            if max_idx >= 0:
+                assert max_idx < y_size, f"[DEBUG] max={max_idx} >= y_size={y_size}"
 
             # === Build decoder input AFTER masking
             mesh_feats = x_hidden[src_decoder_local]
@@ -398,17 +403,17 @@ class GNNLightning(pl.LightningModule):
                     )
 
             # === Scatter aggregation  # MK: rollout adapted
-            tgt_decoder_local = torch.clamp(tgt_decoder_local, max=data.y.shape[0] - 1)  # prevent out-of-bounds after remapping
+            tgt_decoder_local = torch.clamp(tgt_decoder_local, max=current_target_size - 1)  # prevent out-of-bounds after remapping
 
             # Optional bin count debug
-            bincounts = torch.bincount(tgt_decoder_local.cpu(), minlength=data.y.shape[0])
+            bincounts = torch.bincount(tgt_decoder_local.cpu(), minlength=current_target_size)
             self.debug("[DEBUG] Max decoder count per target:", bincounts.max().item())
             self.debug("[DEBUG] out std before scatter:", out.std().item())
 
-            x_out = scatter(out, tgt_decoder_local, dim=0, dim_size=data.y.shape[0], reduce="mean")
+            x_out = scatter(out, tgt_decoder_local, dim=0, dim_size=current_target_size, reduce="mean")
 
             self.debug("[DEBUG] scatter_mean variance:", x_out.var().item())
-            self.debug(f"[DEBUG] Unique targets: {tgt_decoder_local.unique().numel()} / {data.y.shape[0]}")
+            self.debug(f"[DEBUG] Unique targets: {tgt_decoder_local.unique().numel()} / {current_target_size}")
             self.debug(f"[DEBUG] x_out requires_grad: {x_out.requires_grad}, grad_fn: {x_out.grad_fn}")
 
             if self.training and self.trainer.is_global_zero:
@@ -621,8 +626,9 @@ class GNNLightning(pl.LightningModule):
                     print(f"Warning: No sequential data found for {target_bin_name}")
 
             # Debug: Check shapes
-            print(f"[DEBUG] Step {step}: ground truth shape {target_features.shape}")
-            print(f"[DEBUG] Step {step}: target locations shape {target_latlon_rad.shape}")
+            if step < len(ground_truths) and step < len(target_locations_list):
+                print(f"[DEBUG] Step {step}: ground truth shape {ground_truths[step].shape}")
+                print(f"[DEBUG] Step {step}: target locations shape {target_locations_list[step].shape}")
 
         return ground_truths, target_locations_list
 
@@ -642,13 +648,6 @@ class GNNLightning(pl.LightningModule):
         # MK: Log the tracking info here
         self.log("MK_global_step", self.global_step)
         self.log("MK_rollout_steps", float(current_rollout_steps))
-
-        # y_true = batch.y
-        # x_out, loss_probe = self(batch)
-        # y_pred = x_out
-
-        # === Sanity checks (shape match and NaN checks)
-        # assert y_pred.shape == y_true.shape, f"Mismatch: {y_pred.shape} vs {y_true.shape}"
 
         # Handle return format from forward method
         forward_result = self(batch, n_steps=current_rollout_steps)
@@ -705,23 +704,29 @@ class GNNLightning(pl.LightningModule):
             else:
                 print(f"Skipping step {step+1}: pred shape {prediction.shape} != truth shape {ground_truth.shape}")
     
-        # Add the loss probe from main's forward method
-        if self.training and 'loss_probe' in locals():
+        # Add the loss probe from forward method
+        if self.training and isinstance(loss_probe, torch.Tensor):
             total_loss += loss_probe
 
-        self.log("train_loss", total_loss)
+        # self.log("train_loss", total_loss)
         self.log("rollout_steps", float(current_rollout_steps))
         
-        # Set loss for the rest of main's training_step code
+        # Set loss for the rest of training_step code
         loss = total_loss
 
-        self.log("train_loss", loss)
+        # Add loss probe again for final loss (this was in the original code)
+        if self.training and isinstance(loss_probe, torch.Tensor):
+            loss += loss_probe
 
         if self.trainer.is_global_zero:
-            self.debug(f"[DEBUG] MSE loss at batch {batch_idx}: {loss.item():.6f}")
-            with torch.no_grad():
-                self.debug(f"[DEBUG] y_pred → min: {y_pred.min():.4f}, max: {y_pred.max():.4f}, std: {y_pred.std():.6f}")
-                self.debug(f"[DEBUG] y_true → min: {y_true.min():.4f}, max: {y_true.max():.4f}, std: {y_true.std():.6f}")
+            self.debug(f"[DEBUG] Total loss at batch {batch_idx}: {loss.item():.6f}")
+            # Get first prediction for logging
+            y_pred = predictions[0] if predictions else None
+            y_true = ground_truths[0] if ground_truths else None
+            if y_pred is not None and y_true is not None:
+                with torch.no_grad():
+                    self.debug(f"[DEBUG] y_pred → min: {y_pred.min():.4f}, max: {y_pred.max():.4f}, std: {y_pred.std():.6f}")
+                    self.debug(f"[DEBUG] y_true → min: {y_true.min():.4f}, max: {y_true.max():.4f}, std: {y_true.std():.6f}")
 
         # === Gradient probe for encoded
         from torch.autograd import grad
@@ -752,8 +757,8 @@ class GNNLightning(pl.LightningModule):
                 norm = self.processor_layers[0].bias.norm().item()
                 self.debug(f"[DEBUG] Epoch {self.current_epoch} - Processor Layer 0 bias norm: {norm:.6f}")
 
-        loss += loss_probe
-        if self.trainer.is_global_zero:
+        if self.trainer.is_global_zero and predictions:
+            y_pred = predictions[0]
             for ch in range(min(5, y_pred.shape[1])):
                 self.debug(f"[DEBUG] Predicted ch{ch+1}: mean={y_pred[:, ch].mean().item():.4f}, std={y_pred[:, ch].std().item():.4f}")
 
@@ -761,7 +766,6 @@ class GNNLightning(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # MK: small change for a quick test
-        # y_pred = self(batch)
         y_pred_list = self(batch, n_steps=1)
         y_pred = y_pred_list[0]
         y_true = batch.y
@@ -775,6 +779,7 @@ class GNNLightning(pl.LightningModule):
 
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[VAL] Epoch {self.current_epoch} - val_loss: {loss.item():.6f}")
+        
         instrument_ids = batch.instrument_ids
 
         # Per-instrument loss logging
