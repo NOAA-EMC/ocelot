@@ -65,11 +65,7 @@ class BinDataset(Dataset):
 
         try:
             bin = self.data_summary[bin_name]
-            print(f"[{bin_name}] Input indices: {len(bin['input_time_index'])}, Target indices: {len(bin['target_time_index'])}")
             data_dict = self.create_graph_fn(bin)
-            print(
-                f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
-            )
         except Exception as e:
             print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
             raise
@@ -89,7 +85,7 @@ class BinDataset(Dataset):
             target_scaler_max=data_dict["target_scaler_max"],
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
-            instrument_ids=data_dict["instrument_ids"]
+            instrument_ids=data_dict["input_instrument_ids"]
         )
 
 
@@ -174,26 +170,26 @@ class GNNDataModule(pl.LightningDataModule):
             dist.barrier()
 
         if not self.data_processed:
-                # Organize time bins with type-specific data
-                self.data_summary = organize_bins_times(
-                    self.z,
-                    self.start_date,
-                    self.end_date,
-                    self.observation_config,
-                )
+            # Organize time bins with type-specific data
+            self.data_summary = organize_bins_times(
+                self.z,
+                self.start_date,
+                self.end_date,
+                self.observation_config,
+            )
 
-                # Extract features for each bin and observation type
-                self.data_summary = extract_features(
-                    self.z,
-                    self.data_summary,
-                    self.observation_config,
-                )
+            # Extract features for each bin and observation type
+            self.data_summary = extract_features(
+                self.z,
+                self.data_summary,
+                self.observation_config,
+            )
 
-                # Flatten data structure and add instrument IDs
-                self.data_summary, self.instrument_mapping = flatten_data_summary(self.data_summary)
+            # Flatten data structure and add instrument IDs
+            self.data_summary, self.instrument_mapping = flatten_data_summary(self.data_summary)
 
-                # Split bins into train/val/test sets
-                all_bin_names = sorted(list(self.data_summary.keys()))
+            # Split bins into train/val/test sets
+            all_bin_names = sorted(list(self.data_summary.keys()))
 
             if stage == "fit" or stage is None:
                 train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
@@ -317,7 +313,8 @@ class GNNDataModule(pl.LightningDataModule):
             "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
             "target_lat_deg": bin_data["target_lat_deg"],
             "target_lon_deg": bin_data["target_lon_deg"],
-            "instrument_ids": torch.tensor(bin_data["instrument_ids"], dtype=torch.long),
+            "input_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
+            "target_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
         }
 
     def _create_data_object(self, data_dict):
