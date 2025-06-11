@@ -1,0 +1,34 @@
+Region: us-east-1
+Image:
+  Os: alinux2
+HeadNode:
+  InstanceType: t3.micro
+  Networking:
+    SubnetId: <SUBNET_ID>
+  Ssh:
+    KeyName: <KEY_NAME>
+Scheduling:
+  Scheduler: slurm
+  SlurmQueues:
+    - Name: gpu
+      CapacityType: SPOT
+      Networking:
+        SubnetIds:
+          - <SUBNET_ID>
+      ComputeResources:
+        - Name: compute
+          InstanceType: <INSTANCE_TYPE>
+          MinCount: 0
+          MaxCount: 2
+SharedStorage:
+  - Name: fsx
+    StorageType: FsxLustre
+    MountDir: /fsx
+    FsxLustreSettings:
+      DeploymentType: SCRATCH_2
+      StorageCapacity: 1200
+      ImportPath: s3://<S3_BUCKET>/training-data
+      ExportPath: s3://<S3_BUCKET>/output
+      AutoImportPolicy: NEW_CHANGED
+      AutoExportPolicy: ON_CLOSE
+
