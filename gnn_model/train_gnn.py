@@ -30,10 +30,10 @@ def main():
     region = "conus"
     if region == "conus":
         # CONUS data path:
-        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v4/conus"
+        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
         # One week Global data path:
-        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v4/global"
+        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/"
 
     start_date = "2024-04-01"
     end_date = "2024-04-04"
