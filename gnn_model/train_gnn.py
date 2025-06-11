@@ -26,7 +26,6 @@ def main():
     weights_config_path = "configs/weights_config.yaml"
     instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 
-
     # Data parameters
     region = "conus"
     if region == "conus":

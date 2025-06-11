@@ -303,8 +303,8 @@ def flatten_data_summary(data_summary):
             'target_metadata': [],
             'input_instrument_ids': [],
             'target_instrument_ids': [],
-            'target_scaler_min':[],
-            'target_scaler_max':[]
+            'target_scaler_min': [],
+            'target_scaler_max': []
         }
         scalar_lists = {
             'input_lat_deg': [],
