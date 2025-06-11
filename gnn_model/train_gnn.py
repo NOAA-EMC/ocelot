@@ -23,7 +23,6 @@ def main():
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
 
-    data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/atms_small.zarr"
     weights_config_path = "configs/weights_config.yaml"
     instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 

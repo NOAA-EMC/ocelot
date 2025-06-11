@@ -85,7 +85,7 @@ class BinDataset(Dataset):
             target_scaler_max=data_dict["target_scaler_max"],
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
-            instrument_ids=data_dict["input_instrument_ids"]
+            instrument_ids=data_dict["target_instrument_ids"]
         )
 
 
@@ -162,9 +162,9 @@ class GNNDataModule(pl.LightningDataModule):
                     self.z[obs_type][key] = zarr.open(LRUStoreCache(zarr.DirectoryStore(data_path), max_size=2_000_000_000), mode="r")
                     rank_zero_info(f"Opened Zarr files for {data_path}.")
 
-        if hasattr(self.trainer, "global_rank") and self.trainer.global_rank == 0:
-            log_system_info()
-            _ = list(self.z.array_keys())
+        # if hasattr(self.trainer, "global_rank") and self.trainer.global_rank == 0:
+        #     log_system_info()
+        #     _ = list(self.z.array_keys())
 
         if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
             dist.barrier()
@@ -314,7 +314,7 @@ class GNNDataModule(pl.LightningDataModule):
             "target_lat_deg": bin_data["target_lat_deg"],
             "target_lon_deg": bin_data["target_lon_deg"],
             "input_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
-            "target_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
+            "target_instrument_ids": torch.tensor(bin_data["target_instrument_ids"], dtype=torch.long),
         }
 
     def _create_data_object(self, data_dict):
