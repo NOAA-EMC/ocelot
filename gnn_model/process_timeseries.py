@@ -250,7 +250,7 @@ def extract_features(z_dict, data_summary, observation_config):
     return data_summary
 
 
-def flatten_data_summary(data_summary):
+def flatten_data(bin_data):
     """Flatten data_summary from extract_features by padding missing columns with zeros
     and stacking different observation types together. Instrument IDs are kept in separate tensors.
 
@@ -266,14 +266,13 @@ def flatten_data_summary(data_summary):
     unique_instruments = set()
 
     # First pass: find maximum dimensions and collect instruments
-    for bin_name, bin_data in data_summary.items():
-        for obs_type in bin_data.keys():
-            for inst_name in bin_data[obs_type].keys():
-                unique_instruments.add((obs_type, inst_name))
-                curr_data = bin_data[obs_type][inst_name]
-                for var in flattened_variables:
-                    if var in curr_data:
-                        max_features[var] = max(max_features[var], curr_data[var].shape[1])
+    for obs_type in bin_data.keys():
+        for inst_name in bin_data[obs_type].keys():
+            unique_instruments.add((obs_type, inst_name))
+            curr_data = bin_data[obs_type][inst_name]
+            for var in flattened_variables:
+                if var in curr_data:
+                    max_features[var] = max(max_features[var], curr_data[var].shape[1])
 
     # Create instrument ID mapping
     instrument_mapping = {}
@@ -291,80 +290,76 @@ def flatten_data_summary(data_summary):
             return torch.cat([tensor, padding], dim=1)
         return tensor
 
-    flattened_data = {}
-
     # Second pass: pad, flatten, and stack
-    for bin_name, bin_data in data_summary.items():
-        # Initialize data collection dictionaries
-        feature_lists = {
-            'input_features_final': [],
-            'target_features_final': [],
-            'input_metadata': [],
-            'target_metadata': [],
-            'input_instrument_ids': [],
-            'target_instrument_ids': [],
-            'target_scaler_min': [],
-            'target_scaler_max': []
-        }
-        scalar_lists = {
-            'input_lat_deg': [],
-            'input_lon_deg': [],
-            'target_lat_deg': [],
-            'target_lon_deg': []
-        }
+    # Initialize data collection dictionaries
+    feature_lists = {
+        'input_features_final': [],
+        'target_features_final': [],
+        'input_metadata': [],
+        'target_metadata': [],
+        'input_instrument_ids': [],
+        'target_instrument_ids': [],
+        'target_scaler_min': [],
+        'target_scaler_max': []
+    }
+    scalar_lists = {
+        'input_lat_deg': [],
+        'input_lon_deg': [],
+        'target_lat_deg': [],
+        'target_lon_deg': []
+    }
 
-        for obs_type in bin_data.keys():
-            for inst_name in bin_data[obs_type].keys():
-                curr_data = bin_data[obs_type][inst_name]
-                inst_id = instrument_mapping[f"{obs_type}_{inst_name}"]
-                device = next((v.device for v in curr_data.values() if isinstance(v, torch.Tensor)), 'cpu')
+    for obs_type in bin_data.keys():
+        for inst_name in bin_data[obs_type].keys():
+            curr_data = bin_data[obs_type][inst_name]
+            inst_id = instrument_mapping[f"{obs_type}_{inst_name}"]
+            device = next((v.device for v in curr_data.values() if isinstance(v, torch.Tensor)), 'cpu')
 
-                # Process features and metadata
-                for var in flattened_variables:
-                    print(f'{inst_name}, {var} ')
-                    if var in curr_data:
-                        current_tensor = curr_data[var]
-                        num_samples = current_tensor.shape[0]
-                        padded_tensor = pad_and_stack_tensor(current_tensor, max_features[var], device)
-                        feature_lists[var].append(padded_tensor)
+            # Process features and metadata
+            for var in flattened_variables:
+                print(f'{inst_name}, {var} ')
+                if var in curr_data:
+                    current_tensor = curr_data[var]
+                    num_samples = current_tensor.shape[0]
+                    padded_tensor = pad_and_stack_tensor(current_tensor, max_features[var], device)
+                    feature_lists[var].append(padded_tensor)
 
-                        # Add corresponding instrument IDs
-                        if var == 'input_features_final':
-                            feature_lists['input_instrument_ids'].append(
-                                torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
-                            )
+                    # Add corresponding instrument IDs
+                    if var == 'input_features_final':
+                        feature_lists['input_instrument_ids'].append(
+                            torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
+                        )
 
-                        elif var == 'target_features_final':
-                            feature_lists['target_instrument_ids'].append(
-                                torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
-                            )
-                            target_scale_min = torch.tensor(curr_data['target_scaler_min'])
-                            target_scale_min = target_scale_min.unsqueeze(0).repeat(num_samples, 1)
-                            padded_tensor = pad_and_stack_tensor(target_scale_min, max_features[var], device)
-                            feature_lists['target_scaler_min'].append(padded_tensor)
+                    elif var == 'target_features_final':
+                        feature_lists['target_instrument_ids'].append(
+                            torch.full((num_samples,), inst_id, dtype=torch.long, device=device)
+                        )
+                        target_scale_min = torch.tensor(curr_data['target_scaler_min'])
+                        target_scale_min = target_scale_min.unsqueeze(0).repeat(num_samples, 1)
+                        padded_tensor = pad_and_stack_tensor(target_scale_min, max_features[var], device)
+                        feature_lists['target_scaler_min'].append(padded_tensor)
 
-                            target_scale_max = torch.tensor(curr_data['target_scaler_max'])
-                            target_scale_max = target_scale_max.unsqueeze(0).repeat(num_samples, 1)
-                            padded_tensor = pad_and_stack_tensor(target_scale_max, max_features[var], device)
-                            feature_lists['target_scaler_max'].append(padded_tensor)
-                # Process scalar values for input features
-                for key in scalar_lists.keys():
-                    if key in curr_data:
-                        # For lat/lon, use actual values without repeating
-                        scalar_lists[key].append(torch.tensor(curr_data[key], dtype=torch.float32, device=device))
+                        target_scale_max = torch.tensor(curr_data['target_scaler_max'])
+                        target_scale_max = target_scale_max.unsqueeze(0).repeat(num_samples, 1)
+                        padded_tensor = pad_and_stack_tensor(target_scale_max, max_features[var], device)
+                        feature_lists['target_scaler_max'].append(padded_tensor)
+            # Process scalar values for input features
+            for key in scalar_lists.keys():
+                if key in curr_data:
+                    # For lat/lon, use actual values without repeating
+                    scalar_lists[key].append(torch.tensor(curr_data[key], dtype=torch.float32, device=device))
 
-        # Stack all collected data for this bin
-        bin_flat = {}
+    # Stack all collected data for this bin
+    bin_flat = {}
 
-        # Stack features, metadata, and their instrument IDs
-        for key, tensor_list in feature_lists.items():
-            print(key)
-            if tensor_list:  # Only stack if we have values
-                bin_flat[key] = torch.cat(tensor_list, dim=0)
+    # Stack features, metadata, and their instrument IDs
+    for key, tensor_list in feature_lists.items():
+        print(key)
+        if tensor_list:  # Only stack if we have values
+            bin_flat[key] = torch.cat(tensor_list, dim=0)
 
-        # Stack scalar values
-        for key, values in scalar_lists.items():
-            if values:  # Only stack if we have values
-                bin_flat[key] = torch.cat(values, dim=0)
-        flattened_data[bin_name] = bin_flat
-    return flattened_data, instrument_mapping
+    # Stack scalar values
+    for key, values in scalar_lists.items():
+        if values:  # Only stack if we have values
+            bin_flat[key] = torch.cat(values, dim=0)
+    return bin_flat, instrument_mapping

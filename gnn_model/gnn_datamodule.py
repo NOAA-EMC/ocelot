@@ -16,7 +16,7 @@ from mesh_creation import create_icosahedral_mesh
 from mesh_to_mesh import MeshSelfConnectivity
 from mesh_to_target import MeshTargetKNNConnector
 from obs_to_mesh import ObsMeshCutoffConnector
-from process_timeseries import extract_features, organize_bins_times, flatten_data_summary
+from process_timeseries import extract_features, organize_bins_times, flatten_data
 
 
 @rank_zero_only
@@ -65,6 +65,7 @@ class BinDataset(Dataset):
 
         try:
             bin = self.data_summary[bin_name]
+            bin, _ = flatten_data(bin)
             data_dict = self.create_graph_fn(bin)
         except Exception as e:
             print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
@@ -184,9 +185,6 @@ class GNNDataModule(pl.LightningDataModule):
                 self.data_summary,
                 self.observation_config,
             )
-
-            # Flatten data structure and add instrument IDs
-            self.data_summary, self.instrument_mapping = flatten_data_summary(self.data_summary)
 
             # Split bins into train/val/test sets
             all_bin_names = sorted(list(self.data_summary.keys()))
