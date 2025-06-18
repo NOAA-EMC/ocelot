@@ -57,13 +57,20 @@ class GNNLightning(pl.LightningModule):
         self.encoder_mlp = nn.Sequential(
             nn.Linear(input_dim + 1, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.1),  # <== Add this extra layer
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
         )
-
         # Processor: Message passing layers (Hidden ↔ Hidden)
         self.processor_layers = nn.ModuleList([GATConv(hidden_dim, hidden_dim, add_self_loops=True, bias=True) for _ in range(num_layers)])
 
@@ -86,7 +93,8 @@ class GNNLightning(pl.LightningModule):
                 torch.nn.init.constant_(layer.bias, 0.1)
 
         # Define loss function
-        self.loss_fn = nn.MSELoss()
+        # self.loss_fn = nn.MSELoss()
+        self.huber = torch.nn.HuberLoss(delta=0.1, reduction="none")
 
         # Automatically decide whether to use ocelot_loss based on weight config
         self.use_ocelot_loss = not (
@@ -96,8 +104,9 @@ class GNNLightning(pl.LightningModule):
 
     def on_fit_start(self):
         if self.trainer.is_global_zero:
-            print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'MSELoss'} for training.")
-
+            # print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'MSELoss'} for training.")
+            # print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
+            print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
     def on_train_epoch_start(self):
         if self.trainer.is_global_zero:
             print(f"=== Starting Epoch {self.current_epoch} ===")
@@ -317,10 +326,23 @@ class GNNLightning(pl.LightningModule):
         # === Build decoder input AFTER masking
         mesh_feats = x_hidden[src_decoder_local]
         decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
+        # Chunk the decoder MLP forward pass
+        chunk_size = 2_500_000
+        if decoder_input.size(0) > chunk_size:
+            out_dim = self.decoder_mlp[-1].out_features
+            decoded = decoder_input.new_empty(decoder_input.size(0), out_dim)
+            for start in range(0, decoder_input.size(0), chunk_size):
+                end = min(start + chunk_size, decoder_input.size(0))
+                decoded[start:end] = self.decoder_mlp(decoder_input[start:end])
+        else:
+            decoded = self.decoder_mlp(decoder_input)
 
+        out = decoded
+
+        # out = self.decoder_mlp(decoder_input)
         # === Simple, non-chunked decoding (no gate, no scatter) ===
-        decoded = self.decoder_mlp(decoder_input)
-        out = decoded  # No gate, no norm, no scatter
+        # decoded = self.decoder_mlp(decoder_input)
+        # out = decoded  # No gate, no norm, no scatter
 
         # Optional: log stats for first 5 channels
         if self.trainer.is_global_zero:
@@ -393,9 +415,11 @@ class GNNLightning(pl.LightningModule):
 
         # === Compute loss and log it
         if self.use_ocelot_loss:
-            loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids)
+            # loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids)
+            loss = self.weighted_huber_loss(y_pred, y_true, batch.instrument_ids)
         else:
-            loss = self.loss_fn(y_pred, y_true)
+            # loss = self.loss_fn(y_pred, y_true)
+            loss = self.huber(y_pred, y_true).mean()  # fallback
 
         if self.trainer.is_global_zero:
             self.debug(f"[DEBUG] MSE loss at batch {batch_idx}: {loss.item():.6f}")
@@ -444,9 +468,11 @@ class GNNLightning(pl.LightningModule):
         y_true = batch.y
         # Choose appropriate loss
         if self.use_ocelot_loss:
-            loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids, check_grad=False)
+            # loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids, check_grad=False)
+            loss = self.weighted_huber_loss(y_pred, y_true, batch.instrument_ids)
         else:
-            loss = self.loss_fn(y_pred, y_true)
+            # loss = self.loss_fn(y_pred, y_true)
+            loss = self.huber(y_pred, y_true).mean()
 
         self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
 
@@ -563,7 +589,17 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
 
     def configure_optimizers(self):
-        return Adam(self.parameters(), lr=self.lr)
+        # return Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            }
+        }
 
     def ocelot_loss(self, y_pred, y_true, instrument_ids, check_grad=True):
         """
@@ -577,6 +613,7 @@ class GNNLightning(pl.LightningModule):
         Returns:
             loss (Tensor): Scalar loss value
         """
+        device = y_pred.device
         assert y_pred.device == self.device, f"y_pred not on model device: {y_pred.device} != {self.device}"
         assert y_true.device.type == "cuda", "y_true is not on GPU"
         if check_grad:
@@ -591,6 +628,11 @@ class GNNLightning(pl.LightningModule):
 
             y_p = y_pred[inst_mask]
             y_t = y_true[inst_mask]
+            # Normalize y_pred and y_true using per-channel stats
+            mean = self.channel_mean.to(device)
+            std = self.channel_std.to(device)
+            y_p = (y_p - mean) / std
+            y_t = (y_t - mean) / std
 
             # Instrument weight fallback
             w_i = self.instrument_weights.get(inst_id_int, 1.0)
@@ -619,6 +661,29 @@ class GNNLightning(pl.LightningModule):
             total += y_p.shape[0]
 
         return loss / (total + 1e-8)
+
+    def weighted_huber_loss(self, pred, target, instrument_ids):
+        """
+        pred, target: [N, C]
+        instrument_ids: [N], integer instrument IDs (e.g., 0 for ATMS)
+        """
+        device = pred.device
+        huber_loss = self.huber(pred, target)  # shape [N, C]
+
+        total_loss = 0.0
+        for inst_id in instrument_ids.unique():
+            mask = instrument_ids == inst_id
+            if mask.sum() == 0:
+                continue
+
+            inst_id_int = int(inst_id.item())
+            weights = self.channel_weights.get(inst_id_int, torch.ones(pred.shape[1], device=device))
+            weights = weights.to(device)
+
+            masked_loss = huber_loss[mask] * weights  # shape [M, C]
+            total_loss += masked_loss.mean()
+
+        return total_loss / instrument_ids.unique().numel()
 
     @staticmethod
     def scatter_add_aggregate(values, indices, dim_size):

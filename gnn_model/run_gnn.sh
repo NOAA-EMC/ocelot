@@ -8,7 +8,7 @@
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=0
 #SBATCH -t 03:30:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
@@ -32,6 +32,7 @@ export NCCL_P2P_LEVEL=NVL
 export PYTHONFAULTHANDLER=1
 export TORCH_DISTRIBUTED_DEBUG=OFF # INFO
 export CUDA_LAUNCH_BLOCKING=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Running on $(hostname)"
 echo "SLURM Node List: $SLURM_NODELIST"
@@ -39,4 +40,4 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training
-srun --cpu_bind=cores python train_gnn.py #--verbose
+srun --cpu_bind=cores python train_gnn.py --verbose
