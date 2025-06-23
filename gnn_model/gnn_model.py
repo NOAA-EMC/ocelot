@@ -106,7 +106,7 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero:
             # print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'MSELoss'} for training.")
             # print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
-            print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
+            print(f"[INFO] Using {'weighted Huber loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
     def on_train_epoch_start(self):
         if self.trainer.is_global_zero:
             print(f"=== Starting Epoch {self.current_epoch} ===")

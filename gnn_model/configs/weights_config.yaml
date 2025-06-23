@@ -5,6 +5,7 @@ instrument_weights:
 
 channel_weights:
   atms: [1, 1, 1, 1, 1, 1, 0.8, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.7, 0.7, 0.7, 1, 1, 1, 1, 1, 1]       # length 22
+  # atms: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 # surface_pressure: [1.0]
 # radiosonde: [...]
 

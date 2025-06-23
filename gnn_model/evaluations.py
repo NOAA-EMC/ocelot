@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Load your predictions CSV
-df = pd.read_csv("step8_s7_21days/bt_predictions_epoch9.csv")
+df = pd.read_csv("step11_fineTunning_month2/bt_predictions_epoch10.csv")
 
 # Plot predictions vs targets for each channel
 for i in range(1, 23):  # Channels 1 to 22
@@ -28,5 +28,5 @@ for i in range(1, 23):  # Channels 1 to 22
     plt.ylabel("Latitude")
 
     plt.tight_layout()
-    plt.savefig(f"step8_s7_21days/bt_map_channel_{i}.png")
+    plt.savefig(f"step11_fineTunning_month2/bt_map_channel_{i}.png")
     plt.close()

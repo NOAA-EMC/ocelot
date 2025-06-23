@@ -29,6 +29,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
+    # === DATA CONFIGURATION ===
 
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -36,28 +37,29 @@ def main():
     # CONUS data path:
     # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/atms.zarr"
     # One week Global data path:
+    # checkpoint_path = "checkpoints/gnn-epoch-epoch=07-val_loss-val_loss=0.00.ckpt"
     data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/atms.zarr"
     weights_config_path = "configs/weights_config.yaml"
     instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 
     start_date = "2024-04-01"
-    end_date = "2024-05-10"
+    end_date = "2024-05-01"
     satellite_id = 224
 
     mesh_resolution = 6
 
-    # Define model parameters
+    # === MODEL CONFIGURATION ===
     input_dim = 32
     hidden_dim = 128
     output_dim = 22
     num_layers = 6
     lr = 1e-3
 
-    # Training parameters
-    max_epochs = 20
+    # === TRAINING CONFIGURATION ===
+    max_epochs = 10
     batch_size = 1
 
-    # Instantiate model & data module
+    # # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -68,6 +70,17 @@ def main():
         channel_weights=channel_weights,
         verbose=args.verbose,
     )
+    # model = GNNLightning.load_from_checkpoint(
+    #     checkpoint_path,
+    #     input_dim=input_dim,
+    #     hidden_dim=hidden_dim,
+    #     output_dim=output_dim,
+    #     num_layers=num_layers,
+    #     lr=lr,
+    #     instrument_weights=instrument_weights,
+    #     channel_weights=channel_weights,
+    #     verbose=args.verbose,
+    # )
 
     data_module = GNNDataModule(
         data_path=data_path,
@@ -95,17 +108,18 @@ def main():
     callbacks = []
     if has_val_data:
         callbacks = [
-            EarlyStopping(monitor="val_loss", patience=3, mode="min"),
+            EarlyStopping(monitor="val_loss", patience=3, mode="min", verbose=True),
             ModelCheckpoint(
                 dirpath="checkpoints",
                 filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
                 save_top_k=1,
                 monitor="val_loss",
                 mode="min",
+                save_last=True
             ),
         ]
 
-    # Build trainer arguments dynamically
+    # === TRAINER CONFIGURATION ===
     trainer_kwargs = {
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
@@ -126,15 +140,21 @@ def main():
 
     trainer = pl.Trainer(**trainer_kwargs)
 
-    # GPU memory debug
+    # === TRAINING ===
     if torch.cuda.is_available():
         print(f"GPU {torch.cuda.current_device()} memory allocated:", torch.cuda.memory_allocated() / 1024**3, "GB")
 
     trainer.fit(model, data_module)
+    # trainer.fit(model, data_module, ckpt_path=checkpoint_path)
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")
     print(f"Total time (setup + training): {(end_time - start_time) / 60:.2f} minutes")
 
+    # === LOAD BEST MODEL AFTER TRAINING ===
+    if has_val_data:
+        best_path = trainer.checkpoint_callback.best_model_path
+        print(f"[INFO] Best model path: {best_path}")
+        best_model = GNNLightning.load_from_checkpoint(best_path)
 
 if __name__ == "__main__":
     main()
