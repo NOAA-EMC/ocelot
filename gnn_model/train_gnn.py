@@ -53,7 +53,8 @@ def main():
         "conventional": {
             # "radiosonde": ,
             "pressure": {
-                "features": ["height", "stationPressure"]
+                "features": ["stationPressure", ],
+                "metadata": ["height", ]
             },
             # "surface_marine": ,
             # "surface_land":
