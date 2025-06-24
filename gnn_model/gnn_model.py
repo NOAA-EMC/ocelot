@@ -562,6 +562,13 @@ class GNNLightning(pl.LightningModule):
             total_grad_norm = total_grad_norm**0.5
             self.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
 
+        # Release references to intermediate tensors to free memory
+        self._encoded_ref = None
+        self._x_hidden_ref = None
+        self._mesh_feats_ref = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def configure_optimizers(self):
         return Adam(self.parameters(), lr=self.lr)
 
