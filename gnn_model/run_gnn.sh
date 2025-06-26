@@ -10,8 +10,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH -t 03:30:00
-#SBATCH --output=gnn_train_%j.out
-#SBATCH --error=gnn_train_%j.err
+#SBATCH --output=slog/gnn_train_%j.out
+#SBATCH --error=slog/gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 
 # Load Conda environment
@@ -40,4 +40,4 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training
-srun --cpu_bind=cores python train_gnn.py #--verbose
+srun --cpu_bind=cores python train_gnn.py --verbose

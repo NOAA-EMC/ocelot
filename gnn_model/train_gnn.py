@@ -24,7 +24,7 @@ def main():
     sys.stderr.write("===> ENTERED MAIN\n")
 
     # Data parameters
-    region = "conus"
+    region = "global"
     if region == "conus":
         # CONUS data path:
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
