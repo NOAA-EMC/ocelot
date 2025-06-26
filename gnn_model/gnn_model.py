@@ -36,7 +36,9 @@ class GNNLightning(pl.LightningModule):
             weighted aggregation to produce target predictions.
     """
 
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4, instrument_weights=None, channel_weights=None, verbose=False, max_rollout_steps=1, rollout_schedule='step'):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=16, lr=1e-4,
+                 instrument_weights=None, channel_weights=None, verbose=False,
+                 max_rollout_steps=1, rollout_schedule='step'):
         """
         Initializes the GNNLightning model with an encoder, processor, and decoder.
 
@@ -161,12 +163,12 @@ class GNNLightning(pl.LightningModule):
 
         # MK: Get both ground truth and target locations for all steps
         if n_steps > 1:
-            #ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
+            # ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
             step_data_list = self._get_sequential_step_data(data, n_steps)
         else:
             # Single step: use original data
-            #ground_truths = [data.y]
-            #target_locations_list = [data.target_metadata[:, :2]]
+            # ground_truths = [data.y]
+            # target_locations_list = [data.target_metadata[:, :2]]
             step_data_list = [{
                 'y': data.y,
                 'edge_index_decoder': data.edge_index_decoder,
@@ -226,7 +228,7 @@ class GNNLightning(pl.LightningModule):
         # Original code had bug: scatter_add_aggregate used reduce="add" despite claiming "mean"
         # Also had inefficient branching logic that computed scatter twice in some cases
         #       x_hidden = self.scatter_add_aggregate(encoded, tgt_encoder, num_targets) got computed twice for non missing case
-        # Since satellite data always has missing mesh nodes (sparse coverage), 
+        # Since satellite data always has missing mesh nodes (sparse coverage),
         # we always took the "len(missing_mesh_nodes) > 0" path (manually compute index_add and mean) -> this can be replaced by scatter
 
         # === OPTIMIZED: Use scatter with reduce="mean" ===
@@ -286,7 +288,6 @@ class GNNLightning(pl.LightningModule):
             # MK debugging (1 line)
             x_hidden_step_start = x_hidden.clone()
 
-
             try:
                 for i, layer in enumerate(self.processor_layers):
                     self.debug(f"[DEBUG] Processor layer {i} input shape: {x_hidden.shape}")
@@ -339,12 +340,12 @@ class GNNLightning(pl.LightningModule):
 
             # Get current target size
             current_target_size = current_step_data['y'].shape[0]
-            
+
             # Mask invalid decoder edges
             valid_src = src_decoder_local < x_hidden.shape[0]
             valid_tgt = tgt_decoder_local < current_target_size
             valid_mask = valid_src & valid_tgt
-            
+
             src_decoder_local = src_decoder_local[valid_mask]
             tgt_decoder_local = tgt_decoder_local[valid_mask]
             dist_feats = edge_attr_decoder[valid_mask].unsqueeze(1)
@@ -399,7 +400,7 @@ class GNNLightning(pl.LightningModule):
             self.debug("[DEBUG] scatter_mean variance:", x_out.var().item())
             self.debug(f"[DEBUG] Unique targets: {tgt_decoder_local.unique().numel()} / {current_target_size}")
             self.debug(f"[DEBUG] x_out requires_grad: {x_out.requires_grad}, grad_fn: {x_out.grad_fn}")
-            
+
             if self.training and self.trainer.is_global_zero:
                 try:
                     from torch.autograd import grad
@@ -482,30 +483,30 @@ class GNNLightning(pl.LightningModule):
         """
         Gets preprocessed data (y, edge_index_decoder, edge_attr_decoder) for each rollout step
         by accessing the corresponding time bins from the data module.
-        
+
         Returns:
             List[Dict]: List of data dictionaries for each step containing:
                 - 'y': ground truth targets
-                - 'edge_index_decoder': decoder edge indices  
+                - 'edge_index_decoder': decoder edge indices
                 - 'edge_attr_decoder': decoder edge attributes
                 - 'target_scaler_min', 'target_scaler_max': for unnormalization
         """
         data_module = self.trainer.datamodule
         current_bin_name = batch.bin_name[0] if isinstance(batch.bin_name, list) else batch.bin_name
         bin_num = int(current_bin_name.replace("bin", ""))
-        
+
         step_data_list = []
-        
+
         for step in range(n_steps):  # ← FIX: This was not properly indented
             target_bin_name = f"bin{bin_num + step}"
-            
+
             if target_bin_name in data_module.data_summary:
                 # Get the preprocessed bin data
                 target_bin_data = data_module.data_summary[target_bin_name]
-                
+
                 # Create a temporary data object to get the preprocessed graph structure
                 temp_graph_data = data_module._create_graph_structure(target_bin_data)
-                
+
                 step_data = {
                     'y': temp_graph_data['y'].to(batch.y.device),
                     'edge_index_decoder': temp_graph_data['edge_index_decoder'].to(batch.y.device),
@@ -513,9 +514,9 @@ class GNNLightning(pl.LightningModule):
                     'target_scaler_min': temp_graph_data['target_scaler_min'].to(batch.y.device),
                     'target_scaler_max': temp_graph_data['target_scaler_max'].to(batch.y.device)
                 }
-                
+
                 step_data_list.append(step_data)
-                
+
             else:
                 # Fallback: repeat last available data
                 if step_data_list:
@@ -532,7 +533,7 @@ class GNNLightning(pl.LightningModule):
                     }
                     step_data_list.append(step_data)
                     self.debug(f"Warning: No data for {target_bin_name}, using original batch")
-        
+
         return step_data_list
 
     def training_step(self, batch, batch_idx):
@@ -578,11 +579,11 @@ class GNNLightning(pl.LightningModule):
         rank = self.trainer.global_rank if hasattr(self.trainer, "global_rank") else 0
         print(f"[Rank {rank}] Number of rollout steps: {len(predictions)}")
         print(f"[Rank {rank}] Each prediction shape: {predictions[0].shape}, Each ground truth shape: {ground_truths[0].shape}")
-        
+
         # Check for NaNs
         has_nan_pred = any(torch.isnan(pred).any() for pred in predictions)
         has_nan_truth = any(torch.isnan(truth).any() for truth in ground_truths)
-        
+
         if has_nan_pred or has_nan_truth:
             print(f"NaNs detected at batch {batch_idx} on rank {self.trainer.global_rank}")
             for step, (pred, truth) in enumerate(zip(predictions, ground_truths)):
@@ -607,7 +608,7 @@ class GNNLightning(pl.LightningModule):
                 self.log(f"train_loss_step{step+1}", step_loss)
             else:
                 print(f"Skipping step {step+1}: pred shape {prediction.shape} != truth shape {ground_truth.shape}")
-    
+
         # Add the loss probe from forward method
         if self.training and isinstance(loss_probe, torch.Tensor):
             total_loss += loss_probe
@@ -615,7 +616,7 @@ class GNNLightning(pl.LightningModule):
         # Log final loss and metrics
         self.log("train_loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("rollout_steps", float(current_rollout_steps))
-        
+
         # Set loss for return
         loss = total_loss
 
@@ -666,7 +667,7 @@ class GNNLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         # Use current rollout steps to match training
         current_rollout_steps = self.get_current_rollout_steps()
-                                # self.max_rollout_steps
+        # self.max_rollout_steps
 
         # Get predictions for all rollout steps
         y_pred_list = self(batch, n_steps=current_rollout_steps)
@@ -685,7 +686,7 @@ class GNNLightning(pl.LightningModule):
                     step_loss = self.ocelot_loss(prediction, ground_truth, batch.instrument_ids, check_grad=False)
                 else:
                     step_loss = self.loss_fn(prediction, ground_truth)
-                
+
                 total_loss += step_loss
                 self.log(f"val_loss_step{step+1}", step_loss, sync_dist=True, on_epoch=True)
             else:
@@ -698,7 +699,7 @@ class GNNLightning(pl.LightningModule):
 
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[VAL] Epoch {self.current_epoch} - val_loss: {loss.item():.6f} (across {current_rollout_steps} steps)")
-        
+
         # Use first step for instrument-specific logging and metrics (for consistency)
         y_pred = y_pred_list[0]
         y_true = ground_truths[0]
@@ -742,32 +743,32 @@ class GNNLightning(pl.LightningModule):
         step_rmse_list = []
         step_mae_list = []
         step_bias_list = []
-        
+
         for step, (y_pred, y_true) in enumerate(zip(y_pred_list, ground_truths)):
             # Get scaler info for this step
             step_data = step_data_list[step]
             min_vals = step_data['target_scaler_min'].to(self.device)
             max_vals = step_data['target_scaler_max'].to(self.device)
-            
+
             # Unnormalize for this step
             y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
             y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
-            
+
             # Compute per-channel metrics for this step
             step_rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
             step_mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
             step_bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
-            
+
             step_rmse_list.append(step_rmse)
             step_mae_list.append(step_mae)
             step_bias_list.append(step_bias)
-            
+
             # Log per-step metrics
             for i in range(step_rmse.shape[0]):
                 self.log(f"val_rmse_step{step+1}_ch_{i+1}", step_rmse[i].item(), sync_dist=True, on_epoch=True)
                 self.log(f"val_mae_step{step+1}_ch_{i+1}", step_mae[i].item(), sync_dist=True, on_epoch=True)
                 self.log(f"val_bias_step{step+1}_ch_{i+1}", step_bias[i].item(), sync_dist=True, on_epoch=True)
-        
+
         # Average metrics across all steps
         avg_rmse = torch.stack(step_rmse_list).mean(dim=0)  # Average across steps
         avg_mae = torch.stack(step_mae_list).mean(dim=0)
@@ -778,18 +779,18 @@ class GNNLightning(pl.LightningModule):
             self.log(f"val_rmse_ch_{i+1}", avg_rmse[i].item(), sync_dist=True, on_epoch=True)
             self.log(f"val_mae_ch_{i+1}", avg_mae[i].item(), on_epoch=True, sync_dist=True)
             self.log(f"val_bias_ch_{i+1}", avg_bias[i].item(), on_epoch=True, sync_dist=True)
-        
+
         # Also log step-wise degradation metrics
         if current_rollout_steps > 1:
             # Compare last step to first step to see degradation
             first_step_rmse = step_rmse_list[0].mean()  # Average across channels
             last_step_rmse = step_rmse_list[-1].mean()
             rmse_degradation = last_step_rmse / first_step_rmse
-            
+
             self.log("val_rmse_degradation", rmse_degradation.item(), sync_dist=True, on_epoch=True)
             self.log("val_first_step_rmse", first_step_rmse.item(), sync_dist=True, on_epoch=True)
             self.log("val_last_step_rmse", last_step_rmse.item(), sync_dist=True, on_epoch=True)
-        
+
         # Save CSV for visual inspection (use first step)
         if self.trainer.is_global_zero and not hasattr(self, f"_saved_csv_epoch_{self.current_epoch}"):
             setattr(self, f"_saved_csv_epoch_{self.current_epoch}", True)
@@ -801,7 +802,7 @@ class GNNLightning(pl.LightningModule):
             first_step_data = step_data_list[0]
             min_vals_csv = first_step_data['target_scaler_min'].to(self.device)
             max_vals_csv = first_step_data['target_scaler_max'].to(self.device)
-            
+
             y_pred_unnorm_csv = self.unnormalize(y_pred_csv, min_vals_csv, max_vals_csv)
             y_true_unnorm_csv = self.unnormalize(y_true_csv, min_vals_csv, max_vals_csv)
 
@@ -812,7 +813,7 @@ class GNNLightning(pl.LightningModule):
                 **{f"pred_bt_{i+1}": y_pred_unnorm_csv[:, i].cpu().numpy() for i in range(22)},
             })
             df.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
-        
+
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[VAL] Averaged metrics across {current_rollout_steps} steps:")
             print(f"  RMSE (avg): {avg_rmse.mean().item():.4f}")
@@ -843,7 +844,7 @@ class GNNLightning(pl.LightningModule):
 
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[VAL] Epoch {self.current_epoch} - val_loss: {loss.item():.6f}")
-        
+
         instrument_ids = batch.instrument_ids
 
         # Per-instrument loss logging
@@ -964,7 +965,7 @@ class GNNLightning(pl.LightningModule):
                 print(f"  RMSE degradation: {rmse_degradation.item():.2f}x")
 
         self.log("val_lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=False)
-        
+
         # Cleanup - use correct variable names
         del y_pred_list, ground_truths, step_data_list
         return loss
