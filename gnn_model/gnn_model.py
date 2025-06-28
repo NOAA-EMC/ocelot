@@ -12,9 +12,6 @@ import torch.utils.checkpoint
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# MK
-from loss import level_weighted_mse
-
 
 class GNNLightning(pl.LightningModule):
     """
@@ -60,8 +57,8 @@ class GNNLightning(pl.LightningModule):
             weights_tensor = torch.tensor(weights)
             mask = weights_tensor > 0
             self.channel_masks[int(inst_id)] = mask
-        self.max_rollout_steps = max_rollout_steps  # MK: goal is 3 days
-        self.rollout_schedule = rollout_schedule    # MK
+        self.max_rollout_steps = max_rollout_steps
+        self.rollout_schedule = rollout_schedule
 
         # Encoder: Maps data nodes to hidden nodes
         self.encoder_mlp = nn.Sequential(
@@ -95,7 +92,6 @@ class GNNLightning(pl.LightningModule):
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_dim, output_dim),
-            # nn.Sigmoid()  # MK: Add this if targets are 0-1
         )
 
         # Optional: Initialize processor layer biases to small values
@@ -134,7 +130,6 @@ class GNNLightning(pl.LightningModule):
     def unnormalize(tensor, min_vals, max_vals):
         return tensor * (max_vals - min_vals) + min_vals
 
-    # MK: add latent rollout
     def forward(self, data, n_steps=1):
         self.debug(f"[DEBUG] [forward] self.training = {self.training}, grad_enabled = {torch.is_grad_enabled()}")
         if torch.cuda.is_available():
@@ -161,14 +156,10 @@ class GNNLightning(pl.LightningModule):
         edge_index_encoder = data.edge_index_encoder
         edge_index_processor = data.edge_index_processor
 
-        # MK: Get both ground truth and target locations for all steps
+        # Get both ground truth and target locations for all steps
         if n_steps > 1:
-            # ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
             step_data_list = self._get_sequential_step_data(data, n_steps)
         else:
-            # Single step: use original data
-            # ground_truths = [data.y]
-            # target_locations_list = [data.target_metadata[:, :2]]
             step_data_list = [{
                 'y': data.y,
                 'edge_index_decoder': data.edge_index_decoder,
@@ -189,7 +180,6 @@ class GNNLightning(pl.LightningModule):
         assert src_encoder.max().item() < x.shape[0], "[ERROR] src_encoder has out-of-bounds indices"
 
         # === Get decoder edges for first step to determine used mesh nodes
-        # MK:
         # edge_index_decoder = data.edge_index_decoder
         # Get all unique mesh nodes used across all steps for proper aggregation
         all_decoder_mesh_nodes = set()
@@ -197,18 +187,18 @@ class GNNLightning(pl.LightningModule):
             decoder_mesh_nodes = step_data['edge_index_decoder'][0].unique()
             all_decoder_mesh_nodes.update(decoder_mesh_nodes.cpu().numpy())
 
-        # MK: Get all unique processor nodes
+        # Get all unique processor nodes
         processor_mesh_nodes = edge_index_processor.flatten().unique()
 
         # === Mask edges whose target mesh nodes are not used downstream
-        # MK: put all unique node IDs together:
+        # put all unique node IDs together:
         # used_mesh_nodes = torch.cat([edge_index_decoder[0], edge_index_processor[0], edge_index_processor[1]]).unique()
         all_used_mesh_nodes = torch.cat([
             torch.tensor(list(all_decoder_mesh_nodes), device=data.x.device),
             processor_mesh_nodes
         ]).unique()
 
-        # MK: Filter encoder edges to only connect to mesh nodes we'll actually use
+        # Filter encoder edges to only connect to mesh nodes we'll actually use
         # edge_mask = torch.isin(tgt_encoder, used_mesh_nodes)
         edge_mask = torch.isin(tgt_encoder, all_used_mesh_nodes)
 
@@ -224,13 +214,6 @@ class GNNLightning(pl.LightningModule):
         self.debug("[DEBUG] encoded min/max:", encoded.min().item(), encoded.max().item())
 
         # === Aggregate to mesh nodes
-        # MK: DEBUG and OPTIMIZATION
-        # Original code had bug: scatter_add_aggregate used reduce="add" despite claiming "mean"
-        # Also had inefficient branching logic that computed scatter twice in some cases
-        #       x_hidden = self.scatter_add_aggregate(encoded, tgt_encoder, num_targets) got computed twice for non missing case
-        # Since satellite data always has missing mesh nodes (sparse coverage),
-        # we always took the "len(missing_mesh_nodes) > 0" path (manually compute index_add and mean) -> this can be replaced by scatter
-
         # === OPTIMIZED: Use scatter with reduce="mean" ===
         max_node_id = all_used_mesh_nodes.max().item() + 1
         if tgt_encoder.max() >= max_node_id:
@@ -265,10 +248,10 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[DEBUG] All {len(processor_nodes)} processor nodes covered in x_hidden")
         edge_index_processor = torch.searchsorted(unique_tgt_nodes_sorted, edge_index_processor)
 
-        predictions = []  # MK: add empty list to store predictions
+        predictions = []  # An empty list to store predictions
 
-        # Rollout loop # MK: add for loop to go through steps
-        for step in range(n_steps):  # MK: indentation, code no change
+        # Rollout loop
+        for step in range(n_steps):
             # === Processor: mesh ↔ mesh ===
             if self.trainer.is_global_zero:
                 print(f"\n[PROCESSOR DEBUG] Step {step}")
@@ -285,7 +268,6 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[DEBUG] edge_index_processor max: {edge_index_processor.max().item()}, min: {edge_index_processor.min().item()}")
             assert edge_index_processor.max().item() < x_hidden.size(0), "[ERROR] edge_index_processor has out-of-bounds indices"
 
-            # MK debugging (1 line)
             x_hidden_step_start = x_hidden.clone()
 
             try:
@@ -317,16 +299,14 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"[DEBUG] x_hidden.grad_fn AFTER processor: {x_hidden.grad_fn}")
                 self.debug(f"[DEBUG] x_hidden.grad is None AFTER processor: {x_hidden.grad is None}")
 
-            # MK === Decoder: Hidden → Target ===
-            # MK === Dynamic Decoder: Use target locations for this timestep ===
+            # === Decoder: Hidden → Target ===
+            # === Dynamic Decoder: Use target locations for this timestep ===
             current_step_data = step_data_list[step]
             edge_index_decoder = current_step_data['edge_index_decoder']
             edge_attr_decoder = current_step_data['edge_attr_decoder']
 
             src_decoder = edge_index_decoder[0]
             tgt_decoder = edge_index_decoder[1]
-
-            # MK: core code below remains the same unless labeled
 
             # Sanity check: mesh ↔ mesh overlap
             used_by_decoder = src_decoder.unique()
@@ -353,7 +333,6 @@ class GNNLightning(pl.LightningModule):
             if len(src_decoder_local) > 0 and src_decoder_local.max().item() >= x_hidden.size(0):
                 raise IndexError(f"[ERROR] src_decoder_local index {src_decoder_local.max().item()} exceeds x_hidden size {x_hidden.size(0)}")
 
-            # MK: Fix target size validation to use current target size
             # Validate target indices
             max_idx = tgt_decoder_local.max().item() if len(tgt_decoder_local) > 0 else -1
             if max_idx >= 0:
@@ -381,7 +360,7 @@ class GNNLightning(pl.LightningModule):
                 decoded = self.decoder_mlp(decoder_input)
             out = decoded  # No gate, no norm, no scatter
 
-            # Optional: log stats for first 5 channels
+            # Log stats for first 5 channels
             if self.trainer.is_global_zero:
                 self.debug("[DEBUG] Decoded shape:", out.shape)
                 for ch in range(min(5, out.shape[1])):
@@ -419,11 +398,10 @@ class GNNLightning(pl.LightningModule):
                 self._x_hidden_ref.retain_grad()
                 # Optional L2 regularization term to encourage small norms (acts as a probe for debugging)
 
-            # MK: store predictions
+            # Store predictions
             predictions.append(x_out)
             self.debug(f"[DEBUG] Step {step+1}: prediction shape {x_out.shape}")
 
-        # MK: Handle return value
         if self.training:
             return predictions, 1e-6 * x_hidden.norm()  # Return tuple like main
         else:
@@ -440,7 +418,6 @@ class GNNLightning(pl.LightningModule):
         if not hasattr(self, 'rollout_schedule'):
             return self.max_rollout_steps
 
-        # Progressive rollout schedule
         current_epoch = self.current_epoch
         current_step = self.global_step  # This tracks gradient descent updates
 
@@ -455,7 +432,6 @@ class GNNLightning(pl.LightningModule):
             if current_step < threshold:
                 return 1
             else:
-                # Add 1 rollout step per 1000 updates after 300k
                 additional_steps = 2 + (current_step - threshold) // interval
                 return min(additional_steps, self.max_rollout_steps)
 
@@ -478,7 +454,6 @@ class GNNLightning(pl.LightningModule):
         else:
             return self.max_rollout_steps
 
-    # MK
     def _get_sequential_step_data(self, batch, n_steps):
         """
         Gets preprocessed data (y, edge_index_decoder, edge_attr_decoder) for each rollout step
@@ -497,15 +472,17 @@ class GNNLightning(pl.LightningModule):
 
         step_data_list = []
 
-        for step in range(n_steps):  # ← FIX: This was not properly indented
+        for step in range(n_steps):
             target_bin_name = f"bin{bin_num + step}"
 
             if target_bin_name in data_module.data_summary:
                 # Get the preprocessed bin data
                 target_bin_data = data_module.data_summary[target_bin_name]
+                from process_timeseries import flatten_data
+                target_bin_data_flat, _ = flatten_data(target_bin_data)
 
                 # Create a temporary data object to get the preprocessed graph structure
-                temp_graph_data = data_module._create_graph_structure(target_bin_data)
+                temp_graph_data = data_module._create_graph_structure(target_bin_data_flat)
 
                 step_data = {
                     'y': temp_graph_data['y'].to(batch.y.device),
@@ -546,12 +523,11 @@ class GNNLightning(pl.LightningModule):
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
         # === Run forward pass (predict outputs from input batch)
-        # MK: update with rollout steps
-
         current_rollout_steps = self.get_current_rollout_steps()
-        # MK: Log the tracking info here
-        self.log("MK_global_step", self.global_step)
-        self.log("MK_rollout_steps", float(current_rollout_steps))
+
+        # Optional: Log the tracking info here
+        # self.log("MK_global_step", self.global_step)
+        # self.log("MK_rollout_steps", float(current_rollout_steps))
 
         # Handle return format from forward method
         forward_result = self(batch, n_steps=current_rollout_steps)
