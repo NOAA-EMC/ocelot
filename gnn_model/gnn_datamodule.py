@@ -90,7 +90,7 @@ class BinDataset(Dataset):
             target_scaler_max=data_dict["target_scaler_max"],
             target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
-            instrument_ids=data_dict["target_instrument_ids"]
+            instrument_ids=data_dict["target_instrument_ids"],
             bin_name=data_dict["bin_name"],
             target_metadata=torch.tensor(data_dict["target_metadata"], dtype=torch.float32),
         )
