@@ -9,9 +9,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter, scatter_add
 
-# MK
-from loss import level_weighted_mse
-
 
 class GNNLightning(pl.LightningModule):
     """
@@ -57,8 +54,8 @@ class GNNLightning(pl.LightningModule):
             weights_tensor = torch.tensor(weights)
             mask = weights_tensor > 0
             self.channel_masks[int(inst_id)] = mask
-        self.max_rollout_steps = max_rollout_steps  # MK: goal is 3 days
-        self.rollout_schedule = rollout_schedule    # MK
+        self.max_rollout_steps = max_rollout_steps
+        self.rollout_schedule = rollout_schedule
 
         # Encoder: Maps data nodes to hidden nodes
         self.encoder_mlp = nn.Sequential(
@@ -85,7 +82,6 @@ class GNNLightning(pl.LightningModule):
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_dim, output_dim),
-            # nn.Sigmoid()  # MK: Add this if targets are 0-1
         )
 
         # Optional: Initialize processor layer biases to small values
@@ -123,7 +119,6 @@ class GNNLightning(pl.LightningModule):
     def unnormalize(tensor, min_vals, max_vals):
         return tensor * (max_vals - min_vals) + min_vals
 
-    # MK: add latent rollout
     def forward(self, data, n_steps=1):
         self.debug(f"[DEBUG] [forward] self.training = {self.training}, grad_enabled = {torch.is_grad_enabled()}")
         if torch.cuda.is_available():
@@ -150,14 +145,10 @@ class GNNLightning(pl.LightningModule):
         edge_index_encoder = data.edge_index_encoder
         edge_index_processor = data.edge_index_processor
 
-        # MK: Get both ground truth and target locations for all steps
+        # Get both ground truth and target locations for all steps
         if n_steps > 1:
-            # ground_truths, target_locations_list = self._get_sequential_targets_and_locations(data, n_steps)
             step_data_list = self._get_sequential_step_data(data, n_steps)
         else:
-            # Single step: use original data
-            # ground_truths = [data.y]
-            # target_locations_list = [data.target_metadata[:, :2]]
             step_data_list = [{
                 'y': data.y,
                 'edge_index_decoder': data.edge_index_decoder,
@@ -178,7 +169,6 @@ class GNNLightning(pl.LightningModule):
         assert src_encoder.max().item() < x.shape[0], "[ERROR] src_encoder has out-of-bounds indices"
 
         # === Get decoder edges for first step to determine used mesh nodes
-        # MK:
         # edge_index_decoder = data.edge_index_decoder
         # Get all unique mesh nodes used across all steps for proper aggregation
         all_decoder_mesh_nodes = set()
@@ -186,18 +176,18 @@ class GNNLightning(pl.LightningModule):
             decoder_mesh_nodes = step_data['edge_index_decoder'][0].unique()
             all_decoder_mesh_nodes.update(decoder_mesh_nodes.cpu().numpy())
 
-        # MK: Get all unique processor nodes
+        # Get all unique processor nodes
         processor_mesh_nodes = edge_index_processor.flatten().unique()
 
         # === Mask edges whose target mesh nodes are not used downstream
-        # MK: put all unique node IDs together:
+        # put all unique node IDs together:
         # used_mesh_nodes = torch.cat([edge_index_decoder[0], edge_index_processor[0], edge_index_processor[1]]).unique()
         all_used_mesh_nodes = torch.cat([
             torch.tensor(list(all_decoder_mesh_nodes), device=data.x.device),
             processor_mesh_nodes
         ]).unique()
 
-        # MK: Filter encoder edges to only connect to mesh nodes we'll actually use
+        # Filter encoder edges to only connect to mesh nodes we'll actually use
         # edge_mask = torch.isin(tgt_encoder, used_mesh_nodes)
         edge_mask = torch.isin(tgt_encoder, all_used_mesh_nodes)
 
@@ -213,13 +203,6 @@ class GNNLightning(pl.LightningModule):
         self.debug("[DEBUG] encoded min/max:", encoded.min().item(), encoded.max().item())
 
         # === Aggregate to mesh nodes
-        # MK: DEBUG and OPTIMIZATION
-        # Original code had bug: scatter_add_aggregate used reduce="add" despite claiming "mean"
-        # Also had inefficient branching logic that computed scatter twice in some cases
-        #       x_hidden = self.scatter_add_aggregate(encoded, tgt_encoder, num_targets) got computed twice for non missing case
-        # Since satellite data always has missing mesh nodes (sparse coverage),
-        # we always took the "len(missing_mesh_nodes) > 0" path (manually compute index_add and mean) -> this can be replaced by scatter
-
         # === OPTIMIZED: Use scatter with reduce="mean" ===
         max_node_id = all_used_mesh_nodes.max().item() + 1
         if tgt_encoder.max() >= max_node_id:
@@ -254,10 +237,10 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[DEBUG] All {len(processor_nodes)} processor nodes covered in x_hidden")
         edge_index_processor = torch.searchsorted(unique_tgt_nodes_sorted, edge_index_processor)
 
-        predictions = []  # MK: add empty list to store predictions
+        predictions = []  # An empty list to store predictions
 
-        # Rollout loop # MK: add for loop to go through steps
-        for step in range(n_steps):  # MK: indentation, code no change
+        # Rollout loop
+        for step in range(n_steps):
             # === Processor: mesh ↔ mesh ===
             if self.trainer.is_global_zero:
                 print(f"\n[PROCESSOR DEBUG] Step {step}")
@@ -274,7 +257,6 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[DEBUG] edge_index_processor max: {edge_index_processor.max().item()}, min: {edge_index_processor.min().item()}")
             assert edge_index_processor.max().item() < x_hidden.size(0), "[ERROR] edge_index_processor has out-of-bounds indices"
 
-            # MK debugging (1 line)
             x_hidden_step_start = x_hidden.clone()
 
             try:
@@ -306,16 +288,14 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"[DEBUG] x_hidden.grad_fn AFTER processor: {x_hidden.grad_fn}")
                 self.debug(f"[DEBUG] x_hidden.grad is None AFTER processor: {x_hidden.grad is None}")
 
-            # MK === Decoder: Hidden → Target ===
-            # MK === Dynamic Decoder: Use target locations for this timestep ===
+            # === Decoder: Hidden → Target ===
+            # === Dynamic Decoder: Use target locations for this timestep ===
             current_step_data = step_data_list[step]
             edge_index_decoder = current_step_data['edge_index_decoder']
             edge_attr_decoder = current_step_data['edge_attr_decoder']
 
             src_decoder = edge_index_decoder[0]
             tgt_decoder = edge_index_decoder[1]
-
-            # MK: core code below remains the same unless labeled
 
             # Sanity check: mesh ↔ mesh overlap
             used_by_decoder = src_decoder.unique()
@@ -342,7 +322,6 @@ class GNNLightning(pl.LightningModule):
             if len(src_decoder_local) > 0 and src_decoder_local.max().item() >= x_hidden.size(0):
                 raise IndexError(f"[ERROR] src_decoder_local index {src_decoder_local.max().item()} exceeds x_hidden size {x_hidden.size(0)}")
 
-            # MK: Fix target size validation to use current target size
             # Validate target indices
             max_idx = tgt_decoder_local.max().item() if len(tgt_decoder_local) > 0 else -1
             if max_idx >= 0:
@@ -355,7 +334,7 @@ class GNNLightning(pl.LightningModule):
 
             out = decoded  # No gate, no norm, no scatter
 
-            # Optional: log stats for first 5 channels
+            # Log stats for first 5 channels
             if self.trainer.is_global_zero:
                 self.debug("[DEBUG] Decoded shape:", out.shape)
                 for ch in range(min(5, out.shape[1])):
@@ -393,11 +372,10 @@ class GNNLightning(pl.LightningModule):
                 self._x_hidden_ref.retain_grad()
                 # Optional L2 regularization term to encourage small norms (acts as a probe for debugging)
 
-            # MK: store predictions
+            # Store predictions
             predictions.append(x_out)
             self.debug(f"[DEBUG] Step {step+1}: prediction shape {x_out.shape}")
 
-        # MK: Handle return value
         if self.training:
             return predictions, 1e-6 * x_hidden.norm()  # Return tuple like main
         else:
@@ -414,7 +392,6 @@ class GNNLightning(pl.LightningModule):
         if not hasattr(self, 'rollout_schedule'):
             return self.max_rollout_steps
 
-        # Progressive rollout schedule
         current_epoch = self.current_epoch
         current_step = self.global_step  # This tracks gradient descent updates
 
@@ -429,7 +406,6 @@ class GNNLightning(pl.LightningModule):
             if current_step < threshold:
                 return 1
             else:
-                # Add 1 rollout step per 1000 updates after 300k
                 additional_steps = 2 + (current_step - threshold) // interval
                 return min(additional_steps, self.max_rollout_steps)
 
@@ -452,7 +428,6 @@ class GNNLightning(pl.LightningModule):
         else:
             return self.max_rollout_steps
 
-    # MK
     def _get_sequential_step_data(self, batch, n_steps):
         """
         Gets preprocessed data (y, edge_index_decoder, edge_attr_decoder) for each rollout step
@@ -471,15 +446,17 @@ class GNNLightning(pl.LightningModule):
 
         step_data_list = []
 
-        for step in range(n_steps):  # ← FIX: This was not properly indented
+        for step in range(n_steps):
             target_bin_name = f"bin{bin_num + step}"
 
             if target_bin_name in data_module.data_summary:
                 # Get the preprocessed bin data
                 target_bin_data = data_module.data_summary[target_bin_name]
+                from process_timeseries import flatten_data
+                target_bin_data_flat, _ = flatten_data(target_bin_data)
 
                 # Create a temporary data object to get the preprocessed graph structure
-                temp_graph_data = data_module._create_graph_structure(target_bin_data)
+                temp_graph_data = data_module._create_graph_structure(target_bin_data_flat)
 
                 step_data = {
                     'y': temp_graph_data['y'].to(batch.y.device),
@@ -520,12 +497,11 @@ class GNNLightning(pl.LightningModule):
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
         # === Run forward pass (predict outputs from input batch)
-        # MK: update with rollout steps
-
         current_rollout_steps = self.get_current_rollout_steps()
-        # MK: Log the tracking info here
-        self.log("MK_global_step", self.global_step)
-        self.log("MK_rollout_steps", float(current_rollout_steps))
+
+        # Optional: Log the tracking info here
+        # self.log("MK_global_step", self.global_step)
+        # self.log("MK_rollout_steps", float(current_rollout_steps))
 
         # Handle return format from forward method
         forward_result = self(batch, n_steps=current_rollout_steps)
@@ -567,11 +543,6 @@ class GNNLightning(pl.LightningModule):
                     print(f"  Step {step+1} ground truth has NaNs: min={truth.min()}, max={truth.max()}")
 
         # === Compute loss and log it
-        # MK: weighted mse
-        # pressure_levels = None
-        # loss = level_weighted_mse(y_pred, y_true, pressure_levels)
-
-        # MK: update for rollout loss
         # Compute loss for all steps
         total_loss = 0.0
         for step, (prediction, ground_truth) in enumerate(zip(predictions, ground_truths)):
@@ -803,102 +774,6 @@ class GNNLightning(pl.LightningModule):
 
         # Cleanup
         del y_pred, y_true, y_pred_unnorm, y_true_unnorm, batch
-        return loss
-
-    def validation_step_original(self, batch, batch_idx):
-        # MK: small change for a quick test
-        y_pred_list = self(batch, n_steps=1)
-        y_pred = y_pred_list[0]
-        y_true = batch.y
-        # Choose appropriate loss
-        if self.use_ocelot_loss:
-            loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids, check_grad=False)
-        else:
-            loss = self.loss_fn(y_pred, y_true)
-
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
-
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[VAL] Epoch {self.current_epoch} - val_loss: {loss.item():.6f}")
-
-        instrument_ids = batch.instrument_ids
-
-        # Per-instrument loss logging
-        for inst_id in instrument_ids.unique():
-            mask = instrument_ids == inst_id
-            if mask.sum() == 0:
-                continue
-            inst_loss = F.mse_loss(y_pred[mask], y_true[mask])
-            self.log(f"val_loss_inst_{inst_id.item()}", inst_loss.item(), prog_bar=False, sync_dist=True, on_epoch=True)
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
-
-        if self.verbose and self.trainer.is_global_zero and batch_idx == 0:
-            import matplotlib.pyplot as plt
-
-            for i in range(min(5, y_pred.shape[1])):  # Plot only first 5 channels
-                y_pred_i = y_pred[:, i]
-                y_true_i = y_true[:, i]
-                self.debug("[DEBUG] y_pred min:", y_pred.min().item(), "max:", y_pred.max().item())
-                self.debug("[DEBUG] y_pred std:", y_pred.std().item())
-                self.debug(
-                    f"[DEBUG] Channel {i+1} → y_pred mean: {y_pred_i.mean():.6f}, std: {y_pred_i.std():.6f}, "
-                    f"min: {y_pred_i.min():.6f}, max: {y_pred_i.max():.6f}"
-                )
-                plt.figure()
-                plt.hist(y_true[:, i].detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="Normalized y_true")
-                plt.hist(y_pred[:, i].detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="Normalized y_pred")
-                plt.xlabel("Normalized Brightness Temperature")
-                plt.ylabel("Frequency")
-                plt.title(f"Normalized BT Histogram - Channel {i+1}")
-                plt.legend()
-                plt.tight_layout()
-                plt.savefig(f"hist_norm_ytrue_ypred_ch_{i+1}_epoch{self.current_epoch}.png")
-                plt.close()
-        # Unnormalize
-        min_vals = batch.target_scaler_min.to(self.device)
-        max_vals = batch.target_scaler_max.to(self.device)
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print("Min per channel:", min_vals.cpu().numpy())
-            print("Max per channel:", max_vals.cpu().numpy())
-
-        y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
-        y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
-
-        # Metrics
-        rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
-        mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
-        bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
-        for i in range(rmse.shape[0]):
-            self.log(f"val_rmse_ch_{i+1}", rmse[i].item(), sync_dist=True, on_epoch=True)
-            self.log(f"val_mae_ch_{i+1}", mae[i].item(), on_epoch=True, sync_dist=True)
-            self.log(f"val_bias_ch_{i+1}", bias[i].item(), on_epoch=True, sync_dist=True)
-
-        # Save CSV for visual inspection
-        if self.trainer.is_global_zero and not hasattr(self, f"_saved_csv_epoch_{self.current_epoch}"):
-            setattr(self, f"_saved_csv_epoch_{self.current_epoch}", True)
-            import pandas as pd
-
-            df = pd.DataFrame(
-                {
-                    "lat_deg": batch.target_lat_deg.cpu().numpy(),
-                    "lon_deg": batch.target_lon_deg.cpu().numpy(),
-                    **{f"true_bt_{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(22)},
-                    **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
-                }
-            )
-            df.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
-
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[VAL] Averaged metrics across {current_rollout_steps} steps:")
-            print(f"  RMSE (avg): {avg_rmse.mean().item():.4f}")
-            print(f"  MAE (avg): {avg_mae.mean().item():.4f}")
-            if current_rollout_steps > 1:
-                print(f"  RMSE degradation: {rmse_degradation.item():.2f}x")
-
-        self.log("val_lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=False)
-
-        # Cleanup - use correct variable names
-        del y_pred_list, ground_truths, step_data_list
         return loss
 
     def on_after_backward(self):
