@@ -8,6 +8,9 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter, scatter_add
+import torch.utils.checkpoint
+import matplotlib.pyplot as plt
+import pandas as pd
 
 
 class GNNLightning(pl.LightningModule):
@@ -104,9 +107,8 @@ class GNNLightning(pl.LightningModule):
 
     def on_fit_start(self):
         if self.trainer.is_global_zero:
-            # print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'MSELoss'} for training.")
-            # print(f"[INFO] Using {'ocelot_loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
             print(f"[INFO] Using {'weighted Huber loss' if self.use_ocelot_loss else 'HuberLoss'} for training.")
+
     def on_train_epoch_start(self):
         if self.trainer.is_global_zero:
             print(f"=== Starting Epoch {self.current_epoch} ===")
@@ -228,7 +230,7 @@ class GNNLightning(pl.LightningModule):
             if len(missing_mesh_nodes) > 0:
                 self.debug(f"[DEBUG] Aggregation method: index_add with padding + normalization (mean)")
             else:
-                self.debug(f"[DEBUG] Aggregation method: scatter with reduce='mean'")
+                self.debug(f"[DEBUG] Aggregation method: scatter with reduce='add'")
 
         if self.training and not encoded.requires_grad:
             raise RuntimeError("[BUG] encoded must have requires_grad=True")
@@ -326,14 +328,19 @@ class GNNLightning(pl.LightningModule):
         # === Build decoder input AFTER masking
         mesh_feats = x_hidden[src_decoder_local]
         decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
-        # Chunk the decoder MLP forward pass
-        chunk_size = 2_500_000
+
+        chunk_size = 1_500_000
         if decoder_input.size(0) > chunk_size:
             out_dim = self.decoder_mlp[-1].out_features
-            decoded = decoder_input.new_empty(decoder_input.size(0), out_dim)
-            for start in range(0, decoder_input.size(0), chunk_size):
-                end = min(start + chunk_size, decoder_input.size(0))
-                decoded[start:end] = self.decoder_mlp(decoder_input[start:end])
+            num_rows = decoder_input.size(0)
+            decoded_chunks = []
+
+            for start in range(0, num_rows, chunk_size):
+                end = min(start + chunk_size, num_rows)
+                chunk = decoder_input[start:end]  # stays on GPU
+                decoded_chunks.append(self.decoder_mlp(chunk))
+
+            decoded = torch.cat(decoded_chunks, dim=0)
         else:
             decoded = self.decoder_mlp(decoder_input)
 
@@ -474,8 +481,6 @@ class GNNLightning(pl.LightningModule):
             # loss = self.loss_fn(y_pred, y_true)
             loss = self.huber(y_pred, y_true).mean()
 
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
-
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[VAL] Epoch {self.current_epoch} - val_loss: {loss.item():.6f}")
         instrument_ids = batch.instrument_ids
@@ -490,27 +495,62 @@ class GNNLightning(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
 
         if self.verbose and self.trainer.is_global_zero and batch_idx == 0:
-            import matplotlib.pyplot as plt
 
-            for i in range(min(5, y_pred.shape[1])):  # Plot only first 5 channels
-                y_pred_i = y_pred[:, i]
-                y_true_i = y_true[:, i]
-                self.debug("[DEBUG] y_pred min:", y_pred.min().item(), "max:", y_pred.max().item())
-                self.debug("[DEBUG] y_pred std:", y_pred.std().item())
-                self.debug(
-                    f"[DEBUG] Channel {i+1} → y_pred mean: {y_pred_i.mean():.6f}, std: {y_pred_i.std():.6f}, "
-                    f"min: {y_pred_i.min():.6f}, max: {y_pred_i.max():.6f}"
-                )
-                plt.figure()
-                plt.hist(y_true[:, i].detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="Normalized y_true")
-                plt.hist(y_pred[:, i].detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="Normalized y_pred")
-                plt.xlabel("Normalized Brightness Temperature")
-                plt.ylabel("Frequency")
-                plt.title(f"Normalized BT Histogram - Channel {i+1}")
-                plt.legend()
-                plt.tight_layout()
-                plt.savefig(f"hist_norm_ytrue_ypred_ch_{i+1}_epoch{self.current_epoch}.png")
-                plt.close()
+            # === Masks ===
+            bt_true = y_true[:, :22]
+            bt_pred = y_pred[:, :22]
+
+            # Rows where only bt1 (index 0) is non-zero → pressure
+            pressure_mask = (bt_true[:, 1:] == 0).all(dim=1)
+            bt_mask = ~pressure_mask  # everything else is ATMS
+
+            # === Plot Histograms ===
+            for i in range(22):  # All channels
+                label = f"BT Channel {i+1}" if i < 22 else "Surface Pressure"
+                if i == 0:
+                    bt_y_true = y_true[bt_mask, i]
+                    bt_y_pred = y_pred[bt_mask, i]
+                    pr_y_true = y_true[pressure_mask, i]
+                    pr_y_pred = y_pred[pressure_mask, i]
+
+                    # --- BT Histogram for ch0 (skip pressure rows) ---
+                    plt.figure()
+                    plt.hist(bt_y_true.detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="BT y_true")
+                    plt.hist(bt_y_pred.detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="BT y_pred")
+                    plt.xlabel("Normalized Brightness Temperature")
+                    plt.ylabel("Frequency")
+                    plt.title("Normalized Histogram - BT Channel 1")
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(f"hist_bt_ch_1_bt_only_epoch{self.current_epoch}.png")
+                    plt.close()
+
+                    # --- Pressure Histogram (only pressure rows) ---
+                    plt.figure()
+                    plt.hist(pr_y_true.detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="Pressure y_true")
+                    plt.hist(pr_y_pred.detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="Pressure y_pred")
+                    plt.xlabel("Normalized Surface Pressure")
+                    plt.ylabel("Frequency")
+                    plt.title("Normalized Histogram - Surface Pressure")
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(f"hist_pressure_epoch{self.current_epoch}.png")
+                    plt.close()
+
+                else:
+                    y_pred_i = y_pred[bt_mask, i]
+                    y_true_i = y_true[bt_mask, i]
+                    plt.figure()
+                    plt.hist(y_true_i.detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="Normalized y_true")
+                    plt.hist(y_pred_i.detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="Normalized y_pred")
+                    plt.xlabel("Normalized Brightness Temperature")
+                    plt.ylabel("Frequency")
+                    plt.title(f"Normalized Histogram - BT Channel {i+1}")
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(f"hist_bt_ch_{i+1}_epoch{self.current_epoch}.png")
+                    plt.close()
+
         # Unnormalize
         min_vals = batch.target_scaler_min.to(self.device)
         max_vals = batch.target_scaler_max.to(self.device)
@@ -521,7 +561,7 @@ class GNNLightning(pl.LightningModule):
         y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
         y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
 
-        # Metrics
+        # === Metrics Logging (same) ===
         rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
         mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
         bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
@@ -530,20 +570,28 @@ class GNNLightning(pl.LightningModule):
             self.log(f"val_mae_ch_{i+1}", mae[i].item(), on_epoch=True, sync_dist=True)
             self.log(f"val_bias_ch_{i+1}", bias[i].item(), on_epoch=True, sync_dist=True)
 
-        # Save CSV for visual inspection
+        # === CSV Outputs ===
         if self.trainer.is_global_zero and not hasattr(self, f"_saved_csv_epoch_{self.current_epoch}"):
             setattr(self, f"_saved_csv_epoch_{self.current_epoch}", True)
-            import pandas as pd
 
-            df = pd.DataFrame(
-                {
-                    "lat_deg": batch.target_lat_deg.cpu().numpy(),
-                    "lon_deg": batch.target_lon_deg.cpu().numpy(),
-                    **{f"true_bt_{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(22)},
-                    **{f"pred_bt_{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(22)},
-                }
-            )
-            df.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
+            # Save BT predictions
+            df_bt = pd.DataFrame({
+                "lat_deg": batch.target_lat_deg[bt_mask].cpu().numpy(),
+                "lon_deg": batch.target_lon_deg[bt_mask].cpu().numpy(),
+                **{f"true_bt_{i+1}": y_true_unnorm[bt_mask, i].cpu().numpy() for i in range(22)},
+                **{f"pred_bt_{i+1}": y_pred_unnorm[bt_mask, i].cpu().numpy() for i in range(22)},
+            })
+            df_bt.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
+
+            # Save Pressure predictions
+            df_pressure = pd.DataFrame({
+                "lat_deg": batch.target_lat_deg[pressure_mask].cpu().numpy(),
+                "lon_deg": batch.target_lon_deg[pressure_mask].cpu().numpy(),
+                "true_pressure": y_true_unnorm[pressure_mask, 0].cpu().numpy(),
+                "pred_pressure": y_pred_unnorm[pressure_mask, 0].cpu().numpy(),
+            })
+            df_pressure.to_csv(f"pressure_predictions_epoch{self.current_epoch}.csv", index=False)
+
         self.log("val_lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=False)
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[VAL] y_pred mean: {y_pred.mean().item():.6f}, std: {y_pred.std().item():.6f}")

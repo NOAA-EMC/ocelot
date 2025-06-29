@@ -17,23 +17,16 @@ from weight_utils import load_weights_from_yaml
 @timing_resource_decorator
 def main():
     # Enable fault handler for debugging
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
 
     # Set global seed for reproducibility
     pl.seed_everything(42, workers=True)
 
-    # Parse arguments
-
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
-    args = parser.parse_args()
     # === DATA CONFIGURATION ===
-
-    faulthandler.enable()
-    sys.stderr.write("===> ENTERED MAIN\n")
-
     weights_config_path = "configs/weights_config.yaml"
     instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 
@@ -63,7 +56,7 @@ def main():
         },
         "conventional": {
             # "radiosonde": ,
-            "pressure": {
+            "surface_pressure": {
                 "features": ["stationPressure", ],
                 "metadata": ["height", ]
             },
@@ -181,6 +174,7 @@ def main():
         best_path = trainer.checkpoint_callback.best_model_path
         print(f"[INFO] Best model path: {best_path}")
         best_model = GNNLightning.load_from_checkpoint(best_path)
+
 
 if __name__ == "__main__":
     main()
