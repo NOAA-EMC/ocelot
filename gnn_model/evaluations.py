@@ -30,7 +30,8 @@ plt.ylabel("Latitude")
 
 plt.subplot(1, 3, 3)
 sc2 = plt.scatter(
-    df_pressure["lon_deg"], df_pressure["lat_deg"], c=((df_pressure["true_pressure"]-df_pressure["pred_pressure"])/df_pressure["true_pressure"])*100, cmap="bwr", s=5)
+    df_pressure["lon_deg"], df_pressure["lat_deg"], c=((df_pressure["true_pressure"]-df_pressure["pred_pressure"])/df_pressure["true_pressure"])*100,
+    cmap="bwr", s=5)
 plt.colorbar(sc2)
 plt.title(f"Error Pressure")
 plt.xlabel("Longitude")
