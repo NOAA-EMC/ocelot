@@ -30,21 +30,21 @@ def main():
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
         # One week Global data path:
-        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/"
+        # data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v3/"
         # URSA:
-        # data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3"
+        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/"
 
     weights_config_path = "configs/weights_config.yaml"
     instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
 
     start_date = "2024-04-01"
-    end_date = "2024-04-04"
+    end_date = "2024-04-05"
 
     # Observation configuration, will move to a config file later.
     observation_config = {
         "satellite": {
             'atms': {
-                "sat_ids": [224, 225],
+                "sat_ids": [224],
                 "features": [f"bt_channel_{i}" for i in range(1, 23)],
                 "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"]
             },
@@ -54,7 +54,7 @@ def main():
         },
         "conventional": {
             # "radiosonde": ,
-            "pressure": {
+            "surface_pressure": {
                 "features": ["stationPressure", ],
                 "metadata": ["height", ]
             },
@@ -75,7 +75,7 @@ def main():
     max_epochs = 10
     batch_size = 1
     max_rollout_steps = 3  # Maximum rollout length; set 1 to have no rollout
-    rollout_schedule = 'graphcast'  # 'graphcast', 'step', 'linear', or 'fixed'
+    rollout_schedule = 'fixed'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # Instantiate model & data module
     model = GNNLightning(
