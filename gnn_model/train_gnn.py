@@ -77,7 +77,7 @@ def main():
     max_epochs = 10
     batch_size = 1
     max_rollout_steps = 3  # Maximum rollout length; set 1 to have no rollout
-    rollout_schedule = 'graphcast'  # 'graphcast', 'step', 'linear', or 'fixed'
+    rollout_schedule = 'fixed'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
