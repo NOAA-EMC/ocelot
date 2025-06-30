@@ -1,12 +1,12 @@
 Region: us-east-1
 Image:
-  Os: alinux2
+  Os: ubuntu2004
 HeadNode:
   InstanceType: t3.micro
   Networking:
-    SubnetId: <SUBNET_ID>
+    SubnetId: subnet-063bbad948bc91ba5
   Ssh:
-    KeyName: <KEY_NAME>
+    KeyName: ron_key_2
 Scheduling:
   Scheduler: slurm
   SlurmQueues:
@@ -14,7 +14,7 @@ Scheduling:
       CapacityType: SPOT
       Networking:
         SubnetIds:
-          - <SUBNET_ID>
+          - subnet-063bbad948bc91ba5
       ComputeResources:
         - Name: compute
           InstanceType: <INSTANCE_TYPE>
@@ -27,8 +27,8 @@ SharedStorage:
     FsxLustreSettings:
       DeploymentType: SCRATCH_2
       StorageCapacity: 1200
-      ImportPath: s3://<S3_BUCKET>/training-data
-      ExportPath: s3://<S3_BUCKET>/output
+      ImportPath: s3://noaa-ocelot/<DATA_SOURCE>
+      ExportPath: s3://noaa-ocelot/output
       AutoImportPolicy: NEW_CHANGED
-      AutoExportPolicy: ON_CLOSE
+      #AutoExportPolicy: ON_CLOSE
 
