@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 
+import time
 import yaml
 
 
@@ -31,6 +32,35 @@ def run_command(cmd: str):
         raise RuntimeError(f"Command failed ({result.returncode}): {cmd}")
 
 
+def wait_for_cluster_creation(cluster_name):
+    """
+    Waits for AWS ParallelCluster status to become CREATE_COMPLETE.
+    """
+    while True:
+        # Describe the cluster to get its status
+        result = subprocess.run(["pcluster", "describe-cluster", "--cluster-name", cluster_name], capture_output=True, text=True, check=True)
+        output = result.stdout
+
+        # Parse the output to find the cluster status
+        status_line = next((line for line in output.splitlines() if "clusterStatus" in line), None)
+        if status_line:
+            status = status_line.split(":")[1].strip().replace('"', '').replace(',', '')
+
+            # Check if the status is CREATE_COMPLETE
+            if status == "CREATE_COMPLETE":
+                print(f"Cluster '{cluster_name}' creation complete.")
+                break
+            elif status == "CREATE_FAILED":
+                print(f"Cluster '{cluster_name}' creation failed.")
+                # Handle failed creation, e.g., print error message, exit script
+                print(output)
+                break
+            else:
+                print(f"Cluster '{cluster_name}' status is {status}. Waiting...")
+
+        # Wait before checking again
+        time.sleep(30) # Poll every 30 seconds
+
 
 def prepare_config(instance_type: str, data_source: str, output_path: str) -> str:
 
@@ -54,7 +84,8 @@ def prepare_config(instance_type: str, data_source: str, output_path: str) -> st
             encoding='utf-8',    # explicit for clarity
             delete=False,
             suffix='.yaml') as tmp:
-        yaml.safe_dump(config, tmp, sort_keys=False)   # <‑‑ stream is now text
+        
+        yaml.safe_dump(config, tmp, sort_keys=False)   # stream is now text
         return tmp.name        # tmp is already closed by the context manager
 
 
@@ -79,11 +110,7 @@ def main():
     )
     run_command(create_cmd)
 
-    wait_cmd = (
-        f"pcluster wait cluster-available --cluster-name {args.cluster_name} "
-        f"--region {region}"
-    )
-    run_command(wait_cmd)
+    wait_for_cluster_creation(args.cluster_name)
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     scp_cmd = (
