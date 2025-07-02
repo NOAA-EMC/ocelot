@@ -922,7 +922,7 @@ class GNNLightning(pl.LightningModule):
             bt_true_csv = y_true_unnorm_csv[:, :22]
             pressure_mask_csv = (bt_true_csv[:, 1:] == 0).all(dim=1)
             bt_mask_csv = ~pressure_mask_csv
-            
+
             # Save BT predictions
             df_bt = pd.DataFrame({
                 "lat_deg": batch.target_lat_deg[bt_mask_csv].cpu().numpy(),
@@ -931,8 +931,8 @@ class GNNLightning(pl.LightningModule):
                 **{f"pred_bt_{i+1}": y_pred_unnorm_csv[bt_mask_csv, i].cpu().numpy() for i in range(22)},
             })
             df_bt.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
-            
-            # Save Pressure predictions  
+
+            # Save Pressure predictions 
             df_pressure = pd.DataFrame({
                 "lat_deg": batch.target_lat_deg[pressure_mask_csv].cpu().numpy(),
                 "lon_deg": batch.target_lon_deg[pressure_mask_csv].cpu().numpy(),
