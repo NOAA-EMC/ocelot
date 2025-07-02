@@ -932,7 +932,7 @@ class GNNLightning(pl.LightningModule):
             })
             df_bt.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
 
-            # Save Pressure predictions 
+            # Save Pressure predictions
             df_pressure = pd.DataFrame({
                 "lat_deg": batch.target_lat_deg[pressure_mask_csv].cpu().numpy(),
                 "lon_deg": batch.target_lon_deg[pressure_mask_csv].cpu().numpy(),
