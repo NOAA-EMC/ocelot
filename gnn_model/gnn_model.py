@@ -130,7 +130,14 @@ class GNNLightning(pl.LightningModule):
     def unnormalize(tensor, min_vals, max_vals):
         return tensor * (max_vals - min_vals) + min_vals
 
-    def forward(self, data, n_steps=1):
+    def forward(self, data, step_data_list=None):
+        """
+        Modified forward to accept pre-computed step_data_list to avoid duplication.
+
+        Args:
+            data: Original batch data
+            step_data_list: Pre-computed step data (if None, will compute based on current rollout steps)
+        """
         self.debug(f"[DEBUG] [forward] self.training = {self.training}, grad_enabled = {torch.is_grad_enabled()}")
         if torch.cuda.is_available():
             self.debug(f"[Forward] Batch x shape: {data.x.shape}")
@@ -158,18 +165,13 @@ class GNNLightning(pl.LightningModule):
 
         print(f"MK: forward data: {data.bin_name}")
 
-        # Get both ground truth and target locations for all steps
-        if n_steps > 1:
-            step_data_list, actual_n_steps = self._get_sequential_step_data(data, n_steps)
-            # n_steps = actual_n_steps
+        if step_data_list is None:
+            current_rollout_steps = self.get_current_rollout_steps()
+            print(f"MK: [forward] Computing step_data_list internally for rollout step: {current_rollout_steps}")
+            step_data_list, n_steps = self._get_sequential_step_data(data, current_rollout_steps)
         else:
-            step_data_list = [{
-                'y': data.y,
-                'edge_index_decoder': data.edge_index_decoder,
-                'edge_attr_decoder': data.edge_attr_decoder,
-                'target_scaler_min': data.target_scaler_min,
-                'target_scaler_max': data.target_scaler_max
-            }]
+            print(f"MK: [forward] Using pre-computed step_data_list with {len(step_data_list)} steps")
+            n_steps = len(step_data_list)
 
         # === Encoding: obs → mesh ===
         src_encoder = edge_index_encoder[0]
@@ -465,6 +467,7 @@ class GNNLightning(pl.LightningModule):
                 return min(self.max_rollout_steps, 3 + (current_epoch - 20) // 10)
 
         else:
+            # "fixed"
             return self.max_rollout_steps
 
     def _get_sequential_step_data(self, batch, n_steps):
@@ -503,10 +506,29 @@ class GNNLightning(pl.LightningModule):
             target_bin_num = bin_num + step
             target_bin_name = f"bin{target_bin_num}"
 
+            # OPTIMIZATION: For step 0, use batch data directly (already processed)
+            if step == 0:
+                print(f"MK: [get seq/step] Step 0 - using batch data directly (no recomputation)")
+
+                # Extract data directly from batch - much faster!
+                step_data = {
+                    'y': batch.y,
+                    'edge_index_decoder': batch.edge_index_decoder,
+                    'edge_attr_decoder': batch.edge_attr_decoder,
+                    'target_scaler_min': batch.target_scaler_min[0] if batch.target_scaler_min.dim() > 1 else batch.target_scaler_min,
+                    'target_scaler_max': batch.target_scaler_max[0] if batch.target_scaler_max.dim() > 1 else batch.target_scaler_max,
+                    'target_instrument_ids': batch.instrument_ids
+                    }
+
+                step_data_list.append(step_data)
+                actual_step += 1
+                print(f"MK: [get seq/step] Step 0 completed using batch data")
+
+            # For step 1+, need to load new data
             # if target_bin_name in data_module.data_summary:
-            if (target_bin_num <= max_bin_num and
-                target_bin_name in data_module.data_summary and
-                    target_bin_name in available_bins):
+            elif (target_bin_num <= max_bin_num and
+                  target_bin_name in data_module.data_summary and
+                  target_bin_name in available_bins):
                 # Get the preprocessed bin data
                 print(f"MK: [get seq/ step] accessing bin name: {target_bin_name}")
                 target_bin_data = data_module.data_summary[target_bin_name]
@@ -521,20 +543,14 @@ class GNNLightning(pl.LightningModule):
                     'edge_index_decoder': temp_graph_data['edge_index_decoder'].to(batch.y.device),
                     'edge_attr_decoder': temp_graph_data['edge_attr_decoder'].to(batch.y.device),
                     'target_scaler_min': temp_graph_data['target_scaler_min'].to(batch.y.device),
-                    'target_scaler_max': temp_graph_data['target_scaler_max'].to(batch.y.device)
+                    'target_scaler_max': temp_graph_data['target_scaler_max'].to(batch.y.device),
+                    'target_instrument_ids': temp_graph_data['target_instrument_ids'].to(batch.y.device)
                 }
 
                 step_data_list.append(step_data)
                 actual_step += 1
 
             else:
-                # Early termination - no more data available
-                # This method seems sensible, yet cause hanging in multiple GPU settings
-                # print(f"MK: [get seq/ step] requested bin out of dataframe, nothing to append.")
-                # if self.training:
-                #     self.debug(f"Rollout terminated at step {step+1}/{n_steps} - no data for {target_bin_name}")
-                # break
-
                 # Create dummy inputs by duplicating the last available bin
                 # return $actual_step for loss calculation
                 if step_data_list:
@@ -554,13 +570,13 @@ class GNNLightning(pl.LightningModule):
                         'edge_index_decoder': batch.edge_index_decoder,
                         'edge_attr_decoder': batch.edge_attr_decoder,
                         'target_scaler_min': batch.target_scaler_min,
-                        'target_scaler_max': batch.target_scaler_max
+                        'target_scaler_max': batch.target_scaler_max,
+                        'target_instrument_ids': batch.instrument_ids
                     }
                     step_data_list.append(step_data)
                     self.debug(f"Warning: No data for {target_bin_name}, using original batch")
 
         print(f"MK:[get seq] requested n_step: {n_steps}; actual_step: {actual_step}")
-        # print(f"MK:[get seq] step_data_list:{step_data_list}")
 
         return step_data_list, actual_step
 
@@ -588,15 +604,11 @@ class GNNLightning(pl.LightningModule):
         for step_data in step_data_list:
             ground_truths.append(step_data['y'])
 
-        # if actual_rollout_steps < current_rollout_steps:
-        #    self.log("truncated_rollout; actual_rollout_steps", float(actual_rollout_steps))
-        # self.log("actual_rollout_steps", int(actual_rollout_steps))
-
         print(f"MK: [training_step] current_rollout_steps: {current_rollout_steps}")
         print(f"MK: [training_step] actual_rollout_steps: {actual_rollout_steps}")
 
         # Forward pass
-        forward_result = self(batch, n_steps=actual_rollout_steps)
+        forward_result = self(batch, step_data_list=step_data_list)
         if isinstance(forward_result, tuple):
             # Training mode: returns (predictions, loss_probe)
             predictions, loss_probe = forward_result
@@ -604,12 +616,6 @@ class GNNLightning(pl.LightningModule):
             # Eval mode: returns just predictions
             predictions = forward_result
             loss_probe = 0.0
-
-        # Remove dummy inputs
-        # if current_rollout_steps > actual_rollout_steps:
-        #    print("MK: [training_step] removing additional steps")
-        #    predictions = predictions[:actual_rollout_steps]
-        #    ground_truths = ground_truths[:actual_rollout_steps]
 
         # === Sanity checks (shape match and NaN checks)
         assert len(predictions) == len(ground_truths), f"Number of predictions {len(predictions)} != number of ground truths {len(ground_truths)}"
@@ -635,14 +641,16 @@ class GNNLightning(pl.LightningModule):
                     print(f"  Step {step+1} ground truth has NaNs: min={truth.min()}, max={truth.max()}")
 
         # === Compute loss and log it
-        # MK: update for rollout loss
         # Compute loss for all steps
         total_loss = 0.0
         for step, (prediction, ground_truth) in enumerate(zip(predictions, ground_truths)):
             if prediction.shape[0] == ground_truth.shape[0]:
+                # Use step-specific instrument IDs instead of batch.instrument_ids
+                step_instrument_ids = step_data_list[step]['target_instrument_ids']
+
                 if self.use_ocelot_loss:
                     # step_loss = self.ocelot_loss(prediction, ground_truth, batch.instrument_ids)
-                    step_loss = self.weighted_huber_loss(prediction, ground_truth, batch.instrument_ids)
+                    step_loss = self.weighted_huber_loss(prediction, ground_truth, step_instrument_ids)
                 else:
                     # step_loss = self.loss_fn(prediction, ground_truth)
                     loss = self.huber(prediction, ground_truth).mean()  # fallback
@@ -725,7 +733,7 @@ class GNNLightning(pl.LightningModule):
         print(f"MK: [validation_step] ground truth len: {len(ground_truths)}")
 
         # Get predictions for all rollout steps
-        y_pred_list = self(batch, n_steps=current_rollout_steps)
+        y_pred_list = self(batch, step_data_list=step_data_list)
         if isinstance(y_pred_list, tuple):
             y_pred_list, _ = y_pred_list
 
@@ -738,9 +746,12 @@ class GNNLightning(pl.LightningModule):
             ground_truth = ground_truths[step]
 
             if prediction.shape[0] == ground_truth.shape[0]:
+                # Use step-specific instrument IDs instead of batch.instrument_ids
+                step_instrument_ids = step_data_list[step]['target_instrument_ids']
+
                 if self.use_ocelot_loss:
                     # step_loss = self.ocelot_loss(prediction, ground_truth, batch.instrument_ids, check_grad=False)
-                    step_loss = self.weighted_huber_loss(prediction, ground_truth, batch.instrument_ids)
+                    step_loss = self.weighted_huber_loss(prediction, ground_truth, step_instrument_ids)
                 else:
                     # step_loss = self.loss_fn(prediction, ground_truth)
                     step_loss = self.huber(prediction, ground_truth).mean()
@@ -846,10 +857,8 @@ class GNNLightning(pl.LightningModule):
 
             # Unnormalize for this step
             step_data = step_data_list[step]
-            min_vals = step_data['target_scaler_min'].to(self.device)  # Shape: (N_samples, N_channels) due to padding/flatten
-            max_vals = step_data['target_scaler_max'].to(self.device)
-            min_vals = min_vals[0]  # Shape: (N_channels,)
-            max_vals = max_vals[0]
+            min_vals = step_data['target_scaler_min']  # (N_channels,)
+            max_vals = step_data['target_scaler_max']
             y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
             y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
             if self.trainer.is_global_zero and batch_idx == 0:
