@@ -20,3 +20,6 @@ venv/
 # Ignore IDE related resources
 .idea
 
+# Settings files to exclude
+aws/local_settings.py
+

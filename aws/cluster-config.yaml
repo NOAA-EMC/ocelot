@@ -1,25 +1,37 @@
-Region: us-east-1
+Region: <REGION>
+
 Image:
-  Os: ubuntu2004
+  Os: <OS>
+
+Iam:
+  Roles:
+    LambdaFunctionsRole: <ADMIN_ROLE>
+
 HeadNode:
-  InstanceType: t3.micro
+  InstanceType: <HEAD_NODE_INSTANCE>
+  Iam:
+    InstanceRole: <HEAD_NODE_ROLE>
   Networking:
-    SubnetId: subnet-063bbad948bc91ba5
+    SubnetId: <SUBNET_ID>
   Ssh:
     KeyName: ron_key_2
+
 Scheduling:
   Scheduler: slurm
   SlurmQueues:
     - Name: gpu
       CapacityType: SPOT
+      Iam:
+        InstanceRole: <COMPUTE_NODE_ROLE>
       Networking:
         SubnetIds:
-          - subnet-063bbad948bc91ba5
+          - <SUBNET_ID>
       ComputeResources:
         - Name: compute
           InstanceType: <INSTANCE_TYPE>
           MinCount: 0
           MaxCount: 2
+
 SharedStorage:
   - Name: fsx
     StorageType: FsxLustre
@@ -27,8 +39,8 @@ SharedStorage:
     FsxLustreSettings:
       DeploymentType: SCRATCH_2
       StorageCapacity: 1200
-      ImportPath: s3://noaa-ocelot/<DATA_SOURCE>
-      ExportPath: s3://noaa-ocelot/output
+      ImportPath: <IMPORT_PATH>
+      ExportPath: <EXPORT_PATH>
       AutoImportPolicy: NEW_CHANGED
-      #AutoExportPolicy: ON_CLOSE
+
 

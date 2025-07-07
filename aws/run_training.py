@@ -6,6 +6,8 @@ import tempfile
 import time
 import yaml
 
+from data_prep.configs.configure import settings_path
+
 
 #def run_command(cmd: str):
 #    print(cmd)
@@ -63,21 +65,51 @@ def wait_for_cluster_creation(cluster_name):
 
 
 def prepare_config(instance_type: str, data_source: str, output_path: str) -> str:
+    # Added configuration from local settings
+    try:
+        import local_settings as settings
+    except ImportError:
+        raise RuntimeError(f"local_settings not found. Please install local_settings first.")
 
+    # Validate local settings
+    setting_items = ["OS",
+                     "REGION",
+                     "SUBNET_ID",
+                     "ADMIN_ROLE",
+                     "HEAD_NODE_INSTANCE",
+                     "HEAD_NODE_ROLE",
+                     "COMPUTE_NODE_ROLE",
+                     "IMPORT_PATH",
+                     "EXPORT_PATH"]
+    for item in setting_items:
+        if not hasattr(settings, item):
+            raise RuntimeError(f"local_settings is missing required setting: {item}")
+
+
+    # Load the template configuration file
     template_path = './cluster-config.yaml'
     with open(template_path) as f:
         config = yaml.safe_load(f)
 
+    # Update the configuration with local settings
+    config['Region'] = settings.REGION
+    config['Image']['Os'] = settings.OS
+    config['Iam']['Roles']['LambdaFunctionsRole'] = settings.ADMIN_ROLE
+    config['HeadNode']['InstanceType'] = settings.HEAD_NODE_INSTANCE
+    config['HeadNode']['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
+    config['HeadNode']['Networking']['SubnetId'] = [settings.SUBNET_ID]
+
     for queue in config['Scheduling']['SlurmQueues']:
+        queue['Networking']['SubnetIds'] = [settings.SUBNET_ID]
         for cr in queue['ComputeResources']:
             cr['InstanceType'] = instance_type
     for storage in config.get('SharedStorage', []):
         if storage.get('StorageType') == 'FsxLustre':
-            settings = storage.get('FsxLustreSettings', {})
+            lustre_settings = storage.get('FsxLustreSettings', {})
             if 'ImportPath' in settings:
-                settings['ImportPath'] = f"s3://noaa-ocelot/{data_source}"
+                lustre_settings['ImportPath'] = settings.IMPORT_PATH
             if 'ExportPath' in settings:
-                settings['ExportPath'] = f"s3://noaa-ocelot/{output_path}"
+                lustre_settings['ExportPath'] = settings.EXPORT_PATH
 
     with tempfile.NamedTemporaryFile(
             mode='w',            # text mode
@@ -92,23 +124,36 @@ def prepare_config(instance_type: str, data_source: str, output_path: str) -> st
 def main():
     parser = argparse.ArgumentParser(description='Run ocelot training on AWS ParallelCluster')
     parser.add_argument('--cluster-name', default='ocelot-training', help='Name of the cluster')
+    parser.add_argument('--branch', default='main', help='Ocelot branch to use')
     parser.add_argument('--instance-type', default='g5.2xlarge', help='EC2 instance type for compute nodes')
-    parser.add_argument('--training-script', default='gnn_model/train_gnn.py', help='Path to training script')
+    parser.add_argument('--script', default='gnn_model/train_gnn.py', help='Python script to run on the cluster')
     parser.add_argument('--data-source', required=True, help='The data source path to use in the s3 bucket')
     parser.add_argument('--output', required=True, help='Output path in the s3 bucket.')
+    parser.add_argument('--num_nodes', type=int, help='Number of nodes in the cluster.')
+    parser.add_argument('--cpus_per_task', type=int, default=4, help='Number of CPUs per node')
     parser.add_argument('--keep-cluster', action='store_true', help='Do not delete the cluster after completion')
     args = parser.parse_args()
 
     cfg_path = prepare_config(args.instance_type, args.data_source, args.output)
 
-    region = "us-east-1"
+    # if the cluster name does not exist, create it
+    try:
+        result = subprocess.run(
+            ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
+            capture_output=True, text=True, check=True
+        )
+        print(f"Cluster '{args.cluster_name}' already exists.")
+    except subprocess.CalledProcessError as e:
+        if "does not exist" in e.stderr:
+            print(f"Cluster '{args.cluster_name}' does not exist. Creating it...")
+            create_cmd = (
+                f"pcluster create-cluster --cluster-name {args.cluster_name} "
+                f"--cluster-configuration {cfg_path} --rollback-on-failure false"
+            )
+            run_command(create_cmd)
+        else:
+            raise RuntimeError(f"Failed to describe cluster: {e.stderr}")
 
-    create_cmd = (
-        f"pcluster create-cluster --cluster-name {args.cluster_name} "
-        f"--region {region} --cluster-configuration {cfg_path} "
-        "--rollback-on-failure false"
-    )
-    run_command(create_cmd)
 
     wait_for_cluster_creation(args.cluster_name)
 
@@ -120,10 +165,10 @@ def main():
     run_command(scp_cmd)
 
     remote_cmd = (
-        "cd ocelot && "
-        "pip install -r gnn_model/requirements.txt && "
-        f"python {args.training_script}"
+        "cd ocelot && git checkout " + args.branch + " && " + "source venv/bin/activate " + "&& "
+        f"srun --nodes {args.num_nodes} --cpus-per-task {args.cpus_per_task} python3 {args.script} "
     )
+
     ssh_cmd = (
         f"pcluster ssh --cluster-name {args.cluster_name} --region {region} "
         f"--command \"{remote_cmd}\""
