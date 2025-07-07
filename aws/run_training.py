@@ -6,8 +6,6 @@ import tempfile
 import time
 import yaml
 
-from data_prep.configs.configure import settings_path
-
 
 #def run_command(cmd: str):
 #    print(cmd)
@@ -97,19 +95,18 @@ def prepare_config(instance_type: str, data_source: str, output_path: str) -> st
     config['Iam']['Roles']['LambdaFunctionsRole'] = settings.ADMIN_ROLE
     config['HeadNode']['InstanceType'] = settings.HEAD_NODE_INSTANCE
     config['HeadNode']['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
-    config['HeadNode']['Networking']['SubnetId'] = [settings.SUBNET_ID]
+    config['HeadNode']['Networking']['SubnetId'] = settings.SUBNET_ID
 
     for queue in config['Scheduling']['SlurmQueues']:
         queue['Networking']['SubnetIds'] = [settings.SUBNET_ID]
+        queue['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
         for cr in queue['ComputeResources']:
             cr['InstanceType'] = instance_type
     for storage in config.get('SharedStorage', []):
         if storage.get('StorageType') == 'FsxLustre':
             lustre_settings = storage.get('FsxLustreSettings', {})
-            if 'ImportPath' in settings:
-                lustre_settings['ImportPath'] = settings.IMPORT_PATH
-            if 'ExportPath' in settings:
-                lustre_settings['ExportPath'] = settings.EXPORT_PATH
+            lustre_settings['ImportPath'] = settings.IMPORT_PATH
+            lustre_settings['ExportPath'] = settings.EXPORT_PATH
 
     with tempfile.NamedTemporaryFile(
             mode='w',            # text mode
@@ -135,24 +132,29 @@ def main():
     args = parser.parse_args()
 
     cfg_path = prepare_config(args.instance_type, args.data_source, args.output)
+    print ('****', cfg_path)
 
     # if the cluster name does not exist, create it
-    try:
-        result = subprocess.run(
-            ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
-            capture_output=True, text=True, check=True
+    #try:
+    #    result = subprocess.run(
+    #        ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
+    #        capture_output=True, text=True, check=True
+    #    )
+    #    print(f"Cluster '{args.cluster_name}' already exists.")
+    #except subprocess.CalledProcessError as e:
+    #    print(f"Cluster '{args.cluster_name}' does not exist. Creating it...")
+    #    create_cmd = (
+    #        f"pcluster create-cluster --cluster-name {args.cluster_name} "
+    #        f"--cluster-configuration {cfg_path} --rollback-on-failure false"
+    #    )
+    #    run_command(create_cmd)
+
+    create_cmd = (
+            f"pcluster create-cluster --cluster-name {args.cluster_name} "
+            f"--cluster-configuration {cfg_path} --rollback-on-failure false"
         )
-        print(f"Cluster '{args.cluster_name}' already exists.")
-    except subprocess.CalledProcessError as e:
-        if "does not exist" in e.stderr:
-            print(f"Cluster '{args.cluster_name}' does not exist. Creating it...")
-            create_cmd = (
-                f"pcluster create-cluster --cluster-name {args.cluster_name} "
-                f"--cluster-configuration {cfg_path} --rollback-on-failure false"
-            )
-            run_command(create_cmd)
-        else:
-            raise RuntimeError(f"Failed to describe cluster: {e.stderr}")
+    run_command(create_cmd)
+
 
 
     wait_for_cluster_creation(args.cluster_name)
