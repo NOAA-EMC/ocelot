@@ -54,7 +54,12 @@ class GNNLightning(pl.LightningModule):
         self.channel_weights = channel_weights or {}
         self.channel_masks = {}
         for inst_id, weights in self.channel_weights.items():
-            weights_tensor = torch.tensor(weights)
+            # weights_tensor = torch.tensor(weights)
+            # MK: More efficient tensor conversion
+            if isinstance(weights, torch.Tensor):
+                weights_tensor = weights.clone().detach()
+            else:
+                weights_tensor = torch.tensor(weights)
             mask = weights_tensor > 0
             self.channel_masks[int(inst_id)] = mask
         self.max_rollout_steps = max_rollout_steps
@@ -106,8 +111,11 @@ class GNNLightning(pl.LightningModule):
         # Automatically decide whether to use ocelot_loss based on weight config
         self.use_ocelot_loss = not (
             all(w == 1.0 for w in self.instrument_weights.values()) and
-            all(torch.allclose(torch.tensor(w, dtype=torch.float32), torch.ones(len(w))) for w in self.channel_weights.values())
-        )
+            # MK: avoid tensor dulication
+            # all(torch.allclose(torch.tensor(w, dtype=torch.float32), torch.ones(len(w))) for w in self.channel_weights.values())
+            all(torch.allclose(w.to(torch.float32) if isinstance(w, torch.Tensor) else torch.tensor(w, dtype=torch.float32),
+                torch.ones(len(w))) for w in self.channel_weights.values())
+            )
 
     def on_fit_start(self):
         if self.trainer.is_global_zero:
@@ -411,7 +419,6 @@ class GNNLightning(pl.LightningModule):
                 mesh_feats.retain_grad()
                 self._mesh_feats_ref = mesh_feats
                 self._x_hidden_ref.retain_grad()
-                # Optional L2 regularization term to encourage small norms (acts as a probe for debugging)
 
             # Store predictions
             predictions.append(x_out)
@@ -482,6 +489,11 @@ class GNNLightning(pl.LightningModule):
                 - 'edge_attr_decoder': decoder edge attributes
                 - 'target_scaler_min', 'target_scaler_max': for unnormalization
         """
+        # Helper function:
+        def extract_scaler(scaler_tensor):
+            """Extract 1D scaler from potentially 2D tensor"""
+            return scaler_tensor[0] if scaler_tensor.dim() > 1 else scaler_tensor
+
         data_module = self.trainer.datamodule
         current_bin_name = batch.bin_name[0] if isinstance(batch.bin_name, list) else batch.bin_name
         bin_num = int(current_bin_name.replace("bin", ""))
@@ -515,8 +527,8 @@ class GNNLightning(pl.LightningModule):
                     'y': batch.y,
                     'edge_index_decoder': batch.edge_index_decoder,
                     'edge_attr_decoder': batch.edge_attr_decoder,
-                    'target_scaler_min': batch.target_scaler_min[0] if batch.target_scaler_min.dim() > 1 else batch.target_scaler_min,
-                    'target_scaler_max': batch.target_scaler_max[0] if batch.target_scaler_max.dim() > 1 else batch.target_scaler_max,
+                    'target_scaler_min': extract_scaler(batch.target_scaler_min),
+                    'target_scaler_max': extract_scaler(batch.target_scaler_max),
                     'target_instrument_ids': batch.instrument_ids
                     }
 
@@ -542,8 +554,8 @@ class GNNLightning(pl.LightningModule):
                     'y': temp_graph_data['y'].to(batch.y.device),
                     'edge_index_decoder': temp_graph_data['edge_index_decoder'].to(batch.y.device),
                     'edge_attr_decoder': temp_graph_data['edge_attr_decoder'].to(batch.y.device),
-                    'target_scaler_min': temp_graph_data['target_scaler_min'].to(batch.y.device),
-                    'target_scaler_max': temp_graph_data['target_scaler_max'].to(batch.y.device),
+                    'target_scaler_min': extract_scaler(temp_graph_data['target_scaler_min']).to(batch.y.device),
+                    'target_scaler_max': extract_scaler(temp_graph_data['target_scaler_max']).to(batch.y.device),
                     'target_instrument_ids': temp_graph_data['target_instrument_ids'].to(batch.y.device)
                 }
 
@@ -859,8 +871,8 @@ class GNNLightning(pl.LightningModule):
             step_data = step_data_list[step]
             min_vals = step_data['target_scaler_min']  # (N_channels,)
             max_vals = step_data['target_scaler_max']
-            y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
-            y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
+            y_pred_unnorm = self.unnormalize(y_pred_step, min_vals, max_vals)
+            y_true_unnorm = self.unnormalize(y_true_step, min_vals, max_vals)
             if self.trainer.is_global_zero and batch_idx == 0:
                 print("Min per channel:", min_vals.cpu().numpy())
                 print("Max per channel:", max_vals.cpu().numpy())
@@ -915,14 +927,11 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero and not hasattr(self, f"_saved_csv_epoch_{self.current_epoch}"):
             setattr(self, f"_saved_csv_epoch_{self.current_epoch}", True)
 
-            # Use first step for CSV
             y_pred_csv = y_pred_list[0]
             y_true_csv = ground_truths[0]
             first_step_data = step_data_list[0]
-            min_vals_csv = first_step_data['target_scaler_min'].to(self.device)
-            max_vals_csv = first_step_data['target_scaler_max'].to(self.device)
-            min_vals = min_vals[0]
-            max_vals = max_vals[0]
+            min_vals_csv = first_step_data['target_scaler_min']
+            max_vals_csv = first_step_data['target_scaler_max']
             y_pred_unnorm_csv = self.unnormalize(y_pred_csv, min_vals_csv, max_vals_csv)
             y_true_unnorm_csv = self.unnormalize(y_true_csv, min_vals_csv, max_vals_csv)
 
@@ -1106,7 +1115,6 @@ class GNNLightning(pl.LightningModule):
 
         self.log("val_lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=False)
 
-        # Cleanup - use correct variable names
         del y_pred_list, ground_truths, step_data_list
         return loss
 
