@@ -149,22 +149,29 @@ def main():
     #    )
     #    run_command(create_cmd)
 
-    create_cmd = (
-            f"pcluster create-cluster --cluster-name {args.cluster_name} "
-            f"--cluster-configuration {cfg_path} --rollback-on-failure false"
-        )
-    run_command(create_cmd)
-
-
-
-    wait_for_cluster_creation(args.cluster_name)
-
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    scp_cmd = (
-        f"pcluster scp --cluster-name {args.cluster_name} --region {region} "
-        f"--recursive {repo_root} headnode:/home/ubuntu/ocelot"
+    result = subprocess.run(
+       ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
+       capture_output=True, text=True
     )
-    run_command(scp_cmd)
+
+    if result.returncode == 0:
+        print(f"Cluster '{args.cluster_name}' already exists.")
+
+    else:
+        print(f"Creating Cluster '{args.cluster_name}'")
+        create_cmd = (
+                f"pcluster create-cluster --cluster-name {args.cluster_name} "
+                f"--cluster-configuration {cfg_path} --rollback-on-failure false"
+            )
+        run_command(create_cmd)
+        wait_for_cluster_creation(args.cluster_name)
+
+    # repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    # scp_cmd = (
+    #     f"pcluster scp --cluster-name {args.cluster_name} --region {region} "
+    #     f"--recursive {repo_root} headnode:/home/ubuntu/ocelot"
+    # )
+    # run_command(scp_cmd)
 
     remote_cmd = (
         "cd ocelot && git checkout " + args.branch + " && " + "source venv/bin/activate " + "&& "
