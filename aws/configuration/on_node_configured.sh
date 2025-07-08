@@ -1,8 +1,4 @@
-
-sudo apt install python3 -y
-sudo apt install python3-pip -y
-sudo apt install python3-virtualenv -y
-sudo apt install git -y
+#!/usr/bin/env bash
 
 python -m venv venv
 source venv/bin/activate
@@ -25,6 +21,3 @@ python -m pip install tqdm==4.67.1
 python -m pip install pyyaml==6.0.2
 
 git clone https://github.com/NOAA-EMC/ocelot.git
-
-
-
