@@ -132,22 +132,6 @@ def main():
     args = parser.parse_args()
 
     cfg_path = prepare_config(args.instance_type, args.data_source, args.output)
-    print ('****', cfg_path)
-
-    # if the cluster name does not exist, create it
-    #try:
-    #    result = subprocess.run(
-    #        ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
-    #        capture_output=True, text=True, check=True
-    #    )
-    #    print(f"Cluster '{args.cluster_name}' already exists.")
-    #except subprocess.CalledProcessError as e:
-    #    print(f"Cluster '{args.cluster_name}' does not exist. Creating it...")
-    #    create_cmd = (
-    #        f"pcluster create-cluster --cluster-name {args.cluster_name} "
-    #        f"--cluster-configuration {cfg_path} --rollback-on-failure false"
-    #    )
-    #    run_command(create_cmd)
 
     result = subprocess.run(
        ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
@@ -164,14 +148,9 @@ def main():
                 f"--cluster-configuration {cfg_path} --rollback-on-failure false"
             )
         run_command(create_cmd)
-        wait_for_cluster_creation(args.cluster_name)
 
-    # repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    # scp_cmd = (
-    #     f"pcluster scp --cluster-name {args.cluster_name} --region {region} "
-    #     f"--recursive {repo_root} headnode:/home/ubuntu/ocelot"
-    # )
-    # run_command(scp_cmd)
+    wait_for_cluster_creation(args.cluster_name)
+
 
     remote_cmd = (
         "cd ocelot && git checkout " + args.branch + " && " + "source venv/bin/activate " + "&& "
@@ -179,13 +158,13 @@ def main():
     )
 
     ssh_cmd = (
-        f"pcluster ssh --cluster-name {args.cluster_name} --region {region} "
-        f"--command \"{remote_cmd}\""
+        f"pcluster ssh --cluster-name {args.cluster_name} -i ~/key.pem "
+        f"-- \"{remote_cmd}\""
     )
     run_command(ssh_cmd)
 
     if not args.keep_cluster:
-        run_command(f"pcluster delete-cluster --cluster-name {args.cluster_name} --region {args.region} --yes")
+        run_command(f"pcluster delete-cluster --cluster-name {args.cluster_name} ")
 
     os.unlink(cfg_path)
 
