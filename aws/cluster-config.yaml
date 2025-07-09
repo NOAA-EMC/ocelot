@@ -31,6 +31,11 @@ Scheduling:
           InstanceType: <INSTANCE_TYPE>
           MinCount: 0
           MaxCount: 2
+      CustomActions:
+        OnNodeStart:
+          - Script: <ON_NODE_START_SCRIPT>
+        OnNodeConfigured:
+          - Script: <ON_NODE_CONFIGURED_SCRIPT>
 
 SharedStorage:
   - Name: fsx
