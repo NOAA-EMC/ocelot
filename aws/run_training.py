@@ -100,6 +100,8 @@ def prepare_config(instance_type: str, data_source: str, output_path: str) -> st
     for queue in config['Scheduling']['SlurmQueues']:
         queue['Networking']['SubnetIds'] = [settings.SUBNET_ID]
         queue['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
+        queue['CustomActions']['OnNodeStart'][0]['Script'] = settings.ON_NODE_START_SCRIPT
+        queue['CustomActions']['OnNodeConfigured'][0]['Script'] = settings.ON_NODE_CONFIGURED_SCRIPT
         for cr in queue['ComputeResources']:
             cr['InstanceType'] = instance_type
     for storage in config.get('SharedStorage', []):
