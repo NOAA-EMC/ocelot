@@ -6,6 +6,12 @@ import tempfile
 import time
 import yaml
 
+# Added configuration from local settings
+try:
+    import local_settings as settings
+except ImportError:
+    raise RuntimeError(f"local_settings not found. Please install local_settings first.")
+
 
 #def run_command(cmd: str):
 #    print(cmd)
@@ -62,13 +68,7 @@ def wait_for_cluster_creation(cluster_name):
         time.sleep(30) # Poll every 30 seconds
 
 
-def prepare_config(instance_type: str, data_source: str, output_path: str) -> str:
-    # Added configuration from local settings
-    try:
-        import local_settings as settings
-    except ImportError:
-        raise RuntimeError(f"local_settings not found. Please install local_settings first.")
-
+def prepare_config(instance_type: str, num_compute_nodes: int) -> str:
     # Validate local settings
     setting_items = ["OS",
                      "REGION",
@@ -78,7 +78,10 @@ def prepare_config(instance_type: str, data_source: str, output_path: str) -> st
                      "HEAD_NODE_ROLE",
                      "COMPUTE_NODE_ROLE",
                      "IMPORT_PATH",
-                     "EXPORT_PATH"]
+                     "EXPORT_PATH",
+                     "KEY_FILE",
+                     "ON_NODE_START_SCRIPT",
+                     "ON_NODE_CONFIGURED_SCRIPT"]
     for item in setting_items:
         if not hasattr(settings, item):
             raise RuntimeError(f"local_settings is missing required setting: {item}")
@@ -104,6 +107,8 @@ def prepare_config(instance_type: str, data_source: str, output_path: str) -> st
         queue['CustomActions']['OnNodeConfigured']['Script'] = settings.ON_NODE_CONFIGURED_SCRIPT
         for cr in queue['ComputeResources']:
             cr['InstanceType'] = instance_type
+            cr['MinCount'] = num_compute_nodes
+            cr['MaxCount'] = num_compute_nodes
     for storage in config.get('SharedStorage', []):
         if storage.get('StorageType') == 'FsxLustre':
             lustre_settings = storage.get('FsxLustreSettings', {})
@@ -126,14 +131,12 @@ def main():
     parser.add_argument('--branch', default='main', help='Ocelot branch to use')
     parser.add_argument('--instance-type', default='g5.2xlarge', help='EC2 instance type for compute nodes')
     parser.add_argument('--script', default='gnn_model/train_gnn.py', help='Python script to run on the cluster')
-    parser.add_argument('--data-source', required=True, help='The data source path to use in the s3 bucket')
-    parser.add_argument('--output', required=True, help='Output path in the s3 bucket.')
     parser.add_argument('--num_nodes', type=int, help='Number of nodes in the cluster.')
     parser.add_argument('--cpus_per_task', type=int, default=4, help='Number of CPUs per node')
     parser.add_argument('--keep-cluster', action='store_true', help='Do not delete the cluster after completion')
     args = parser.parse_args()
 
-    cfg_path = prepare_config(args.instance_type, args.data_source, args.output)
+    cfg_path = prepare_config(args.instance_type, args.num_nodes)
     print ('!!!!', cfg_path)
     result = subprocess.run(
        ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
@@ -160,7 +163,7 @@ def main():
     )
 
     ssh_cmd = (
-        f"pcluster ssh --cluster-name {args.cluster_name} -i ~/key.pem "
+        f"pcluster ssh --cluster-name {args.cluster_name} -i {settings.KEY_FILE} "
         f"-- \"{remote_cmd}\""
     )
     run_command(ssh_cmd)

@@ -29,8 +29,8 @@ Scheduling:
       ComputeResources:
         - Name: compute
           InstanceType: <INSTANCE_TYPE>
-          MinCount: 0
-          MaxCount: 2
+          MinCount: <NUM_COMPUTE_NODES>
+          MaxCount: <NUM_COMPUTE_NODES>
       CustomActions:
         OnNodeStart:
           Script: <ON_NODE_START_SCRIPT>
