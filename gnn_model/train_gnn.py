@@ -54,15 +54,15 @@ def main():
             # "goes":,
             # "ascat":
         },
-        "conventional": {
-            # "radiosonde": ,
-            "surface_pressure": {
-                "features": ["stationPressure", ],
-                "metadata": ["height", ]
-            },
-            # "surface_marine": ,
-            # "surface_land":
-        }
+        # "conventional": {
+        #     # "radiosonde": ,
+        #     "surface_pressure": {
+        #         "features": ["stationPressure", ],
+        #         "metadata": ["height", ]
+        #     },
+        #     # "surface_marine": ,
+        #     # "surface_land":
+        # }
     }
     mesh_resolution = 6
 
@@ -76,7 +76,7 @@ def main():
     # === TRAINING CONFIGURATION ===
     max_epochs = 10
     batch_size = 1
-    max_rollout_steps = 3  # Maximum rollout length; set 1 to have no rollout
+    max_rollout_steps = 2  # Maximum rollout length; set 1 to have no rollout
     rollout_schedule = 'fixed'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # # === INSTANTIATE MODEL & DATA MODULE ===
