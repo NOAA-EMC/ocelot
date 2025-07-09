@@ -33,9 +33,9 @@ Scheduling:
           MaxCount: 2
       CustomActions:
         OnNodeStart:
-          - Script: <ON_NODE_START_SCRIPT>
+          Script: <ON_NODE_START_SCRIPT>
         OnNodeConfigured:
-          - Script: <ON_NODE_CONFIGURED_SCRIPT>
+          Script: <ON_NODE_CONFIGURED_SCRIPT>
 
 SharedStorage:
   - Name: fsx
