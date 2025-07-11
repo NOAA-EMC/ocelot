@@ -19,6 +19,44 @@ from obs_to_mesh import ObsMeshCutoffConnector
 from process_timeseries import extract_features, organize_bins_times, flatten_data
 
 
+def tensor_conversion(data, dtype=torch.float32, device=None):
+    """
+    Convert data to tensor efficiently without unnecessary copies.
+
+    Current inefficient code in gnn_datamodule.py:
+        e.g., "target_scaler_min": torch.tensor(bin_data["target_scaler_min"], dtype=torch.float32)
+        This doubles up memory usage by creating a new tensor copy in memory
+
+    Args:
+        data: Input data (tensor, numpy array, list, etc.)
+        dtype: Target data type
+        device: Target device (optional)
+
+    Returns:
+        torch.Tensor: Efficiently converted tensor
+    """
+    if isinstance(data, torch.Tensor):
+        # Already a tensor - minimize operations
+        result = data
+
+        # Change dtype if needed
+        if result.dtype != dtype:
+            result = result.to(dtype)
+
+        # Change device if needed
+        if device is not None and result.device != device:
+            result = result.to(device)
+
+        # Always detach to avoid gradient issues
+        return result.detach()
+    else:
+        # Not a tensor - create new one efficiently
+        if device is not None:
+            return torch.tensor(data, dtype=dtype, device=device)
+        else:
+            return torch.tensor(data, dtype=dtype)
+
+
 @rank_zero_only
 def log_system_info():
     """
@@ -67,6 +105,10 @@ class BinDataset(Dataset):
             bin = self.data_summary[bin_name]
             bin, _ = flatten_data(bin)
             data_dict = self.create_graph_fn(bin)
+            data_dict['bin_name'] = bin_name  # Add bin_name to data_dict
+            print(
+                f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
+            )
         except Exception as e:
             print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
             raise
@@ -84,9 +126,11 @@ class BinDataset(Dataset):
             y=data_dict["y"],
             target_scaler_min=data_dict["target_scaler_min"],
             target_scaler_max=data_dict["target_scaler_max"],
-            target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
-            target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
-            instrument_ids=data_dict["target_instrument_ids"]
+            instrument_ids=data_dict["target_instrument_ids"],  # MK: should this be named as target_instrument_ids?
+            bin_name=data_dict["bin_name"],
+            target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
+            target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
+            target_metadata=data_dict["target_metadata"],
         )
 
 
@@ -307,12 +351,13 @@ class GNNDataModule(pl.LightningDataModule):
             "edge_index_decoder": edge_index_decoder_global.to(torch.long),
             "edge_attr_decoder": edge_attr_knn,
             "y": target_features,  # Flattened target features
-            "target_scaler_min": torch.tensor(bin_data["target_scaler_min"], dtype=torch.float32),
-            "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
             "target_lat_deg": bin_data["target_lat_deg"],
             "target_lon_deg": bin_data["target_lon_deg"],
-            "input_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
-            "target_instrument_ids": torch.tensor(bin_data["target_instrument_ids"], dtype=torch.long),
+            "target_scaler_min": tensor_conversion(bin_data["target_scaler_min"], dtype=torch.float32),
+            "target_scaler_max": tensor_conversion(bin_data["target_scaler_max"], dtype=torch.float32),
+            "input_instrument_ids": tensor_conversion(bin_data["input_instrument_ids"], dtype=torch.long),
+            "target_instrument_ids": tensor_conversion(bin_data["target_instrument_ids"], dtype=torch.long),
+            "target_metadata": tensor_conversion(bin_data["target_metadata"], dtype=torch.float32),
         }
 
     def _create_data_object(self, data_dict):
@@ -321,11 +366,6 @@ class GNNDataModule(pl.LightningDataModule):
 
         Adds additional fields needed for later unnormalization (e.g., for evaluation).
         """
-        if "instrument_ids" in data_dict:
-            instrument_ids = torch.tensor(data_dict["instrument_ids"], dtype=torch.long)
-        else:
-            instrument_ids = None
-
         data_args = dict(
             x=data_dict["x"],
             edge_index_encoder=data_dict["edge_index_encoder"],
@@ -336,12 +376,12 @@ class GNNDataModule(pl.LightningDataModule):
             y=data_dict["y"],
             target_scaler_min=data_dict["target_scaler_min"],
             target_scaler_max=data_dict["target_scaler_max"],
-            target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
-            target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
+            target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
+            target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
         )
         # Optional: add instrument_ids only if present
         if "instrument_ids" in data_dict:
-            data_args["instrument_ids"] = torch.tensor(data_dict["instrument_ids"], dtype=torch.long)
+            data_args["instrument_ids"] = tensor_conversion(data_dict["instrument_ids"], dtype=torch.long)
 
         return Data(**data_args)
 

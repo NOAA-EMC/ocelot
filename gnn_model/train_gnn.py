@@ -54,17 +54,16 @@ def main():
             # "goes":,
             # "ascat":
         },
-        "conventional": {
-            # "radiosonde": ,
-            "surface_pressure": {
-                "features": ["stationPressure", ],
-                "metadata": ["height", ]
-            },
-            # "surface_marine": ,
-            # "surface_land":
-        }
+        # "conventional": {
+        #     # "radiosonde": ,
+        #     "surface_pressure": {
+        #         "features": ["stationPressure", ],
+        #         "metadata": ["height", ]
+        #     },
+        #     # "surface_marine": ,
+        #     # "surface_land":
+        # }
     }
-
     mesh_resolution = 6
 
     # === MODEL CONFIGURATION ===
@@ -77,6 +76,8 @@ def main():
     # === TRAINING CONFIGURATION ===
     max_epochs = 10
     batch_size = 1
+    max_rollout_steps = 2  # Maximum rollout length; set 1 to have no rollout
+    rollout_schedule = 'fixed'  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
@@ -88,6 +89,8 @@ def main():
         instrument_weights=instrument_weights,
         channel_weights=channel_weights,
         verbose=args.verbose,
+        max_rollout_steps=max_rollout_steps,
+        rollout_schedule=rollout_schedule,
     )
     # model = GNNLightning.load_from_checkpoint(
     #     checkpoint_path,

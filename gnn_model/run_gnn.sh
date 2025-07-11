@@ -12,6 +12,7 @@
 #SBATCH -t 04:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 # Load Conda environment
 # source /home/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
