@@ -54,8 +54,6 @@ class GNNLightning(pl.LightningModule):
         self.channel_weights = channel_weights or {}
         self.channel_masks = {}
         for inst_id, weights in self.channel_weights.items():
-            # weights_tensor = torch.tensor(weights)
-            # MK: More efficient tensor conversion
             if isinstance(weights, torch.Tensor):
                 weights_tensor = weights.clone().detach()
             else:
@@ -111,8 +109,6 @@ class GNNLightning(pl.LightningModule):
         # Automatically decide whether to use ocelot_loss based on weight config
         self.use_ocelot_loss = not (
             all(w == 1.0 for w in self.instrument_weights.values()) and
-            # MK: avoid tensor dulication
-            # all(torch.allclose(torch.tensor(w, dtype=torch.float32), torch.ones(len(w))) for w in self.channel_weights.values())
             all(torch.allclose(w.to(torch.float32) if isinstance(w, torch.Tensor) else torch.tensor(w, dtype=torch.float32),
                 torch.ones(len(w))) for w in self.channel_weights.values())
             )
@@ -171,14 +167,14 @@ class GNNLightning(pl.LightningModule):
         edge_index_encoder = data.edge_index_encoder
         edge_index_processor = data.edge_index_processor
 
-        print(f"MK: forward data: {data.bin_name}")
+        print(f"forward data: {data.bin_name}")
 
         if step_data_list is None:
             current_rollout_steps = self.get_current_rollout_steps()
-            print(f"MK: [forward] Computing step_data_list internally for rollout step: {current_rollout_steps}")
+            print(f"[forward] Computing step_data_list internally for rollout step: {current_rollout_steps}")
             step_data_list, n_steps = self._get_sequential_step_data(data, current_rollout_steps)
         else:
-            print(f"MK: [forward] Using pre-computed step_data_list with {len(step_data_list)} steps")
+            print(f"[forward] Using pre-computed step_data_list with {len(step_data_list)} steps")
             n_steps = len(step_data_list)
 
         # === Encoding: obs → mesh ===
@@ -193,7 +189,6 @@ class GNNLightning(pl.LightningModule):
         assert src_encoder.max().item() < x.shape[0], "[ERROR] src_encoder has out-of-bounds indices"
 
         # === Get decoder edges for first step to determine used mesh nodes
-        # edge_index_decoder = data.edge_index_decoder
         # Get all unique mesh nodes used across all steps for proper aggregation
         all_decoder_mesh_nodes = set()
         for step_data in step_data_list:
@@ -205,14 +200,12 @@ class GNNLightning(pl.LightningModule):
 
         # === Mask edges whose target mesh nodes are not used downstream
         # put all unique node IDs together:
-        # used_mesh_nodes = torch.cat([edge_index_decoder[0], edge_index_processor[0], edge_index_processor[1]]).unique()
         all_used_mesh_nodes = torch.cat([
             torch.tensor(list(all_decoder_mesh_nodes), device=data.x.device),
             processor_mesh_nodes
         ]).unique()
 
         # Filter encoder edges to only connect to mesh nodes we'll actually use
-        # edge_mask = torch.isin(tgt_encoder, used_mesh_nodes)
         edge_mask = torch.isin(tgt_encoder, all_used_mesh_nodes)
         src_encoder = src_encoder[edge_mask]
         tgt_encoder = tgt_encoder[edge_mask]
@@ -498,7 +491,7 @@ class GNNLightning(pl.LightningModule):
         current_bin_name = batch.bin_name[0] if isinstance(batch.bin_name, list) else batch.bin_name
         bin_num = int(current_bin_name.replace("bin", ""))
 
-        print(f"MK: [get_seq] current bin name:{current_bin_name}")
+        print(f"[get_seq] current bin name:{current_bin_name}")
 
         step_data_list = []
         actual_step = 0
@@ -514,13 +507,13 @@ class GNNLightning(pl.LightningModule):
             use_padding = True
 
         for step in range(n_steps):
-            print(f"MK: [get seq/ step] requested n_step: {n_steps}; working on step: {step}")
+            print(f"[get seq/ step] requested n_step: {n_steps}; working on step: {step}")
             target_bin_num = bin_num + step
             target_bin_name = f"bin{target_bin_num}"
 
             # OPTIMIZATION: For step 0, use batch data directly (already processed)
             if step == 0:
-                print(f"MK: [get seq/step] Step 0 - using batch data directly (no recomputation)")
+                print(f"[get seq/step] Step 0 - using batch data directly (no recomputation)")
 
                 # Extract data directly from batch - much faster!
                 step_data = {
@@ -534,7 +527,7 @@ class GNNLightning(pl.LightningModule):
 
                 step_data_list.append(step_data)
                 actual_step += 1
-                print(f"MK: [get seq/step] Step 0 completed using batch data")
+                print(f"[get seq/step] Step 0 completed using batch data")
 
             # For step 1+, need to load new data
             # if target_bin_name in data_module.data_summary:
@@ -542,7 +535,7 @@ class GNNLightning(pl.LightningModule):
                   target_bin_name in data_module.data_summary and
                   target_bin_name in available_bins):
                 # Get the preprocessed bin data
-                print(f"MK: [get seq/ step] accessing bin name: {target_bin_name}")
+                print(f"[get seq/ step] accessing bin name: {target_bin_name}")
                 target_bin_data = data_module.data_summary[target_bin_name]
                 from process_timeseries import flatten_data
                 target_bin_data_flat, _ = flatten_data(target_bin_data)
@@ -567,12 +560,12 @@ class GNNLightning(pl.LightningModule):
                 # return $actual_step for loss calculation
                 if step_data_list:
                     if use_padding:
-                        print(f"MK: [get seq/ step] use previous bin")
+                        print(f"[get seq/ step] use previous bin")
                         step_data_list.append(step_data_list[-1])
                         self.debug(f"Warning: No data for {target_bin_name}, using previous step")
                     else:
                         # Training: stop early, no padding needed
-                        print(f"MK: [get seq/ step] training - stopping rollout at temporal boundary")
+                        print(f"[get seq/ step] training - stopping rollout at temporal boundary")
                         break
                 else:
                     # Ultimate fallback: use original batch data
@@ -588,7 +581,7 @@ class GNNLightning(pl.LightningModule):
                     step_data_list.append(step_data)
                     self.debug(f"Warning: No data for {target_bin_name}, using original batch")
 
-        print(f"MK:[get seq] requested n_step: {n_steps}; actual_step: {actual_step}")
+        print(f"[get seq] requested n_step: {n_steps}; actual_step: {actual_step}")
 
         return step_data_list, actual_step
 
@@ -608,7 +601,7 @@ class GNNLightning(pl.LightningModule):
         # self.log("global_step", self.global_step)
         # self.log("rollout_steps", int(current_rollout_steps))
 
-        print(f"MK: [training_step] batch: {batch.bin_name}")
+        print(f"[training_step] batch: {batch.bin_name}")
 
         # Get data for all rollout steps
         ground_truths = []
@@ -616,8 +609,8 @@ class GNNLightning(pl.LightningModule):
         for step_data in step_data_list:
             ground_truths.append(step_data['y'])
 
-        print(f"MK: [training_step] current_rollout_steps: {current_rollout_steps}")
-        print(f"MK: [training_step] actual_rollout_steps: {actual_rollout_steps}")
+        print(f"[training_step] current_rollout_steps: {current_rollout_steps}")
+        print(f"[training_step] actual_rollout_steps: {actual_rollout_steps}")
 
         # Forward pass
         forward_result = self(batch, step_data_list=step_data_list)
@@ -729,27 +722,27 @@ class GNNLightning(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        print(f"MK: VALIDATION STEP  batch: {batch.bin_name}")
+        print(f"VALIDATION STEP  batch: {batch.bin_name}")
         # Use current rollout steps to match training
         current_rollout_steps = self.max_rollout_steps
 
         # Get ground truths for all rollout steps
         ground_truths = []
         step_data_list, actual_rollout_steps = self._get_sequential_step_data(batch, current_rollout_steps)
-        print(f"MK: [validation_step] current_rollout_steps: {current_rollout_steps}")
-        print(f"MK: [validation_step] actual_rollout_steps: {actual_rollout_steps}")
+        print(f"[validation_step] current_rollout_steps: {current_rollout_steps}")
+        print(f"[validation_step] actual_rollout_steps: {actual_rollout_steps}")
 
         for step_data in step_data_list:
             ground_truths.append(step_data['y'])
 
-        print(f"MK: [validation_step] ground truth len: {len(ground_truths)}")
+        print(f"[validation_step] ground truth len: {len(ground_truths)}")
 
         # Get predictions for all rollout steps
         y_pred_list = self(batch, step_data_list=step_data_list)
         if isinstance(y_pred_list, tuple):
             y_pred_list, _ = y_pred_list
 
-        print(f"MK: [validation_step] prediction len: {len(y_pred_list)}")
+        print(f"[validation_step] prediction len: {len(y_pred_list)}")
 
         total_loss = 0.0
         # Important: we compute loss only on actual rollout steps
@@ -976,146 +969,6 @@ class GNNLightning(pl.LightningModule):
         del y_pred_list, ground_truths, step_data_list, batch
         del y_pred, y_true, step_rmse_list, step_mae_list, step_bias_list
         del y_pred_unnorm, y_true_unnorm
-        return loss
-
-    def validation_step_original(self, batch, batch_idx):
-        # MK: small change for a quick test
-        y_pred_list = self(batch, n_steps=1)
-        y_pred = y_pred_list[0]
-        y_true = batch.y
-        # Choose appropriate loss
-        if self.use_ocelot_loss:
-            # loss = self.ocelot_loss(y_pred, y_true, batch.instrument_ids, check_grad=False)
-            loss = self.weighted_huber_loss(y_pred, y_true, batch.instrument_ids)
-        else:
-            # loss = self.loss_fn(y_pred, y_true)
-            loss = self.huber(y_pred, y_true).mean()
-
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[VAL] Epoch {self.current_epoch} - val_loss: {loss.item():.6f}")
-
-        instrument_ids = batch.instrument_ids
-
-        # Per-instrument loss logging
-        for inst_id in instrument_ids.unique():
-            mask = instrument_ids == inst_id
-            if mask.sum() == 0:
-                continue
-            inst_loss = F.mse_loss(y_pred[mask], y_true[mask])
-            self.log(f"val_loss_inst_{inst_id.item()}", inst_loss.item(), prog_bar=False, sync_dist=True, on_epoch=True)
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True, on_epoch=True)
-
-        if self.verbose and self.trainer.is_global_zero and batch_idx == 0:
-
-            # === Masks ===
-            bt_true = y_true[:, :22]
-            bt_pred = y_pred[:, :22]
-
-            # Rows where only bt1 (index 0) is non-zero → pressure
-            pressure_mask = (bt_true[:, 1:] == 0).all(dim=1)
-            bt_mask = ~pressure_mask  # everything else is ATMS
-
-            # === Plot Histograms ===
-            for i in range(22):  # All channels
-                label = f"BT Channel {i+1}" if i < 22 else "Surface Pressure"
-                if i == 0:
-                    bt_y_true = y_true[bt_mask, i]
-                    bt_y_pred = y_pred[bt_mask, i]
-                    pr_y_true = y_true[pressure_mask, i]
-                    pr_y_pred = y_pred[pressure_mask, i]
-
-                    # --- BT Histogram for ch0 (skip pressure rows) ---
-                    plt.figure()
-                    plt.hist(bt_y_true.detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="BT y_true")
-                    plt.hist(bt_y_pred.detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="BT y_pred")
-                    plt.xlabel("Normalized Brightness Temperature")
-                    plt.ylabel("Frequency")
-                    plt.title("Normalized Histogram - BT Channel 1")
-                    plt.legend()
-                    plt.tight_layout()
-                    plt.savefig(f"hist_bt_ch_1_bt_only_epoch{self.current_epoch}.png")
-                    plt.close()
-
-                    # --- Pressure Histogram (only pressure rows) ---
-                    plt.figure()
-                    plt.hist(pr_y_true.detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="Pressure y_true")
-                    plt.hist(pr_y_pred.detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="Pressure y_pred")
-                    plt.xlabel("Normalized Surface Pressure")
-                    plt.ylabel("Frequency")
-                    plt.title("Normalized Histogram - Surface Pressure")
-                    plt.legend()
-                    plt.tight_layout()
-                    plt.savefig(f"hist_pressure_epoch{self.current_epoch}.png")
-                    plt.close()
-
-                else:
-                    y_pred_i = y_pred[bt_mask, i]
-                    y_true_i = y_true[bt_mask, i]
-                    plt.figure()
-                    plt.hist(y_true_i.detach().cpu().numpy(), bins=100, alpha=0.6, color="blue", label="Normalized y_true")
-                    plt.hist(y_pred_i.detach().cpu().numpy(), bins=100, alpha=0.6, color="orange", label="Normalized y_pred")
-                    plt.xlabel("Normalized Brightness Temperature")
-                    plt.ylabel("Frequency")
-                    plt.title(f"Normalized Histogram - BT Channel {i+1}")
-                    plt.legend()
-                    plt.tight_layout()
-                    plt.savefig(f"hist_bt_ch_{i+1}_epoch{self.current_epoch}.png")
-                    plt.close()
-
-        # Unnormalize
-        min_vals = batch.target_scaler_min.to(self.device)
-        max_vals = batch.target_scaler_max.to(self.device)
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print("Min per channel:", min_vals.cpu().numpy())
-            print("Max per channel:", max_vals.cpu().numpy())
-
-        y_pred_unnorm = self.unnormalize(y_pred, min_vals, max_vals)
-        y_true_unnorm = self.unnormalize(y_true, min_vals, max_vals)
-
-        # === Metrics Logging (same) ===
-        rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
-        mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
-        bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
-        for i in range(rmse.shape[0]):
-            self.log(f"val_rmse_ch_{i+1}", rmse[i].item(), sync_dist=True, on_epoch=True)
-            self.log(f"val_mae_ch_{i+1}", mae[i].item(), on_epoch=True, sync_dist=True)
-            self.log(f"val_bias_ch_{i+1}", bias[i].item(), on_epoch=True, sync_dist=True)
-
-        # === CSV Outputs ===
-        if self.trainer.is_global_zero and not hasattr(self, f"_saved_csv_epoch_{self.current_epoch}"):
-            setattr(self, f"_saved_csv_epoch_{self.current_epoch}", True)
-
-            # Save BT predictions
-            df_bt = pd.DataFrame({
-                "lat_deg": batch.target_lat_deg[bt_mask].cpu().numpy(),
-                "lon_deg": batch.target_lon_deg[bt_mask].cpu().numpy(),
-                **{f"true_bt_{i+1}": y_true_unnorm[bt_mask, i].cpu().numpy() for i in range(22)},
-                **{f"pred_bt_{i+1}": y_pred_unnorm[bt_mask, i].cpu().numpy() for i in range(22)},
-            })
-            df_bt.to_csv(f"bt_predictions_epoch{self.current_epoch}.csv", index=False)
-
-            # Save Pressure predictions
-            df_pressure = pd.DataFrame({
-                "lat_deg": batch.target_lat_deg[pressure_mask].cpu().numpy(),
-                "lon_deg": batch.target_lon_deg[pressure_mask].cpu().numpy(),
-                "true_pressure": y_true_unnorm[pressure_mask, 0].cpu().numpy(),
-                "pred_pressure": y_pred_unnorm[pressure_mask, 0].cpu().numpy(),
-            })
-            df_pressure.to_csv(f"pressure_predictions_epoch{self.current_epoch}.csv", index=False)
-
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[VAL] y_pred mean: {y_pred.mean().item():.6f}, std: {y_pred.std().item():.6f}")
-
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[VAL] Averaged metrics across {current_rollout_steps} steps:")
-            print(f"  RMSE (avg): {avg_rmse.mean().item():.4f}")
-            print(f"  MAE (avg): {avg_mae.mean().item():.4f}")
-            if current_rollout_steps > 1:
-                print(f"  RMSE degradation: {rmse_degradation.item():.2f}x")
-
-        self.log("val_lr", self.trainer.optimizers[0].param_groups[0]["lr"], prog_bar=False)
-
-        del y_pred_list, ground_truths, step_data_list
         return loss
 
     def on_after_backward(self):

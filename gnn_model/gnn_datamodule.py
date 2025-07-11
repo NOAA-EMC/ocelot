@@ -131,9 +131,6 @@ class BinDataset(Dataset):
             target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
             target_metadata=data_dict["target_metadata"],
-            # target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
-            # target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
-            # target_metadata=torch.tensor(data_dict["target_metadata"], dtype=torch.float32),
         )
 
 
@@ -361,11 +358,6 @@ class GNNDataModule(pl.LightningDataModule):
             "input_instrument_ids": tensor_conversion(bin_data["input_instrument_ids"], dtype=torch.long),
             "target_instrument_ids": tensor_conversion(bin_data["target_instrument_ids"], dtype=torch.long),
             "target_metadata": tensor_conversion(bin_data["target_metadata"], dtype=torch.float32),
-            # "target_scaler_min": torch.tensor(bin_data["target_scaler_min"], dtype=torch.float32),
-            # "target_scaler_max": torch.tensor(bin_data["target_scaler_max"], dtype=torch.float32),
-            # "input_instrument_ids": torch.tensor(bin_data["input_instrument_ids"], dtype=torch.long),
-            # "target_instrument_ids": torch.tensor(bin_data["target_instrument_ids"], dtype=torch.long),
-            # "target_metadata": torch.tensor(bin_data["target_metadata"], dtype=torch.float32),
         }
 
     def _create_data_object(self, data_dict):
@@ -374,12 +366,6 @@ class GNNDataModule(pl.LightningDataModule):
 
         Adds additional fields needed for later unnormalization (e.g., for evaluation).
         """
-        # MK: this seems a redundency?
-        # if "instrument_ids" in data_dict:
-        #     instrument_ids = torch.tensor(data_dict["instrument_ids"], dtype=torch.long)
-        # else:
-        #     instrument_ids = None
-
         data_args = dict(
             x=data_dict["x"],
             edge_index_encoder=data_dict["edge_index_encoder"],
@@ -392,13 +378,10 @@ class GNNDataModule(pl.LightningDataModule):
             target_scaler_max=data_dict["target_scaler_max"],
             target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
-            # target_lat_deg=torch.tensor(data_dict["target_lat_deg"], dtype=torch.float32),
-            # target_lon_deg=torch.tensor(data_dict["target_lon_deg"], dtype=torch.float32),
         )
         # Optional: add instrument_ids only if present
         if "instrument_ids" in data_dict:
             data_args["instrument_ids"] = tensor_conversion(data_dict["instrument_ids"], dtype=torch.long)
-            # data_args["instrument_ids"] = torch.tensor(data_dict["instrument_ids"], dtype=torch.long)
 
         return Data(**data_args)
 
