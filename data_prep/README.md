@@ -30,9 +30,16 @@ options:
   -b, --batch           Run in batch mode (using sbatch). 
                         Chunks the data into multiple tasks if needed.
   -a, --append          Append to existing data
+
   --slurm_account SLURM_ACCOUNT
                         SLURM account name for batch jobs
 ```
+
+The generated Zarr files now contain at most one week of data. Files are named
+`<type>_<suffix>_<YYYYMMDD>_<YYYYMMDD>.zarr` (the suffix portion is omitted if
+not provided) where the dates represent the Monday-Sunday range for that week.
+Subsequent runs automatically append to these files when processing additional
+days within the same week.
 
 ## Configuration /  Mapping files
 

@@ -49,8 +49,8 @@ def _make_sbatch_cmd(idx: int,
     if suffix:
         cmd += f'-s {suffix} '
 
-    if not append:
-        cmd += '--append False '
+    if append:
+        cmd += '-a '
 
     cmd += '" | awk \'{print $4}\')'
 
@@ -69,16 +69,16 @@ def _make_parallel_cmd(start: datetime,
         if suffix:
             cmd += f'-s {suffix} '
 
-        if not append:
-            cmd += '--append False '
+        if append:
+            cmd += '-a '
 
     else:
         cmd = f'mpirun -n {ntasks} python {runner_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
         if suffix:
             cmd += f'-s {suffix} '
 
-        if not append:
-            cmd += '--append False '
+        if append:
+            cmd += '-a '
 
     return cmd
 
@@ -94,8 +94,8 @@ def _make_serial_cmd(start: datetime,
     if suffix:
         cmd += f'-s {suffix} '
 
-    if not append:
-        cmd += '--append False '
+    if append:
+        cmd += '-a '
 
     return cmd
 
