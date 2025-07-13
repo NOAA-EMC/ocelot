@@ -99,6 +99,7 @@ def prepare_config(instance_type: str, num_compute_nodes: int) -> str:
     config['HeadNode']['InstanceType'] = settings.HEAD_NODE_INSTANCE
     config['HeadNode']['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
     config['HeadNode']['Networking']['SubnetId'] = settings.SUBNET_ID
+    config['HeadNode']['Ssh']['KeyName'] = settings.KEY_NAME
 
     for queue in config['Scheduling']['SlurmQueues']:
         queue['Networking']['SubnetIds'] = [settings.SUBNET_ID]
