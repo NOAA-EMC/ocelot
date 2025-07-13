@@ -14,7 +14,7 @@ HeadNode:
   Networking:
     SubnetId: <SUBNET_ID>
   Ssh:
-    KeyName: ron_key_2
+    KeyName: ocelot-key
 
 Scheduling:
   Scheduler: slurm
