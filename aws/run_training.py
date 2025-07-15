@@ -68,7 +68,7 @@ def wait_for_cluster_creation(cluster_name):
         time.sleep(30) # Poll every 30 seconds
 
 
-def prepare_config(instance_type: str, num_compute_nodes: int) -> str:
+def prepare_config(cluster_name: str, instance_type: str, num_compute_nodes: int) -> str:
     # Validate local settings
     setting_items = ["OS",
                      "REGION",
@@ -114,7 +114,7 @@ def prepare_config(instance_type: str, num_compute_nodes: int) -> str:
         if storage.get('StorageType') == 'FsxLustre':
             lustre_settings = storage.get('FsxLustreSettings', {})
             lustre_settings['ImportPath'] = settings.IMPORT_PATH
-            lustre_settings['ExportPath'] = settings.EXPORT_PATH
+            lustre_settings['ExportPath'] = f'{settings.EXPORT_PATH}/{cluster_name}'
 
     with tempfile.NamedTemporaryFile(
             mode='w',            # text mode
@@ -137,8 +137,9 @@ def main():
     parser.add_argument('--keep-cluster', action='store_true', help='Do not delete the cluster after completion')
     args = parser.parse_args()
 
-    cfg_path = prepare_config(args.instance_type, args.num_nodes)
-    print ('!!!!', cfg_path)
+    cfg_path = prepare_config(args.cluster_name, args.instance_type, args.num_nodes)
+    print ('PCluster Config Path: ', cfg_path)
+
     result = subprocess.run(
        ["pcluster", "describe-cluster", "--cluster-name", args.cluster_name],
        capture_output=True, text=True
