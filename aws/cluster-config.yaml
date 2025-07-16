@@ -1,7 +1,8 @@
 Region: <REGION>
 
 Image:
-  Os: <OS>
+  Os: ubuntu2204
+  CustomAmi: ami-01fbda37c78f270b7
 
 Iam:
   Roles:
@@ -31,11 +32,11 @@ Scheduling:
           InstanceType: <INSTANCE_TYPE>
           MinCount: <NUM_COMPUTE_NODES>
           MaxCount: <NUM_COMPUTE_NODES>
-      CustomActions:
-        OnNodeStart:
-          Script: <ON_NODE_START_SCRIPT>
-        OnNodeConfigured:
-          Script: <ON_NODE_CONFIGURED_SCRIPT>
+#      CustomActions:
+#        OnNodeStart:
+#          Script: <ON_NODE_START_SCRIPT>
+#        OnNodeConfigured:
+#          Script: <ON_NODE_CONFIGURED_SCRIPT>
 
 SharedStorage:
   - Name: fsx

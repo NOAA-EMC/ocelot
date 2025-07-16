@@ -94,7 +94,7 @@ def prepare_config(cluster_name: str, instance_type: str, num_compute_nodes: int
 
     # Update the configuration with local settings
     config['Region'] = settings.REGION
-    config['Image']['Os'] = settings.OS
+    # config['Image']['Os'] = settings.OS
     config['Iam']['Roles']['LambdaFunctionsRole'] = settings.ADMIN_ROLE
     config['HeadNode']['InstanceType'] = settings.HEAD_NODE_INSTANCE
     config['HeadNode']['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
@@ -104,8 +104,8 @@ def prepare_config(cluster_name: str, instance_type: str, num_compute_nodes: int
     for queue in config['Scheduling']['SlurmQueues']:
         queue['Networking']['SubnetIds'] = [settings.SUBNET_ID]
         queue['Iam']['InstanceRole'] = settings.HEAD_NODE_ROLE
-        queue['CustomActions']['OnNodeStart']['Script'] = settings.ON_NODE_START_SCRIPT
-        queue['CustomActions']['OnNodeConfigured']['Script'] = settings.ON_NODE_CONFIGURED_SCRIPT
+        # queue['CustomActions']['OnNodeStart']['Script'] = settings.ON_NODE_START_SCRIPT
+        # queue['CustomActions']['OnNodeConfigured']['Script'] = settings.ON_NODE_CONFIGURED_SCRIPT
         for cr in queue['ComputeResources']:
             cr['InstanceType'] = instance_type
             cr['MinCount'] = num_compute_nodes
