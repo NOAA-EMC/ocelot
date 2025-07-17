@@ -2,7 +2,7 @@ Region: <REGION>
 
 Image:
   Os: ubuntu2204
-  CustomAmi: ami-01fbda37c78f270b7
+#  CustomAmi: ami-01fbda37c78f270b7
 
 Iam:
   Roles:
@@ -21,7 +21,7 @@ Scheduling:
   Scheduler: slurm
   SlurmQueues:
     - Name: gpu
-      CapacityType: SPOT
+      CapacityType: ONDEMAND
       Iam:
         InstanceRole: <COMPUTE_NODE_ROLE>
       Networking:
@@ -32,11 +32,11 @@ Scheduling:
           InstanceType: <INSTANCE_TYPE>
           MinCount: <NUM_COMPUTE_NODES>
           MaxCount: <NUM_COMPUTE_NODES>
-#      CustomActions:
-#        OnNodeStart:
-#          Script: <ON_NODE_START_SCRIPT>
-#        OnNodeConfigured:
-#          Script: <ON_NODE_CONFIGURED_SCRIPT>
+      CustomActions:
+        OnNodeStart:
+          Script: <ON_NODE_START_SCRIPT>
+        OnNodeConfigured:
+          Script: <ON_NODE_CONFIGURED_SCRIPT>
 
 SharedStorage:
   - Name: fsx
