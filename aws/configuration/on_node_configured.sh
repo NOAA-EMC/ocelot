@@ -8,7 +8,7 @@ cd "$HOME"
 
 python3.10 -m venv venv
 source venv/bin/activate
-echo "source ~/venv/bin/activate" >> ~/.bashrc
+#echo "source ~/venv/bin/activate" >> ~/.bashrc
 
 python3.10 -m pip install --no-input --upgrade pip
 
@@ -28,8 +28,6 @@ EOF
 
 # (Optional) ensure ownership just in case
 chown -R ubuntu:ubuntu /home/ubuntu/venv
-
-sudo /opt/parallelcluster/pyenv/versions/cookbook_virtualenv/bin/supervisorctl start cfn-hup
 
 #git clone https://github.com/NOAA-EMC/ocelot.git
 #git checkout main
