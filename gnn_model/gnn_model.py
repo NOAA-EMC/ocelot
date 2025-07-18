@@ -121,7 +121,7 @@ class GNNLightning(pl.LightningModule):
                 x_inner = layer(x_inner)
             return x_inner
 
-        x = checkpoint.checkpoint(custom_forward, x)
+        x = checkpoint.checkpoint(custom_forward, x, use_reentrant=False)
         # x = custom_forward(x)
         x = self.decoder_layers[-1](x)  # Final linear layer not checkpointed
         return x
