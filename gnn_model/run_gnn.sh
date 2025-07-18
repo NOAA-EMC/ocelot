@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH -A da-cpu
+#SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
 #SBATCH -q gpuwf
 #SBATCH --gres=gpu:h100:2
@@ -42,3 +42,4 @@ nvidia-smi
 
 # Launch training
 srun --cpu_bind=cores python train_gnn.py --verbose
+# srun --cpu_bind=cores python train_gnn.py --verbose --sampling_mode sequential
