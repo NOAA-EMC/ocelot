@@ -12,6 +12,7 @@ from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
+import os
 
 
 @timing_resource_decorator
@@ -37,18 +38,19 @@ def main():
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
         # One week Global data path:
-        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/"
+        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/bigzarr/"
+        # data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3"
 
     start_date = "2024-04-01"
-    end_date = "2024-04-07"
+    end_date = "2024-05-15"
 
     # Observation configuration, will move to a config file later.
     observation_config = {
         "satellite": {
-            'atms': {
+            "atms": {
                 "sat_ids": [224],
                 "features": [f"bt_channel_{i}" for i in range(1, 23)],
-                "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"]
+                "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"],
             },
             # "iasi": ,
             # "goes":,
@@ -76,8 +78,8 @@ def main():
     # === TRAINING CONFIGURATION ===
     max_epochs = 10
     batch_size = 1
-    max_rollout_steps = 2  # Maximum rollout length; set 1 to have no rollout
-    rollout_schedule = 'fixed'  # 'graphcast', 'step', 'linear', or 'fixed'
+    max_rollout_steps = 1  # Maximum rollout length; set 1 to have no rollout
+    rollout_schedule = "fixed"  # 'graphcast', 'step', 'linear', or 'fixed'
 
     # # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
@@ -137,7 +139,7 @@ def main():
                 save_top_k=1,
                 monitor="val_loss",
                 mode="min",
-                save_last=True
+                save_last=True,
             ),
         ]
 
@@ -147,7 +149,7 @@ def main():
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
         "devices": 2,
         "num_nodes": 4,
-        "strategy": "ddp_find_unused_parameters_true",
+        "strategy": "ddp",
         "precision": "16-mixed",  # Mixed precision for memory efficiency
         "log_every_n_steps": 1,
         "callbacks": callbacks,
@@ -165,6 +167,10 @@ def main():
     # === TRAINING ===
     if torch.cuda.is_available():
         print(f"GPU {torch.cuda.current_device()} memory allocated:", torch.cuda.memory_allocated() / 1024**3, "GB")
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
     trainer.fit(model, data_module)
     # trainer.fit(model, data_module, ckpt_path=checkpoint_path)
@@ -177,6 +183,9 @@ def main():
         best_path = trainer.checkpoint_callback.best_model_path
         print(f"[INFO] Best model path: {best_path}")
         best_model = GNNLightning.load_from_checkpoint(best_path)
+
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -23,10 +23,6 @@ def tensor_conversion(data, dtype=torch.float32, device=None):
     """
     Convert data to tensor efficiently without unnecessary copies.
 
-    Current inefficient code in gnn_datamodule.py:
-        e.g., "target_scaler_min": torch.tensor(bin_data["target_scaler_min"], dtype=torch.float32)
-        This doubles up memory usage by creating a new tensor copy in memory
-
     Args:
         data: Input data (tensor, numpy array, list, etc.)
         dtype: Target data type
@@ -87,11 +83,12 @@ class BinDataset(Dataset):
         create_graph_fn (function): Function that creates the graph structure per bin.
     """
 
-    def __init__(self, bin_names, data_summary, zarr_store, create_graph_fn):
+    def __init__(self, bin_names, data_summary, zarr_store, create_graph_fn, observation_config):
         self.bin_names = bin_names
         self.data_summary = data_summary
         self.z = zarr_store
         self.create_graph_fn = create_graph_fn
+        self.observation_config = observation_config
 
     def __len__(self):
         return len(self.bin_names)
@@ -102,7 +99,16 @@ class BinDataset(Dataset):
         print(f"[Rank {rank}] Fetching {bin_name}...")
 
         try:
-            bin = self.data_summary[bin_name]
+            # bin = self.data_summary[bin_name]
+            # read from z file only for this bin...to follow previous, save in self.data_summary format, but only for required bin
+            # Extract features for each bin and observation type
+            bin = extract_features(
+                self.z,
+                self.data_summary,
+                bin_name,
+                self.observation_config,
+            )[bin_name]
+
             bin, _ = flatten_data(bin)
             data_dict = self.create_graph_fn(bin)
             data_dict['bin_name'] = bin_name  # Add bin_name to data_dict
@@ -126,7 +132,7 @@ class BinDataset(Dataset):
             y=data_dict["y"],
             target_scaler_min=data_dict["target_scaler_min"],
             target_scaler_max=data_dict["target_scaler_max"],
-            instrument_ids=data_dict["target_instrument_ids"],  # MK: should this be named as target_instrument_ids?
+            instrument_ids=data_dict["target_instrument_ids"],
             bin_name=data_dict["bin_name"],
             target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
             target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
@@ -187,14 +193,10 @@ class GNNDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         """
-        Sets up the dataset by organizing time bins, extracting features, and flattening data.
-
         The setup process:
         1. Opens Zarr stores for each observation type
         2. Organizes data into time bins
-        3. Extracts features for each bin
-        4. Flattens data structure and adds instrument IDs
-        5. Splits data into train/val/test sets
+        3. Splits data into train/val/test sets
         """
         if self.z is None:
             # Open Zarr stores
@@ -207,10 +209,6 @@ class GNNDataModule(pl.LightningDataModule):
                     self.z[obs_type][key] = zarr.open(LRUStoreCache(zarr.DirectoryStore(data_path), max_size=2_000_000_000), mode="r")
                     rank_zero_info(f"Opened Zarr files for {data_path}.")
 
-        # if hasattr(self.trainer, "global_rank") and self.trainer.global_rank == 0:
-        #     log_system_info()
-        #     _ = list(self.z.array_keys())
-
         if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
             dist.barrier()
 
@@ -220,13 +218,6 @@ class GNNDataModule(pl.LightningDataModule):
                 self.z,
                 self.start_date,
                 self.end_date,
-                self.observation_config,
-            )
-
-            # Extract features for each bin and observation type
-            self.data_summary = extract_features(
-                self.z,
-                self.data_summary,
                 self.observation_config,
             )
 
@@ -295,7 +286,8 @@ class GNNDataModule(pl.LightningDataModule):
         edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(
             obs_latlon_rad,
             self.mesh_latlon_rad,
-            return_edge_attr=True
+            return_edge_attr=True,
+            max_neighbors=1
         )
 
         if edge_index_encoder.numel() == 0:
@@ -393,7 +385,7 @@ class GNNDataModule(pl.LightningDataModule):
         - Enables parallel processing across GPUs using DDP.
         - Uses persistent workers for better performance.
         """
-        dataset = BinDataset(self.train_bin_names, self.data_summary, self.z, self._create_graph_structure)
+        dataset = BinDataset(self.train_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
         sampler = DistributedSampler(dataset, shuffle=True)
         return DataLoader(
             dataset,
@@ -422,7 +414,7 @@ class GNNDataModule(pl.LightningDataModule):
                         return {}
 
                 return DataLoader(EmptyDataset(), batch_size=4)
-        dataset = BinDataset(self.val_bin_names, self.data_summary, self.z, self._create_graph_structure)
+        dataset = BinDataset(self.val_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
         return DataLoader(
             dataset,
             batch_size=1,
@@ -437,7 +429,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         Loads and evaluates all test bins, one per batch.
         """
-        dataset = BinDataset(self.test_bin_names, self.data_summary, self.z, self._create_graph_structure)
+        dataset = BinDataset(self.test_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
         return DataLoader(
             dataset,
             batch_size=1,
@@ -452,7 +444,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         Reuses the train+val bins for inference unless otherwise specified.
         """
-        dataset = BinDataset(self.predict_bin_names, self.data_summary, self.z, self._create_graph_structure)
+        dataset = BinDataset(self.predict_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
         return DataLoader(
             dataset,
             batch_size=1,

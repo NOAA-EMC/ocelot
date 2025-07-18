@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.nn import GATConv
 from torch_scatter import scatter, scatter_add
-import torch.utils.checkpoint
+import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -85,17 +85,17 @@ class GNNLightning(pl.LightningModule):
         self.processor_layers = nn.ModuleList([GATConv(hidden_dim, hidden_dim, add_self_loops=True, bias=True) for _ in range(num_layers)])
 
         # Decoder: Maps hidden nodes back to target nodes
-        self.decoder_mlp = nn.Sequential(
+        self.decoder_layers = nn.ModuleList([
             nn.Linear(hidden_dim + 1, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1),  # Add dropout for regularization
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_dim, output_dim),
-        )
+        ])
 
         # Optional: Initialize processor layer biases to small values
         for layer in self.processor_layers:
@@ -112,6 +112,19 @@ class GNNLightning(pl.LightningModule):
             all(torch.allclose(w.to(torch.float32) if isinstance(w, torch.Tensor) else torch.tensor(w, dtype=torch.float32),
                 torch.ones(len(w))) for w in self.channel_weights.values())
             )
+
+    def forward_decoder_mlp(self, x):
+        layers = self.decoder_layers[:-1]
+
+        def custom_forward(x_inner):
+            for layer in layers:
+                x_inner = layer(x_inner)
+            return x_inner
+
+        x = checkpoint.checkpoint(custom_forward, x)
+        # x = custom_forward(x)
+        x = self.decoder_layers[-1](x)  # Final linear layer not checkpointed
+        return x
 
     def on_fit_start(self):
         if self.trainer.is_global_zero:
@@ -358,23 +371,19 @@ class GNNLightning(pl.LightningModule):
             mesh_feats = x_hidden[src_decoder_local]
             decoder_input = torch.cat([mesh_feats, dist_feats], dim=1)
 
-            # === Simple, non-chunked decoding (no gate, no scatter) ===
-            # decoded = self.decoder_mlp(decoder_input)
+            # === Apply decoder MLP with checkpointing over full input
+            decoder_output = self.forward_decoder_mlp(decoder_input)
+
+            # === Chunk after forward pass (if needed for memory)
             chunk_size = 1_500_000
-            if decoder_input.size(0) > chunk_size:
-                out_dim = self.decoder_mlp[-1].out_features
-                num_rows = decoder_input.size(0)
+            if decoder_output.size(0) > chunk_size:
                 decoded_chunks = []
-
-                for start in range(0, num_rows, chunk_size):
-                    end = min(start + chunk_size, num_rows)
-                    chunk = decoder_input[start:end]  # stays on GPU
-                    decoded_chunks.append(self.decoder_mlp(chunk))
-
-                decoded = torch.cat(decoded_chunks, dim=0)
+                for start in range(0, decoder_output.size(0), chunk_size):
+                    end = min(start + chunk_size, decoder_output.size(0))
+                    decoded_chunks.append(decoder_output[start:end])
+                out = torch.cat(decoded_chunks, dim=0)
             else:
-                decoded = self.decoder_mlp(decoder_input)
-            out = decoded  # No gate, no norm, no scatter
+                out = decoder_output
 
             # Log stats for first 5 channels
             if self.trainer.is_global_zero:
