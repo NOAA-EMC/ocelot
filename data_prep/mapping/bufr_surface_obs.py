@@ -5,53 +5,56 @@ import numpy as np
 import re
 from datetime import datetime
 from pathlib import Path
+from sklearn.preprocessing import LabelEncoder
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-
-ADPUPA_MAPPING = os.path.join(script_dir, 'bufr_surface_pressure_adpupa.yaml')
-ADPSFC_SFCSHP_MAPPING = os.path.join(script_dir, 'bufr_surface_pressure_adpsfc_sfcshp.yaml')
+MAP_PATH = os.path.join(script_dir, 'bufr_surface_obs.yaml')
 
 OBS_TYPES = np.array([180, 181, 183, 187, 120])
 
 
 class PressureObsBuilder(ObsBuilder):
     def __init__(self):
-        map_dict = {'adpupa': ADPUPA_MAPPING,
-                    'adpsfc_sfcshp': ADPSFC_SFCSHP_MAPPING}
-
-        super().__init__(map_dict, log_name=os.path.basename(__file__))
+        super().__init__(MAP_PATH, log_name=os.path.basename(__file__))
 
     # Override
     def make_obs(self, comm, input_path) -> bufr.DataContainer:
-        container = bufr.Parser(input_path, self.map_dict['adpsfc_sfcshp']).parse(comm)
-        adpupa_container = bufr.Parser(input_path, self.map_dict['adpupa']).parse(comm)
+        container = super().make_obs(comm, input_path)
 
-        reference_time = self._get_reference_time(input_path)
-
-        # Add timestamps
-        self._add_timestamp(container, reference_time)
-        self._add_timestamp(adpupa_container, reference_time)
-
-        # Mask ADPUPA for station pressure category
-        data_level_cat = adpupa_container.get('dataLevelCategory')
-        adpupa_container.apply_mask(data_level_cat == 0)
-
-        # Remove uneeded data fields (make all containers the same)
-        adpupa_container.remove('dataLevelCategory')
-
-        # Merge containers
-        container.append(adpupa_container)
+        # Apply Masks
 
         # Filter according to thw obs type
         obs_type = container.get('observationType')
         container.apply_mask(np.isin(obs_type, OBS_TYPES))
 
+        # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
+
+        self._apply_quality_flag(container, 'airTemperature', 'airTemperatureQuality')
+        self._apply_quality_flag(container, 'specificHumidity', 'specificHumidityQuality')
+        self._apply_quality_flag(container, 'northwardWind', 'windQuality')
+        self._apply_quality_flag(container, 'eastwardWind',  'windQuality')
+        self._apply_quality_flag(container, 'airPressure', 'airPressureQuality')
+        self._apply_quality_flag(container, 'height', 'heightQuality')
+        self._apply_quality_flag(container, 'seaTemperature', 'seaTemperatureQuality')
+
+        # Add timestamps
+        reference_time = self._get_reference_time(input_path)
+        self._add_timestamp(container, reference_time)
+
+        # Convert stationIdentification into integer field
+        stationIdentification = container.get('stationIdentification')
+        encoder = LabelEncoder()
+        stationIdentification = encoder.fit_transform(stationIdentification)
+        container.replace('stationIdentification', stationIdentification)
+
+        # Add global attribute for stationIdentification labels
+        self.description.add_global('stationIdentificationLabels', list(encoder.classes_))
 
         return container
 
@@ -86,6 +89,10 @@ class PressureObsBuilder(ObsBuilder):
         time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add('timestamp', time, ['*'])
 
+    def _apply_quality_flag(self, container, target_field_name, quality_field_name):
+        data = container.get(target_field_name)
+        data.mask[container.get(quality_field_name) > 3] = True  # True means mask out
+        container.replace(target_field_name, data)
 
-# Add main functions create_obs_file and create_obs_group
+
 add_main_functions(PressureObsBuilder)
