@@ -89,10 +89,10 @@ class Cluster:
 
                 # Check if the status is CREATE_COMPLETE
                 if status == "CREATE_COMPLETE":
-                    print(f"Cluster '{self.name}' creation complete.")
+                    print(f"Cluster '{self.name}' Creation Complete.")
                     break
                 elif status == "CREATE_FAILED":
-                    print(f"Cluster '{self.name}' creation failed.")
+                    print(f"Cluster '{self.name}' Creation Failed.")
                     # Handle failed creation, e.g., print error message, exit script
                     print(output)
                     break
