@@ -31,6 +31,9 @@ EOF
 # (Optional) ensure ownership just in case
 chown -R ubuntu:ubuntu /home/ubuntu/venv
 
+# Restart cfn-hup in case it's already running so the node can signal
+sudo /opt/parallelcluster/pyenv/versions/cookbook_virtualenv/bin/supervisorctl restart cfn-hup || true
+
 #git clone https://github.com/NOAA-EMC/ocelot.git
 #git checkout main
 
