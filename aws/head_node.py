@@ -39,7 +39,7 @@ class HeadNode:
         cmd = ""
         if path is not None:
             cmd += f"cd {path}; "
-        cmd += f"srun --nodes {num_nodes} --cpus-per-task {cpus_per_task} (source ~/venv/bin/activate && python3.10 {script_path})"
+        cmd += f"srun --nodes {num_nodes} --cpus-per-task {cpus_per_task} python3.10 {script_path}"
 
         # Run the command on the head node
         self.run(cmd)
@@ -75,7 +75,7 @@ class HeadNode:
         #
         # '''
 
-        cmd = "/fsx/scripts/init_python.sh"
+        cmd = "/fsx/input/scripts/init_python_env.sh"
 
         # Run the command on the head node
         result = self.run(cmd)
