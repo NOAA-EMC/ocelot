@@ -2,7 +2,7 @@ import argparse
 import os
 import subprocess
 import settings
-from aws.cluster import Cluster
+from cluster import Cluster
 
 def init_ocelot_branch(cluster: Cluster, branch: str = 'main'):
     """

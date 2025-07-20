@@ -1,7 +1,7 @@
 
 setting_items = ["OS",
                  "REGION",
-                 "KEY_NAME"
+                 "KEY_NAME",
                  "SUBNET_ID",
                  "ADMIN_ROLE",
                  "HEAD_NODE_INSTANCE",

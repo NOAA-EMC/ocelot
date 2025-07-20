@@ -62,7 +62,7 @@ class Cluster:
             print(f"Cluster configuration file created at: {self.config_path}")
 
             # Create the cluster using AWS ParallelCluster CLI
-            cmd = f"pcluster create-cluster --cluster-name {self.name}" \
+            cmd = f"pcluster create-cluster --cluster-name {self.name} " \
                   f"--cluster-configuration {self.config_path} --rollback-on-failure false"
 
             run_cmd(cmd)
