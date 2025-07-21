@@ -55,32 +55,8 @@ class HeadNode:
         # Check if the .env directory exists on the cluster head node
 
         logger.info("Cluster %s - Initializing Python environment...", self.name)
-        # cmd = '''
-        # if [ ! -d "venv" ]; then
-        #     echo "Creating Python virtual environment..."
-        #
-        #     python3.10 -m venv venv
-        #
-        #     python3.10 -m pip install --no-input --upgrade pip
-        #
-        #     python3.10 -m pip install --no-input numpy==1.26.4
-        #     python3.10 -m pip install --no-input pandas==2.2.2
-        #     python3.10 -m pip install --no-input torch==2.5.1
-        #     python3.10 -m pip install --no-input torch_scatter -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
-        #     python3.10 -m pip install --no-input torch-geometric==2.6.1
-        #     python3.10 -m pip install --no-input lightning==2.5.1
-        #     python3.10 -m pip install --no-input scikit-learn==1.6.1
-        #     python3.10 -m pip install --no-input matplotlib==3.9.4
-        #     python3.10 -m pip install --no-input psutil==5.9.8
-        #     python3.10 -m pip install --no-input trimesh==4.6.10
-        #     python3.10 -m pip install --no-input zarr==2.18.0
-        # fi
-        #
-        # '''
 
         cmd = "/fsx/input/scripts/init_python_env.sh"
-
-        # Run the command on the head node
         result = self.run(cmd)
 
         logger.info("Cluster %s - Python environment initialized with result %s.", self.name, result)
