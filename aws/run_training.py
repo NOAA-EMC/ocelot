@@ -35,7 +35,7 @@ def main():
     cluster = Cluster(args.cluster_name, args.instance_type, args.num_nodes, args.cpus_per_task)
     init_ocelot_branch(cluster, args.branch)
 
-    cluster.head_node.srun(args.script, num_nodes=args.num_nodes, cpus_per_task=args.cpus_per_task, path="ocelot/gnn_model")
+    cluster.head_node.srun(args.script, num_nodes=args.num_nodes, cpus_per_task=args.cpus_per_task, path="~/ocelot/gnn_model")
 
     if not args.keep_cluster:
         cluster.delete()
