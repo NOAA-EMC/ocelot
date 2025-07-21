@@ -3,10 +3,13 @@ import subprocess
 import tempfile
 import time
 import yaml
+from logging import get_logger
 
 import settings
 from head_node import HeadNode
 from run_cmd import run_cmd
+
+logger = get_logger(__name__)
 
 class Cluster:
     def __init__(self, name: str, instance_type: str, num_compute_nodes: int, cpus_per_task: int):
@@ -32,13 +35,13 @@ class Cluster:
         """
         Deletes the AWS ParallelCluster.
         """
-        print(f"Deleting Cluster '{self.name}'")
+        logger.info("Deleting Cluster '%s'", self.name)
 
         # Run the command to delete the cluster
         cmd = f"pcluster delete-cluster --cluster-name {self.name}"
         run_cmd(cmd)
 
-        print(f"Cluster '{self.name}' deleted successfully.")
+        logger.info("Cluster '%s' deleted successfully.", self.name)
         self.head_node = None
 
     def _create(self) -> None:
@@ -52,14 +55,14 @@ class Cluster:
         )
 
         if result.returncode == 0:
-            print(f"Cluster '{self.name}' already exists.")
+            logger.info("Cluster '%s' already exists.", self.name)
 
         else:
-            print(f"Creating Cluster '{self.name}'")
+            logger.info("Creating Cluster '%s'", self.name)
 
             # Prepare the configuration file
             self.config_path = self._prepare_config(self.instance_type, self.num_compute_nodes)
-            print(f"Cluster configuration file created at: {self.config_path}")
+            logger.info("Cluster configuration file created at: %s", self.config_path)
 
             # Create the cluster using AWS ParallelCluster CLI
             cmd = f"pcluster create-cluster --cluster-name {self.name} " \
@@ -89,15 +92,15 @@ class Cluster:
 
                 # Check if the status is CREATE_COMPLETE
                 if status == "CREATE_COMPLETE":
-                    print(f"Cluster '{self.name}' Creation Complete.")
+                    logger.info("Cluster '%s' Creation Complete.", self.name)
                     break
                 elif status == "CREATE_FAILED":
-                    print(f"Cluster '{self.name}' Creation Failed.")
+                    logger.error("Cluster '%s' Creation Failed.", self.name)
                     # Handle failed creation, e.g., print error message, exit script
-                    print(output)
+                    logger.error(output)
                     break
                 else:
-                    print(f"Cluster '{self.name}' status is {status}. Waiting...")
+                    logger.info("Cluster '%s' status is %s. Waiting...", self.name, status)
 
             # Wait before checking again
             time.sleep(30)  # Poll every 30 seconds
