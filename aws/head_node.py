@@ -30,7 +30,11 @@ class HeadNode:
             f"pcluster ssh --cluster-name {self.name} -i {self.key_file} -- \"{cmd};\";"
         )
 
-        return run_cmd(cmd)
+        logger.info("Cluster %s - Running command: %s", self.name, cmd)
+        result = run_cmd(cmd)
+        logger.info("Cluster %s - Command executed with result: %s", self.name, result)
+
+        return result
 
     def srun(self, script_path: str, num_nodes: int = 1, cpus_per_task: int = 4, path: str = None):
         """

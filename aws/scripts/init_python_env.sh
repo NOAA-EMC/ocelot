@@ -16,5 +16,3 @@ python3.10 -m pip install --no-input psutil==5.9.8
 python3.10 -m pip install --no-input trimesh==4.6.10
 python3.10 -m pip install --no-input zarr==2.18.0
 
-
-
