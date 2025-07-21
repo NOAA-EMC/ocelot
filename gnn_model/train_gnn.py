@@ -15,6 +15,7 @@ from weight_utils import load_weights_from_yaml
 import os
 # Import both callbacks from the new file
 from callbacks import ResampleDataCallback, SequentialDataCallback
+import settings
 
 
 @timing_resource_decorator
@@ -45,10 +46,10 @@ def main():
     region = "global"
     if region == "conus":
         # CONUS data path:
-        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
+        data_path = settings.DATA_DIR_CONUS
     else:
         # Three Months Global data path:
-        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/bigzarr"
+        data_path = settings.DATA_DIR_GLOBAL
 
     # These dates define the INITIAL window for the first setup.
     start_date = "2024-04-01"
@@ -125,14 +126,14 @@ def main():
     setup_end_time = time.time()
     print(f"Initial setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
 
-    logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
+    logger = CSVLogger(save_dir=settings.LOG_DIR, name=f"ocelot_gnn_{args.sampling_mode}")
 
     # Setup standard callbacks
     callbacks = []
     if has_val_data:
         callbacks.append(EarlyStopping(monitor="val_loss", patience=5, mode="min", verbose=True))
         callbacks.append(ModelCheckpoint(
-            dirpath="checkpoints",
+            dirpath=settings.CHECKPOINT_DIR,
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
             save_top_k=1,
             monitor="val_loss",
