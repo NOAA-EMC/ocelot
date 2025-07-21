@@ -21,6 +21,19 @@ class RadiosondeObsBuilder(ObsBuilder):
     def make_obs(self, comm, input_path):
         container = super().make_obs(comm, input_path)
 
+        # Apply Masks
+
+        # Mask out bad time values
+        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
+        container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
+
+        self._apply_quality_flag(container, 'airTemperature', 'airTemperatureQuality')
+        self._apply_quality_flag(container, 'specificHumidity', 'specificHumidityQuality')
+        self._apply_quality_flag(container, 'northwardWind', 'windQuality')
+        self._apply_quality_flag(container, 'eastwardWind',  'windQuality')
+        self._apply_quality_flag(container, 'airPressure', 'airPressureQuality')
+        self._apply_quality_flag(container, 'height', 'heightQuality')
+
         # Add timestamps
         reference_time = self._get_reference_time(input_path)
         self._add_timestamp(container, reference_time)
@@ -28,17 +41,12 @@ class RadiosondeObsBuilder(ObsBuilder):
         # Replace virtual temperature with computed air temperature values
         temp = container.get('airTemperature')
         temp_event_code = container.get('temperatureEventCode')
-        specific_humidity = container.get('specificHumidity')
+        specific_humidity = container.get('specificHumidity') * 1e-6  # convert to kg/kg
 
-        virt_temp_mask = temp_event_code == 8
-
+        virt_temp_mask = (temp_event_code == 8) & ~temp.mask & ~specific_humidity.mask
         mixing_ratio = specific_humidity / (1 - specific_humidity)
         temp[virt_temp_mask] = temp[virt_temp_mask] / (1 + 0.61 * mixing_ratio[virt_temp_mask])
-
         container.replace('airTemperature', temp)
-
-        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
-        container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         # Convert stationIdentification into integer field
         stationIdentification = container.get('stationIdentification')
@@ -81,6 +89,11 @@ class RadiosondeObsBuilder(ObsBuilder):
         cycle_times = np.array([3600 * t for t in container.get('obsTimeMinusCycleTime')]).astype('timedelta64[s]')
         time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add('timestamp', time, ['*'])
+
+    def _apply_quality_flag(self, container, target_field_name, quality_field_name):
+        data = container.get(target_field_name)
+        data.mask[container.get(quality_field_name) > 3] = True  # True means mask out
+        container.replace(target_field_name, data)
 
 
 add_main_functions(RadiosondeObsBuilder)

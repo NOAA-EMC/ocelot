@@ -28,6 +28,9 @@ bufr:
     sensorZenithAngle:
       query: "*/SAZA"
 
+    sensorAzimuthAngle:
+      query: "*/BEARAZ"
+
     sensorChannelNumber:
       query: "*/ATMSCH/CHNM"
 
@@ -71,6 +74,7 @@ encoder:
       source: variables/longitude
       longName: "Longitude"
       units: "degree_east"
+      range: [-180, 180]
 
     - name: "satelliteId"
       source: variables/satelliteId
@@ -87,13 +91,17 @@ encoder:
       source: variables/solarAzimuthAngle
       longName: "Solar Azimuth Angle"
       units: "degree"
-      range: [0, 360]
 
     - name: "sensorZenithAngle"
       source: variables/sensorZenithAngle
       longName: "Sensor Zenith Angle"
       units: "degree"
       range: [0, 90]
+
+    - name: "sensorAzimuthAngle"
+      source: variables/sensorAzimuthAngle
+      longName: "Sensor Azimuth Angle"
+      units: "degree"
 
     - name: "bt"
       source: variables/brightnessTemperature

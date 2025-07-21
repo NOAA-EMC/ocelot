@@ -56,6 +56,9 @@ bufr:
     dewPointTemperatureQuality:
       query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
+    windQuality:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
+
     airPressureQuality:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
 
@@ -133,23 +136,32 @@ encoder:
       units: "meters"
       range: [0, 60000]
 
-    # Quality Markers
-    - name: "airTemperatureQuality"
-      source: airTemperatureQuality
-      longName: "Air Temperature Quality Marker"
-
-    - name: "specificHumidityQuality"
-      source: specificHumidityQuality
-      longName: "Specific Humidity Quality Marker"
-
-    - name: "dewPointTemperatureQuality"
-      source: dewPointTemperatureQuality
-      longName: "Dew Point Temperature Quality Marker"
-
-    - name: "airPressureQuality"
-      source: airPressureQuality
-      longName: "Air Pressure Quality Marker"
-
-    - name: "heightQuality"
-      source: heightQuality
-      longName: "Height Quality Marker"
+#    # Quality Markers
+#    - name: "airTemperatureQuality"
+#      source: airTemperatureQuality
+#      longName: "Air Temperature Quality Marker"
+#
+#    - name: "specificHumidityQuality"
+#      source: specificHumidityQuality
+#      longName: "Specific Humidity Quality Marker"
+#      range: [0, 14]
+#
+#    - name: "dewPointTemperatureQuality"
+#      source: dewPointTemperatureQuality
+#      longName: "Dew Point Temperature Quality Marker"
+#
+#    - name: "eastwardWindQuality"
+#      source: windSpeedQuality
+#      longName: "Eastward Wind Quality Marker"
+#
+#    - name: "northwardWindQuality"
+#      source: windSpeedQuality
+#      longName: "Northward Wind Quality Marker"
+#
+#    - name: "airPressureQuality"
+#      source: airPressureQuality
+#      longName: "Air Pressure Quality Marker"
+#
+#    - name: "heightQuality"
+#      source: heightQuality
+#      longName: "Height Quality Marker"
