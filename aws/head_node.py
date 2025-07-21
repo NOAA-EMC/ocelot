@@ -27,7 +27,7 @@ class HeadNode:
         Runs a command on the head node of the AWS ParallelCluster.
         """
         cmd = (
-            f"pcluster ssh --cluster-name {self.name} -i {self.key_file} --  bash -lc \"{cmd};\";"
+            f"pcluster ssh --cluster-name {self.name} -i {self.key_file} -- bash -lc \"\\\"{cmd};\\\"\";"
         )
 
         logger.info("Cluster %s - Running command: %s", self.name, cmd)
