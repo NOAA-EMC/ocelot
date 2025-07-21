@@ -36,7 +36,7 @@ class HeadNode:
 
         return result
 
-    def srun(self, script_path: str, num_nodes: int = 1, cpus_per_task: int = 4, path: str = None):
+    def srun(self, script_path: str, num_nodes: int = 1, cpus_per_task: int = 4, working_dir: str = None):
         """
         Runs a Python script on the head node of the AWS ParallelCluster.
 
@@ -44,8 +44,8 @@ class HeadNode:
             script_path (str): Path to the Python script to run.
         """
         cmd = ""
-        if path is not None:
-            cmd += f"cd {path}; "
+        if working_dir is not None:
+            cmd += f"cd {working_dir}; "
         cmd += f"srun --nodes {num_nodes} --cpus-per-task {cpus_per_task} python3.10 {script_path}"
 
         # Run the command on the head node
