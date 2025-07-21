@@ -15,12 +15,12 @@ class AtmsObsBuilder(ObsBuilder):
     def make_obs(self, comm, input_path):
         container = super().make_obs(comm, input_path)
 
-        quality_flags = container.get('qualityFlags')
-        brightness_temp = container.get('brightnessTemperature')
-
         # Mask out values with non-zero quality flags
-        brightness_temp[quality_flags != 0].mask = True
-        container.replace('brightnessTemperature', brightness_temp.filled())
+        quality_flags = container.get('qualityFlags')
+
+        brightnessTemperature = container.get('brightnessTemperature')
+        brightnessTemperature[quality_flags != 0].mask = True  # True means mask out.
+        container.replace('brightnessTemperature', brightnessTemperature)
 
         return container
 

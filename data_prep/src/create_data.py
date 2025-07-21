@@ -11,7 +11,11 @@ import data_reader  # noqa: E402
 import settings  # noqa: E402
 
 
-def create_data_for_day(comm, date: datetime, type: str, suffix: str = None, append: bool = True):
+def create_data_for_day(comm,
+                        date: datetime,
+                        data_type: str,
+                        output_path: str,
+                        append: bool = True) -> None:
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
@@ -19,7 +23,7 @@ def create_data_for_day(comm, date: datetime, type: str, suffix: str = None, app
     parameters.start_time = start_datetime
     parameters.stop_time = end_datetime
 
-    description, container = data_reader.run(comm, type, parameters)
+    description, container = data_reader.run(comm, data_type, parameters)
 
     if container is None:
         raise ValueError("No data found")
@@ -39,14 +43,9 @@ def create_data_for_day(comm, date: datetime, type: str, suffix: str = None, app
         if not np.any(mask):
             return  # No data in the region
 
-        container = container.apply_mask(mask)
+        container.apply_mask(mask)
 
     if comm.rank() == 0:
-        if suffix:
-            output_path = os.path.join(settings.OUTPUT_PATH, f'{type}_{suffix}.zarr')
-        else:
-            output_path = os.path.join(settings.OUTPUT_PATH, f'{type}.zarr')
-
         Encoder(description).encode(container, output_path, append=append)
         print(f"Output written to {output_path}")
         sys.stdout.flush()
@@ -54,17 +53,49 @@ def create_data_for_day(comm, date: datetime, type: str, suffix: str = None, app
 
 def create_data(start_date: datetime,
                 end_date: datetime,
-                type: str,
+                data_type: str,
                 suffix: str = None,
-                append: bool = True):
-    date = start_date
-    day = timedelta(days=1)
+                append: bool = True) -> None:
+    """Create zarr files from BUFR data in week long chunks."""
 
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
+    # Determine all week boundaries (Monday - Sunday) that intersect the range
+    week_start = start_date - timedelta(days=start_date.weekday())
+    week_ranges = []
+    while week_start <= end_date:
+        week_end = week_start + timedelta(days=6)
+        week_ranges.append((week_start, week_end))
+        week_start = week_end + timedelta(days=1)
+
+    # Generate output paths for each week
+    output_paths = {}
+    for wstart, wend in week_ranges:
+        if suffix:
+            file_name = f"{data_type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+        else:
+            file_name = f"{data_type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+        output_paths[(wstart, wend)] = os.path.join(settings.OUTPUT_PATH, file_name)
+
+    if comm.rank() == 0:
+        # Ensure all output directories exist before processing
+        for path in output_paths.values():
+            if not append and os.path.exists(path):
+                import shutil
+                shutil.rmtree(path)
+            os.makedirs(path, exist_ok=True)
+    comm.barrier()
+
+    # Process each day and append to the appropriate weekly file
+    day = timedelta(days=1)
+    date = start_date
     while date <= end_date:
-        create_data_for_day(comm, date, type, suffix, append)
+        week_start = date - timedelta(days=date.weekday())
+        week_end = week_start + timedelta(days=6)
+        out_path = output_paths[(week_start, week_end)]
+
+        create_data_for_day(comm, date, data_type, out_path)
         date += day
 
 
@@ -73,8 +104,8 @@ if __name__ == "__main__":
     parser.add_argument('start_date')
     parser.add_argument('end_date')
     parser.add_argument('type')
-    parser.add_argument('-s', '--suffix', required=False)
-    parser.add_argument('-a', '--append', required=False, default=True)
+    parser.add_argument('-s', '--suffix', required=False, help='Suffix for the output file(s)')
+    parser.add_argument('-a', '--append', action='store_true', help='Append to existing data')
 
     args = parser.parse_args()
 
