@@ -23,13 +23,13 @@ def init_ocelot_branch(cluster: Cluster, branch: str = 'main'):
 
 def main():
     parser = argparse.ArgumentParser(description='Run ocelot training on AWS ParallelCluster')
-    parser.add_argument('--cluster-name', default='ocelot-training', help='Name of the cluster')
-    parser.add_argument('--branch', default='main', help='Ocelot branch to use')
-    parser.add_argument('--working-dir', default='~/ocelot/gnn_model', help='Working directory.')
-    parser.add_argument('--instance-type', default='g5.2xlarge', help='EC2 instance type for compute nodes')
-    parser.add_argument('--script', default='train_gnn.py', help='Python script to run on the cluster')
+    parser.add_argument('--cluster-name', help='Name of the cluster')
+    parser.add_argument('--instance-type', help='EC2 instance type for compute nodes')
     parser.add_argument('--num-nodes', type=int, help='Number of nodes in the cluster.')
     parser.add_argument('--cpus-per-task', type=int, default=4, help='Number of CPUs per node')
+    parser.add_argument('--branch', default='main', help='Ocelot branch to use')
+    parser.add_argument('--working-dir', default='~/ocelot/gnn_model', help='Working directory.')
+    parser.add_argument('--script', default='train_gnn.py', help='Python script to run on the cluster')
     parser.add_argument('--keep-cluster', action='store_true', help='Do not delete the cluster after completion')
     args = parser.parse_args()
 
