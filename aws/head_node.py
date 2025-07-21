@@ -1,4 +1,7 @@
+from logging import get_logger
 from run_cmd import run_cmd
+
+logger = get_logger(__name__)
 
 class HeadNode:
     """
@@ -51,7 +54,7 @@ class HeadNode:
 
         # Check if the .env directory exists on the cluster head node
 
-        print (f"Cluster {self.name} - Initializing Python environment...")
+        logger.info("Cluster %s - Initializing Python environment...", self.name)
         # cmd = '''
         # if [ ! -d "venv" ]; then
         #     echo "Creating Python virtual environment..."
@@ -80,5 +83,5 @@ class HeadNode:
         # Run the command on the head node
         result = self.run(cmd)
 
-        print(f"Cluster {self.name} - Python environment initialized with result {result}.")
+        logger.info("Cluster %s - Python environment initialized with result %s.", self.name, result)
 
