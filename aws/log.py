@@ -1,4 +1,4 @@
-import logging as _logging
+import log as _logging
 
 _logging.basicConfig(
     level=_logging.INFO,

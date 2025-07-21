@@ -1,4 +1,4 @@
-from logging import get_logger
+from log import get_logger
 from run_cmd import run_cmd
 
 logger = get_logger(__name__)

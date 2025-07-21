@@ -3,11 +3,12 @@ import subprocess
 import tempfile
 import time
 import yaml
-from logging import get_logger
 
 import settings
 from head_node import HeadNode
 from run_cmd import run_cmd
+from log import get_logger
+
 
 logger = get_logger(__name__)
 
