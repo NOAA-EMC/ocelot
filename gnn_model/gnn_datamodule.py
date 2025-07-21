@@ -155,6 +155,7 @@ class GNNDataModule(pl.LightningDataModule):
         super().__init__()
         # Store parameters
         self.data_path = data_path
+        # These now represent the CURRENT window, which will be updated by the callback
         self.start_date = pd.to_datetime(start_date)
         self.end_date = pd.to_datetime(end_date)
         self.observation_config = observation_config
@@ -185,7 +186,6 @@ class GNNDataModule(pl.LightningDataModule):
 
         self._printed_mesh_stats = False
         self._printed_processor_edges = False
-        self.data_processed = False
 
     @staticmethod
     def get_num_workers():
@@ -193,13 +193,15 @@ class GNNDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         """
+        Prepares a data window for training or validation.
+        This method is now designed to be called multiple times by the ResampleDataCallback.
         The setup process:
         1. Opens Zarr stores for each observation type
         2. Organizes data into time bins
         3. Splits data into train/val/test sets
         """
+        # --- One-time setup: Open Zarr stores if they haven't been opened yet ---
         if self.z is None:
-            # Open Zarr stores
             self.z = {}
             for obs_type in self.obs_types:
                 self.z[obs_type] = {}
@@ -207,41 +209,45 @@ class GNNDataModule(pl.LightningDataModule):
                     data_path = os.path.join(self.data_path, key) + ".zarr"
                     print(f'path: {data_path}')
                     self.z[obs_type][key] = zarr.open(LRUStoreCache(zarr.DirectoryStore(data_path), max_size=2_000_000_000), mode="r")
-                    rank_zero_info(f"Opened Zarr files for {data_path}.")
+            rank_zero_info("Zarr stores opened successfully.")
 
-        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-        if not self.data_processed:
-            # Organize time bins with type-specific data
-            self.data_summary = organize_bins_times(
-                self.z,
-                self.start_date,
-                self.end_date,
-                self.observation_config,
-            )
+        # --- Per-epoch setup: Process the current data window ---
+        # This part will be re-run every time the callback calls setup()
+        rank_zero_info(f"Preparing data for window: {self.start_date.date()} to {self.end_date.date()}")
 
-            # Split bins into train/val/test sets
-            all_bin_names = sorted(list(self.data_summary.keys()))
+        self.data_summary = organize_bins_times(
+            self.z,
+            self.start_date,
+            self.end_date,
+            self.observation_config,
+        )
 
-            if stage == "fit" or stage is None:
-                train_size = 1 if len(all_bin_names) == 1 else int(0.8 * len(all_bin_names))
-                self.train_bin_names = all_bin_names[:train_size]
-                self.val_bin_names = all_bin_names[train_size:]
-                print(f"Train bins: {len(self.train_bin_names)}, Val bins: {len(self.val_bin_names)}")
-                self._log_dataset_split()
+        # Use a natural sort key to sort bin names numerically ---
+        all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
 
-            if stage == "test":
-                self.test_bin_names = all_bin_names
+        if stage == "fit" or stage is None:
+            # For validation, we use a fixed, small slice of the available data
+            # to keep validation consistent and fast.
+            # Here we take the last 3 bins of the current window for validation.
+            val_size = min(3, len(all_bin_names) - 1)
+            self.train_bin_names = all_bin_names[:-val_size] if val_size > 0 else all_bin_names
+            self.val_bin_names = all_bin_names[-val_size:] if val_size > 0 else []
+            self._log_dataset_split()
 
-            if stage == "predict":
-                self.predict_bin_names = all_bin_names
+        if stage == "test":
+            self.test_bin_names = all_bin_names
 
-            self.data_processed = True
+        if stage == "predict":
+            self.predict_bin_names = all_bin_names
 
     @rank_zero_only
     def _log_dataset_split(self):
         print(f"Split data into {len(self.train_bin_names)} training bins and {len(self.val_bin_names)} validation bins")
+        print(f"Training bins: {self.train_bin_names}")
+        print(f"Validation bins: {self.val_bin_names}")
 
     def _create_graph_structure(self, bin_data):
         """
@@ -352,40 +358,16 @@ class GNNDataModule(pl.LightningDataModule):
             "target_metadata": tensor_conversion(bin_data["target_metadata"], dtype=torch.float32),
         }
 
-    def _create_data_object(self, data_dict):
-        """
-        Converts a graph dictionary into a PyG `Data` object with attached scalers.
-
-        Adds additional fields needed for later unnormalization (e.g., for evaluation).
-        """
-        data_args = dict(
-            x=data_dict["x"],
-            edge_index_encoder=data_dict["edge_index_encoder"],
-            edge_attr_encoder=data_dict["edge_attr_encoder"],
-            edge_index_processor=data_dict["edge_index_processor"],
-            edge_index_decoder=data_dict["edge_index_decoder"],
-            edge_attr_decoder=data_dict["edge_attr_decoder"],
-            y=data_dict["y"],
-            target_scaler_min=data_dict["target_scaler_min"],
-            target_scaler_max=data_dict["target_scaler_max"],
-            target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
-            target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
-        )
-        # Optional: add instrument_ids only if present
-        if "instrument_ids" in data_dict:
-            data_args["instrument_ids"] = tensor_conversion(data_dict["instrument_ids"], dtype=torch.long)
-
-        return Data(**data_args)
-
     def train_dataloader(self):
         """
         Returns the training DataLoader with a DistributedSampler.
-
         - One bin per batch (batch_size=1).
         - Enables parallel processing across GPUs using DDP.
         - Uses persistent workers for better performance.
         """
         dataset = BinDataset(self.train_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
+        # NOTE: shuffle=True is generally recommended for better training.
+        # To enforce strict sequential order within an epoch, set shuffle=False.
         sampler = DistributedSampler(dataset, shuffle=True)
         return DataLoader(
             dataset,

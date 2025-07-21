@@ -13,6 +13,8 @@ from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
 import os
+# Import both callbacks from the new file
+from callbacks import ResampleDataCallback, SequentialDataCallback
 
 
 @timing_resource_decorator
@@ -20,6 +22,14 @@ def main():
     # Enable fault handler for debugging
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    # Add argument to select sampling mode
+    parser.add_argument(
+        "--sampling_mode",
+        type=str,
+        default="random",
+        choices=["random", "sequential"],
+        help="The data sampling strategy ('random' or 'sequential')."
+    )
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -37,20 +47,19 @@ def main():
         # CONUS data path:
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
-        # One week Global data path:
-        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/bigzarr/"
-        # data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3"
+        # Three Months Global data path:
+        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/bigzarr"
 
+    # These dates define the INITIAL window for the first setup.
     start_date = "2024-04-01"
-    end_date = "2024-05-15"
+    end_date = "2024-04-09"
 
-    # Observation configuration, will move to a config file later.
     observation_config = {
         "satellite": {
             "atms": {
                 "sat_ids": [224],
                 "features": [f"bt_channel_{i}" for i in range(1, 23)],
-                "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"],
+                "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"]
             },
             # "iasi": ,
             # "goes":,
@@ -76,12 +85,12 @@ def main():
     lr = 1e-3
 
     # === TRAINING CONFIGURATION ===
-    max_epochs = 10
+    max_epochs = 50
     batch_size = 1
     max_rollout_steps = 1  # Maximum rollout length; set 1 to have no rollout
     rollout_schedule = "fixed"  # 'graphcast', 'step', 'linear', or 'fixed'
 
-    # # === INSTANTIATE MODEL & DATA MODULE ===
+    # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -94,17 +103,6 @@ def main():
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
     )
-    # model = GNNLightning.load_from_checkpoint(
-    #     checkpoint_path,
-    #     input_dim=input_dim,
-    #     hidden_dim=hidden_dim,
-    #     output_dim=output_dim,
-    #     num_layers=num_layers,
-    #     lr=lr,
-    #     instrument_weights=instrument_weights,
-    #     channel_weights=channel_weights,
-    #     verbose=args.verbose,
-    # )
 
     data_module = GNNDataModule(
         data_path=data_path,
@@ -118,30 +116,29 @@ def main():
 
     start_time = time.time()
 
-    # Safety check: skip validation-related callbacks if no val_data exists
+    # Initial setup
     data_module.setup("fit")
     val_loader = data_module.val_dataloader()
     has_val_data = val_loader is not None and len(val_loader.dataset) > 0
-    print(f"Validation loader has {len(val_loader.dataset)} bins")
+    print(f"Initial validation loader has {len(val_loader.dataset)} bins")
 
     setup_end_time = time.time()
-    print(f"Setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
+    print(f"Initial setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
 
-    logger = CSVLogger(save_dir="logs", name="ocelot_gnn")
-    # Setup callbacks
+    logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
+
+    # Setup standard callbacks
     callbacks = []
     if has_val_data:
-        callbacks = [
-            EarlyStopping(monitor="val_loss", patience=3, mode="min", verbose=True),
-            ModelCheckpoint(
-                dirpath="checkpoints",
-                filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
-                save_top_k=1,
-                monitor="val_loss",
-                mode="min",
-                save_last=True,
-            ),
-        ]
+        callbacks.append(EarlyStopping(monitor="val_loss", patience=5, mode="min", verbose=True))
+        callbacks.append(ModelCheckpoint(
+            dirpath="checkpoints",
+            filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
+            save_top_k=1,
+            monitor="val_loss",
+            mode="min",
+            save_last=True,
+        ))
 
     # === TRAINER CONFIGURATION ===
     trainer_kwargs = {
@@ -150,14 +147,35 @@ def main():
         "devices": 2,
         "num_nodes": 4,
         "strategy": "ddp",
-        "precision": "16-mixed",  # Mixed precision for memory efficiency
+        "precision": "16-mixed",
         "log_every_n_steps": 1,
-        "callbacks": callbacks,
         "logger": logger,
-        "num_sanity_val_steps": 0,  # Skip sanity check
+        "num_sanity_val_steps": 0,
         "gradient_clip_val": 0.5,
         "enable_progress_bar": False,
     }
+
+    # Conditionally add the correct callback and trainer arguments
+    if args.sampling_mode == 'random':
+        print("Using RANDOM sampling mode.")
+        callbacks.append(ResampleDataCallback(
+            full_start_date="2024-04-01",
+            full_end_date="2024-07-01",
+            window_days=7
+        ))
+        # Define an epoch as a fixed number of steps for random sampling
+        trainer_kwargs['limit_train_batches'] = 5000
+
+    elif args.sampling_mode == 'sequential':
+        print("Using SEQUENTIAL sampling mode.")
+        callbacks.append(SequentialDataCallback(
+            full_start_date="2024-04-01",
+            full_end_date="2024-07-01",
+            window_days=7
+        ))
+        # For sequential, an epoch is one full window, so no limit is needed.
+
+    trainer_kwargs['callbacks'] = callbacks
 
     if has_val_data:
         trainer_kwargs["check_val_every_n_epoch"] = 1
@@ -173,19 +191,19 @@ def main():
         torch.cuda.synchronize()
 
     trainer.fit(model, data_module)
-    # trainer.fit(model, data_module, ckpt_path=checkpoint_path)
+
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")
     print(f"Total time (setup + training): {(end_time - start_time) / 60:.2f} minutes")
 
     # === LOAD BEST MODEL AFTER TRAINING ===
-    if has_val_data:
+    if has_val_data and trainer.checkpoint_callback:
         best_path = trainer.checkpoint_callback.best_model_path
         print(f"[INFO] Best model path: {best_path}")
         best_model = GNNLightning.load_from_checkpoint(best_path)
 
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
