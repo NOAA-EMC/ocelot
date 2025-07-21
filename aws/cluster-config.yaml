@@ -35,8 +35,7 @@ Scheduling:
       CustomActions:
         OnNodeStart:
           Script: <ON_NODE_START_SCRIPT>
-        OnNodeConfigured:
-          Script: <ON_NODE_CONFIGURED_SCRIPT>
+
 
 SharedStorage:
   - Name: fsx
