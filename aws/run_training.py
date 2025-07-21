@@ -21,6 +21,16 @@ def init_ocelot_branch(cluster: Cluster, branch: str = 'main'):
 
     cluster.head_node.run(remote_cmd)
 
+def init_local_settings(cluster: Cluster):
+    remote_cmd = f'''
+    if [ ! -f ocelot/gnn_model/local_settings.py ]; then
+        echo "LOG_DIR = '/fsx/logs'" > ocelot/gnn_model/local_settings.py
+        echo "CHECKPOINT_DIR = '/fsx/checkpoint'" >> ocelot/gnn_model/local_settings.py
+        echo "DATA_DIR_CONUS = '/fsx/input/data_v2/'" >> ocelot/gnn_model/local_settings.py
+        echo "DATA_DIR_GLOBAL = '/fsx/input/data_v3/'"  >> ocelot/gnn_model/local_settings.py
+    '''
+    cluster.head_node.run(remote_cmd)
+
 def main():
     parser = argparse.ArgumentParser(description='Run ocelot training on AWS ParallelCluster')
     parser.add_argument('--cluster-name', help='Name of the cluster')
@@ -35,6 +45,7 @@ def main():
 
     cluster = Cluster(args.cluster_name, args.instance_type, args.num_nodes, args.cpus_per_task)
     init_ocelot_branch(cluster, args.branch)
+    init_local_settings(cluster)
 
     cluster.head_node.srun(args.script,
                            num_nodes=args.num_nodes,
