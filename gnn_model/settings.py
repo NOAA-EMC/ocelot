@@ -16,4 +16,5 @@ except ImportError:
 # Validate the settings file
 missing_settings = [item for item in setting_items if item not in locals()]
 if missing_settings:
-    raise RuntimeError(f"Missing settings in local_settings.py: {'\n '.join(missing_settings)}")
+    missing_settings_str = "\n".join(missing_settings)
+    raise RuntimeError(f"Missing settings in local_settings.py:\n{missing_settings_str}")

@@ -1,5 +1,6 @@
 from log import get_logger
 from run_cmd import run_cmd
+import settings
 
 logger = get_logger(__name__)
 
