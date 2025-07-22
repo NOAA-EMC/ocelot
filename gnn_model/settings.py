@@ -14,7 +14,11 @@ except ImportError:
     DATA_DIR_GLOBAL = '/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/bigzarr'
 
 # Validate the settings file
-missing_settings = [item for item in setting_items if item not in locals()]
+missing_settings = []
+for item in setting_items:
+    if item not in locals():
+        missing_settings.append(item)
+
 if missing_settings:
     missing_settings_str = "\n".join(missing_settings)
     raise RuntimeError(f"Missing settings in local_settings.py:\n{missing_settings_str}")
