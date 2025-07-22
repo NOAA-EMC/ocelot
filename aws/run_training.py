@@ -24,12 +24,10 @@ def init_ocelot_branch(cluster: Cluster, branch: str = 'main'):
 def init_local_settings(cluster: Cluster):
     remote_cmd = f'''
     if [ ! -f ocelot/gnn_model/local_settings.py ]; then
-        echo "LOG_DIR = \'/fsx/logs\'" > ocelot/gnn_model/local_settings.py
-        echo "CHECKPOINT_DIR = \'/fsx/checkpoint\'" >> ocelot/gnn_model/local_settings.py
-        echo "DATA_DIR_CONUS = \'/fsx/input/data_v2/\'" >> ocelot/gnn_model/local_settings.py
-        echo "DATA_DIR_GLOBAL = \'/fsx/input/data_v3/\'"  >> ocelot/gnn_model/local_settings.py
+        cp /fsx/input/scripts/gnn_model_settings.py ~/ocelot/gnn_model/local_settings.py
     fi
     '''
+
     cluster.head_node.run(remote_cmd)
 
 def main():
