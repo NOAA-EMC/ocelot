@@ -16,9 +16,9 @@ HeadNode:
     SubnetId: <SUBNET_ID>
   Ssh:
     KeyName: <KEY_NAME>
-  LocalStorage:
-    EphemeralVolume:
-      MountDir: /scratch   # default
+#  LocalStorage:
+#    EphemeralVolume:
+#      MountDir: /scratch   # default
 
 Scheduling:
   Scheduler: slurm
@@ -38,9 +38,9 @@ Scheduling:
       CustomActions:
         OnNodeStart:
           Script: <ON_NODE_START_SCRIPT>
-      LocalStorage:
-        EphemeralVolume:
-          MountDir: /scratch
+#      LocalStorage:
+#        EphemeralVolume:
+#          MountDir: /scratch
 
 
 SharedStorage:
