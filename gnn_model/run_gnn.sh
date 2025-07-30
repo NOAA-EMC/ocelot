@@ -1,5 +1,5 @@
-#!/bin/bash
-
+#!/bin/bash -l 
+#SBATCH --exclude=u22g09,u22g08,u22g10
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
 #SBATCH -q gpuwf
@@ -13,6 +13,7 @@
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
+
 
 # Load Conda environment
 # source /home/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
@@ -32,7 +33,7 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_P2P_LEVEL=NVL
 export PYTHONFAULTHANDLER=1
 export TORCH_DISTRIBUTED_DEBUG=OFF # INFO
-export CUDA_LAUNCH_BLOCKING=1
+# export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Running on $(hostname)"
@@ -41,5 +42,8 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training
-srun --cpu_bind=cores python train_gnn.py --verbose
+# srun --cpu_bind=cores python train_gnn.py --verbose
+srun --cpu-bind=map_cpu:0,1,2,3 python train_gnn.py --verbose
+# Launch training, now with the resume flag
+# srun --cpu-bind=map_cpu:0,1,2,3 python train_gnn.py --verbose --resume_from_checkpoint checkpoints/last.ckpt
 # srun --cpu_bind=cores python train_gnn.py --verbose --sampling_mode sequential
