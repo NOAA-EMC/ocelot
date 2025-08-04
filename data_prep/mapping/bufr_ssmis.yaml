@@ -67,6 +67,18 @@ encoder:
       longName: "Longitude"
       units: "degree_east"
 
+    - name: "MetaData/latitude1"
+      source: variables/latitude1
+      longName: "Latitude"
+      units: "degree_north"
+      range: [ -90, 90 ]
+
+    - name: "MetaData/latitude2"
+      source: variables/latitude2
+      longName: "Latitude"
+      units: "degree_north"
+      range: [ -90, 90 ]
+
     - name: "MetaData/satelliteIdentifier"
       source: variables/satelliteId
       longName: "Satellite Identifier"
