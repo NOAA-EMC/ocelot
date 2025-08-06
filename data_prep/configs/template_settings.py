@@ -4,7 +4,7 @@ config_dir = os.path.split(os.path.abspath(__file__))[0]
 
 # Path to the configuration yaml file for the BUFR tank
 # (example: '/install_dir/spoc/tank/conf/hera_test_tank.yaml')
-BUFR_TANK_YAML = os.path.join(config_dir, 'hera.yaml')
+BUFR_TANK_YAML = os.path.join(config_dir, 'ursa.yaml')
 
 # Path to the root directory for the BUFR tank
 # (example: '/data_dir/ops/prod/dcom')
