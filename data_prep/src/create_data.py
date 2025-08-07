@@ -58,46 +58,71 @@ def create_data(start_date: datetime,
                 append: bool = True) -> None:
     """Create zarr files from BUFR data in week long chunks."""
 
+    # bufr.mpi.App(sys.argv)
+    # comm = bufr.mpi.Comm("world")
+
+    # # Determine all week boundaries (Monday - Sunday) that intersect the range
+    # week_start = start_date - timedelta(days=start_date.weekday())
+    # week_ranges = []
+    # while week_start <= end_date:
+    #     week_end = week_start + timedelta(days=6)
+    #     week_ranges.append((week_start, week_end))
+    #     week_start = week_end + timedelta(days=1)
+    #
+    # # Generate output paths for each week
+    # output_paths = {}
+    # for wstart, wend in week_ranges:
+    #     if suffix:
+    #         file_name = f"{data_type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+    #     else:
+    #         file_name = f"{data_type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+    #     output_paths[(wstart, wend)] = os.path.join(settings.OUTPUT_PATH, file_name)
+    #
+    # if comm.rank() == 0:
+    #     # Ensure all output directories exist before processing
+    #     for path in output_paths.values():
+    #         if not append and os.path.exists(path):
+    #             import shutil
+    #             shutil.rmtree(path)
+    #         os.makedirs(path, exist_ok=True)
+    # comm.barrier()
+    #
+    # # Process each day and append to the appropriate weekly file
+    # day = timedelta(days=1)
+    # date = start_date
+    # while date <= end_date:
+    #     week_start = date - timedelta(days=date.weekday())
+    #     week_end = week_start + timedelta(days=6)
+    #     out_path = output_paths[(week_start, week_end)]
+    #
+    #     create_data_for_day(comm, date, data_type, out_path)
+    #     date += day
+
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
-    # Determine all week boundaries (Monday - Sunday) that intersect the range
-    week_start = start_date - timedelta(days=start_date.weekday())
-    week_ranges = []
-    while week_start <= end_date:
-        week_end = week_start + timedelta(days=6)
-        week_ranges.append((week_start, week_end))
-        week_start = week_end + timedelta(days=1)
+    if suffix:
+        file_name = f"{data_type}_{suffix}.zarr"
+    else:
+        file_name = f"{data_type}.zarr"
 
-    # Generate output paths for each week
-    output_paths = {}
-    for wstart, wend in week_ranges:
-        if suffix:
-            file_name = f"{data_type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
-        else:
-            file_name = f"{data_type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
-        output_paths[(wstart, wend)] = os.path.join(settings.OUTPUT_PATH, file_name)
+    output_path = os.path.join(settings.OUTPUT_PATH, file_name)
 
     if comm.rank() == 0:
         # Ensure all output directories exist before processing
-        for path in output_paths.values():
-            if not append and os.path.exists(path):
-                import shutil
-                shutil.rmtree(path)
-            os.makedirs(path, exist_ok=True)
+        if not append and os.path.exists(output_path):
+            import shutil
+            shutil.rmtree(output_path)
+        os.makedirs(output_path, exist_ok=True)
+
     comm.barrier()
 
-    # Process each day and append to the appropriate weekly file
-    day = timedelta(days=1)
     date = start_date
+    day = timedelta(days=1)
+
     while date <= end_date:
-        week_start = date - timedelta(days=date.weekday())
-        week_end = week_start + timedelta(days=6)
-        out_path = output_paths[(week_start, week_end)]
-
-        create_data_for_day(comm, date, data_type, out_path)
+        create_data_for_day(comm, date, data_type, suffix, output_path)
         date += day
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
