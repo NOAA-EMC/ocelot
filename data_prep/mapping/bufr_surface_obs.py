@@ -36,6 +36,7 @@ class PressureObsBuilder(ObsBuilder):
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         self._apply_quality_flag(container, 'airTemperature', 'airTemperatureQuality')
+        self._apply_quality_flag(container, 'virtualTemperature', 'airTemperatureQuality')
         self._apply_quality_flag(container, 'specificHumidity', 'specificHumidityQuality')
         self._apply_quality_flag(container, 'northwardWind', 'windQuality')
         self._apply_quality_flag(container, 'eastwardWind',  'windQuality')
