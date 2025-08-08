@@ -44,6 +44,16 @@ class PressureObsBuilder(ObsBuilder):
         self._apply_quality_flag(container, 'height', 'heightQuality')
         self._apply_quality_flag(container, 'seaTemperature', 'seaTemperatureQuality')
 
+        # Apply temperature event code
+        temperature_event_code = container.get('temperatureEventCode')
+        air_temp = container.get('airTemperature')
+        air_temp.mask = ((temperature_event_code < 1) | (temperature_event_code >= 8))  # True means mask out
+        container.replace('airTemperature', air_temp)
+
+        virt_temp = container.get('virtualTemperature')
+        virt_temp.mask = (temperature_event_code != 8)  # True means mask out
+        container.replace('virtualTemperature', virt_temp)
+
         # Add timestamps
         reference_time = self._get_reference_time(input_path)
         self._add_timestamp(container, reference_time)
