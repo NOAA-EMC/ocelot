@@ -121,7 +121,7 @@ def create_data(start_date: datetime,
     day = timedelta(days=1)
 
     while date <= end_date:
-        create_data_for_day(comm, date, data_type, suffix, output_path)
+        create_data_for_day(comm, date, data_type, output_path)
         date += day
 
 if __name__ == "__main__":
