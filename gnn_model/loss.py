@@ -41,7 +41,7 @@ def level_weighted_mse(predictions, targets, pressure_levels=None):
     print(f"reshaped weights shape: {weights.shape}")
 
     # Compute squared difference and apply weights
-    squared_diff = (predictions - targets)**2
+    squared_diff = (predictions - targets) ** 2
     weighted_squared_diff = squared_diff * weights
 
     print(f"squared error shape: {squared_diff.shape}")

@@ -1,12 +1,14 @@
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from timing_utils import timing_resource_decorator
 
 
 @timing_resource_decorator
-def organize_bins_times(z_dict, start_date, end_date, observation_config, window_size="12h"):
+def organize_bins_times(
+    z_dict, start_date, end_date, observation_config, window_size="12h"
+):
     """
     Bin definition: a bin consists of a pair of input and targets, each covers window_size.
     Organizes satellite observation times into time bins and creates input-target pairs
@@ -28,10 +30,16 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
     Raises:
         ValueError: If window_size format is invalid
     """
+    delta_satellite = 25
+    delta_surface = 20
     # Validate window_size format
     valid_units = ["h", "H"]
     if not any(window_size.endswith(unit) for unit in valid_units):
-        raise ValueError(f"Invalid window_size format: {window_size}\n" f"Must end with one of: {valid_units}\n" f"Examples: '6h' for 6 hours")
+        raise ValueError(
+            f"Invalid window_size format: {window_size}\n"
+            f"Must end with one of: {valid_units}\n"
+            f"Examples: '6h' for 6 hours"
+        )
     data_summary = {}
     for obs_type in observation_config.keys():
         for key in observation_config[obs_type].keys():
@@ -45,7 +53,8 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
                 sat_ids = observation_config[obs_type][key]["sat_ids"]
                 available_sats = z["satelliteId"][:]
                 assert isinstance(sat_ids, list), (
-                    f"Configuration error: satellite IDs must be a list, got {type(sat_ids)} instead.\n" f"Key: {key}, Value: {sat_ids}"
+                    f"Configuration error: satellite IDs must be a list, got {type(sat_ids)} instead.\n"
+                    f"Key: {key}, Value: {sat_ids}"
                 )
 
                 invalid_sats = [sid for sid in sat_ids if sid not in available_sats]
@@ -62,7 +71,13 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
             else:
                 selected_times = np.where(time_cond)[0]
 
-            df = pd.DataFrame({"time": time[selected_times], "zar_time": z["time"][selected_times], "index": selected_times})
+            df = pd.DataFrame(
+                {
+                    "time": time[selected_times],
+                    "zar_time": z["time"][selected_times],
+                    "index": selected_times,
+                }
+            )
             df["time_window"] = df["time"].dt.floor(window_size)
 
             # Sort by time
@@ -72,13 +87,28 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
             print("Filtered observation times:")
             print("  - Start:", df["time"].min())
             print("  - End:", df["time"].max())
-            print("Unique time windows:", unique_time_windows)
-            print(df["time_window"].value_counts().sort_index())  # show how full each bin is
+            print(
+                df["time_window"].value_counts().sort_index()
+            )  # show how full each bin is
 
-            for i in range(len(unique_time_windows) - 1):  # Exclude last bin (no target)
+            for i in range(
+                len(unique_time_windows) - 1
+            ):  # Exclude last bin (no target)
                 bin_name = f"bin{i+1}"
-                input_indices = df[df["time_window"] == unique_time_windows[i]]["index"].values
-                target_indices = df[df["time_window"] == unique_time_windows[i + 1]]["index"].values
+                input_indices = df[df["time_window"] == unique_time_windows[i]][
+                    "index"
+                ].values
+                target_indices = df[df["time_window"] == unique_time_windows[i + 1]][
+                    "index"
+                ].values
+
+                # Apply the fixed-rate subsampling
+                if obs_type == "satellite":
+                    input_indices = input_indices[::delta_satellite]
+                    target_indices = target_indices[::delta_satellite]
+                else:  # For conventional data
+                    input_indices = input_indices[::delta_surface]
+                    target_indices = target_indices[::delta_surface]
 
                 # Initialize nested dictionaries if they don't exist
                 if bin_name not in data_summary:
@@ -129,6 +159,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
         for inst_name in data_summary[bin_name][obs_type].keys():
             print(f"obs: {obs_type}: {inst_name}")
             z = z_dict[obs_type][inst_name]
+
             data_summary_bin = data_summary[bin_name][obs_type][inst_name]
             input_idx = data_summary_bin["input_time_index"]
             target_idx = data_summary_bin["target_time_index"]
@@ -137,103 +168,194 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
                 print(f"Skipping bin {bin_name} because input or target is empty.")
                 continue
 
+            if inst_name == 'surface_obs':
+                print(f'original input surface_obs, {len(input_idx)}')
+                print(f'original target surface_obs, {len(target_idx)}')
+                input_surface_t = z['virtualTemperature'][input_idx]
+                target_surface_t = z['virtualTemperature'][target_idx]
+                input_surface_t_idx = input_surface_t[:] < 100
+                target_surface_t_idx = target_surface_t[:] < 100
+                input_idx = input_idx[input_surface_t_idx]
+                target_idx = target_idx[target_surface_t_idx]
+                print(f'final input surface_obs, {len(input_idx)}')
+                print(f'final target surface_obs, {len(input_idx)}')
+
             # === Extract only necessary points for this bin ===
             lat_rad_input = np.radians(z["latitude"][input_idx])[:, None]
             lon_rad_input = np.radians(z["longitude"][input_idx])[:, None]
-            lat_rad_target = np.radians(z["latitude"][target_idx])[:, None]
-            lon_rad_target = np.radians(z["longitude"][target_idx])[:, None]
-
-            # Compute sine and cosine of latitude and longitude
-            sin_lat = np.sin(lat_rad_input)
-            cos_lat = np.cos(lat_rad_input)
-            sin_lon = np.sin(lon_rad_input)
-            cos_lon = np.cos(lon_rad_input)
+            input_sin_lat = np.sin(lat_rad_input)
+            input_cos_lat = np.cos(lat_rad_input)
+            input_sin_lon = np.sin(lon_rad_input)
+            input_cos_lon = np.cos(lon_rad_input)
 
             # Compute time of the year
             input_times = z["time"][input_idx][:]
             input_timestamps = pd.to_datetime(input_times, unit="s")
             input_dayofyear = np.array(
                 [
-                    (timestamp.timetuple().tm_yday - 1 + (timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second) / 86400) / 365.24219
+                    (
+                        timestamp.timetuple().tm_yday
+                        - 1
+                        + (
+                            timestamp.hour * 3600
+                            + timestamp.minute * 60
+                            + timestamp.second
+                        )
+                        / 86400
+                    )
+                    / 365.24219
                     for timestamp in input_timestamps
                 ]
             )[:, None]
 
-            if obs_type == "satellite":
-                metadata_keys = observation_config[obs_type][inst_name]["metadata"]
-                metadata_input = np.column_stack([z[key][input_idx] for key in metadata_keys])
-                metadata_target = np.column_stack([z[key][target_idx] for key in metadata_keys])
-
             # Time of day as fraction [0, 1]
-            input_time_fraction = np.array([(ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400 for ts in input_timestamps])
+            input_time_fraction = np.array(
+                [
+                    (ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400
+                    for ts in input_timestamps
+                ]
+            )
 
             input_sin_time = np.sin(2 * np.pi * input_time_fraction)[:, None]
             input_cos_time = np.cos(2 * np.pi * input_time_fraction)[:, None]
 
-            feature_input = np.column_stack([z[key][input_idx] for key in observation_config[obs_type][inst_name]["features"]])
-            feature_target = np.column_stack([z[key][target_idx] for key in observation_config[obs_type][inst_name]["features"]])
-
-            # === Normalize features ===
-            if obs_type == "satellite":
-                input_features_orig = np.column_stack(
-                    [
-                        input_dayofyear,
-                        metadata_input,
-                        feature_input,
-                    ]
-                )
-            else:
-                input_features_orig = np.column_stack(
-                    [
-                        input_dayofyear,
-                        feature_input,
-                    ]
-                )
-            input_scaler = MinMaxScaler()
-            input_features_norm = input_scaler.fit_transform(input_features_orig)
-            target_features_orig = feature_target
-            target_scaler = MinMaxScaler()
-            target_features_norm = target_scaler.fit_transform(target_features_orig)
-
-            # === Input Feature data ===
-            input_features_final = np.column_stack(
+            # Ensure all raw data is loaded as float32 to prevent gradient issues.
+            input_features_raw = np.column_stack(
                 [
-                    sin_lat,
-                    cos_lat,
-                    sin_lon,
-                    cos_lon,
-                    input_sin_time,
-                    input_cos_time,
-                    input_features_norm,
+                    z[key][input_idx]
+                    for key in observation_config[obs_type][inst_name]["features"]
+                ]
+            ).astype(np.float32)
+            input_metadata_raw = np.column_stack(
+                [
+                    z[key][input_idx]
+                    for key in observation_config[obs_type][inst_name]["metadata"]
+                ]
+            ).astype(np.float32)
+
+            # --- Process Target Features and Metadata ---
+            target_times = z["time"][target_idx][:]
+            target_timestamps = pd.to_datetime(target_times, unit="s")
+            target_time_fraction = np.array(
+                [
+                    (ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400
+                    for ts in target_timestamps
                 ]
             )
+            target_sin_time = np.sin(2 * np.pi * target_time_fraction)[:, None]
+            target_cos_time = np.cos(2 * np.pi * target_time_fraction)[:, None]
 
-            # === Metadata ===
+            lat_rad_target = np.radians(z["latitude"][target_idx])[:, None]
+            lon_rad_target = np.radians(z["longitude"][target_idx])[:, None]
+            target_sin_lat = np.sin(lat_rad_target)
+            target_cos_lat = np.cos(lat_rad_target)
+            target_sin_lon = np.sin(lon_rad_target)
+            target_cos_lon = np.cos(lon_rad_target)
+
+            target_features_raw = np.column_stack(
+                [
+                    z[key][target_idx]
+                    for key in observation_config[obs_type][inst_name]["features"]
+                ]
+            ).astype(np.float32)
+
+            target_metadata_raw = np.column_stack(
+                [
+                    z[key][target_idx]
+                    for key in observation_config[obs_type][inst_name]["metadata"]
+                ]
+            ).astype(np.float32)
+
+            all_features_raw = np.concatenate(
+                [input_features_raw, target_features_raw], axis=0
+            )
+
+            # Normalize features
+            bin_scaler = StandardScaler()
+            all_features_norm = bin_scaler.fit_transform(all_features_raw)
+            n_input = input_features_raw.shape[0]
+            input_features_norm = all_features_norm[:n_input]
+            target_features_norm = all_features_norm[n_input:]
+
             if obs_type == "satellite":
-                input_metadata = np.column_stack([lat_rad_input, lon_rad_input, metadata_input])
-                target_metadata = np.column_stack([lat_rad_target, lon_rad_target, metadata_target])
-            else:
-                input_metadata = np.column_stack(
+                # Normalize to encode input metadata angles
+                input_metadata_rad = np.deg2rad(input_metadata_raw)
+                input_metadata_cos = np.cos(input_metadata_rad)
+                input_metadata = input_metadata_cos
+                # Normalize target metadata angles for the decoder
+                target_metadata_rad = np.deg2rad(target_metadata_raw)
+                target_metadata_cos = np.cos(target_metadata_rad)
+                target_metadata_norm = target_metadata_cos
+                # Assemble final input features for satellite
+                input_features_final = np.column_stack(
                     [
-                        lat_rad_input,
-                        lon_rad_input,
-                    ]
-                )
-                target_metadata = np.column_stack(
-                    [
-                        lat_rad_target,
-                        lon_rad_target,
+                        input_sin_lat,
+                        input_cos_lat,
+                        input_sin_lon,
+                        input_cos_lon,
+                        input_dayofyear,
+                        input_metadata,
+                        input_features_norm,
                     ]
                 )
 
-            # === Save ===
-            data_summary_bin["input_features_final"] = torch.tensor(input_features_final, dtype=torch.float32)
-            data_summary_bin["target_features_final"] = torch.tensor(target_features_norm, dtype=torch.float32)
-            data_summary_bin["input_metadata"] = torch.tensor(input_metadata, dtype=torch.float32)
-            data_summary_bin["target_metadata"] = torch.tensor(target_metadata, dtype=torch.float32)
-            # Store min/max values for later unnormalization
-            data_summary_bin["target_scaler_min"] = target_scaler.data_min_
-            data_summary_bin["target_scaler_max"] = target_scaler.data_max_
+                # Assemble final target features for satellite (with scan angle)
+                scan_angle = target_metadata_cos[:, 0:1]
+                target_features_final = np.column_stack(
+                    [target_features_norm, scan_angle]
+                )
+
+                # Assemble target metadata for plotting
+                target_metadata = np.column_stack(
+                    [lat_rad_target, lon_rad_target, target_metadata_norm]
+                )
+
+            else:
+                # --- CONVENTIONAL-SPECIFIC LOGIC ---
+                features_scaler = StandardScaler()
+                input_metadata_norm = features_scaler.fit_transform(input_metadata_raw)
+                target_scaler = StandardScaler()
+                target_metadata_norm = target_scaler.fit_transform(target_metadata_raw)
+
+                input_metadata = input_metadata_norm  # For conventional, it's just the normalized metadata
+
+                # Assemble final input features for conventional
+                input_features_final = np.column_stack(
+                    [
+                        input_sin_lat,
+                        input_cos_lat,
+                        input_sin_lon,
+                        input_cos_lon,
+                        input_dayofyear,
+                        input_metadata,
+                        input_features_norm,
+                    ]
+                )
+
+                # The target is JUST the normalized features
+                target_features_final = target_features_norm
+
+                # Assemble target metadata for plotting
+                target_metadata = np.column_stack(
+                    [lat_rad_target, lon_rad_target, target_metadata_norm]
+                )
+
+            # --- Assemble Final Data for the Bin ---
+            data_summary_bin["input_features_final"] = torch.tensor(
+                input_features_final, dtype=torch.float32
+            )
+            data_summary_bin["target_features_final"] = torch.tensor(
+                target_features_final, dtype=torch.float32
+            )
+
+            # This can be simplified as it's the same for both
+            input_metadata_for_graph = np.column_stack([lat_rad_input, lon_rad_input])
+            data_summary_bin["input_metadata"] = torch.tensor(
+                input_metadata_for_graph, dtype=torch.float32
+            )
+            data_summary_bin["target_metadata"] = torch.tensor(
+                target_metadata, dtype=torch.float32
+            )
 
             # Save lat/lon degrees separately for CSV and evaluation
             data_summary_bin["input_lat_deg"] = z["latitude"][input_idx]
@@ -241,109 +363,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             data_summary_bin["target_lat_deg"] = z["latitude"][target_idx]
             data_summary_bin["target_lon_deg"] = z["longitude"][target_idx]
 
-            print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
-            print(f"[{bin_name}] target_features_final shape: {target_features_norm.shape}")
+            print(
+                f"[{bin_name}] input_features_final shape: {input_features_final.shape}"
+            )
+            print(
+                f"[{bin_name}] target_features_final shape: {target_features_final.shape}"
+            )
 
     return data_summary
-
-
-def flatten_data(bin_data):
-    """Flatten data_summary from extract_features by padding missing columns with zeros
-    and stacking different observation types together. Instrument IDs are kept in separate tensors.
-
-    Args:
-        data_summary (dict): Dictionary of bin data from extract_features
-
-    Returns:
-        dict: Flattened and stacked data with consistent features across all bins,
-              along with an instrument mapping dictionary
-    """
-    flattened_variables = ("input_features_final", "target_features_final", "input_metadata", "target_metadata")
-    max_features = {var: 0 for var in flattened_variables}
-    unique_instruments = set()
-
-    # First pass: find maximum dimensions and collect instruments
-    for obs_type in bin_data.keys():
-        for inst_name in bin_data[obs_type].keys():
-            unique_instruments.add((obs_type, inst_name))
-            curr_data = bin_data[obs_type][inst_name]
-            for var in flattened_variables:
-                if var in curr_data:
-                    max_features[var] = max(max_features[var], curr_data[var].shape[1])
-
-    # Create instrument ID mapping
-    instrument_mapping = {}
-    for idx, (obs_type, inst_name) in enumerate(sorted(unique_instruments)):
-        instrument_mapping[f"{obs_type}_{inst_name}"] = idx
-
-    def pad_and_stack_tensor(tensor, max_dim, device):
-        """Helper function to pad a tensor to max_dim along dimension 1"""
-        if tensor.shape[1] < max_dim:
-            padding = torch.zeros((tensor.shape[0], max_dim - tensor.shape[1]), dtype=tensor.dtype, device=device)
-            return torch.cat([tensor, padding], dim=1)
-        return tensor
-
-    # Second pass: pad, flatten, and stack
-    # Initialize data collection dictionaries
-    feature_lists = {
-        "input_features_final": [],
-        "target_features_final": [],
-        "input_metadata": [],
-        "target_metadata": [],
-        "input_instrument_ids": [],
-        "target_instrument_ids": [],
-        "target_scaler_min": [],
-        "target_scaler_max": [],
-    }
-    scalar_lists = {"input_lat_deg": [], "input_lon_deg": [], "target_lat_deg": [], "target_lon_deg": []}
-
-    for obs_type in bin_data.keys():
-        for inst_name in bin_data[obs_type].keys():
-            curr_data = bin_data[obs_type][inst_name]
-            inst_id = instrument_mapping[f"{obs_type}_{inst_name}"]
-            device = next((v.device for v in curr_data.values() if isinstance(v, torch.Tensor)), "cpu")
-
-            # Process features and metadata
-            for var in flattened_variables:
-                print(f"{inst_name}, {var} ")
-                if var in curr_data:
-                    current_tensor = curr_data[var]
-                    num_samples = current_tensor.shape[0]
-                    padded_tensor = pad_and_stack_tensor(current_tensor, max_features[var], device)
-                    feature_lists[var].append(padded_tensor)
-
-                    # Add corresponding instrument IDs
-                    if var == "input_features_final":
-                        feature_lists["input_instrument_ids"].append(torch.full((num_samples,), inst_id, dtype=torch.long, device=device))
-
-                    elif var == "target_features_final":
-                        feature_lists["target_instrument_ids"].append(torch.full((num_samples,), inst_id, dtype=torch.long, device=device))
-                        target_scale_min = torch.tensor(curr_data["target_scaler_min"])
-                        target_scale_min = target_scale_min.unsqueeze(0).repeat(num_samples, 1)
-                        padded_tensor = pad_and_stack_tensor(target_scale_min, max_features[var], device)
-                        feature_lists["target_scaler_min"].append(padded_tensor)
-
-                        target_scale_max = torch.tensor(curr_data["target_scaler_max"])
-                        target_scale_max = target_scale_max.unsqueeze(0).repeat(num_samples, 1)
-                        padded_tensor = pad_and_stack_tensor(target_scale_max, max_features[var], device)
-                        feature_lists["target_scaler_max"].append(padded_tensor)
-            # Process scalar values for input features
-            for key in scalar_lists.keys():
-                if key in curr_data:
-                    # For lat/lon, use actual values without repeating
-                    scalar_lists[key].append(torch.tensor(curr_data[key], dtype=torch.float32, device=device))
-
-    # Stack all collected data for this bin
-    bin_flat = {}
-
-    # Stack features, metadata, and their instrument IDs
-    for key, tensor_list in feature_lists.items():
-        print(key)
-        if tensor_list:  # Only stack if we have values
-            bin_flat[key] = torch.cat(tensor_list, dim=0)
-
-    # Stack scalar values
-    for key, values in scalar_lists.items():
-        if values:  # Only stack if we have values
-            bin_flat[key] = torch.cat(values, dim=0)
-    return bin_flat, instrument_mapping

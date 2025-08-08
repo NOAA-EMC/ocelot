@@ -2,7 +2,9 @@ import pandas as pd
 import yaml
 
 
-def compute_channel_weights(metrics_path, output_yaml, rmse_output_csv, instrument_id=0, use_best_epoch=True):
+def compute_channel_weights(
+    metrics_path, output_yaml, rmse_output_csv, instrument_id=0, use_best_epoch=True
+):
     # Load metrics.csv
     df = pd.read_csv(metrics_path)
 
@@ -27,11 +29,7 @@ def compute_channel_weights(metrics_path, output_yaml, rmse_output_csv, instrume
     weight_list = [round(w, 6) for w in normalized_weights]
 
     # Save to YAML
-    weights_config = {
-        "channel_weights": {
-            instrument_id: weight_list
-        }
-    }
+    weights_config = {"channel_weights": {instrument_id: weight_list}}
     with open(output_yaml, "w") as f:
         yaml.dump(weights_config, f)
     print(f"Saved normalized channel weights to: {output_yaml}")
@@ -43,5 +41,5 @@ if __name__ == "__main__":
         metrics_path="logs/ocelot_gnn/version_0/metrics.csv",
         output_yaml="configs/weights_config.yaml",
         rmse_output_csv="logs/ocelot_gnn/version_0/channel_rmse.csv",
-        instrument_id=0
+        instrument_id=0,
     )

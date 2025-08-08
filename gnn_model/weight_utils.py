@@ -4,7 +4,7 @@ import torch
 
 INSTRUMENT_NAME_TO_ID = {
     "atms": 0,
-    "surface_pressure": 1,
+    "surface_obs": 1,
     "radiosonde": 2,
     # Add more as needed
 }
@@ -12,7 +12,7 @@ INSTRUMENT_NAME_TO_ID = {
 
 def load_weights_from_yaml(path):
 
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         config = yaml.safe_load(f)
 
     # Map instrument names to IDs
