@@ -148,19 +148,26 @@ class GNNDataModule(pl.LightningDataModule):
 
                     # --- TARGET NODES & EDGES ---
                     target_features = inst_data["target_features_final"]
-                    # Conditionally handle scan angle for ATMS, and other obs for everything else
                     if inst_name == "atms":
-                        # For ATMS, the last column is the scan angle, which goes into '.x'
-                        data[node_type_target].y = target_features[:, :-1]
-                        data[node_type_target].x = target_features[:, -1:]  # Scan angle
-                    else:
-                        # For other obs like surface_pressure, all features are targets in '.y'
-                        data[node_type_target].y = target_features
-                        # There are no auxiliary decoder features, so create a placeholder for '.x'
+                        data[node_type_target].y = target_features  # [N, 22]
+                        data[node_type_target].x = inst_data["scan_angle"].to(torch.float32)  # [N, 1]
+                        # instrument IDs (long)
+                        inst_id = int(inst_data["instrument_id"])
                         num_nodes = target_features.shape[0]
-                        data[node_type_target].x = torch.zeros(
-                            (num_nodes, 1), dtype=torch.float32
+                        data[node_type_target].instrument_ids = torch.full(
+                            (num_nodes,), inst_id, dtype=torch.long
                         )
+                    else:
+                        # For other obs, all features are targets in '.y'
+                        data[node_type_target].y = target_features  # [N, target_dim]
+                        num_nodes = target_features.shape[0]
+                        # instrument IDs (long)
+                        inst_id = int(inst_data["instrument_id"])
+                        data[node_type_target].instrument_ids = torch.full(
+                            (num_nodes,), inst_id, dtype=torch.long
+                        )
+                        # No aux decoder features → placeholder '.x'
+                        data[node_type_target].x = torch.zeros((num_nodes, 1), dtype=torch.float32)
 
                     data[node_type_target].num_nodes = data[node_type_target].y.shape[0]
 
@@ -188,15 +195,12 @@ class GNNDataModule(pl.LightningDataModule):
                 else:
                     # --- Handle missing instruments ---
                     data[node_type_input].x = torch.empty(
-                        (0, inst_cfg["input_dim"]), dtype=torch.float32
-                    )
+                        (0, inst_cfg["input_dim"]), dtype=torch.float32)
                     data[node_type_target].y = torch.empty(
-                        (0, inst_cfg["output_dim"]), dtype=torch.float32
-                    )
+                        (0, inst_cfg["target_dim"]), dtype=torch.float32)
                     data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
-                    data[node_type_target].target_metadata = torch.empty(
-                        (0, 3), dtype=torch.float32
-                    )
+                    data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
+                    data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
 
         # 3. Processor edges (mesh-to-mesh)
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]

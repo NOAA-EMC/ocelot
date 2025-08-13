@@ -1,0 +1,74 @@
+pipeline:
+  subsample:
+    satellite: 25
+    conventional: 20
+
+instrument_weights:
+  atms: 1.0
+  surface_obs: 1.0
+
+channel_weights:
+  atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
+  surface_obs: [1.0]
+
+observation_config:
+  satellite:
+    atms:
+      sat_ids: [224, 225]
+      features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
+                 bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
+                 bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15,
+                 bt_channel_16, bt_channel_17, bt_channel_18, bt_channel_19, bt_channel_20,
+                 bt_channel_21, bt_channel_22]
+      metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+      input_dim: 32
+      target_dim: 22
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+  conventional:
+    surface_obs:
+      features: [airPressure]
+      metadata: [height]
+      input_dim: 9
+      target_dim: 1
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        airPressure: [300, 1200]
+
+feature_stats:
+  airPressure: [979.30, 52.78]
+  airTemperature: [24.16, 6.00]
+  dewPointTemperature: [11.99, 9.07]
+  latitude: [36.80, 6.44]
+  longitude: [-89.20, 9.75]
+  seaTemperature: [24.17, 5.62]
+  stationElevation: [381.52, 565.39]
+  virtualTemperature: [20.92, 8.51]
+  bt_channel_1: [259.20, 33.30]
+  bt_channel_2: [254.39, 39.29]
+  bt_channel_3: [266.43, 18.62]
+  bt_channel_4: [267.84, 11.89]
+  bt_channel_5: [264.40, 7.48]
+  bt_channel_6: [252.46, 6.54]
+  bt_channel_7: [236.02, 5.08]
+  bt_channel_8: [225.50, 3.65]
+  bt_channel_9: [218.70, 3.33]
+  bt_channel_10: [214.40, 4.22]
+  bt_channel_11: [217.72, 3.05]
+  bt_channel_12: [225.02, 2.63]
+  bt_channel_13: [234.56, 3.12]
+  bt_channel_14: [246.21, 3.41]
+  bt_channel_15: [255.89, 3.24]
+  bt_channel_16: [269.68, 20.06]
+  bt_channel_17: [276.82, 13.88]
+  bt_channel_18: [270.94, 11.07]
+  bt_channel_19: [265.76, 9.77]
+  bt_channel_20: [260.43, 8.85]
+  bt_channel_21: [253.80, 8.09]
+  bt_channel_22: [247.68, 7.61]
+  satelliteId: [225.02, 0.81]
+  sensorAzimuthAngle: [179.68, 94.52]
+  sensorZenithAngle: [31.15, 18.43]
+  solarAzimuthAngle: [125.22, 95.04]
+  solarZenithAngle: [71.94, 47.49]

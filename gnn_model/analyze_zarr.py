@@ -22,10 +22,8 @@ def analyze_zarr_data(file_path):
         print("-" * 30)
 
         # 2. Load data into a Pandas DataFrame for analysis
-        # We only load a few key variables to avoid using too much memory.
-        # You can add more variables to this list if you like.
         variables_to_load = [
-            'latitude', 'longitude', 'height ', 'airTemperature', 'airPressure',
+            'latitude', 'longitude', 'height', 'airTemperature', 'airPressure',
             'seaTemperature', 'stationElevation', 'eastwardWind', 'virtualTemperature', 'northwardWind'
         ]
 
@@ -40,7 +38,6 @@ def analyze_zarr_data(file_path):
 
         # 3. Print Descriptive Statistics
         print("## Data Statistics ##")
-        # The .describe() method provides count, mean, std, min/max, and quartiles
         print(df.describe())
         print("-" * 30)
 
@@ -55,7 +52,6 @@ def analyze_zarr_data(file_path):
         ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False)
 
         # Create a scatter plot of all data points
-        # Using a small marker size and transparency is good for dense data
         ax.scatter(df['longitude'], df['latitude'],
                    color='blue',
                    s=1.0,          # Small size for each point
@@ -73,5 +69,5 @@ def analyze_zarr_data(file_path):
 
 
 if __name__ == '__main__':
-    # Set the path to your Zarr file at the top of the script
+    # Set the path to the Zarr file at the top of the script
     analyze_zarr_data(ZARR_FILE_PATH)

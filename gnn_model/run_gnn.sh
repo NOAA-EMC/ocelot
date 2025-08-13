@@ -16,13 +16,12 @@
 
 
 # Load Conda environment
-# source /home/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 
 # PYTHONPATH
 export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
-# export PYTHONPATH=/home/Azadeh.Gholoubi/miniconda3/envs/gnn-env/lib/python3.10/site-packages:$PYTHONPATH
+
 # Debug + performance
 export OMP_NUM_THREADS=1
 export PYTORCH_ENABLE_MPS_FALLBACK=1
@@ -41,9 +40,9 @@ echo "SLURM Node List: $SLURM_NODELIST"
 echo "Visible GPUs on this node:"
 nvidia-smi
 
-# Launch training
-# srun --cpu_bind=cores python train_gnn.py --verbose
-srun --cpu-bind=map_cpu:0,1,2,3 python train_gnn.py --verbose
-# Launch training, now with the resume flag
+# Launch a new training run
+srun --cpu-bind=map_cpu:0,1,2,3 python train_gnn.py
+
+# Resume training from the latest checkpoint (with verbose logging)
 # srun --cpu-bind=map_cpu:0,1,2,3 python train_gnn.py --verbose --resume_from_checkpoint checkpoints/last.ckpt
-# srun --cpu_bind=cores python train_gnn.py --verbose --sampling_mode sequential
+
