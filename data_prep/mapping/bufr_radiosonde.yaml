@@ -35,10 +35,10 @@ bufr:
       query: "*/PRSLEVEL/Q___INFO/TDO"
 
     eastwardWind:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/UOB"
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{2}/UOB"
 
     northwardWind:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/VOB"
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{2}/VOB"
 
     airPressure:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
@@ -57,7 +57,7 @@ bufr:
       query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
     windQuality:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{2}/WQM"
 
     airPressureQuality:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"

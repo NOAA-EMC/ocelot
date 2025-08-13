@@ -18,8 +18,9 @@ class OperationConfig:
 
 
 class DataTypeConfig:
-    def __init__(self, config):
+    def __init__(self, config, type_name):
         self.config = config
+        self.type = type_name
 
     @property
     def name(self):
@@ -38,16 +39,33 @@ class DataTypeConfig:
         return self.config['batch_days']
 
     @property
-    def paths(self):
-        return self.config['paths']
-
-    @property
     def operations(self):
         if 'operations' not in self.config:
             return []
 
         return [OperationConfig(op) for op in self.config['operations']]
 
+
+class TankConfig(DataTypeConfig):
+    def __init__(self, config):
+        super().__init__(config, 'tank')
+
+    @property
+    def paths(self):
+        return self.config['paths']
+
+
+class BufrPcaConfig(DataTypeConfig):
+    def __init__(self, config):
+        super().__init__(config, 'bufr_pca')
+
+    @property
+    def directory(self):
+        return self.config['directory']
+
+    @property
+    def filename_regex(self):
+        return self.config['filename_regex']
 
 class Config:
     def __init__(self, yaml_path=''):
@@ -75,7 +93,13 @@ class Config:
     def _get_data_types(self):
         data_types = []
         for data_type in self.config:
-            data_types.append(DataTypeConfig(data_type))
+            if data_type['type'] == 'tank':
+                data_types.append(TankConfig(data_type))
+            elif data_type['type'] == 'bufr_pca':
+                data_types.append(BufrPcaConfig(data_type))
+            else:
+                assert False, f"Unknown data type {data_type['type']} in config"
+
         return data_types
 
     def __repr__(self):

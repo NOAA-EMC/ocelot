@@ -1,5 +1,6 @@
 data types:
   - name: atms
+    type: tank
     num_tasks: 24
     batch_days: 15
     mapping: bufr_atms.py
@@ -10,6 +11,7 @@ data types:
       - 18/atmos/gdas.t18z.atms.tm00.bufr_d
 
   - name: surface_obs
+    type: tank
     num_tasks: 4
     batch_days: 30
     mapping: bufr_surface_obs.py
@@ -20,6 +22,7 @@ data types:
       - 18/atmos/gdas.t18z.prepbufr
 
   - name: radiosonde
+    type: tank
     num_tasks: 4
     batch_days: 30
     mapping: bufr_radiosonde.py
@@ -29,32 +32,44 @@ data types:
       - 12/atmos/gdas.t12z.prepbufr
       - 18/atmos/gdas.t18z.prepbufr
 
-#  - name: ascat
-#    num_tasks: 4
-#    batch_days: 30
-#    mapping: bufr_ascat.py
-#    paths:
-#      - 00/atmos/gdas.t00z.ascatt.tm00.bufr_d
-#      - 06/atmos/gdas.t06z.ascatt.tm00.bufr_d
-#      - 12/atmos/gdas.t12z.ascatt.tm00.bufr_d
-#      - 18/atmos/gdas.t18z.ascatt.tm00.bufr_d
-#
-#  - name: seviri
-#    num_tasks: 4
-#    batch_days: 30
-#    mapping: bufr_seviri.py
-#    paths:
-#      - 00/atmos/gdas.t00z.sevcsr.tm00.bufr_d
-#      - 06/atmos/gdas.t06z.sevcsr.tm00.bufr_d
-#      - 12/atmos/gdas.t12z.sevcsr.tm00.bufr_d
-#      - 18/atmos/gdas.t18z.sevcsr.tm00.bufr_d
-#
-#  - name: ssmis
-#    num_tasks: 4
-#    batch_days: 30
-#    mapping: bufr_ssmis.py
-#    paths:
-#      - 00/atmos/gdas.t00z.ssmisu.tm00.bufr_d
-#      - 06/atmos/gdas.t06z.ssmisu.tm00.bufr_d
-#      - 12/atmos/gdas.t12z.ssmisu.tm00.bufr_d
-#      - 18/atmos/gdas.t18z.ssmisu.tm00.bufr_d
+  - name: ascat
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_ascat.py
+    paths:
+      - 00/atmos/gdas.t00z.ascatt.tm00.bufr_d
+      - 06/atmos/gdas.t06z.ascatt.tm00.bufr_d
+      - 12/atmos/gdas.t12z.ascatt.tm00.bufr_d
+      - 18/atmos/gdas.t18z.ascatt.tm00.bufr_d
+
+  - name: seviri
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_seviri.py
+    paths:
+      - 00/atmos/gdas.t00z.sevcsr.tm00.bufr_d
+      - 06/atmos/gdas.t06z.sevcsr.tm00.bufr_d
+      - 12/atmos/gdas.t12z.sevcsr.tm00.bufr_d
+      - 18/atmos/gdas.t18z.sevcsr.tm00.bufr_d
+
+  - name: ssmis
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_ssmis.py
+    paths:
+      - 00/atmos/gdas.t00z.ssmisu.tm00.bufr_d
+      - 06/atmos/gdas.t06z.ssmisu.tm00.bufr_d
+      - 12/atmos/gdas.t12z.ssmisu.tm00.bufr_d
+      - 18/atmos/gdas.t18z.ssmisu.tm00.bufr_d
+
+  - name: iasi_pca
+    type: bufr_pca
+    num_tasks: 4
+    batch_days: 30
+    mapping: pca_iasi.py
+    directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/IASI_PCA/bufr
+    filename_regex: M03-IASI-IASPCS1C-NA-1.0-(?P<start_time>\d{14}).000000000Z-(?P<end_time>\d{14})-4887062-d+\.bfr
+
