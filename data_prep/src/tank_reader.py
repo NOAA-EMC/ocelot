@@ -6,7 +6,8 @@ import numpy as np
 import bufr
 
 sys.path.insert(0, os.path.realpath('/'))
-from zarr_encoder import Encoder  # noqa: E402
+from zarr_encoder import Encoder as ZarrEncoder  # noqa: E402
+from parquet_encoder import Encoder as ParquetEncoder  # noqa: E402
 import data_reader  # noqa: E402
 import settings  # noqa: E402
 
@@ -22,9 +23,9 @@ def create_data(start_date: datetime,
     comm = bufr.mpi.Comm("world")
 
     if suffix:
-        file_name = f"{data_type}_{suffix}.zarr"
+        file_name = f"{data_type}_{suffix}"
     else:
-        file_name = f"{data_type}.zarr"
+        file_name = f"{data_type}"
 
     output_path = os.path.join(settings.OUTPUT_PATH, file_name)
 
@@ -82,7 +83,9 @@ def _create_data_for_day(comm,
         container.apply_mask(mask)
 
     if comm.rank() == 0:
-        Encoder(description).encode(container, output_path, append=append)
+        ZarrEncoder(description).encode(container, f'{output_path}.zarr', append=append)
+        ParquetEncoder(description).encode(container, f'{output_path}.pqt', append=append)
+
         print(f"Output written to {output_path}")
         sys.stdout.flush()
 
