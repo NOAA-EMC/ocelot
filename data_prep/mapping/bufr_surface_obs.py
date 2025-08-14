@@ -14,9 +14,6 @@ from bufr.obs_builder import ObsBuilder, add_main_functions
 script_dir = os.path.dirname(os.path.abspath(__file__))
 MAP_PATH = os.path.join(script_dir, 'bufr_surface_obs.yaml')
 
-OBS_TYPES = np.array([180, 181, 183, 187, 120])
-
-
 class PressureObsBuilder(ObsBuilder):
     def __init__(self):
         super().__init__(MAP_PATH, log_name=os.path.basename(__file__))
@@ -26,10 +23,6 @@ class PressureObsBuilder(ObsBuilder):
         container = super().make_obs(comm, input_path)
 
         # Apply Masks
-
-        # Filter according to thw obs type
-        obs_type = container.get('observationType')
-        container.apply_mask(np.isin(obs_type, OBS_TYPES))
 
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.

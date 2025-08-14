@@ -6,9 +6,6 @@ bufr:
     obsTimeMinusCycleTime:
       query: "*/DHR"
 
-    observationType:
-      query: "*/TYP"
-
     latitude:
       query: "*/YOB"
 
