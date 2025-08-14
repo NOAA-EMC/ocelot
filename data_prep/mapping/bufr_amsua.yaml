@@ -42,16 +42,7 @@ encoder:
   dimensions:
     - name: channel
       source: variables/sensorChannelNumber
-      path: "*/ATMSCH"
-
-  globals:
-    - name: "platformCommonName"
-      type: string
-      value: "ATMS"
-
-    - name: "platformLongDescription"
-      type: string
-      value: "MTYP 021-203 ATMS ATENNA/BRIGHTNESS TEMPERATURE DATA"
+      path: "*/BRITCSTC"
 
   variables:
     # MetaData
