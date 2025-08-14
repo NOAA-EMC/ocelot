@@ -64,66 +64,66 @@ bufr:
 encoder:
   variables:
     # MetaData
-    - name: "MetaData/dateTime"
+    - name: "time"
       source: variables/timestamp
       longName: "Datetime"
       units: "seconds since 1970-01-01T00:00:00Z"
 
-    - name: "MetaData/latitude"
+    - name: "latitude"
       source: variables/latitude
       longName: "Latitude"
       units: "degrees_north"
       range: [ -90, 90 ]
 
-    - name: "MetaData/longitude"
+    - name: "longitude"
       source: variables/longitude
       longName: "Longitude"
       units: "degrees_east"
       range: [ -180, 180 ]
 
-    - name: "MetaData/satelliteIdentifier"
+    - name: "satelliteIdentifier"
       source: variables/satelliteId
       longName: "Satellite Identifier"
 
-    - name: "MetaData/satelliteZenithAngle"
+    - name: "satelliteZenithAngle"
       source: variables/satelliteZenithAngle
       longName: "Satellite Zenith Angle"
       units: "degree"
       range: [ 0, 90 ]
 
-    - name: "MetaData/sensorCentralFrequency"
+    - name: "sensorCentralFrequency"
       source: variables/sensorCentralFrequency
       longName: "Satellite Channel Center Frequency"
       units: "Hz"
 
-    - name: "MetaData/dataProviderOrigin"
+    - name: "dataProviderOrigin"
       source: variables/dataProviderOrigin
       longName: "Identification of Originating/Generating Center"
 
-    - name: "MetaData/windComputationMethod"
+    - name: "windComputationMethod"
       source: variables/windComputationMethod
       longName: "Satellite-derived Wind Computation Method"
 
-    - name: "MetaData/windGeneratingApplication"
+    - name: "windGeneratingApplication"
       source: variables/windGeneratingApplication
       longName: "Wind Generating Application"
 
-    - name: "MetaData/qiWithoutForecast"
+    - name: "qiWithoutForecast"
       source: variables/qualityInformationWithoutForecast
       longName: "Quality Information Without Forecast"
       units: "percent"
 
-    - name: "MetaData/pressure"
+    - name: "pressure"
       source: variables/pressure
       longName: "Pressure"
       units: "Pa"
 
-    - name: "ObsValue/windDirection"
+    - name: "windDirection"
       source: variables/windDirection
       longName: "Wind Direction"
       units: "degree"
 
-    - name: "ObsValue/windSpeed"
+    - name: "windSpeed"
       source: variables/windSpeed
       longName: "Wind Speed"
       units: "m s-1"

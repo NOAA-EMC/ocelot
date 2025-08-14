@@ -74,6 +74,8 @@ def _create_data_for_day(comm,
         mask[longitudes < settings.LON_RANGE[0]] = False
         mask[longitudes > settings.LON_RANGE[1]] = False
 
+
+
         if not np.any(mask):
             return  # No data in the region
 

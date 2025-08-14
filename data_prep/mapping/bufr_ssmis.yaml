@@ -51,68 +51,66 @@ encoder:
 
   variables:
     # MetaData
-    - name: "MetaData/dateTime"
+    - name: "time"
       source: variables/timestamp
       longName: "Datetime"
       units: "seconds since 1970-01-01T00:00:00Z"
 
-    - name: "MetaData/latitude"
+    - name: "latitude"
       source: variables/latitude
       longName: "Latitude"
       units: "degree_north"
       range: [-90, 90]
 
-    - name: "MetaData/longitude"
+    - name: "longitude"
       source: variables/longitude
       longName: "Longitude"
       units: "degree_east"
 
-    - name: "MetaData/latitude1"
+    - name: "latitude1"
       source: variables/latitude1
       longName: "Latitude"
       units: "degree_north"
       range: [ -90, 90 ]
 
-    - name: "MetaData/latitude2"
+    - name: "latitude2"
       source: variables/latitude2
       longName: "Latitude"
       units: "degree_north"
       range: [ -90, 90 ]
 
-    - name: "MetaData/satelliteIdentifier"
+    - name: "satelliteIdentifier"
       source: variables/satelliteId
       longName: "Satellite Identifier"
 
-    - name: "MetaData/sensorScanPosition"
+    - name: "sensorScanPosition"
       source: variables/fieldOfViewNumber
       longName: "Field of View Number"
 
-    - name: "MetaData/sensorChannelNumber"
+    - name: "sensorChannelNumber"
       source: variables/sensorChannelNumber
       longName: "Sensor Channel Number"
 
-    - name: "MetaData/sensorViewAngle"
+    - name: "sensorViewAngle"
       source: variables/sensorScanAngle
       longName: "Sensor View Angle"
       units: "degree"
 
-    - name: "MetaData/earthSurfaceType"
+    - name: "earthSurfaceType"
       source: variables/surfaceFlag
       longName: "Earth Surface Type"
 
-    - name: "MetaData/rainFlag"
+    - name: "rainFlag"
       source: variables/rainFlag
       longName: "Rain Flag (1:rain; 0:no rain (clear); -1:no determined"
 
-    - name: "MetaData/scanLineNumber"
+    - name: "scanLineNumber"
       source: variables/scanLineNumber
       longName: "Scan Line Number"
 
     # ObsValue
     # Remapped Brightness Temperature
-    - name: "ObsValue/brightnessTemperature"
+    - name: "bt"
       source: variables/brightnessTemperature
-      longName: "3-by-3 Averaged Brightness Temperature"
+      longName: "Brightness Temperature"
       units: "K"
-      range: [120, 500]
-      chunks: [10000, 24]
