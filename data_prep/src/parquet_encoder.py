@@ -23,7 +23,7 @@ class Encoder(bufr.encoders.EncoderBase):
         container: bufr.DataContainer,
         output_template_path: str,
         append: bool = False,
-    ) -> Dict:
+    ) -> dict:
         """Encode the DataContainer into parquet files.
 
         Parameters
@@ -39,7 +39,7 @@ class Encoder(bufr.encoders.EncoderBase):
             file, otherwise a new file will be created or overwrite an existing
             one.
         """
-        result: Dict = {}
+        result: dict = {}
 
         for category in container.all_sub_categories():
             substitutions = {}
