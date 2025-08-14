@@ -1,80 +1,86 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
+import os
 
-# Load your predictions CSV
-df_bt = pd.read_csv("bt_predictions_epoch35.csv")
-# df_pressure = pd.read_csv("pressure_predictions_epoch12.csv")
 
-# plt.figure(figsize=(12, 5))
-# # Get shared color scale limits
-# vmin_pressure = min(df_pressure[f"true_pressure"].min(), df_pressure[f"pred_pressure"].min())
-# vmax_pressure = max(df_pressure[f"true_pressure"].max(), df_pressure[f"pred_pressure"].max())
+def plot_instrument_maps(instrument_name, epoch, batch_idx, num_channels=1, data_dir="val_csv"):
+    """
+    Loads prediction data for a given instrument and generates map plots for each channel.
 
-# # Plot target
-# plt.subplot(1, 3, 1)
-# sc1 = plt.scatter(
-#     df_pressure["lon_deg"], df_pressure["lat_deg"], c=df_pressure["true_pressure"], cmap="viridis", s=5, vmin=vmin_pressure, vmax=vmax_pressure)
-# plt.colorbar(sc1)
-# plt.title(f"True Pressure")
-# plt.xlabel("Longitude")
-# plt.ylabel("Latitude")
+    Args:
+        instrument_name (str): The name of the instrument (e.g., 'surface_obs', 'atms').
+        epoch (int): The epoch number to plot.
+        batch_idx (int): The batch index to plot.
+        num_channels (int, optional): The number of channels for this instrument. Defaults to 1.
+        data_dir (str, optional): The directory where the CSV files are located. Defaults to "val_csv".
+    """
+    filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
 
-# # # Plot prediction
-# plt.subplot(1, 3, 2)
-# sc2 = plt.scatter(
-#     df_pressure["lon_deg"], df_pressure["lat_deg"], c=df_pressure["pred_pressure"], cmap="viridis", s=5, vmin=vmin_pressure, vmax=vmax_pressure)
-# plt.colorbar(sc2)
-# plt.title(f"Predicted Pressure")
-# plt.xlabel("Longitude")
-# plt.ylabel("Latitude")
+    # --- 1. Load Data ---
+    try:
+        df = pd.read_csv(filepath)
+        print(f"\n--- Processing {instrument_name} from {filepath} ---")
+    except FileNotFoundError:
+        print(f"\nWarning: Could not find data file {filepath}. Skipping.")
+        return
 
-# error = df_pressure["true_pressure"]-df_pressure["pred_pressure"]
-# norm = TwoSlopeNorm(vmin=error.min(), vcenter=0, vmax=error.max())
-# plt.subplot(1, 3, 3)
-# sc3 = plt.scatter(df_pressure["lon_deg"], df_pressure["lat_deg"], c=error, norm=norm, cmap="bwr", s=5)
-# plt.colorbar(sc3)
-# plt.title(f"Error Pressure")
-# plt.xlabel("Longitude")
-# plt.ylabel("Latitude")
-# plt.tight_layout()
-# plt.savefig(f"pressure_map.png")
-# plt.close()
-# print(f"finished pressure_map.png")
+    # --- 2. Loop Through Channels and Plot ---
+    for i in range(1, num_channels + 1):
+        true_col = f"true_ch{i}"
+        pred_col = f"pred_ch{i}"
 
-# Plot predictions vs targets for each channel
-for i in range(1, 23):  # Channels 1 to 22
-    plt.figure(figsize=(16, 5))
-    # Get shared color scale limits
-    vmin = min(df_bt[f"true_bt_{i}"].min(), df_bt[f"pred_bt_{i}"].min())
-    vmax = max(df_bt[f"true_bt_{i}"].max(), df_bt[f"pred_bt_{i}"].max())
+        # Ensure the necessary columns exist in the DataFrame
+        if not all(col in df.columns for col in [true_col, pred_col, "lon", "lat"]):
+            print(f"Warning: Missing required columns for channel {i} in {filepath}. Skipping.")
+            continue
 
-    # Plot target
-    plt.subplot(1, 3, 1)
-    sc1 = plt.scatter(df_bt["lon_deg"], df_bt["lat_deg"], c=df_bt[f"true_bt_{i}"], cmap="viridis", s=5, vmin=vmin, vmax=vmax)
-    plt.colorbar(sc1)
-    plt.title(f"True Brightness Temp - Channel {i}")
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
+        fig.suptitle(f"Instrument: {instrument_name} - Channel: {i} - Epoch: {epoch}", fontsize=16)
 
-    # Plot prediction
-    plt.subplot(1, 3, 2)
-    sc2 = plt.scatter(df_bt["lon_deg"], df_bt["lat_deg"], c=df_bt[f"pred_bt_{i}"], cmap="viridis", s=5, vmin=vmin, vmax=vmax)
-    plt.colorbar(sc2)
-    plt.title(f"Predicted Brightness Temp - Channel {i}")
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
+        # Get shared color scale limits for consistency
+        vmin = min(df[true_col].min(), df[pred_col].min())
+        vmax = max(df[true_col].max(), df[pred_col].max())
 
-    error = ((df_bt[f"true_bt_{i}"] - df_bt[f"pred_bt_{i}"]) / df_bt[f"true_bt_{i}"]) * 100
-    norm = TwoSlopeNorm(vmin=error.min(), vcenter=0, vmax=error.max())
-    plt.subplot(1, 3, 3)
-    sc3 = plt.scatter(df_bt["lon_deg"], df_bt["lat_deg"], c=error, cmap="bwr", norm=norm, s=5)
-    plt.colorbar(sc3)
-    plt.title(f"Error % Brightness Temp - Channel {i}")
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
+        # a) Plot Ground Truth
+        sc1 = axes[0].scatter(df["lon"], df["lat"], c=df[true_col], cmap="jet", s=5, vmin=vmin, vmax=vmax)
+        fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
+        axes[0].set_title("Ground Truth")
 
-    plt.tight_layout()
-    plt.savefig(f"bt_map_channel_{i}.png")
-    plt.close()
-    print(f"finished ch_{i}.png")
+        # b) Plot Prediction
+        sc2 = axes[1].scatter(df["lon"], df["lat"], c=df[pred_col], cmap="jet", s=5, vmin=vmin, vmax=vmax)
+        fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
+        axes[1].set_title("Prediction")
+
+        # c) Plot Percent Error
+        # Avoid division by zero for the error calculation
+        error = 100 * (df[pred_col] - df[true_col]) / df[true_col].replace(0, 1e-9)
+        error_norm = TwoSlopeNorm(vmin=error.min(), vcenter=0, vmax=error.max())
+
+        sc3 = axes[2].scatter(df["lon"], df["lat"], c=error, cmap="bwr", norm=error_norm, s=5)
+        fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("% Error")
+        axes[2].set_title("Percent Error")
+
+        for ax in axes:
+            ax.set_xlabel("Longitude")
+        axes[0].set_ylabel("Latitude")
+
+        # --- 3. Save Figure ---
+        output_filename = f"{instrument_name}_map_channel_{i}_epoch_{epoch}.png"
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(output_filename)
+        plt.close()
+        print(f"  -> Saved plot: {output_filename}")
+
+
+if __name__ == "__main__":
+    # --- Configuration ---
+    EPOCH_TO_PLOT = 76
+    BATCH_IDX_TO_PLOT = 0
+
+    # Define all the instruments to plot and their number of channels
+    INSTRUMENTS = {"surface_obs": 1, "radiosonde": 1, "atms": 22}
+    # -------------------
+
+    for name, channels in INSTRUMENTS.items():
+        plot_instrument_maps(name, EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=channels)

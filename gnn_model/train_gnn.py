@@ -1,123 +1,131 @@
-import yaml
+import argparse
 import faulthandler
+import os
+import socket
 import sys
 import time
+import yaml
+import pandas as pd
+
 import lightning.pytorch as pl
-import argparse
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.strategies import DDPStrategy
 
+from callbacks import ResampleDataCallback, SequentialDataCallback
 from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
-import os
-# Import both callbacks from the new file
-from callbacks import ResampleDataCallback, SequentialDataCallback
+
+torch.set_float32_matmul_precision("medium")
 
 
 @timing_resource_decorator
 def main():
-    # Enable fault handler for debugging
+    # Corrected print statements for style
+    print(f"Hostname: {socket.gethostname()}")
+    print(f"  SLURM_PROCID: {os.environ.get('SLURM_PROCID')}")
+    print(f"  SLURM_LOCALID: {os.environ.get('SLURM_LOCALID')}")
+    print(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
-    # Add argument to select sampling mode
     parser.add_argument(
         "--sampling_mode",
         type=str,
         default="random",
         choices=["random", "sequential"],
-        help="The data sampling strategy ('random' or 'sequential')."
+        help="The data sampling strategy ('random' or 'sequential').",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint to resume training from.",
     )
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
 
-    # Set global seed for reproducibility
     pl.seed_everything(42, workers=True)
 
-    # === DATA CONFIGURATION ===
-    weights_config_path = "configs/weights_config.yaml"
-    instrument_weights, channel_weights = load_weights_from_yaml(weights_config_path)
+    # === DATA & MODEL CONFIGURATION ===
+    cfg_path = "configs/observation_config.yaml"
+    observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
 
-    # Data parameters
+    # Data/region path
     region = "global"
     if region == "conus":
-        # CONUS data path:
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
-        # Three Months Global data path:
-        data_path = "/scratch3/NCEPDEV/da/Azadeh.Gholoubi/data_v3/bigzarr"
+        data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v5/global"
 
-    # These dates define the INITIAL window for the first setup.
-    start_date = "2024-04-01"
-    end_date = "2024-04-09"
+    # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
+    FULL_START_DATE = "2024-04-01"
+    FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
+    WINDOW_DAYS = 14  # The size of the window for each epoch
 
-    observation_config = {
-        "satellite": {
-            "atms": {
-                "sat_ids": [224],
-                "features": [f"bt_channel_{i}" for i in range(1, 23)],
-                "metadata": ["sensorZenithAngle", "solarZenithAngle", "solarAzimuthAngle"]
-            },
-            # "iasi": ,
-            # "goes":,
-            # "ascat":
-        },
-        # "conventional": {
-        #     # "radiosonde": ,
-        #     "surface_pressure": {
-        #         "features": ["stationPressure", ],
-        #         "metadata": ["height", ]
-        #     },
-        #     # "surface_marine": ,
-        #     # "surface_land":
-        # }
-    }
+    # The initial start/end dates for the datamodule are the
+    # first window of the full period. The callback will change this on subsequent epochs.
+    initial_start_date = FULL_START_DATE
+    initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    # --- HYPERPARAMETERS ---
     mesh_resolution = 6
-
-    # === MODEL CONFIGURATION ===
-    input_dim = 32
-    hidden_dim = 128
-    output_dim = 22
-    num_layers = 6
-    lr = 1e-3
-
-    # === TRAINING CONFIGURATION ===
-    max_epochs = 50
+    hidden_dim = 64
+    num_layers = 10
+    lr = 0.001
+    max_epochs = 100
     batch_size = 1
-    max_rollout_steps = 1  # Maximum rollout length; set 1 to have no rollout
-    rollout_schedule = "fixed"  # 'graphcast', 'step', 'linear', or 'fixed'
+    # ----------------------------------------------------
+
+    max_rollout_steps = 1
+    rollout_schedule = "fixed"
+
+    start_time = time.time()
 
     # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
-        input_dim=input_dim,
+        observation_config=observation_config,
         hidden_dim=hidden_dim,
-        output_dim=output_dim,
         num_layers=num_layers,
         lr=lr,
         instrument_weights=instrument_weights,
         channel_weights=channel_weights,
+        mesh_resolution=mesh_resolution,
         verbose=args.verbose,
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
+        feature_stats=feature_stats,
     )
 
     data_module = GNNDataModule(
         data_path=data_path,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=initial_start_date,
+        end_date=initial_end_date,
         observation_config=observation_config,
+        mesh_structure=model.mesh_structure,
         batch_size=batch_size,
-        mesh_resolution=mesh_resolution,
         num_neighbors=3,
     )
 
-    start_time = time.time()
+    # The 'LOCAL_RANK' and 'NODE_RANK' env variables are set by PyTorch Lightning
+    is_main_process = int(os.environ.get("LOCAL_RANK", 0)) == 0 and int(os.environ.get("NODE_RANK", 0)) == 0
 
-    # Initial setup
-    data_module.setup("fit")
+    if is_main_process:
+        print("--- Main process is preparing data... ---")
+        data_module.setup("fit")
+
+    # All other processes will wait here until the main process is done
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+
+    if not is_main_process:
+        print(f"--- Rank {int(os.environ.get('SLURM_PROCID'))} is loading data prepared by main process... ---")
+        data_module.setup("fit")
+
     val_loader = data_module.val_dataloader()
     has_val_data = val_loader is not None and len(val_loader.dataset) > 0
     print(f"Initial validation loader has {len(val_loader.dataset)} bins")
@@ -127,26 +135,26 @@ def main():
 
     logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
 
-    # Setup standard callbacks
     callbacks = []
     if has_val_data:
-        callbacks.append(EarlyStopping(monitor="val_loss", patience=5, mode="min", verbose=True))
-        callbacks.append(ModelCheckpoint(
-            dirpath="checkpoints",
-            filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
-            save_top_k=1,
-            monitor="val_loss",
-            mode="min",
-            save_last=True,
-        ))
+        callbacks.append(EarlyStopping(monitor="val_loss", patience=10, mode="min", verbose=True))
+        callbacks.append(
+            ModelCheckpoint(
+                dirpath="checkpoints",
+                filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
+                save_top_k=1,
+                monitor="val_loss",
+                mode="min",
+                save_last=True,
+            )
+        )
 
-    # === TRAINER CONFIGURATION ===
     trainer_kwargs = {
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
         "devices": 2,
         "num_nodes": 4,
-        "strategy": "ddp",
+        "strategy": DDPStrategy(find_unused_parameters=True),
         "precision": "16-mixed",
         "log_every_n_steps": 1,
         "logger": logger,
@@ -155,27 +163,27 @@ def main():
         "enable_progress_bar": False,
     }
 
-    # Conditionally add the correct callback and trainer arguments
-    if args.sampling_mode == 'random':
+    if args.sampling_mode == "random":
         print("Using RANDOM sampling mode.")
-        callbacks.append(ResampleDataCallback(
-            full_start_date="2024-04-01",
-            full_end_date="2024-07-01",
-            window_days=7
-        ))
-        # Define an epoch as a fixed number of steps for random sampling
-        trainer_kwargs['limit_train_batches'] = 5000
+        callbacks.append(
+            ResampleDataCallback(
+                full_start_date=FULL_START_DATE,
+                full_end_date=FULL_END_DATE,
+                window_days=WINDOW_DAYS,
+            )
+        )
 
-    elif args.sampling_mode == 'sequential':
+    elif args.sampling_mode == "sequential":
         print("Using SEQUENTIAL sampling mode.")
-        callbacks.append(SequentialDataCallback(
-            full_start_date="2024-04-01",
-            full_end_date="2024-07-01",
-            window_days=7
-        ))
-        # For sequential, an epoch is one full window, so no limit is needed.
+        callbacks.append(
+            SequentialDataCallback(
+                full_start_date=FULL_START_DATE,
+                full_end_date=FULL_END_DATE,
+                window_days=WINDOW_DAYS,
+            )
+        )
 
-    trainer_kwargs['callbacks'] = callbacks
+    trainer_kwargs["callbacks"] = callbacks
 
     if has_val_data:
         trainer_kwargs["check_val_every_n_epoch"] = 1
@@ -184,13 +192,17 @@ def main():
 
     # === TRAINING ===
     if torch.cuda.is_available():
-        print(f"GPU {torch.cuda.current_device()} memory allocated:", torch.cuda.memory_allocated() / 1024**3, "GB")
+        print(
+            f"GPU {torch.cuda.current_device()} memory allocated:",
+            torch.cuda.memory_allocated() / 1024**3,
+            "GB",
+        )
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    trainer.fit(model, data_module)
+    trainer.fit(model, data_module, ckpt_path=args.resume_from_checkpoint)
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")

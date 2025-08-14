@@ -54,7 +54,13 @@ class ObsMeshCutoffConnector:
         self.radius = dists[dists > 0].max() * self.cutoff_factor
         return self.radius
 
-    def add_edges(self, obs_latlon_rad, mesh_latlon_rad, return_edge_attr=False, max_neighbors: int = 8):
+    def add_edges(
+        self,
+        obs_latlon_rad,
+        mesh_latlon_rad,
+        return_edge_attr=False,
+        max_neighbors: int = 1,
+    ):
         """
         Adds edges from observation nodes to mesh nodes based on a cutoff radius.
 
@@ -88,15 +94,22 @@ class ObsMeshCutoffConnector:
             for mesh_idx, dist in zip(mesh_neighbors, mesh_dists):
                 obs_to_mesh_edges.append([obs_idx, mesh_idx])
                 if return_edge_attr:
-                    edge_weights.append(dist)
+                    edge_feat = [dist]
+                    edge_weights.append(edge_feat)
 
         if len(obs_to_mesh_edges) == 0:
-            print("Warning: No obs-to-mesh edges were created. Check cutoff radius or input coordinates.")
+            print(
+                "Warning: No obs-to-mesh edges were created. Check cutoff radius or input coordinates."
+            )
 
-        edge_index_obs_to_mesh = torch.tensor(obs_to_mesh_edges, dtype=torch.long).t().contiguous()
+        edge_index_obs_to_mesh = (
+            torch.tensor(obs_to_mesh_edges, dtype=torch.long).t().contiguous()
+        )
 
         if return_edge_attr:
-            edge_attr = torch.tensor(edge_weights, dtype=torch.float32)
+            edge_attr = torch.tensor(
+                edge_weights, dtype=torch.float32
+            )  # shape [N_edges, edge_dim]
             return edge_index_obs_to_mesh, edge_attr
 
         return edge_index_obs_to_mesh
