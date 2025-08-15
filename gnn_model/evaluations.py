@@ -75,7 +75,7 @@ def plot_instrument_maps(instrument_name, epoch, batch_idx, num_channels=1, data
 
 if __name__ == "__main__":
     # --- Configuration ---
-    EPOCH_TO_PLOT = 76
+    EPOCH_TO_PLOT = 30  # Specify the epoch you want to visualize
     BATCH_IDX_TO_PLOT = 0
 
     # Define all the instruments to plot and their number of channels

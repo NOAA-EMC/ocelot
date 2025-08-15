@@ -18,6 +18,8 @@ from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
+from datetime import timedelta
+
 
 torch.set_float32_matmul_precision("medium")
 
@@ -111,8 +113,7 @@ def main():
         num_neighbors=3,
     )
 
-    # The 'LOCAL_RANK' and 'NODE_RANK' env variables are set by PyTorch Lightning
-    is_main_process = int(os.environ.get("LOCAL_RANK", 0)) == 0 and int(os.environ.get("NODE_RANK", 0)) == 0
+    is_main_process = os.environ.get("SLURM_PROCID", "0") == "0"
 
     if is_main_process:
         print("--- Main process is preparing data... ---")
@@ -128,7 +129,7 @@ def main():
 
     val_loader = data_module.val_dataloader()
     has_val_data = val_loader is not None and len(val_loader.dataset) > 0
-    print(f"Initial validation loader has {len(val_loader.dataset)} bins")
+    print(f"Initial validation loader has {len(val_loader.dataset) if val_loader is not None else 0} bins")
 
     setup_end_time = time.time()
     print(f"Initial setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
@@ -149,12 +150,18 @@ def main():
             )
         )
 
+    strategy = DDPStrategy(
+        process_group_backend="nccl",
+        find_unused_parameters=False,
+        gradient_as_bucket_view=True,
+        timeout=timedelta(minutes=45),
+    )
     trainer_kwargs = {
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
         "devices": 2,
         "num_nodes": 4,
-        "strategy": DDPStrategy(find_unused_parameters=True),
+        "strategy": strategy,
         "precision": "16-mixed",
         "log_every_n_steps": 1,
         "logger": logger,

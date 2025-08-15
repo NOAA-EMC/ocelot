@@ -65,16 +65,20 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
             df = pd.DataFrame(
                 {
                     "time": time[selected_times],
-                    "zar_time": z["time"][selected_times],
+                    "zar_time": (z["zar_time"][selected_times] if "zar_time" in z else z["time"][selected_times]),
                     "index": selected_times,
                 }
             )
+
             df["time_window"] = df["time"].dt.floor(window_size)
 
             # Sort by time
             df = df.sort_values(by="zar_time")
 
             unique_time_windows = df["time_window"].unique()
+            if df.empty:
+                print(f"No observations for {obs_type}.{key} in the window " f"{start_date} → {end_date}")
+                continue  # skip to next key
             print("Filtered observation times:")
             print("  - Start:", df["time"].min())
             print("  - End:", df["time"].max())
@@ -134,21 +138,22 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
     """
 
     print(f"\nProcessing {bin_name}...")
-    for obs_type in data_summary[bin_name].keys():
-        for inst_name in data_summary[bin_name][obs_type].keys():
-            print(f"obs: {obs_type}: {inst_name}")
+    for obs_type in list(data_summary[bin_name].keys()):
+        for inst_name in list(data_summary[bin_name][obs_type].keys()):
             z = z_dict[obs_type][inst_name]
 
             data_summary_bin = data_summary[bin_name][obs_type][inst_name]
-            input_idx = data_summary_bin["input_time_index"]
-            target_idx = data_summary_bin["target_time_index"]
+            input_idx = np.asarray(data_summary_bin["input_time_index"])
+            target_idx = np.asarray(data_summary_bin["target_time_index"])
+            orig_in, orig_tg = input_idx.size, target_idx.size
 
             if len(input_idx) == 0 or len(target_idx) == 0:
-                print(f"Skipping bin {bin_name} because input or target is empty.")
+                del data_summary[bin_name][obs_type][inst_name]
                 continue
 
             # Get the QC filter configuration for the current instrument
-            qc_filters = observation_config[obs_type][inst_name].get("qc_filters")
+            obs_cfg = observation_config[obs_type][inst_name]
+            qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
 
             # Apply quality control based on the instrument name
             if qc_filters:
@@ -156,22 +161,44 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
                 valid_input_mask = np.ones(len(input_idx), dtype=bool)
                 valid_target_mask = np.ones(len(target_idx), dtype=bool)
 
-                # Sequentially apply each filter defined in the config
-                for var, valid_range in qc_filters.items():
-                    # Load the data for the current QC variable
-                    input_qc_data = z[var][input_idx]
-                    target_qc_data = z[var][target_idx]
+                for var, cfg in qc_filters.items():
+                    # range handling
+                    rng = None
+                    if isinstance(cfg, dict):
+                        rng = cfg.get("range", cfg.get("valid_range"))
+                    elif isinstance(cfg, (list, tuple)) and len(cfg) == 2:
+                        rng = cfg
 
-                    # Update the masks. A row is only kept if it passes ALL checks.
-                    valid_input_mask &= (input_qc_data > valid_range[0]) & (input_qc_data < valid_range[1])
-                    valid_target_mask &= (target_qc_data > valid_range[0]) & (target_qc_data < valid_range[1])
+                    if rng is not None:
+                        if var not in z:
+                            print(f"[QC WARNING] '{var}' not in z; skipping range filter.")
+                        else:
+                            lo, hi = rng
+                            in_vals = z[var][input_idx]
+                            tg_vals = z[var][target_idx]
+                            valid_input_mask &= (in_vals >= lo) & (in_vals <= hi)
+                            valid_target_mask &= (tg_vals >= lo) & (tg_vals <= hi)
 
-                # Apply the mask to the indices
+                    # QM flags
+                    if isinstance(cfg, dict) and "qm_flag_col" in cfg and "keep" in cfg:
+                        flag_col = cfg["qm_flag_col"]
+                        if flag_col in z:
+                            in_flags = z[flag_col][input_idx]
+                            tg_flags = z[flag_col][target_idx]
+                            has_valid = (in_flags >= 0).any() or (tg_flags >= 0).any()
+                            if has_valid:
+                                keep_set = set(cfg["keep"])
+                                valid_input_mask &= np.isin(in_flags, list(keep_set)) | (in_flags < 0)
+                                valid_target_mask &= np.isin(tg_flags, list(keep_set)) | (tg_flags < 0)
+                        else:
+                            print(f"[QC] {inst_name}: no valid {flag_col}; skipping QM filter")
+
                 input_idx = input_idx[valid_input_mask]
                 target_idx = target_idx[valid_target_mask]
+                print(f"[{bin_name}][{inst_name}] QC kept {input_idx.size}/{orig_in} (input), " f"{target_idx.size}/{orig_tg} (target)")
 
-                if len(input_idx) == 0 or len(target_idx) == 0:
-                    print(f"Skipping bin {bin_name} for {inst_name} after QC filtering.")
+                if input_idx.size == 0 or target_idx.size == 0:
+                    del data_summary[bin_name][obs_type][inst_name]
                     continue
 
             # --- Load ALL Raw Data ---
@@ -229,11 +256,6 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             target_lon_raw = target_lon_raw[valid_target_mask]
             target_times_clean = target_times_raw[valid_target_mask]
 
-            # If after filtering, any array is empty, skip this bin
-            if input_features_raw.shape[0] == 0 or target_features_raw.shape[0] == 0:
-                print(f"Skipping bin {bin_name} for {inst_name} after NaN removal.")
-                continue
-
             # --- Create the final feature arrays using the CLEANED data ---
             lat_rad_input = np.radians(input_lat_raw)[:, None]
             lon_rad_input = np.radians(input_lon_raw)[:, None]
@@ -266,7 +288,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
 
             # If after filtering, any array is empty, skip this bin
             if input_features_raw.shape[0] == 0 or target_features_raw.shape[0] == 0:
-                print(f"Skipping bin {bin_name} for {inst_name} after NaN removal.")
+                del data_summary[bin_name][obs_type][inst_name]
                 continue
 
             all_features_raw = np.concatenate([input_features_raw, target_features_raw], axis=0)
@@ -345,6 +367,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
 
                 # Assemble target metadata for plotting
                 target_metadata = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_norm])
+                scan_angle = np.zeros((target_features_final.shape[0], 1), dtype=np.float32)
 
             # --- Assemble Final Data for the Bin ---
             data_summary_bin["input_features_final"] = torch.tensor(input_features_final, dtype=torch.float32)
@@ -365,5 +388,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
 
             print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
             print(f"[{bin_name}] target_features_final shape: {target_features_final.shape}")
+
+        if not data_summary[bin_name].get(obs_type):  # all instruments removed
+            del data_summary[bin_name][obs_type]
 
     return data_summary
