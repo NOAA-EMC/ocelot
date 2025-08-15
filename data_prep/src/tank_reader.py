@@ -23,10 +23,12 @@ def create_data(start_date: datetime,
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
+    extension = 'zarr' if output_type == 'zarr' else 'pqt'
+
     if suffix:
-        file_name = f"{data_type}_{suffix}"
+        file_name = f"{data_type}_{suffix}.{extension}"
     else:
-        file_name = f"{data_type}"
+        file_name = f"{data_type}.{extension}"
 
     output_path = os.path.join(settings.OUTPUT_PATH, file_name)
 
@@ -135,9 +137,9 @@ def _create_data_for_day(comm,
 
     if comm.rank() == 0:
         if output_type == 'zarr':
-            ZarrEncoder(description).encode(container, f'{output_path}.zarr', append=append)
+            ZarrEncoder(description).encode(container, f'{output_path}', append=append)
         elif output_type == 'parquet':
-            ParquetEncoder(description).encode(container, f'{output_path}.pqt', append=append)
+            ParquetEncoder(description).encode(container, f'{output_path}', append=append)
         else:
             raise ValueError(f"Unsupported output type: {output_type}")
 
