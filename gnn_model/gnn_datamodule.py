@@ -4,6 +4,8 @@ import pandas as pd
 import torch
 import torch.distributed as dist
 import zarr
+import importlib
+from nnja_adapter import build_zlike_from_df
 from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -12,6 +14,10 @@ from zarr.storage import LRUStoreCache
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
 from utils import random_keep_fraction_and_reindex
+
+
+def _t32(x):
+    return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
 
 
 class BinDataset(Dataset):
@@ -39,9 +45,7 @@ class BinDataset(Dataset):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         print(f"[Rank {rank}] Fetching {bin_name}...")
         try:
-            bin_data = extract_features(
-                self.z, self.data_summary, bin_name, self.observation_config
-            )[bin_name]
+            bin_data = extract_features(self.z, self.data_summary, bin_name, self.observation_config)[bin_name]
             graph_data = self.create_graph_fn(bin_data)
             graph_data.bin_name = bin_name
             return graph_data
@@ -75,14 +79,33 @@ class GNNDataModule(pl.LightningDataModule):
             self.z = {}
             for obs_type, instruments in self.hparams.observation_config.items():
                 self.z[obs_type] = {}
-                for inst_name in instruments.keys():
-                    zarr_path = (
-                        os.path.join(self.hparams.data_path, inst_name) + ".zarr"
-                    )
-                    self.z[obs_type][inst_name] = zarr.open(
-                        LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=2e9),
-                        mode="r",
-                    )
+                for inst_name, inst_cfg in instruments.items():
+                    src = inst_cfg.get("source", "zarr")
+
+                    if src == "zarr":
+                        zarr_path = os.path.join(self.hparams.data_path, inst_name) + ".zarr"
+                        self.z[obs_type][inst_name] = zarr.open(LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=2e9), mode="r")
+                    elif src == "nnja":
+                        # Load DataFrame via dotted loader path
+                        loader_path = inst_cfg["dataframe_loader"]
+                        mod_name, fn_name = loader_path.rsplit(".", 1)
+                        load_fn = getattr(importlib.import_module(mod_name), fn_name)
+
+                        # Columns to request = var_map values + coords/time
+                        need = list(inst_cfg["var_map"].values())
+                        need += [inst_cfg.get("lat_col", "LAT"), inst_cfg.get("lon_col", "LON"), inst_cfg.get("time_col", "OBS_TIMESTAMP")]
+
+                        df = load_fn(start_date=self.hparams.start_date, end_date=self.hparams.end_date, columns=need)
+
+                        self.z[obs_type][inst_name] = build_zlike_from_df(
+                            df,
+                            var_map=inst_cfg["var_map"],
+                            lat_col=inst_cfg.get("lat_col", "LAT"),
+                            lon_col=inst_cfg.get("lon_col", "LON"),
+                            time_col=inst_cfg.get("time_col", "OBS_TIMESTAMP"),
+                        )
+                    else:
+                        raise ValueError(f"Unknown source '{src}' for {inst_name}")
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -93,15 +116,11 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.end_date,
             self.hparams.observation_config,
         )
-        all_bin_names = sorted(
-            list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", ""))
-        )
+        all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
 
         if stage == "fit" or stage is None:
             val_size = min(3, len(all_bin_names) - 1)
-            self.train_bin_names = (
-                all_bin_names[:-val_size] if val_size > 0 else all_bin_names
-            )
+            self.train_bin_names = all_bin_names[:-val_size] if val_size > 0 else all_bin_names
             self.val_bin_names = all_bin_names[-val_size:] if val_size > 0 else []
             self.train_dataset = BinDataset(
                 self.train_bin_names,
@@ -116,10 +135,8 @@ class GNNDataModule(pl.LightningDataModule):
         data = HeteroData()
 
         # 1. Mesh node features and edges
-        data["mesh"].x = self.mesh_structure["mesh_features_torch"][0]
-        data["mesh"].pos = torch.tensor(
-            self.mesh_structure["mesh_lat_lon_list"][0], dtype=torch.float32
-        )
+        data["mesh"].x = _t32(self.mesh_structure["mesh_features_torch"][0])
+        data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
         # 2. For each instrument, set up input and target nodes and edges
         for obs_type, instruments in self.hparams.observation_config.items():
@@ -154,33 +171,32 @@ class GNNDataModule(pl.LightningDataModule):
                         # instrument IDs (long)
                         inst_id = int(inst_data["instrument_id"])
                         num_nodes = target_features.shape[0]
-                        data[node_type_target].instrument_ids = torch.full(
-                            (num_nodes,), inst_id, dtype=torch.long
-                        )
+                        data[node_type_target].instrument_ids = torch.full((num_nodes,), inst_id, dtype=torch.long)
                     else:
                         # For other obs, all features are targets in '.y'
                         data[node_type_target].y = target_features  # [N, target_dim]
                         num_nodes = target_features.shape[0]
                         # instrument IDs (long)
                         inst_id = int(inst_data["instrument_id"])
-                        data[node_type_target].instrument_ids = torch.full(
-                            (num_nodes,), inst_id, dtype=torch.long
-                        )
+                        data[node_type_target].instrument_ids = torch.full((num_nodes,), inst_id, dtype=torch.long)
                         # No aux decoder features → placeholder '.x'
                         data[node_type_target].x = torch.zeros((num_nodes, 1), dtype=torch.float32)
+
+                        # per-channel mask for conventional targets
+                        if "target_channel_mask" in inst_data:
+                            data[node_type_target].target_channel_mask = inst_data["target_channel_mask"].to(torch.bool)
+                        else:
+                            # fall back to all-True if not provided
+                            data[node_type_target].target_channel_mask = torch.ones_like(target_features, dtype=torch.bool)
 
                     data[node_type_target].num_nodes = data[node_type_target].y.shape[0]
 
                     target_lat_deg = inst_data["target_lat_deg"]
                     target_lon_deg = inst_data["target_lon_deg"]
-                    lon_tensor = torch.tensor(target_lon_deg, dtype=torch.float32)
-                    lat_tensor = torch.tensor(target_lat_deg, dtype=torch.float32)
-                    data[node_type_target].pos = torch.stack(
-                        [lon_tensor, lat_tensor], dim=1
-                    )
-                    data[node_type_target].target_metadata = torch.tensor(
-                        inst_data["target_metadata"], dtype=torch.float32
-                    )
+                    lon_tensor = _t32(inst_data["target_lon_deg"])
+                    lat_tensor = _t32(inst_data["target_lat_deg"])
+                    data[node_type_target].pos = torch.stack([lon_tensor, lat_tensor], dim=1)
+                    data[node_type_target].target_metadata = _t32(inst_data["target_metadata"])
 
                     edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
                         target_lat_deg,
@@ -194,25 +210,20 @@ class GNNDataModule(pl.LightningDataModule):
                     data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
                 else:
                     # --- Handle missing instruments ---
-                    data[node_type_input].x = torch.empty(
-                        (0, inst_cfg["input_dim"]), dtype=torch.float32)
-                    data[node_type_target].y = torch.empty(
-                        (0, inst_cfg["target_dim"]), dtype=torch.float32)
+                    data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+                    data[node_type_target].y = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.float32)
                     data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
                     data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
                     data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
+                    data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
 
         # 3. Processor edges (mesh-to-mesh)
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
         m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
 
         reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
-        data["mesh", "to", "mesh"].edge_index = torch.cat(
-            [m2m_edge_index, reverse_edges], dim=1
-        )
-        data["mesh", "to", "mesh"].edge_attr = torch.cat(
-            [m2m_edge_attr, m2m_edge_attr], dim=0
-        )
+        data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
+        data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
 
         return data
 
@@ -242,5 +253,5 @@ class GNNDataModule(pl.LightningDataModule):
             batch_size=1,
             num_workers=4,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,
         )
