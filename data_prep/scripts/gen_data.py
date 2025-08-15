@@ -38,6 +38,7 @@ def _make_sbatch_cmd(reader_path: str,
                      end: datetime,
                      ntasks: int,
                      data_type: str,
+                     output_type: str,
                      suffix: str = None,
                      append: bool = True,
                      slurm_account: str = None) -> str:
@@ -56,7 +57,7 @@ def _make_sbatch_cmd(reader_path: str,
     cmd += f'--ntasks={ntasks} '
     cmd += '--time=02:00:00 '
     cmd += f'--job-name="gen_ocelot_{data_type}_{idx+1}" '
-    cmd += f'--wrap="srun -n {ntasks} python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
+    cmd += f'--wrap="srun -n {ntasks} python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} {output_type} '
 
     if suffix:
         cmd += f'-s {suffix} '
@@ -74,11 +75,12 @@ def _make_parallel_cmd(reader_path: str,
                        end: datetime,
                        ntasks: int,
                        data_type: str,
+                       output_type: str,
                        suffix: str = None,
                        append: bool = True) -> str:
 
     if _is_slurm_available():
-        cmd = f'srun -n {ntasks} python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
+        cmd = f'srun -n {ntasks} python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} {output_type} '
         if suffix:
             cmd += f'-s {suffix} '
 
@@ -86,7 +88,7 @@ def _make_parallel_cmd(reader_path: str,
             cmd += '-a '
 
     else:
-        cmd = f'mpirun -n {ntasks} python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
+        cmd = f'mpirun -n {ntasks} python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} {output_type} '
         if suffix:
             cmd += f'-s {suffix} '
 
@@ -100,10 +102,11 @@ def _make_serial_cmd(reader_path: str,
                      start: datetime,
                      end: datetime,
                      data_type: str,
+                     output_type: str,
                      suffix: str = None,
                      append=True) -> str:
 
-    cmd = f'python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} '
+    cmd = f'python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} {output_type}'
 
     if suffix:
         cmd += f'-s {suffix} '
@@ -137,6 +140,7 @@ def _batch_gen(reader_path: str,
                max_days: int,
                ntasks: int,
                gen_type: str,
+               output_type: str,
                suffix: str = None,
                append: bool = True,
                slurm_account: str = None) -> None:
@@ -151,6 +155,7 @@ def _batch_gen(reader_path: str,
                                  end,
                                  ntasks,
                                  gen_type,
+                                 output_type,
                                  suffix=suffix,
                                  append=append,
                                  slurm_account=slurm_account))
@@ -162,6 +167,7 @@ def _batch_gen(reader_path: str,
                                  end,
                                  ntasks,
                                  gen_type,
+                                 output_type,
                                  suffix=suffix,
                                  slurm_account=slurm_account))
 
@@ -175,9 +181,10 @@ def _parallel_gen(reader_path: str,
                   end: datetime,
                   ntasks: int,
                   gen_type: str,
+                  output_type: str,
                   suffix: str = None,
                   append: bool = True) -> None:
-    cmd = _make_parallel_cmd(reader_path, start, end, ntasks, gen_type, suffix=suffix, append=append)
+    cmd = _make_parallel_cmd(reader_path, start, end, ntasks, gen_type, output_type, suffix=suffix, append=append)
     print(cmd)
     os.system(cmd)
 
@@ -186,9 +193,10 @@ def _serial_gen(reader_path: str,
                 start: datetime,
                 end: datetime,
                 gen_type: str,
+                output_type: str,
                 suffix: str = None,
                 append: bool = True) -> None:
-    cmd = _make_serial_cmd(reader_path, start, end, gen_type, suffix=suffix, append=append)
+    cmd = _make_serial_cmd(reader_path, start, end, gen_type, output_type, suffix=suffix, append=append)
     print(cmd)
     os.system(cmd)
 
@@ -204,6 +212,7 @@ if __name__ == "__main__":
     parser.add_argument('start_date', help='Start date in YYYY-MM-DD format')
     parser.add_argument('end_date', help='End date in YYYY-MM-DD format')
     parser.add_argument('type', choices=choices, help='Data type to generate. "all" generates all data types.')
+    parser.add_argument("output_type", choices=['zarr', 'parquet'], help='Output file type')
     parser.add_argument('-s', '--suffix', required=False, help='Suffix for the output file(s)')
     parser.add_argument('-p', '--parallel', action='store_true', help='Run in parallel (using either srun or mpirun).')
     parser.add_argument('-b', '--batch', action='store_true', help='Run in batch mode (using sbatch). Chunks the data into multiple tasks if needed.')
@@ -225,6 +234,7 @@ if __name__ == "__main__":
                        type_config.batch_days,
                        type_config.num_tasks,
                        gen_type,
+                       args.output_type,
                        suffix=args.suffix,
                        append=args.append,
                        slurm_account=args.slurm_account)
@@ -234,6 +244,7 @@ if __name__ == "__main__":
                           end_date,
                           type_config.num_tasks,
                           gen_type,
+                          args.output_type,
                           suffix=args.suffix,
                           append=args.append)
         else:
@@ -241,6 +252,7 @@ if __name__ == "__main__":
                         start_date,
                         end_date,
                         gen_type,
+                        args.output_type,
                         suffix=args.suffix,
                         append=args.append)
 
