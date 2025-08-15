@@ -160,9 +160,19 @@ class GNNLightning(pl.LightningModule):
             num_message_passing_steps=num_layers,
         )
 
-        self.register_buffer("mesh_x", torch.tensor(mesh_x, dtype=torch.float32))
-        self.register_buffer("mesh_edge_index", torch.tensor(mesh_edge_index, dtype=torch.long))
-        self.register_buffer("mesh_edge_attr", torch.tensor(mesh_edge_attr, dtype=torch.float32))
+        def _as_f32(x):
+            import torch
+
+            return x.clone().detach().to(torch.float32) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.float32)
+
+        def _as_i64(x):
+            import torch
+
+            return x.clone().detach().to(torch.long) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.long)
+
+        self.register_buffer("mesh_x", _as_f32(mesh_x))
+        self.register_buffer("mesh_edge_index", _as_i64(mesh_edge_index))
+        self.register_buffer("mesh_edge_attr", _as_f32(mesh_edge_attr))
 
     def on_fit_start(self):
         if getattr(self, "detect_anomaly", False):

@@ -25,19 +25,36 @@ observation_config:
       target_dim: 22
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+
   conventional:
     surface_obs:
+      source: nnja
+      dataframe_loader: my_loaders.load_adpsfc
+      time_col: OBS_TIMESTAMP
+      lat_col: LAT
+      lon_col: LON
+
+      var_map:
+        airPressure: PRESDATA.PRESSQ03.PRES
+        height: SELV
+        qm_airPressure: QMPR
+
       features: [airPressure]
       metadata: [height]
       input_dim: 9
       target_dim: 1
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
-      qc_filters:
-        airPressure: [300, 1200]
 
-feature_stats:
-  airPressure: [979.30, 52.78]
+      qc_filters:
+        airPressure:
+          range: [300, 1200]       # hPa (adapter already converted Pa->hPa)
+          qm_flag_col: qm_airPressure
+          keep: [-1, 0, 1, 2, 4]            # -1=unknown/missing, 0=good, 2=Neutral or not checked, 1=probably good, 4=climo-ok
+
+
+feature_stats:  # Statistics for the features used in the model
+  airPressure: [978.85, 71.78]
   airTemperature: [24.16, 6.00]
   dewPointTemperature: [11.99, 9.07]
   latitude: [36.80, 6.44]
