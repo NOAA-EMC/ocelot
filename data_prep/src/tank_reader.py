@@ -15,7 +15,7 @@ import settings  # noqa: E402
 def create_data(start_date: datetime,
                 end_date: datetime,
                 data_type: str,
-                output_type: str = 'zarr',
+                output_type: str,
                 suffix: str = None,
                 append: bool = True) -> None:
     """Create zarr files from BUFR data in week long chunks."""
@@ -30,12 +30,13 @@ def create_data(start_date: datetime,
 
     output_path = os.path.join(settings.OUTPUT_PATH, file_name)
 
-    if comm.rank() == 0:
-        # Ensure all output directories exist before processing
-        if not append and os.path.exists(output_path):
-            import shutil
-            shutil.rmtree(output_path)
-        os.makedirs(output_path, exist_ok=True)
+    if output_type == 'zarr':
+        if comm.rank() == 0:
+            # Ensure all output directories exist before processing
+            if not append and os.path.exists(output_path):
+                import shutil
+                shutil.rmtree(output_path)
+            os.makedirs(output_path, exist_ok=True)
 
     comm.barrier()
 
@@ -65,23 +66,25 @@ def create_weekly_data(start_date: datetime,
         week_ranges.append((week_start, week_end))
         week_start = week_end + timedelta(days=1)
 
+    extension = 'zarr' if output_type == 'zarr' else 'pqt'
+
     # Generate output paths for each week
     output_paths = {}
     for wstart, wend in week_ranges:
         if suffix:
-            file_name = f"{data_type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+            file_name = f"{data_type}_{suffix}_{wstart:%Y%m%d}_{wend:%Y%m%d}.{extension}"
         else:
-            file_name = f"{data_type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.zarr"
+            file_name = f"{data_type}_{wstart:%Y%m%d}_{wend:%Y%m%d}.{extension}"
         output_paths[(wstart, wend)] = os.path.join(settings.OUTPUT_PATH, file_name)
 
-    if comm.rank() == 0:
+    if output_type == 'zarr' and comm.rank() == 0:
         # Ensure all output directories exist before processing
-        for path in output_paths.values()[:-1]:
+        for path in output_paths.values():
             if not append and os.path.exists(path):
                 import shutil
                 shutil.rmtree(path)
             os.makedirs(path, exist_ok=True)
-    comm.barrier()
+        comm.barrier()
 
     # Process each day and append to the appropriate weekly file
     day = timedelta(days=1)
