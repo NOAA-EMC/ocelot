@@ -9,15 +9,8 @@ sys.path.append(os.path.realpath(os.path.join(base_path, '..', 'src')))
 
 
 def get_reader_path(data_type: str) -> str:
-    """
-    Returns the correct reader path based on the data_type.
-    """
-    if data_type == 'tank':
-        return os.path.realpath(os.path.join(base_path, '../src/tank_reader.py'))
-    elif data_type == 'bufr_pca':
-        return os.path.realpath(os.path.join(base_path, '../src/bufr_pca_reader.py'))
-    else:
-        raise ValueError(f"Unknown data_type: {data_type}")
+    """Return path to the unified reader script."""
+    return os.path.realpath(os.path.join(base_path, '../src/reader.py'))
 
 
 def _is_slurm_available() -> bool:
@@ -202,7 +195,7 @@ def _serial_gen(reader_path: str,
 
 
 if __name__ == "__main__":
-    from data_reader import Config
+    from config import Config
     config = Config()
 
     data_types = config.get_data_type_names()
