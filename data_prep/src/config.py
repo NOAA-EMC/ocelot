@@ -55,9 +55,9 @@ class TankConfig(DataTypeConfig):
         return self.config['paths']
 
 
-class BufrPcaConfig(DataTypeConfig):
+class PcaConfig(DataTypeConfig):
     def __init__(self, config):
-        super().__init__(config, 'bufr_pca')
+        super().__init__(config, 'pca')
 
     @property
     def directory(self):
@@ -95,8 +95,8 @@ class Config:
         for data_type in self.config:
             if data_type['type'] == 'tank':
                 data_types.append(TankConfig(data_type))
-            elif data_type['type'] == 'bufr_pca':
-                data_types.append(BufrPcaConfig(data_type))
+            elif data_type['type'] == 'pca':
+                data_types.append(PcaConfig(data_type))
             else:
                 assert False, f"Unknown data type {data_type['type']} in config"
 

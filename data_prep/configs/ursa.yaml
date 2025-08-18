@@ -77,7 +77,7 @@ data types:
       - 18/atmos/gdas.t18z.1bamua.tm00.bufr_d
 
   - name: iasi_pca
-    type: bufr_pca
+    type: pca
     num_tasks: 4
     batch_days: 30
     mapping: pca_iasi.py
