@@ -21,6 +21,8 @@ MAPPING_FILE_DIR = os.path.realpath(os.path.join(config_dir, '..', 'mapping'))
 # Path to the directory where the output files will be saved
 OUTPUT_PATH = ''
 
+BUFR_TABLE_DIR = ''
+
 # # The range of latitude and longitude for the continental US
 # LAT_RANGE = (24, 51)
 # LON_RANGE = (-115, -74)

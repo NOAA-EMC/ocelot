@@ -78,9 +78,9 @@ data types:
 
   - name: iasi_pca
     type: pca
-    num_tasks: 4
-    batch_days: 30
+    num_tasks: 12
+    batch_days: 15
     mapping: pca_iasi.py
     directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/IASI_PCA/bufr
-    filename_regex: M03-IASI-IASPCS1C-NA-1.0-(?P<start_time>\d{14}).000000000Z-(?P<end_time>\d{14})-4887062-d+\.bfr
+    filename_regex: M03-IASI-IASPCS1C-NA-1\.0-(?P<start_time>\d{14})\.000000000Z-(?P<end_time>\d{14})-4887062-\d{1}\.bfr 
 
