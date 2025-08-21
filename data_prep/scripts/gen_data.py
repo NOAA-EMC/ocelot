@@ -99,7 +99,7 @@ def _make_serial_cmd(reader_path: str,
                      suffix: str = None,
                      append=True) -> str:
 
-    cmd = f'python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} {output_type}'
+    cmd = f'python {reader_path} {start.strftime("%Y-%m-%d")} {end.strftime("%Y-%m-%d")} {data_type} {output_type} '
 
     if suffix:
         cmd += f'-s {suffix} '

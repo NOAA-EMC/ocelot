@@ -16,8 +16,18 @@ bufr:
     longitude:
       query: "*/CLONH"
 
-    principalComponentScore:
-      query: "*/RPSEQ003/RPSEQ004/NNPCS"
+    #principalComponentScore:
+    #  query: "*/RPSEQ003/RPSEQ004/NNPCS"
+
+    pcs1:
+      query: "*/RPSEQ003{1}/RPSEQ004{1-90}/NNPCS"
+
+    pcs2:
+      query: "*/RPSEQ003{2}/RPSEQ004{1-120}/NNPCS"
+    
+    pcs3:
+      query: "*/RPSEQ003{3}/RPSEQ004{1-90}/NNPCS"
+
 
     sensorZenithAngle:
       query: "*/SAZA"
@@ -36,12 +46,31 @@ bufr:
 
     #Quality Flags
     globalQcFlag:
-      query: "*/QGFQ"
+      query: "*/QFFS"
 
-    residualRms:
-      query: "*/RPSEQ003/RRIB"
+    residualRms1:
+      query: "*/RPSEQ003{1}/RRIB"
+
+    residualRms2:
+      query: "*/RPSEQ003{2}/RRIB"
+
+    residualRms3:
+      query: "*/RPSEQ003{3}/RRIB"
 
 encoder:
+  dimensions:
+    - name: "reps1" 
+      path: "*/RPSEQ003{1}/RPSEQ004{1-90}"
+      labels: "1-90"
+
+    - name: "reps2" 
+      path: "*/RPSEQ003{2}/RPSEQ004{1-120}"
+      labels: "1-120"
+
+    - name: "reps3" 
+      path: "*/RPSEQ003{3}/RPSEQ004{1-90}"
+      labels: "1-90"
+
   variables:
     # MetaData
     - name: "MetaData/time"
@@ -61,9 +90,17 @@ encoder:
       units: "degrees_east"
       range: [ -180, 180 ]
 
-    - name: "ObsValue/principalComponentScore"
-      source: variables/principalComponentScore
-      longName: "Principal Component Score"
+    - name: "ObsValue/pcs1"
+      source: variables/pcs1
+      longName: "Principal Component Score 1"
+
+    - name: "ObsValue/pcs2"
+      source: variables/pcs2
+      longName: "Principal Component Score 2"
+
+    - name: "ObsValue/pcs3"
+      source: variables/pcs3
+      longName: "Principal Component Score 3"
 
     - name: "MetaData/sensorZenithAngle"
       source: variables/sensorZenithAngle
@@ -98,7 +135,18 @@ encoder:
       longName: "Global Quality Control Flag"
       units: ""
 
-    - name: "MetaData/residualRms"
-      source: variables/residualRms
+    - name: "MetaData/residualRms1"
+      source: variables/residualRms1
       longName: "Residual RMS"
       units: ""
+    
+    - name: "MetaData/residualRms2"
+      source: variables/residualRms2
+      longName: "Residual RMS"
+      units: ""
+
+    - name: "MetaData/residualRms3"
+      source: variables/residualRms3
+      longName: "Residual RMS"
+      units: ""
+
