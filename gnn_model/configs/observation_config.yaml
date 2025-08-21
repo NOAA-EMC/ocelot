@@ -1,7 +1,12 @@
 pipeline:
   subsample:
-    satellite: 25
-    conventional: 30
+    satellite: 20         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
+    conventional: 5       # N for conventional
+    mode:
+      satellite: "stride"      # "stride" | "random" | "none"
+      conventional: "random"   # enable random for surface obs
+    seed: 12345            # base seed for reproducible selection
+
 
 instrument_weights:
   atms: 1.0
