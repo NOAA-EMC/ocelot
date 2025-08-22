@@ -51,7 +51,7 @@ class TankConfig(DataTypeConfig):
         super().__init__(config, 'tank')
 
     @property
-    def paths(self):
+    def paths(self) -> str | dict:
         return self.config['paths']
 
 

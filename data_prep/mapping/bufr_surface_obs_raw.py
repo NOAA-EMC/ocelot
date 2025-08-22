@@ -5,26 +5,30 @@ import numpy as np
 import re
 from datetime import datetime
 from pathlib import Path
-from sklearn.preprocessing import LabelEncoder
 
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
 
-DumpKey = 'dump_map_path'
-PrepbufrKey = 'prepbufr_map_path'
-DumpMapPath = map_path('raw_adpsfc_dump.yaml')
+PrepbufrKey = 'prepbufr'
+AdpsfcKey = 'adpsfc'
+SfcshpKey = 'sfcshp'
+
 PrepbufrMapPath = map_path('raw_adpsfc_prepbufr.yaml')
+AdpsfcMapPath = map_path('bufr_surface_obs_adpsfc.yaml')
+SfcshpMapPath = map_path('bufr_surface_obs_sfcshp.yaml')
 
 class RawAdpsfcBuilder(ObsBuilder):
     def __init__(self):
-        super().__init__({DumpKey: DumpMapPath,
-                          PrepbufrKey: PrepbufrMapPath}, log_name=os.path.basename(__file__))
+        super().__init__({PrepbufrKey: PrepbufrMapPath,
+                          AdpsfcKey: AdpsfcMapPath,
+                          SfcshpKey: SfcshpMapPath}, log_name=os.path.basename(__file__))
 
     # Override
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
-        dump_container = bufr.Parser(input_dict[DumpKey], self.map_dict[DumpKey]).parse(comm)
         prepbufr_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
+        adpsfc_container = bufr.Parser(input_dict[AdpsfcKey], self.map_dict[AdpsfcKey]).parse(comm)
+        sfcshp_container = bufr.Parser(input_dict[SfcshpKey], self.map_dict[SfcshpKey]).parse(comm)
 
         container = bufr.DataContainer()
 

@@ -66,18 +66,37 @@ class TankRunner(Runner):
 
     def run(self, comm, parameters: Parameters) -> bufr.DataContainer:
         combined_container = bufr.DataContainer()
-        for path in self.type_config.paths:
+
+        if isinstance(self.type_config.paths, str):
             for day_str in self._day_strs(parameters.start_time, parameters.stop_time):
-                input_path = os.path.join(settings.TANK_PATH, day_str, path)
+                for path in self.type_config.paths:
+                    input_path = os.path.join(settings.TANK_PATH, day_str, path)
 
-                if not os.path.exists(input_path):
-                    print(f"Input path {input_path} does not exist!")
-                    continue
+                    if not os.path.exists(input_path):
+                        print(f"Input path {input_path} does not exist!")
+                        continue
 
-                container = self._make_obs(comm, input_path)
+                    container = self._make_obs(comm, input_path)
 
-                container.gather(comm)
-                combined_container.append(container)
+                    container.gather(comm)
+                    combined_container.append(container)
+        elif isinstance(self.type_config.paths, dict):
+            for day_str in self._day_strs(parameters.start_time, parameters.stop_time):
+                for path_idx in range(len(self.type_config.paths.values()[0])):
+                    input_dict = {}
+                    for key in self.type_config.paths.keys():
+                        rel_path = self.type_config.paths[key][path_idx]
+                        input_path = os.path.join(settings.TANK_PATH, day_str, rel_path)
+
+                        if not os.path.exists(input_path):
+                            print(f"Input path {input_path} does not exist!")
+                            continue
+
+                        input_dict[key] = input_path
+
+                    container = self._make_obs(comm, input_dict)
+                    container.gather(comm)
+                    combined_container.append(container)
 
         return combined_container
 
