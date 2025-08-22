@@ -18,6 +18,7 @@ bufr:
     # Observation Values
     airPressure:
       query: "[*/PRES, */PRLC]"  # Air pressure  missing from NC000007
+      type: float
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
 
@@ -44,6 +45,7 @@ bufr:
 
     windDirection:
       query: "[*/WDIR]"
+      type: float
       tranforms:
         - scale: 0.0174533
 

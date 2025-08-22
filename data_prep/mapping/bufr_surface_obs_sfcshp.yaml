@@ -18,6 +18,7 @@ bufr:
     # Observation Values
     airPressure:
       query: "*/PRES"  # Air pressure at station level
+      type: float
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
 
@@ -44,6 +45,7 @@ bufr:
 
     windDirection:
       query: "[*/WDIR, */WNDSQ4/WDIR]"
+      type: float
       tranforms:
         - scale: 0.0174533  # Convert degrees to radians
 
