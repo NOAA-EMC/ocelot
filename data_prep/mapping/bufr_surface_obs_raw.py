@@ -30,9 +30,55 @@ class RawAdpsfcBuilder(ObsBuilder):
         adpsfc_container = bufr.Parser(input_dict[AdpsfcKey], self.map_dict[AdpsfcKey]).parse(comm)
         sfcshp_container = bufr.Parser(input_dict[SfcshpKey], self.map_dict[SfcshpKey]).parse(comm)
 
+        # Mask out missing time stamps
+        # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
+        prepbufr_container.apply_mask(~prepbufr_container.get('obsTimeMinusCycleTime').mask)
+
+        # Add timestamps to the prepbufr container
+        reference_time = self._get_reference_time(input_dict[PrepbufrKey])
+        self._add_timestamp(prepbufr_container, reference_time)
+
+        # Create output container
         container = bufr.DataContainer()
 
-        return prepbufr_container
+        # Combine the ADPSFC and SFCSHP containers
+        container.append(adpsfc_container)
+        container.append(sfcshp_container)
+
+        # Add the prepbufr quality flag fields to the combined container
+        # Use the timestamp, latitude and longitude to match the observations
+        prepbufr_time = prepbufr_container.get('timestamp')
+        prepbufr_lat = prepbufr_container.get('latitude')
+        prepbufr_lon = prepbufr_container.get('longitude')
+
+        container_time = container.get('timestamp')
+        container_lat = container.get('latitude')
+        container_lon = container.get('longitude')
+
+        # Make hash table for fast lookup
+        prepbufr_dict = {}
+        for i, (t, lat, lon) in enumerate(zip(prepbufr_time, prepbufr_lat, prepbufr_lon)):
+            key = (t, round(lat, 2), round(lon, 2))
+            prepbufr_dict[key] = i
+
+        # Use hash table to find matching indices in combined container
+        indices = [-1] * len(container_time)
+        for i, (t, lat, lon) in enumerate(zip(container_time, container_lat, container_lon)):
+            key = (t, round(lat, 2), round(lon, 2))
+            if key in prepbufr_dict:
+                indices[i] = prepbufr_dict[key]
+
+        indices = np.array(indices)
+        valid_mask = indices != -1
+        indices = indices[valid_mask]
+        container.apply_mask(~valid_mask)
+
+        # Add the quality flags to the container
+        for var in ['airTemperatureQuality', 'specificHumidityQuality', 'windQuality', 'airPressureQuality', 'heightQuality']:
+            quality_flags = prepbufr_container.get(var)[indices]
+            container.add(var, quality_flags, ['*'])
+
+        return container
 
     def _make_description(self):
         description = super()._make_description()
