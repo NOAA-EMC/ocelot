@@ -47,24 +47,24 @@ class RawAdpsfcBuilder(ObsBuilder):
 
         # Add the prepbufr quality flag fields to the combined container
         # Use the timestamp, latitude and longitude to match the observations
-        prepbufr_time = prepbufr_container.get('timestamp')
-        prepbufr_lat = prepbufr_container.get('latitude')
-        prepbufr_lon = prepbufr_container.get('longitude')
+        prepbufr_time = prepbufr_container.get('timestamp').filled()
+        prepbufr_lat = prepbufr_container.get('latitude').filled()
+        prepbufr_lon = prepbufr_container.get('longitude').filled()
 
-        container_time = container.get('timestamp')
-        container_lat = container.get('latitude')
-        container_lon = container.get('longitude')
+        container_time = container.get('timestamp').filled()
+        container_lat = container.get('latitude').filled()
+        container_lon = container.get('longitude').filled()
 
         # Make hash table for fast lookup
         prepbufr_dict = {}
         for i, (t, lat, lon) in enumerate(zip(prepbufr_time, prepbufr_lat, prepbufr_lon)):
-            key = (t, round(lat, 2), round(lon, 2))
+            key = (t, np.round(lat, 2), np.round(lon, 2))
             prepbufr_dict[key] = i
 
         # Use hash table to find matching indices in combined container
         indices = [-1] * len(container_time)
         for i, (t, lat, lon) in enumerate(zip(container_time, container_lat, container_lon)):
-            key = (t, round(lat, 2), round(lon, 2))
+            key = (t, np.round(lat, 2), np.round(lon, 2))
             if key in prepbufr_dict:
                 indices[i] = prepbufr_dict[key]
 
@@ -74,7 +74,12 @@ class RawAdpsfcBuilder(ObsBuilder):
         container.apply_mask(~valid_mask)
 
         # Add the quality flags to the container
-        for var in ['airTemperatureQuality', 'specificHumidityQuality', 'windQuality', 'airPressureQuality', 'heightQuality']:
+        for var in ['airTemperatureQuality',
+                    'specificHumidityQuality',
+                    'windQuality',
+                    'airPressureQuality',
+                    'dewPointTemperatureQuality',
+                    'heightQuality']:
             quality_flags = prepbufr_container.get(var)[indices]
             container.add(var, quality_flags, ['*'])
 
