@@ -93,7 +93,6 @@ class TankRunner(Runner):
 
                         input_dict[key] = input_path
 
-                    print ('**** ', input_dict)
                     container = self._make_obs(comm, input_dict)
                     container.gather(comm)
                     combined_container.append(container)

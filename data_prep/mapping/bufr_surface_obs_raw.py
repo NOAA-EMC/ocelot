@@ -32,7 +32,7 @@ class RawAdpsfcBuilder(ObsBuilder):
 
         container = bufr.DataContainer()
 
-        return container
+        return prepbufr_container
 
     def _make_description(self):
         description = super()._make_description()

@@ -28,7 +28,7 @@ bufr:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
     seaTemperature:
-      query: "[*/SST1, *SEATEMPM/SST1, */IDMSMDBS/BBYSTSL{1}/SST1]"
+      query: "[*/SST1, */SEATEMPM/SST1, */IDMSMDBS/BBYSTSL{1}/SST1]"
       transforms:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
@@ -50,7 +50,7 @@ bufr:
         - scale: 0.0174533  # Convert degrees to radians
 
     height:
-      query: "[*/SELV, */HSMSL]"  # Height above ground level
+      query: "[*/SELV, */HSMSL, */HSAWS, */HSAWS[1]]"  # Height above ground level
 
   encoder:
     variables:
