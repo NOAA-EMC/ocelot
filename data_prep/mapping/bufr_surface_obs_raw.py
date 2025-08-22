@@ -14,7 +14,7 @@ PrepbufrKey = 'prepbufr'
 AdpsfcKey = 'adpsfc'
 SfcshpKey = 'sfcshp'
 
-PrepbufrMapPath = map_path('raw_adpsfc_prepbufr.yaml')
+PrepbufrMapPath = map_path('bufr_surface_obs_prepbufr.yaml')
 AdpsfcMapPath = map_path('bufr_surface_obs_adpsfc.yaml')
 SfcshpMapPath = map_path('bufr_surface_obs_sfcshp.yaml')
 
