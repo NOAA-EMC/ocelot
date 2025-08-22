@@ -82,18 +82,18 @@ class TankRunner(Runner):
                     combined_container.append(container)
         elif isinstance(self.type_config.paths, dict):
             for day_str in self._day_strs(parameters.start_time, parameters.stop_time):
-                for path_idx in range(len(self.type_config.paths.values()[0])):
+                for path_idx in range(len(list(self.type_config.paths.values())[0])):
                     input_dict = {}
                     for key in self.type_config.paths.keys():
                         rel_path = self.type_config.paths[key][path_idx]
                         input_path = os.path.join(settings.TANK_PATH, day_str, rel_path)
 
                         if not os.path.exists(input_path):
-                            print(f"Input path {input_path} does not exist!")
-                            continue
+                            raise Exception(f"Input path {input_path} does not exist!")
 
                         input_dict[key] = input_path
 
+                    print ('**** ', input_dict)
                     container = self._make_obs(comm, input_dict)
                     container.gather(comm)
                     combined_container.append(container)
