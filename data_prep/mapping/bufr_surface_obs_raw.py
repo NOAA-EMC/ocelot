@@ -86,14 +86,45 @@ class RawAdpsfcBuilder(ObsBuilder):
         return container
 
     def _make_description(self):
-        description = super()._make_description()
+        description = bufr.encoders.Description(self.map_dict[AdpsfcKey])
 
+        # Add the quality flag variables
         description.add_variables([
             {
-                'name': "time",
-                'source': 'timestamp',
-                'longName': "Datetime",
-                'units': "seconds since 1970-01-01T00:00:00Z"
+                'name': "airTemperatureQuality",
+                'source': 'airTemperatureQuality',
+                'longName': "Air Temperature Quality Marker",
+                'units': "quality_marker"
+            },
+            {
+                'name': "specificHumidityQuality",
+                'source': 'specificHumidityQuality',
+                'longName': "Specific Humidity Quality Marker",
+                'units': "quality_marker"
+            },
+            {
+                'name': "dewPointTemperatureQuality",
+                'source': 'dewPointTemperatureQuality',
+                'longName': "Dew Point Temperature Quality Marker",
+                'units': "quality_marker"
+            },
+            {
+                'name': "windQuality",
+                'source': 'windQuality',
+                'longName': "Wind Quality Marker",
+                'units': "quality_marker"
+            },
+            {
+                'name': "airPressureQuality",
+                'source': 'airPressureQuality',
+                'longName': "Air Pressure Quality Marker",
+                'units': "quality_marker"
+            },
+            {
+                'name': "heightQuality",
+                'source': 'heightQuality',
+                'longName': "Height Quality Marker",
+                'units': "quality_marker"
             }
         ])
 
