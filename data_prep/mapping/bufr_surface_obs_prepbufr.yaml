@@ -16,22 +16,22 @@ bufr:
 
     # Quality Markers
     airTemperatureQuality:
-      query: "*/T___INFO/T__EVENT{1}/TQM"
+      query: "*/T___INFO/T__EVENT/TQM"
 
     specificHumidityQuality:
-      query: "*/Q___INFO/Q__EVENT{1}/QQM"
+      query: "*/Q___INFO/Q__EVENT/QQM"
 
     dewPointTemperatureQuality:
-      query: "*/Q___INFO/Q__EVENT{1}/QQM"
+      query: "*/Q___INFO/Q__EVENT/QQM"
 
     windQuality:
-      query: "*/W___INFO/W__EVENT{2}/WQM"
+      query: "*/W___INFO/W__EVENT/WQM"
 
     airPressureQuality:
-      query: "*/P___INFO/P__EVENT{1}/PQM"
+      query: "*/P___INFO/P__EVENT/PQM"
 
     heightQuality:
-      query: "*/Z___INFO/Z__EVENT{1}/ZQM"
+      query: "*/Z___INFO/Z__EVENT/ZQM"
 
 encoder:
   variables:
