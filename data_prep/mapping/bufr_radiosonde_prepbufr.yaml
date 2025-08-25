@@ -26,26 +26,68 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
-    height:
+    height_event_1:
       query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
 
+    height_event_2:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{2}/ZOB"
+
+    height_event_3:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{3}/ZOB"
+
     # Quality Markers
-    airTemperatureQuality:
+    airTemperatureQuality_event_1:
       query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
 
-    specificHumidityQuality:
+    airTemperatureQuality_event_2:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{2}/TQM"
+
+    airTemperatureQuality_event_3:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{3}/TQM"
+
+    specificHumidityQuality_event_1:
       query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
-    dewPointTemperatureQuality:
+    specificHumidityQuality_event_2:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{2}/QQM"
+
+    specificHumidityQuality_event_3:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{3}/QQM"
+
+    dewPointTemperatureQuality_event_1:
       query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
-    windQuality:
+    dewPointTemperatureQuality_event_2:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{2}/QQM"
+
+    dewPointTemperatureQuality_event_3:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{3}/QQM"
+
+    windQuality_event_1:
       query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
 
-    airPressureQuality:
+    windQuality_event_2:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{2}/WQM"
+
+    windQuality_event_3:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{3}/WQM"
+
+    airPressureQuality_event_1:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
 
-    heightQuality:
+    airPressureQuality_event_2:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{2}/PQM"
+
+    airPressureQuality_event_3:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{3}/PQM"
+
+    heightQuality_event_1:
       query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZQM"
+
+    heightQuality_event_2:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{2}/ZQM"
+
+    heightQuality_event_3:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{3}/ZQM"
 
 

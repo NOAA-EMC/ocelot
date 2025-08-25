@@ -34,6 +34,8 @@ class RawAdpsfcBuilder(ObsBuilder):
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         prepbufr_container.apply_mask(~prepbufr_container.get('obsTimeMinusCycleTime').mask)
 
+        prepbufr_container.all_gather(comm)
+
         # Add timestamps to the prepbufr container
         reference_time = self._get_reference_time(input_dict[PrepbufrKey])
         self._add_timestamp(prepbufr_container, reference_time)
