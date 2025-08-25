@@ -1,0 +1,51 @@
+bufr:
+  group_by_variable: driftTime
+  subsets:
+    - ADPUPA
+  variables:
+    # MetaData Variables
+    launchTime:
+      query: "*/DHR"
+
+    launchLatitude:
+      query: "*/XOB"
+
+    launchLongitude:
+      query: "*/YOB"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    driftTime:
+      query: "*/PRSLEVEL/DRFTINFO/HRDR"
+
+    driftLatitude:
+      query: "*/PRSLEVEL/DRFTINFO/YDR"
+
+    driftLongitude:
+      query: "*/PRSLEVEL/DRFTINFO/XDR"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    height:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT/ZOB"
+
+    # Quality Markers
+    airTemperatureQuality:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT/TQM"
+
+    specificHumidityQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT/QQM"
+
+    dewPointTemperatureQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT/QQM"
+
+    windQuality:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT/WQM"
+
+    airPressureQuality:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT/PQM"
+
+    heightQuality:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT/ZQM"
+
+
