@@ -1,5 +1,5 @@
 bufr:
-  group_by_variable: driftTime
+  group_by_variable: driftCycleTime
   subsets:
     - ADPUPA
   variables:
@@ -27,25 +27,25 @@ bufr:
         - wrap: [ -180.0, 180.0 ]
 
     height:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT/ZOB"
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
 
     # Quality Markers
     airTemperatureQuality:
-      query: "*/PRSLEVEL/T___INFO/T__EVENT/TQM"
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
 
     specificHumidityQuality:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT/QQM"
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
     dewPointTemperatureQuality:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT/QQM"
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
     windQuality:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT/WQM"
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
 
     airPressureQuality:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT/PQM"
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
 
     heightQuality:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT/ZQM"
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZQM"
 
 
