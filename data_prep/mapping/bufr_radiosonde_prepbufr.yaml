@@ -4,7 +4,7 @@ bufr:
     - ADPUPA
   variables:
     # MetaData Variables
-    launchTime:
+    launchCycleTime:
       query: "*/DHR"
 
     launchLatitude:
@@ -15,7 +15,7 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
-    driftTime:
+    driftCycleTime:
       query: "*/PRSLEVEL/DRFTINFO/HRDR"
 
     driftLatitude:
