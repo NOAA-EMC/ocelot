@@ -71,7 +71,7 @@ class RawAdpsfcBuilder(ObsBuilder):
         indices = np.array(indices)
         valid_mask = indices != -1
         indices = indices[valid_mask]
-        container.apply_mask(~valid_mask)
+        container.apply_mask(valid_mask)
 
         # Add the quality flags to the container
         for var in ['airTemperatureQuality',
@@ -81,7 +81,7 @@ class RawAdpsfcBuilder(ObsBuilder):
                     'dewPointTemperatureQuality',
                     'heightQuality']:
             quality_flags = prepbufr_container.get(var)[indices]
-            container.add(var, quality_flags, ['*'])
+            container.add(var, quality_flags, ['*', '*/EVENT'])
 
         return container
 
@@ -127,6 +127,8 @@ class RawAdpsfcBuilder(ObsBuilder):
                 'units': "quality_marker"
             }
         ])
+
+        description.add_dimension('event', ['*', '*/EVENT'])
 
         return description
 
