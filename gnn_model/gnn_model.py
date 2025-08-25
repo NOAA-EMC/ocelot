@@ -160,9 +160,27 @@ class GNNLightning(pl.LightningModule):
             num_message_passing_steps=num_layers,
         )
 
-        self.register_buffer("mesh_x", torch.tensor(mesh_x, dtype=torch.float32))
-        self.register_buffer("mesh_edge_index", torch.tensor(mesh_edge_index, dtype=torch.long))
-        self.register_buffer("mesh_edge_attr", torch.tensor(mesh_edge_attr, dtype=torch.float32))
+        def _as_f32(x):
+            import torch
+
+            return x.clone().detach().to(torch.float32) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.float32)
+
+        def _as_i64(x):
+            import torch
+
+            return x.clone().detach().to(torch.long) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.long)
+
+        self.register_buffer("mesh_x", _as_f32(mesh_x))
+        self.register_buffer("mesh_edge_index", _as_i64(mesh_edge_index))
+        self.register_buffer("mesh_edge_attr", _as_f32(mesh_edge_attr))
+
+    def _feature_names_for_node(self, node_type: str):
+        """Return ordered feature names for this target node."""
+        inst_name = node_type.replace("_target", "")
+        for obs_type, instruments in self.observation_config.items():
+            if inst_name in instruments:
+                return instruments[inst_name].get("features", None)
+        return None
 
     def on_fit_start(self):
         if getattr(self, "detect_anomaly", False):
@@ -189,7 +207,13 @@ class GNNLightning(pl.LightningModule):
                     loader.sampler.set_epoch(self.current_epoch)
 
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
-        # Use config values if node_type matches
+        """
+        Undo standardization (z-score) for predictions/targets.
+
+        - If node_type is "atms_target": uses bt_channel_1..22 from feature_stats.
+        - If node_type is "surface_obs_target": uses feature order defined in observation_config["surface_obs"]["features"].
+        - Otherwise raises ValueError.
+        """
         if node_type == "atms_target":
             features = [f"bt_channel_{i}" for i in range(1, 23)]
             mean_vec = torch.tensor(
@@ -203,14 +227,32 @@ class GNNLightning(pl.LightningModule):
                 device=self.device,
             )
             return tensor * std_vec + mean_vec
-        elif node_type in ["surface_obs_target", "radiosonde_target"]:
-            # Get the mean and std for the 'airPressure' feature
-            mean_val = self.feature_stats["airPressure"][0]
-            std_val = self.feature_stats["airPressure"][1]
-            return tensor * std_val + mean_val
 
-        elif mean is not None and std is not None:
-            return tensor * std + mean
+        elif node_type == "surface_obs_target":
+            # Find the configured features for surface_obs
+            feats = None
+            for obs_type, instruments in self.observation_config.items():
+                if "surface_obs" in instruments:
+                    feats = instruments["surface_obs"]["features"]
+                    break
+            if feats is None:
+                raise ValueError("surface_obs config with 'features' not found for unnormalization")
+
+            # Build mean/std vectors for the configured order
+            mean_vec = torch.tensor(
+                [self.feature_stats[f][0] for f in feats],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            std_vec = torch.tensor(
+                [self.feature_stats[f][1] for f in feats],
+                dtype=torch.float32,
+                device=self.device,
+            )
+
+            # Broadcast to prediction shape if needed
+            return tensor * std_vec + mean_vec
+
         else:
             raise ValueError(f"Un-normalization not supported for node_type: {node_type}")
 
@@ -401,6 +443,7 @@ class GNNLightning(pl.LightningModule):
                             "x": batch[decoder_name].x,
                             "target_metadata": batch[decoder_name].target_metadata,
                             "instrument_ids": batch[decoder_name].instrument_ids,
+                            "target_channel_mask": getattr(batch[decoder_name], "target_channel_mask", None),
                         }
                         step_data[("mesh", "to", decoder_name)] = {
                             "edge_index": batch[("mesh", "to", decoder_name)].edge_index,
@@ -422,6 +465,11 @@ class GNNLightning(pl.LightningModule):
                             "x": temp_graph_data[decoder_name].x.to(device),
                             "target_metadata": temp_graph_data[decoder_name].target_metadata.to(device),
                             "instrument_ids": temp_graph_data[decoder_name].instrument_ids.to(device),
+                            "target_channel_mask": (
+                                getattr(temp_graph_data[decoder_name], "target_channel_mask", None)
+                                if hasattr(temp_graph_data[decoder_name], "target_channel_mask")
+                                else None
+                            ),
                         }
                         step_data[("mesh", "to", decoder_name)] = {
                             "edge_index": temp_graph_data[("mesh", "to", decoder_name)].edge_index.to(device),
@@ -486,6 +534,7 @@ class GNNLightning(pl.LightningModule):
                     continue
 
                 instrument_ids = step_data_list[step].get(node_type, {}).get("instrument_ids", None)
+                valid_mask = step_data_list[step].get(node_type, {}).get("target_channel_mask", None)
                 channel_loss = weighted_huber_loss(
                     y_pred,
                     y_true,
@@ -493,6 +542,7 @@ class GNNLightning(pl.LightningModule):
                     channel_weights=self.channel_weights,  # dict keyed by int ids
                     delta=0.1,
                     rebalancing=True,
+                    valid_mask=valid_mask,
                 )
 
                 # Apply the overall instrument weight
@@ -562,6 +612,7 @@ class GNNLightning(pl.LightningModule):
 
         # --- Loop over all node_types/decoders ---
         for node_type, preds_list in all_predictions.items():
+            feats = None
             inst_name = node_type.replace("_target", "")
             inst_id = self.instrument_name_to_id.get(inst_name, None)
             instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
@@ -577,9 +628,16 @@ class GNNLightning(pl.LightningModule):
                     continue
 
                 instrument_ids = step_data_list[step].get(node_type, {}).get("instrument_ids", None)
+                valid_mask = step_data_list[step].get(node_type, {}).get("target_channel_mask", None)
                 # Get the channel-weighted loss
                 channel_loss = weighted_huber_loss(
-                    y_pred, y_true, instrument_ids=instrument_ids, channel_weights=self.channel_weights, delta=0.1, rebalancing=True
+                    y_pred,
+                    y_true,
+                    instrument_ids=instrument_ids,
+                    channel_weights=self.channel_weights,
+                    delta=0.1,
+                    rebalancing=True,
+                    valid_mask=valid_mask,
                 )
 
                 # Apply the overall instrument weight
@@ -599,9 +657,35 @@ class GNNLightning(pl.LightningModule):
                 y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
                 y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
 
-                step_rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
-                step_mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
-                step_bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
+                if valid_mask is not None:
+                    # reduce only over valid elements
+                    vm = valid_mask
+                    # RMSE
+                    mse_elems = (y_pred_unnorm - y_true_unnorm).pow(2)
+                    rmse = torch.sqrt((mse_elems[vm]).mean() + 1e-12)
+                    # MAE
+                    mae = (y_pred_unnorm - y_true_unnorm).abs()
+                    mae = (mae[vm]).mean()
+                    # Bias
+                    bias = y_pred_unnorm - y_true_unnorm
+                    bias = (bias[vm]).mean()
+
+                    # Keep per-channel vectors to match the logging format
+                    # (compute channelwise means with masking)
+                    # shape handling:
+                    vm_f = vm.float()
+                    denom_ch = vm_f.sum(dim=0).clamp_min(1.0)
+                    rmse_ch = torch.sqrt((mse_elems * vm_f).sum(dim=0) / denom_ch + 1e-12)
+                    mae_ch = (mae := ((y_pred_unnorm - y_true_unnorm).abs() * vm_f).sum(dim=0) / denom_ch)
+                    bias_ch = ((y_pred_unnorm - y_true_unnorm) * vm_f).sum(dim=0) / denom_ch
+
+                    step_rmse = rmse_ch
+                    step_mae = mae_ch
+                    step_bias = bias_ch
+                else:
+                    step_rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
+                    step_mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
+                    step_bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
 
                 all_step_rmse[node_type].append(step_rmse)
                 all_step_mae[node_type].append(step_mae)
@@ -612,6 +696,7 @@ class GNNLightning(pl.LightningModule):
                     and step == 0  # only first step of rollout
                     and batch_idx == 0  # only first batch
                 ):
+                    # --- CSV save block ---
                     out_dir = "val_csv"
                     os.makedirs(out_dir, exist_ok=True)
                     n = y_pred_unnorm.shape[0]
@@ -622,15 +707,35 @@ class GNNLightning(pl.LightningModule):
                     lon = current_step_data["target_metadata"][:, 1].cpu().numpy()
                     lat_deg = np.degrees(lat)
                     lon_deg = np.degrees(lon)
+                    # Get feature names and make sure length matches n_ch
+                    feats = self._feature_names_for_node(node_type)
+                    if not feats:
+                        feats = [f"ch{i+1}" for i in range(n_ch)]
+                    # guard against mismatch (slice or pad)
+                    if len(feats) > n_ch:
+                        feats = feats[:n_ch]
+                    elif len(feats) < n_ch:
+                        feats = feats + [f"ch{i+1}" for i in range(len(feats) + 1, n_ch + 1)]
+
+                    # sanitize any odd names for column safety (optional)
+                    def _safe_col_name(s: str) -> str:
+                        return str(s).replace(" ", "_")
+
                     # Build DataFrame
-                    df = pd.DataFrame(
-                        {
-                            "lat": lat_deg,
-                            "lon": lon_deg,
-                            **{f"pred_ch{i+1}": y_pred_unnorm[:, i].cpu().numpy() for i in range(n_ch)},
-                            **{f"true_ch{i+1}": y_true_unnorm[:, i].cpu().numpy() for i in range(n_ch)},
-                        }
-                    )
+                    df = pd.DataFrame({"lat": lat_deg, "lon": lon_deg})
+
+                    for i, fname in enumerate(feats):
+                        col = _safe_col_name(fname)
+                        df[f"pred_{col}"] = y_pred_unnorm[:, i].detach().cpu().numpy()
+                        df[f"true_{col}"] = y_true_unnorm[:, i].detach().cpu().numpy()
+
+                    # include mask columns when available
+                    if valid_mask is not None:
+                        vm_cpu = valid_mask.detach().cpu().numpy().astype(bool)
+                        for i, fname in enumerate(feats):
+                            col = _safe_col_name(fname)
+                            df[f"mask_{col}"] = vm_cpu[:, i]
+
                     filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step{step}.csv"
                     df.to_csv(filename, index=False)
                     print(f"Saved: {filename}")

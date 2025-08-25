@@ -1,7 +1,12 @@
 pipeline:
   subsample:
-    satellite: 25
-    conventional: 20
+    satellite: 20         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
+    conventional: 5       # N for conventional
+    mode:
+      satellite: "stride"      # "stride" | "random" | "none"
+      conventional: "random"   # enable random for surface obs
+    seed: 12345            # base seed for reproducible selection
+
 
 instrument_weights:
   atms: 1.0
@@ -9,7 +14,7 @@ instrument_weights:
 
 channel_weights:
   atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
-  surface_obs: [1.0]
+  surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
 
 observation_config:
   satellite:
@@ -25,21 +30,86 @@ observation_config:
       target_dim: 22
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+
   conventional:
     surface_obs:
-      features: [airPressure]
+      source: nnja
+      dataframe_loader: my_loaders.load_adpsfc
+      time_col: OBS_TIMESTAMP
+      lat_col: LAT
+      lon_col: LON
+
+      var_map:
+        # pressure (adapter has fallback to PRSSQ1.PRES and auto Pa→hPa)
+        airPressure: PRESDATA.PRESSQ03.PRES
+        qm_airPressure: QMPR
+
+        # temperature (Kelvin in NC000101 → adapter converts to °C)
+        airTemperature: TEMHUMDA.TMDB
+        qm_airTemperature: QMAT
+
+        # dew point (adapter converts K→°C)
+        dewPointTemperature: TEMHUMDA.TMDP
+        qm_dewPointTemperature: QMDD
+
+        # humidity (as reported, %)
+        relativeHumidity: TEMHUMDA.REHU
+
+        # wind (speed & dir in NC000101; adapter computes wind_u, wind_v)
+        windSpeed: BSYWND1.WSPD
+        windDirection: BSYWND1.WDIR
+        qm_wind: QMWN
+
+        # metadata
+        height: SELV
+
+      # order here defines the target channel order everywhere (CSV, plotting, losses)
+      features: [airPressure, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
       metadata: [height]
-      input_dim: 9
-      target_dim: 1
+      input_dim: 14  # input_dim  = 7 + len(metadata) + len(features)
+      target_dim: 6
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
-      qc_filters:
-        airPressure: [300, 1200]
 
-feature_stats:
-  airPressure: [979.30, 52.78]
-  airTemperature: [24.16, 6.00]
-  dewPointTemperature: [11.99, 9.07]
+      qc_filters:
+        airPressure:
+          range: [300, 1200]       # hPa (adapter already converted Pa->hPa)
+          qm_flag_col: qm_airPressure
+          keep: [-1, 0, 1, 2, 4]            # -1=unknown/missing, 0=good, 2=Neutral or not checked, 1=probably good, 4=climo-ok
+
+        airTemperature:
+          range: [-80, 60]         # after K→°C conversion
+          qm_flag_col: qm_airTemperature
+          keep: [-1, 0, 1, 2, 4]
+
+        dewPointTemperature:
+          range: [-100, 40]                # °C (dew points)
+          qm_flag_col: qm_dewPointTemperature
+          keep: [-1, 0, 1, 2, 4]
+
+        relativeHumidity:
+          range: [0, 100]                  # %
+          # NC000101 does not expose a dedicated RH QM; leave qm_flag_col unset or use temperature QC as a proxy.
+          # qm_flag_col: qm_airTemperature
+          keep: [-1, 0, 1, 2, 4]
+
+        # wind components are signed m/s; use symmetric ranges
+        wind_u:
+          range: [-75, 75]                 # m/s
+          qm_flag_col: qm_wind
+          keep: [-1, 0, 1, 2, 4]
+        wind_v:
+          range: [-75, 75]                 # m/s
+          qm_flag_col: qm_wind
+          keep: [-1, 0, 1, 2, 4]
+
+feature_stats:  # Statistics for the features used in the model
+  airPressure: [972.39, 59.30]
+  airTemperature: [13.25, 11.96]
+  dewPointTemperature: [6.92, 10.92]
+  relativeHumidity: [71.06, 21.03]
+  wind_u: [0.24, 3.83]
+  wind_v: [0.26, 3.68]
   latitude: [36.80, 6.44]
   longitude: [-89.20, 9.75]
   seaTemperature: [24.17, 5.62]
