@@ -15,6 +15,12 @@ bufr:
     longitude:
       query: "[*/CLON]"
 
+    airPressure:
+      query: "[*/UARLV/PRLC, */PRLC]"  # Air pressure at station level
+      type: float
+      transforms:
+        - scale: 0.01  # Convert from Pa to hPa
+
     airTemperature:
       query: "[*/UARLV/UATMP/TMDB, */TMDB]"
 
@@ -34,11 +40,6 @@ bufr:
       query: "[*/UARLV/UAWND/WSPD, */WSPD]"
       type: float
 
-    airPressure:
-      query: "[*/UARLV/PRLC, */PRLC]"  # Air pressure at station level
-      type: float
-      transforms:
-        - scale: 0.01  # Convert from Pa to hPa
 encoder:
   variables:
     # MetaData
