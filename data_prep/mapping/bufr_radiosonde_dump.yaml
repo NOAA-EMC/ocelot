@@ -39,3 +39,54 @@ bufr:
       type: float
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
+encoder:
+  variables:
+    - # MetaData
+    - name: "time"
+    - source: timestamp
+    - longName: "Datetime"
+    - units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: "latitude"
+      source: latitude
+      longName: "Latitude"
+      units: "degree_north"
+      range: [-90, 90]
+
+    - name: "longitude"
+      source: longitude
+      longName: "Longitude"
+      units: "degree_east"
+
+    - name: "airTemperature"
+      source: airTemperature
+      longName: "Air Temperature"
+      units: "deg C"
+      range: [-100, 100]
+
+    - name: "dewPointTemperature"
+      source: dewPointTemperature
+      longName: "Dew Point Temperature"
+      units: "deg C"
+      range: [ -100, 100 ]
+
+    - name: "specificHumidity"
+      source: specificHumidity
+      longName: "Specific Humidity"
+      units: "mg/kg"
+      range: [0, 50000]
+
+    - name: "windDirection"
+      source: windDirection
+      longName: "Wind Direction"
+      units: "radians"
+
+    - name: "windSpeed"
+      source: windSpeed
+      longName: "Wind Speed"
+      units: "m/s"
+
+    - name: "airPressure"
+      source: airPressure
+      longName: "Air Pressure"
+      units: "hPa"
