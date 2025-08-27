@@ -75,17 +75,21 @@ class RawRadiosondeBuilder(ObsBuilder):
         # Add the quality flags to the container
         for var in ['driftTime',
                     'driftLatitude',
-                    'driftLongitude',
-                    'height_event',
-                    'airTemperatureQuality_event',
-                    'specificHumidityQuality_event',
-                    'dewPointTemperatureQuality_event',
-                    'windQuality_event',
-                    'airPressureQuality_event',
-                    'heightQuality_event']:
+                    'driftLongitude']:
 
             quality_flags = prepbufr_container.get(var)[indices]
             container.add(var, quality_flags, ['*'])
+
+        for var in ['height',
+                    'airTemperatureQuality',
+                    'specificHumidityQuality',
+                    'dewPointTemperatureQuality',
+                    'windQuality',
+                    'airPressureQuality',
+                    'heightQuality']:
+
+            quality_flags = prepbufr_container.get(var)[indices]
+            container.add(var, quality_flags, ['*', '*/EVENT'])
 
         return container
 
@@ -113,44 +117,44 @@ class RawRadiosondeBuilder(ObsBuilder):
                 'units': "degree_east"
             },
             {
-                'name': "height_event",
-                'source': 'height_event',
+                'name': "height",
+                'source': 'height',
                 'longName': "Height",
                 'units': "meters"
             },
             {
-                'name': "airTemperatureQuality_event",
-                'source': 'airTemperatureQuality_event',
+                'name': "airTemperatureQuality",
+                'source': 'airTemperatureQuality',
                 'longName': "Air Temperature Quality Marker",
                 'units': "quality_marker"
             },
             {
-                'name': "specificHumidityQuality_event",
-                'source': 'specificHumidityQuality_event',
+                'name': "specificHumidityQuality",
+                'source': 'specificHumidityQuality',
                 'longName': "Specific Humidity Quality Marker",
                 'units': "quality_marker"
             },
             {
-                'name': "dewPointTemperatureQuality_event",
-                'source': 'dewPointTemperatureQuality_event',
+                'name': "dewPointTemperatureQuality",
+                'source': 'dewPointTemperatureQuality',
                 'longName': "Dew Point Temperature Quality Marker",
                 'units': "quality_marker"
             },
             {
-                'name': "windQuality_event",
-                'source': 'windQuality_event',
+                'name': "windQuality",
+                'source': 'windQuality',
                 'longName': "Wind Quality Marker",
                 'units': "quality_marker"
             },
             {
-                'name': "airPressureQuality_event",
-                'source': 'airPressureQuality_event',
+                'name': "airPressureQuality",
+                'source': 'airPressureQuality',
                 'longName': "Air Pressure Quality Marker",
                 'units': "quality_marker"
             },
             {
-                'name': "heightQuality_event",
-                'source': 'heightQuality_event',
+                'name': "heightQuality",
+                'source': 'heightQuality',
                 'longName': "Height Quality Marker",
                 'units': "quality_marker"
             }

@@ -24,14 +24,20 @@ bufr:
     dewPointTemperatureQuality:
       query: "*/Q___INFO/Q__EVENT/QQM"
 
-    windQuality:
-      query: "*/W___INFO/W__EVENT/WQM"
-
     airPressureQuality:
-      query: "*/P___INFO/P__EVENT/PQM"
+      query: "*/P___INFO/P__EVENT{1-3}/PQM" # coarse dimension
 
     heightQuality:
       query: "*/Z___INFO/Z__EVENT/ZQM"
+
+    windQuality:
+      query: "*/W___INFO/W__EVENT/WQM"
+
+    eastwardWind:
+      query: "*/W___INFO/W__EVENT/UOB"
+
+    northwardWind:
+      query: "*/W___INFO/W__EVENT/VOB"
 
 encoder:
   variables:
