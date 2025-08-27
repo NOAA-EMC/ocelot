@@ -114,12 +114,6 @@ class RawAdpsfcBuilder(ObsBuilder):
                 'units': "quality_marker"
             },
             {
-                'name': "windQuality",
-                'source': 'windQuality',
-                'longName': "Wind Quality Marker",
-                'units': "quality_marker"
-            },
-            {
                 'name': "airPressureQuality",
                 'source': 'airPressureQuality',
                 'longName': "Air Pressure Quality Marker",
@@ -130,6 +124,24 @@ class RawAdpsfcBuilder(ObsBuilder):
                 'source': 'heightQuality',
                 'longName': "Height Quality Marker",
                 'units': "quality_marker"
+            },
+            {
+                'name': "windQuality",
+                'source': 'windQuality',
+                'longName': "Wind Quality Marker",
+                'units': "quality_marker"
+            },
+            {
+                'name': "eastwardWind",
+                'source': 'eastwardWind',
+                'longName': "Eastward Wind",
+                'units': "m/s"
+            },
+            {
+                'name': "northwardWind",
+                'source': 'northwardWind',
+                'longName': "Northward Wind",
+                'units': "m/s"
             }
         ])
 
