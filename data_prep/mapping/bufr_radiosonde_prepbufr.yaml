@@ -26,68 +26,24 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
-    height_event_1:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
-
-    height_event_2:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{2}/ZOB"
-
-    height_event_3:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{3}/ZOB"
+    height_event:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1-3}/ZOB"
 
     # Quality Markers
-    airTemperatureQuality_event_1:
-      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
+    airTemperatureQuality_event:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1-3}/TQM"
 
-    airTemperatureQuality_event_2:
-      query: "*/PRSLEVEL/T___INFO/T__EVENT{2}/TQM"
+    specificHumidityQuality_event:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1-3}/QQM"
 
-    airTemperatureQuality_event_3:
-      query: "*/PRSLEVEL/T___INFO/T__EVENT{3}/TQM"
+    dewPointTemperatureQuality_event:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1-3}/QQM"
 
-    specificHumidityQuality_event_1:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
+    windQuality_event:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1-3}/WQM"
 
-    specificHumidityQuality_event_2:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{2}/QQM"
+    airPressureQuality_event:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1-3}/PQM"
 
-    specificHumidityQuality_event_3:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{3}/QQM"
-
-    dewPointTemperatureQuality_event_1:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
-
-    dewPointTemperatureQuality_event_2:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{2}/QQM"
-
-    dewPointTemperatureQuality_event_3:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{3}/QQM"
-
-    windQuality_event_1:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
-
-    windQuality_event_2:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{2}/WQM"
-
-    windQuality_event_3:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{3}/WQM"
-
-    airPressureQuality_event_1:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
-
-    airPressureQuality_event_2:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT{2}/PQM"
-
-    airPressureQuality_event_3:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT{3}/PQM"
-
-    heightQuality_event_1:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZQM"
-
-    heightQuality_event_2:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{2}/ZQM"
-
-    heightQuality_event_3:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{3}/ZQM"
-
-
+    heightQuality_event:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1-3}/ZQM"
