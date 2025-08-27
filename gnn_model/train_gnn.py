@@ -71,19 +71,35 @@ def main():
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
     FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
-    WINDOW_DAYS = 7  # The size of the window for each epoch
+    TRAIN_WINDOW_DAYS = 14  # The size of the training window for each epoch
+    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
 
     # The initial start/end dates for the datamodule are the
     # first window of the full period. The callback will change this on subsequent epochs.
+    WINDOW_DAYS = 14  # The size of the window for each epoch
     initial_start_date = FULL_START_DATE
     initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    TRAIN_VAL_SPLIT_RATIO = 0.9  # 90% train, 10% val
+
+    # Calculate total days and split
+    total_days = (pd.to_datetime(FULL_END_DATE) - pd.to_datetime(FULL_START_DATE)).days
+    train_days = int(total_days * TRAIN_VAL_SPLIT_RATIO)
+
+    TRAIN_START_DATE = FULL_START_DATE
+    TRAIN_END_DATE = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=train_days)).strftime("%Y-%m-%d")
+    VAL_START_DATE = (pd.to_datetime(TRAIN_END_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")  # starting the day after train_end_date
+    VAL_END_DATE = FULL_END_DATE
+
+    print(f"Training period: {TRAIN_START_DATE} to {TRAIN_END_DATE}")
+    print(f"Validation period: {VAL_START_DATE} to {VAL_END_DATE}")
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
     hidden_dim = 64
     num_layers = 8
     lr = 0.001
-    max_epochs = 100
+    max_epochs = 10
     batch_size = 1
     # ----------------------------------------------------
 
@@ -133,9 +149,12 @@ def main():
         print(f"--- Rank {int(os.environ.get('SLURM_PROCID'))} is loading data prepared by main process... ---")
         data_module.setup("fit")
 
-    val_loader = data_module.val_dataloader()
-    has_val_data = val_loader is not None and len(val_loader.dataset) > 0
-    print(f"Initial validation loader has {len(val_loader.dataset) if val_loader is not None else 0} bins")
+    # MK: This part is no longer valid. Val date range is later updated in callbacks
+    # val_loader = data_module.val_dataloader()
+    # has_val_data = val_loader is not None and len(val_loader.dataset) > 0
+    # print(f"Initial validation loader has {len(val_loader.dataset) if val_loader is not None else 0} bins")
+    # MK: Assuming we always have val data since we split the date ranges
+    has_val_data = True
 
     setup_end_time = time.time()
     print(f"Initial setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
@@ -181,9 +200,15 @@ def main():
         print("Using RANDOM sampling mode.")
         callbacks.append(
             ResampleDataCallback(
-                full_start_date=FULL_START_DATE,
-                full_end_date=FULL_END_DATE,
-                window_days=WINDOW_DAYS,
+                # full_start_date=FULL_START_DATE,
+                # full_end_date=FULL_END_DATE,
+                # window_days=WINDOW_DAYS,
+                train_start_date=TRAIN_START_DATE,
+                train_end_date=TRAIN_END_DATE,
+                val_start_date=VAL_START_DATE,
+                val_end_date=VAL_END_DATE,
+                train_window_days=TRAIN_WINDOW_DAYS,
+                val_window_days=VALID_WINDOW_DAYS,
             )
         )
 
@@ -191,9 +216,15 @@ def main():
         print("Using SEQUENTIAL sampling mode.")
         callbacks.append(
             SequentialDataCallback(
-                full_start_date=FULL_START_DATE,
-                full_end_date=FULL_END_DATE,
-                window_days=WINDOW_DAYS,
+                # full_start_date=FULL_START_DATE,
+                # full_end_date=FULL_END_DATE,
+                # window_days=WINDOW_DAYS,
+                train_start_date=TRAIN_START_DATE,
+                train_end_date=TRAIN_END_DATE,
+                val_start_date=VAL_START_DATE,
+                val_end_date=VAL_END_DATE,
+                train_window_days=TRAIN_WINDOW_DAYS,
+                val_window_days=VALID_WINDOW_DAYS,
             )
         )
 

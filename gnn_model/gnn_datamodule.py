@@ -138,20 +138,12 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             pipeline_cfg=self.hparams.pipeline,
         )
-        all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
+        self.all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
 
         if stage == "fit" or stage is None:
-            val_size = min(3, len(all_bin_names) - 1)
-            self.train_bin_names = all_bin_names[:-val_size] if val_size > 0 else all_bin_names
-            self.val_bin_names = all_bin_names[-val_size:] if val_size > 0 else []
-            self.train_dataset = BinDataset(
-                self.train_bin_names,
-                self.data_summary,
-                self.z,
-                self._create_graph_structure,
-                self.hparams.observation_config,
-                feature_stats=self.feature_stats,
-            )
+            self.train_bin_names = self.all_bin_names
+            self.val_bin_names = self.all_bin_names
+            pass
 
     def _create_graph_structure(self, bin_data):
         data = HeteroData()
@@ -256,8 +248,16 @@ class GNNDataModule(pl.LightningDataModule):
         return data
 
     def train_dataloader(self):
+        train_dataset = BinDataset(
+            self.train_bin_names,  # self.all_bin_names,
+            self.data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            apply_masking=True,
+        )
         return PyGDataLoader(
-            self.train_dataset,
+            train_dataset,
             batch_size=1,
             shuffle=True,
             num_workers=4,
@@ -266,10 +266,10 @@ class GNNDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        if not self.val_bin_names:
+        if not self.val_bin_names:  # self.all_bin_names:
             return None
         val_dataset = BinDataset(
-            self.val_bin_names,
+            self.val_bin_names,  # self.all_bin_names,
             self.data_summary,
             self.z,
             self._create_graph_structure,
