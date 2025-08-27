@@ -5,35 +5,74 @@ import random
 
 class ResampleDataCallback(pl.Callback):
     """
-    Callback to resample a new, random time window from the full dataset
-    at the beginning of each training epoch.
+    Callback to resample from separate train/val date ranges
     """
 
-    def __init__(self, full_start_date, full_end_date, window_days=7):
-        self.full_start_date = pd.to_datetime(full_start_date)
-        # Adjust end date to ensure a full window can always be sampled
-        self.full_end_date = pd.to_datetime(full_end_date) - pd.Timedelta(
-            days=window_days
-        )
-        self.window_days = pd.Timedelta(days=window_days)
+    def __init__(self, train_start_date, train_end_date, val_start_date, val_end_date, train_window_days=14, val_window_days=3):
+        # Training date range
+        self.train_start_date = pd.to_datetime(train_start_date)
+        self.train_end_date = pd.to_datetime(train_end_date) - pd.Timedelta(days=train_window_days)
+        self.train_window_days = pd.Timedelta(days=train_window_days)
+
+        # Validation date range
+        self.val_start_date = pd.to_datetime(val_start_date)
+        self.val_end_date = pd.to_datetime(val_end_date) - pd.Timedelta(days=val_window_days)
+        self.val_window_days = pd.Timedelta(days=val_window_days)
+
+        # Validate date ranges during initialization
+        self._check_date_ranges()
 
     def on_train_epoch_start(self, trainer, pl_module):
-        # Calculate a new random start date from the full date range
-        total_days = (self.full_end_date - self.full_start_date).days
-        random_day_offset = random.randint(0, total_days)
-        new_start = self.full_start_date + pd.Timedelta(days=random_day_offset)
-        new_end = new_start + self.window_days
+        """Sample from training date range"""
+        total_train_days = (self.train_end_date - self.train_start_date).days
+        random_day_offset = random.randint(0, total_train_days)
+        new_start = self.train_start_date + pd.Timedelta(days=random_day_offset)
+        new_end = new_start + self.train_window_days
+        new_end = self._check_end_date(new_end, self.train_end_date, "TRAIN")
 
-        print(
-            f"\n[Random Sampler] Resampling new window: {new_start.date()} to {new_end.date()}\n"
-        )
+        print(f"\n[Random Sampler - TRAIN] Window: {new_start.date()} to {new_end.date()}\n")
+        self._update_datamodule(trainer, new_start, new_end)
 
-        # Update the datamodule with the new time window
+    def on_validation_epoch_start(self, trainer, pl_module):
+        """Sample from validation date range"""
+        total_val_days = (self.val_end_date - self.val_start_date).days
+        random_day_offset = random.randint(0, total_val_days)
+        new_start = self.val_start_date + pd.Timedelta(days=random_day_offset)
+        new_end = new_start + self.val_window_days
+        new_end = self._check_end_date(new_end, self.val_end_date, "VAL")
+
+        print(f"\n[Random Sampler - VAL] Window: {new_start.date()} to {new_end.date()}\n")
+        self._update_datamodule(trainer, new_start, new_end)
+
+    def _check_date_ranges(self):
+        """Validate date ranges during initialization"""
+        if self.train_end_date < self.train_start_date:
+            raise ValueError(
+                f"[Random Sampler] Training date range error: "
+                f"Start date ({self.train_start_date.date()}) "
+                f"exceeds updated end date ({self.train_end_date.date()})"
+            )
+
+        if self.val_end_date < self.val_start_date:
+            raise ValueError(
+                f"[Random Sampler] Validation date range error: "
+                f"Start date ({self.val_start_date.date()}) "
+                f"exceeds updated end date ({self.val_end_date.date()})"
+            )
+
+    def _check_end_date(self, new_end, end_date_limit, mode):
+        """Ensure the window doesn't exceed the date range limit"""
+        if new_end > end_date_limit:
+            print(f"\n[Random Sampler - {mode}] Warning: End date would exceed date range. "
+                  f"Setting end date to the last available date: {end_date_limit.date()}\n")
+            new_end = end_date_limit
+        return new_end
+
+    def _update_datamodule(self, trainer, start_date, end_date):
+        """Helper to update datamodule and re-setup"""
         datamodule = trainer.datamodule
-        datamodule.hparams.start_date = new_start
-        datamodule.hparams.end_date = new_end
-
-        # Re-run the setup logic for the new, smaller window of data
+        datamodule.hparams.start_date = start_date
+        datamodule.hparams.end_date = end_date
         datamodule.setup("fit")
 
 
