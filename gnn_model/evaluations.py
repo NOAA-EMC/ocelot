@@ -299,12 +299,32 @@ if __name__ == "__main__":
         drop_small_truth=True,
     )
 
+    plot_instrument_maps(
+        "snow_cover",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=2,
+        data_dir="val_csv",
+        error_metric="auto",
+        drop_small_truth=True,
+    )
+
     # ATMS: keep % error (symmetric color scale around 0)
     plot_instrument_maps(
         "atms",
         EPOCH_TO_PLOT,
         BATCH_IDX_TO_PLOT,
         num_channels=22,
+        data_dir="val_csv",
+        error_metric="percent",
+        drop_small_truth=False,
+    )
+
+    plot_instrument_maps(
+        "amsua",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=15,
         data_dir="val_csv",
         error_metric="percent",
         drop_small_truth=False,
