@@ -8,10 +8,10 @@ bufr:
       query: "*/DHR"
 
     launchLatitude:
-      query: "*/XOB"
+      query: "*/YOB"
 
     launchLongitude:
-      query: "*/YOB"
+      query: "*/XOB"
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
