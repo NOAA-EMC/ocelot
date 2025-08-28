@@ -46,8 +46,6 @@ bufr:
     windDirection:
       query: "[*/WDIR, */WNDSQ4/WDIR]"
       type: float
-      tranforms:
-        - scale: 0.0174533  # Convert degrees to radians
 
     height:
       query: "[*/SELV, */HSMSL, */HSAWS, */HSAWS[1]]"  # Height above ground level

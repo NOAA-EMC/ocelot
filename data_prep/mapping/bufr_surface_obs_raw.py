@@ -74,7 +74,7 @@ class RawAdpsfcBuilder(ObsBuilder):
         indices = indices[valid_mask]
         container.apply_mask(valid_mask)
 
-        # Add the quality flags to the container
+        # Add event data
         for var in ['eastwardWind',
                     'northwardWind',
                     'specificHumidity',
@@ -142,6 +142,12 @@ class RawAdpsfcBuilder(ObsBuilder):
                 'source': 'northwardWind',
                 'longName': "Northward Wind",
                 'units': "m/s"
+            },
+            {
+                'name': "specificHumidity",
+                'source': 'specificHumidity',
+                'longName': "Specific Humidity",
+                'units': "mg/kg"
             }
         ])
 

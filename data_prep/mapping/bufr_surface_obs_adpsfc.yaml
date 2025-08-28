@@ -46,8 +46,6 @@ bufr:
     windDirection:
       query: "[*/WDIR]"
       type: float
-      tranforms:
-        - scale: 0.0174533
 
     height:
       query: "[*/SELV, */HSMSL]"  # Height above ground level
