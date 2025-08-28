@@ -76,8 +76,13 @@ bufr:
       query: '*/WSPD'
 
 encoder:
-  variables:
+  dimensions:
+    - name: event
+      paths:
+        - "*/GQCPRMS"
+        - "*/AMVQIC"
 
+  variables:
     # MetaData
     - name: "time"
       source: variables/timestamp
