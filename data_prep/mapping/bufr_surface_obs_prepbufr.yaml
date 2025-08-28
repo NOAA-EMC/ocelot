@@ -14,6 +14,15 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
+    eastwardWind:
+      query: "*/W___INFO/W__EVENT/UOB"
+
+    northwardWind:
+      query: "*/W___INFO/W__EVENT/VOB"
+
+    specificHumidity:
+      query: "*/Q___INFO/Q__EVENT/QOB"
+
     # Quality Markers
     airTemperatureQuality:
       query: "*/T___INFO/T__EVENT/TQM"
@@ -33,11 +42,7 @@ bufr:
     windQuality:
       query: "*/W___INFO/W__EVENT/WQM"
 
-    eastwardWind:
-      query: "*/W___INFO/W__EVENT/UOB"
 
-    northwardWind:
-      query: "*/W___INFO/W__EVENT/VOB"
 
 encoder:
   variables:

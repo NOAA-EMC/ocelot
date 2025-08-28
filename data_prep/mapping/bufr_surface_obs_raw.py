@@ -76,14 +76,15 @@ class RawAdpsfcBuilder(ObsBuilder):
         container.apply_mask(valid_mask)
 
         # Add the quality flags to the container
-        for var in ['airTemperatureQuality',
+        for var in ['eastwardWind',
+                    'northwardWind',
+                    'specificHumidity',
+                    'airTemperatureQuality',
                     'specificHumidityQuality',
                     'airPressureQuality',
                     'dewPointTemperatureQuality',
                     'heightQuality',
-                    'windQuality',
-                    'eastwardWind',
-                    'northwardWind']:
+                    'windQuality']:
 
             quality_flags = prepbufr_container.get(var)[indices]
             container.add(var, quality_flags, ['*', '*/EVENT'])
