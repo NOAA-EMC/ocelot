@@ -56,6 +56,10 @@ def main():
     # === DATA & MODEL CONFIGURATION ===
     cfg_path = "configs/observation_config.yaml"
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
+    # grab top-level pipeline from the same YAML
+    with open(cfg_path, "r") as f:
+        _raw_cfg = yaml.safe_load(f)
+    pipeline_cfg = _raw_cfg.get("pipeline", {})
 
     # Data/region path
     region = "global"
@@ -67,7 +71,7 @@ def main():
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
     FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
-    WINDOW_DAYS = 14  # The size of the window for each epoch
+    WINDOW_DAYS = 7  # The size of the window for each epoch
 
     # The initial start/end dates for the datamodule are the
     # first window of the full period. The callback will change this on subsequent epochs.
@@ -77,7 +81,7 @@ def main():
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
     hidden_dim = 64
-    num_layers = 10
+    num_layers = 8
     lr = 0.001
     max_epochs = 100
     batch_size = 1
@@ -111,6 +115,8 @@ def main():
         mesh_structure=model.mesh_structure,
         batch_size=batch_size,
         num_neighbors=3,
+        feature_stats=feature_stats,
+        pipeline=pipeline_cfg,
     )
 
     is_main_process = os.environ.get("SLURM_PROCID", "0") == "0"
@@ -152,9 +158,10 @@ def main():
 
     strategy = DDPStrategy(
         process_group_backend="nccl",
-        find_unused_parameters=False,
+        broadcast_buffers=False,
+        find_unused_parameters=True,
         gradient_as_bucket_view=True,
-        timeout=timedelta(minutes=45),
+        timeout=timedelta(minutes=15),
     )
     trainer_kwargs = {
         "max_epochs": max_epochs,

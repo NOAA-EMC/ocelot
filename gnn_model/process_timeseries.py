@@ -54,22 +54,54 @@ def _stable_seed(seed_base: int, bin_time: pd.Timestamp, obs_type: str, key: str
     return int(np.frombuffer(h, dtype=np.uint64)[0] % (2**32))
 
 
+def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str,
+                         default_stride: int, default_mode: str) -> tuple[int, str]:
+    """
+    Resolve (stride, mode) for a given obs_type ('satellite'|'conventional') and instrument name.
+    Supports legacy ints/strings and new per-instrument dicts with optional '_default'.
+    """
+    # stride
+    stride_spec = subs_cfg.get(obs_type, default_stride)
+    if isinstance(stride_spec, dict):
+        stride = int(stride_spec.get(inst_name, stride_spec.get("_default", default_stride)))
+    else:
+        stride = int(stride_spec)
+
+    # mode
+    mode_cfg = subs_cfg.get("mode", {}) or {}
+    mode_spec = mode_cfg.get(obs_type, default_mode)
+    if isinstance(mode_spec, dict):
+        mode = str(mode_spec.get(inst_name, mode_spec.get("_default", default_mode)))
+    else:
+        mode = str(mode_spec)
+
+    return max(1, stride), mode
+
+
 @timing_resource_decorator
-def organize_bins_times(z_dict, start_date, end_date, observation_config, window_size="12h", verbose=False):
+def organize_bins_times(
+    z_dict,
+    start_date,
+    end_date,
+    observation_config,
+    pipeline_cfg=None,
+    window_size="12h",
+    verbose=False,
+):
     """
     Bin definition: a bin consists of a pair of input and targets, each covers window_size.
     Organizes observation times into time bins and creates input-target pairs.
 
-    Random subsampling supported per obs-type.
+    Uses chunked scans to avoid loading entire arrays into memory.
 
     Config (all optional):
       pipeline:
         subsample:
-          satellite: 25
-          conventional: 10
+          satellite: 25 | { _default: 25, instA: 10, ... }
+          conventional: 10 | { _default: 10, instB: 8, ... }
           mode:
-            satellite: "stride"      # "stride" | "random" | "none"
-            conventional: "random"   # "stride" | "random" | "none"
+            satellite: "random" | "stride" | "none" | { _default: "random", instA: "stride", ... }
+            conventional: "random" | "stride" | "none" | { _default: "random", instB: "stride", ... }
           seed: 12345
     """
     # --- normalize inputs to UTC-aware ---
@@ -82,85 +114,116 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
         raise ValueError("window_size must end with 'h' (e.g., '6h', '12h').")
 
     # subsampling config
-    subs_cfg = observation_config.get("pipeline", {}).get("subsample", {}) or {}
-    delta_satellite = int(subs_cfg.get("satellite", 25))
-    delta_surface = int(subs_cfg.get("conventional", 20))
-    mode_cfg = subs_cfg.get("mode", {}) or {}
-    mode_sat = mode_cfg.get("satellite", "stride")
-    mode_cnv = mode_cfg.get("conventional", "random")  # default: random for conventional
+    subs_cfg = (pipeline_cfg or {}).get("subsample", {}) or {}
     seed_base = int(subs_cfg.get("seed", 12345))
 
+    # defaults if not specified (mode defaults to "random" for both)
+    DEFAULTS = {
+        "satellite":    {"stride": 25, "mode": "random"},
+        "conventional": {"stride": 20, "mode": "random"},
+    }
+
+    t0 = int(start_date.timestamp())
+    t1 = int(end_date.timestamp())
+
     data_summary = {}
+
     for obs_type in observation_config.keys():
         for key in observation_config[obs_type].keys():
             z = z_dict[obs_type][key]
-            time = pd.to_datetime(z["time"][:], unit="s", utc=True)
-            time_cond = (time >= start_date) & (time < end_date)
 
+            # --- Chunked scan to find candidate indices (time + optional sat filter) ---
+            time_arr = z["time"]
+            n_total = len(time_arr)
+            chunk = getattr(time_arr, "chunks", (2_000_000,))[0]  # safe default if not chunked
+
+            idx_parts = []
             if obs_type == "satellite":
-                sat_ids = observation_config[obs_type][key]["sat_ids"]
-                available_sats = z["satelliteId"][:]
-                assert isinstance(sat_ids, list), (
-                    f"Configuration error: satellite IDs must be a list, got {type(sat_ids)}.\n" f"Key: {key}, Value: {sat_ids}"
-                )
-                invalid_sats = [sid for sid in sat_ids if sid not in available_sats]
-                if invalid_sats:
-                    raise ValueError(f"Invalid satellite IDs for {key}: {invalid_sats}\n" f"Available: {np.unique(available_sats)}")
-                sat_ids_mask = np.isin(z["satelliteId"][:], sat_ids)
-                selected_times = np.where(time_cond & sat_ids_mask)[0]
+                conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                for i0 in range(0, n_total, chunk):
+                    i1 = min(i0 + chunk, n_total)
+                    t = time_arr[i0:i1]
+                    m_time = (t >= t0) & (t < t1)
+                    if not m_time.any():
+                        continue
+                    sats = z["satelliteId"][i0:i1]
+                    m = m_time & np.isin(sats, conf_sat_ids)
+                    if m.any():
+                        idx_parts.append(np.flatnonzero(m) + i0)
             else:
-                selected_times = np.where(time_cond)[0]
+                for i0 in range(0, n_total, chunk):
+                    i1 = min(i0 + chunk, n_total)
+                    t = time_arr[i0:i1]
+                    m_time = (t >= t0) & (t < t1)
+                    if m_time.any():
+                        idx_parts.append(np.flatnonzero(m_time) + i0)
 
-            df = pd.DataFrame(
-                {
-                    "time": time[selected_times],
-                    "zar_time": (z["zar_time"][selected_times] if "zar_time" in z else z["time"][selected_times]),
-                    "index": selected_times,
-                }
-            )
-
-            # 12h bin edges (UTC-aware)
-            df["time_window"] = df["time"].dt.floor(window_size)
-            df = df.sort_values(by="zar_time")
-
-            if df.empty:
+            if not idx_parts:
                 if verbose:
                     print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
                 continue
 
-            if verbose:
-                print("Filtered observation times:")
-                print("  - Start:", df["time"].min())
-                print("  - End:", df["time"].max())
-                print(df["time_window"].value_counts().sort_index())
+            idx_all = np.concatenate(idx_parts)
 
-            unique_time_windows = df["time_window"].unique()
+            # --- Sort by zar_time (or time) with minimal copies ---
+            if "zar_time" in z:
+                zar = z["zar_time"][idx_all]
+            else:
+                zar = time_arr[idx_all]
+            order = np.argsort(zar, kind="stable")
+            idx_all = idx_all[order]
 
-            for i in range(len(unique_time_windows) - 1):  # Exclude last bin (no target)
-                bin_name = f"bin{i+1}"
-                t_in = unique_time_windows[i]
-                t_out = unique_time_windows[i + 1]
+            # --- Build window labels without a big DataFrame ---
+            time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
+            win = time_ts.floor(window_size)  # tz-aware
 
-                input_indices = df.loc[df["time_window"] == t_in, "index"].values
-                target_indices = df.loc[df["time_window"] == t_out, "index"].values
+            # unique ordered windows + integer codes for each row's window
+            uniq_win = pd.Index(win).unique().sort_values()
+            codes = pd.Categorical(win, categories=uniq_win, ordered=True).codes
 
-                # --- Subsampling (random or stride), reproducible per bin ---
+            n_bins = len(uniq_win) - 1
+            if n_bins <= 0:
+                if verbose:
+                    print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
+                continue
+
+            # Resolve subsampling policy for this instrument
+            if obs_type == "satellite":
+                stride, mode = _resolve_stride_mode(
+                    subs_cfg, "satellite", key,
+                    DEFAULTS["satellite"]["stride"], DEFAULTS["satellite"]["mode"]
+                )
+            else:
+                stride, mode = _resolve_stride_mode(
+                    subs_cfg, "conventional", key,
+                    DEFAULTS["conventional"]["stride"], DEFAULTS["conventional"]["mode"]
+                )
+
+            # --- Build bins; reproducible per-bin subsampling ---
+            for bi in range(n_bins):  # exclude last window as target-only
+                t_in = uniq_win[bi]
+                t_out = uniq_win[bi + 1]
+
+                m_in = (codes == bi)
+                m_out = (codes == bi + 1)
+
+                input_indices = idx_all[m_in]
+                target_indices = idx_all[m_out]
+
+                # Per-bin stable seeds
                 seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
                 seed_out = _stable_seed(seed_base, t_out, obs_type, key, is_target=True)
 
-                if obs_type == "satellite":
-                    input_indices = _subsample_by_mode(input_indices, mode_sat, delta_satellite, seed_in)
-                    target_indices = _subsample_by_mode(target_indices, mode_sat, delta_satellite, seed_out)
-                else:
-                    input_indices = _subsample_by_mode(input_indices, mode_cnv, delta_surface, seed_in)
-                    target_indices = _subsample_by_mode(target_indices, mode_cnv, delta_surface, seed_out)
+                # Apply subsampling
+                input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
+                target_indices = _subsample_by_mode(target_indices, mode, stride, seed_out)
 
-                if bin_name not in data_summary:
-                    data_summary[bin_name] = {}
-                if obs_type not in data_summary[bin_name]:
-                    data_summary[bin_name][obs_type] = {}
+                # Skip empty bin if both sides empty after subsampling
+                if input_indices.size == 0 and target_indices.size == 0:
+                    continue
 
-                data_summary[bin_name][obs_type][key] = {
+                bin_name = f"bin{bi+1}"
+                data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
                     "input_time": t_in,
                     "target_time": t_out,
                     "input_time_index": input_indices,
@@ -168,133 +231,221 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
                 }
 
             if verbose:
-                print(f"Created {len(data_summary)} bins (pairs of input-target).")
+                total_bins = sum(
+                    1 for _ in range(n_bins)
+                    if f"bin{_+1}" in data_summary and
+                       obs_type in data_summary[f"bin{_+1}"] and
+                       key in data_summary[f"bin{_+1}"][obs_type]
+                )
+                print(f"Created {total_bins} bins (pairs of input-target) for {obs_type}.{key}.")
 
     return data_summary
 
 
+def _name2id(observation_config):
+    order = []
+    for obs_type in ("satellite", "conventional"):
+        if obs_type in observation_config:
+            order += sorted(observation_config[obs_type].keys())
+    return {name: i for i, name in enumerate(order)}
+
+
+# Helper that returns an empty (N,0) if there are no keys
+def _stack_or_empty(arrs, keys, idx):
+    if not keys:
+        return np.empty((len(idx), 0), dtype=np.float32)
+    return np.column_stack([arrs[k][idx] for k in keys]).astype(np.float32)
+
+
+def _stats_from_cfg(feature_stats, inst_name, feat_keys):
+    """Return (means, stds) for this instrument/feature order or (None, None) if missing."""
+    if feature_stats is None or inst_name not in feature_stats:
+        return None, None
+    try:
+        means = np.array([feature_stats[inst_name][k][0] for k in feat_keys], dtype=np.float32)
+        stds = np.array([feature_stats[inst_name][k][1] for k in feat_keys], dtype=np.float32)
+    except Exception:
+        return None, None
+    stds[(stds == 0) | ~np.isfinite(stds)] = 1.0
+    means[~np.isfinite(means)] = 0.0
+    return means, stds
+
+
 @timing_resource_decorator
-def extract_features(z_dict, data_summary, bin_name, observation_config):
+def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None):
     """
-    Loads and normalizes input and target features for each time bin individually.
-    Adds per-channel masks for conventional targets so features can be missing independently.
+    Loads and normalizes features for each time bin.
+    Adds per-channel masks for inputs and targets so features can be missing independently.
+    Inputs: keep a row if ANY feature channel is valid; metadata can be missing (imputed later).
+    Targets: require metadata row to be valid; features may be missing per-channel.
     """
     print(f"\nProcessing {bin_name}...")
     for obs_type in list(data_summary[bin_name].keys()):
         for inst_name in list(data_summary[bin_name][obs_type].keys()):
             z = z_dict[obs_type][inst_name]
-
             data_summary_bin = data_summary[bin_name][obs_type][inst_name]
+
             input_idx = np.asarray(data_summary_bin["input_time_index"])
             target_idx = np.asarray(data_summary_bin["target_time_index"])
             orig_in, orig_tg = input_idx.size, target_idx.size
 
-            if len(input_idx) == 0 or len(target_idx) == 0:
+            if input_idx.size == 0 or target_idx.size == 0:
                 del data_summary[bin_name][obs_type][inst_name]
                 continue
 
-            # Get the QC filter configuration for the current instrument
+            # --- Config & feature ordering ---
             obs_cfg = observation_config[obs_type][inst_name]
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
-
-            # Apply quality control based on the instrument name
-            if qc_filters:
-                print(f"Applying QC for {inst_name}...")
-                valid_input_mask = np.ones(len(input_idx), dtype=bool)
-                valid_target_mask = np.ones(len(target_idx), dtype=bool)
-
-                for var, cfg in qc_filters.items():
-                    # range handling
-                    rng = None
-                    if isinstance(cfg, dict):
-                        rng = cfg.get("range", cfg.get("valid_range"))
-                    elif isinstance(cfg, (list, tuple)) and len(cfg) == 2:
-                        rng = cfg
-
-                    if rng is not None:
-                        if var not in z:
-                            print(f"[QC WARNING] '{var}' not in z; skipping range filter.")
-                        else:
-                            lo, hi = rng
-                            in_vals = z[var][input_idx]
-                            tg_vals = z[var][target_idx]
-                            valid_input_mask &= (in_vals >= lo) & (in_vals <= hi)
-                            valid_target_mask &= (tg_vals >= lo) & (tg_vals <= hi)
-
-                    # QM flags
-                    if isinstance(cfg, dict) and "qm_flag_col" in cfg and "keep" in cfg:
-                        flag_col = cfg["qm_flag_col"]
-                        if flag_col in z:
-                            in_flags = z[flag_col][input_idx]
-                            tg_flags = z[flag_col][target_idx]
-                            has_valid = (in_flags >= 0).any() or (tg_flags >= 0).any()
-                            if has_valid:
-                                keep_set = set(cfg["keep"])
-                                valid_input_mask &= np.isin(in_flags, list(keep_set)) | (in_flags < 0)
-                                valid_target_mask &= np.isin(tg_flags, list(keep_set)) | (tg_flags < 0)
-                        else:
-                            print(f"[QC] {inst_name}: no valid {flag_col}; skipping QM filter")
-
-                input_idx = input_idx[valid_input_mask]
-                target_idx = target_idx[valid_target_mask]
-                print(f"[{bin_name}][{inst_name}] QC kept {input_idx.size}/{orig_in} (input), {target_idx.size}/{orig_tg} (target)")
-
-                if input_idx.size == 0 or target_idx.size == 0:
-                    del data_summary[bin_name][obs_type][inst_name]
-                    continue
-
-            # --- Load ALL Raw Data ---
             feat_keys = observation_config[obs_type][inst_name]["features"]
             meta_keys = observation_config[obs_type][inst_name]["metadata"]
+            feat_pos = {k: i for i, k in enumerate(feat_keys)}
+            n_ch = len(feat_keys)
 
-            input_features_raw = np.column_stack([z[k][input_idx] for k in feat_keys]).astype(np.float32)
-            input_metadata_raw = np.column_stack([z[k][input_idx] for k in meta_keys]).astype(np.float32)
+            # Per-channel validity masks (inputs + targets)
+            input_valid_ch = np.ones((input_idx.size, n_ch), dtype=bool)
+            target_valid_ch = np.ones((target_idx.size, n_ch), dtype=bool)
+
+            # Track aux QC to propagate to wind_u / wind_v
+            ws_ok_in = wd_ok_in = None
+            ws_ok_tg = wd_ok_tg = None
+
+            # -------------------- QC (per-channel; do NOT row-drop inputs) --------------------
+            if qc_filters:
+                print(f"Applying QC for {inst_name}...")
+                for var, cfg in qc_filters.items():
+                    rng = cfg.get("range") if isinstance(cfg, dict) else (cfg if isinstance(cfg, (list, tuple)) else None)
+                    flag_col = cfg.get("qm_flag_col") if isinstance(cfg, dict) else None
+                    keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
+                    pos = feat_pos.get(var, None)
+
+                    # --- range ---
+                    if rng is not None and var in z:
+                        lo, hi = rng
+                        in_vals = z[var][input_idx]
+                        tg_vals = z[var][target_idx]
+
+                        if pos is not None:
+                            input_valid_ch[:, pos] &= (in_vals >= lo) & (in_vals <= hi)
+                            target_valid_ch[:, pos] &= (tg_vals >= lo) & (tg_vals <= hi)
+                        else:
+                            # accumulate aux for u/v
+                            if var == "windSpeed":
+                                ws_ok_in = (in_vals >= lo) & (in_vals <= hi) if ws_ok_in is None else (ws_ok_in & ((in_vals >= lo) & (in_vals <= hi)))
+                                ws_ok_tg = (tg_vals >= lo) & (tg_vals <= hi) if ws_ok_tg is None else (ws_ok_tg & ((tg_vals >= lo) & (tg_vals <= hi)))
+                            if var == "windDirection":
+                                wd_ok_in = (in_vals >= lo) & (in_vals <= hi) if wd_ok_in is None else (wd_ok_in & ((in_vals >= lo) & (in_vals <= hi)))
+                                wd_ok_tg = (tg_vals >= lo) & (tg_vals <= hi) if wd_ok_tg is None else (wd_ok_tg & ((tg_vals >= lo) & (tg_vals <= hi)))
+
+                    # --- QM flags (keep-list) ---
+                    if isinstance(cfg, dict) and flag_col and ("keep" in cfg) and (flag_col in z):
+                        in_flags = z[flag_col][input_idx]
+                        tg_flags = z[flag_col][target_idx]
+                        keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0)
+                        keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0)
+
+                        if pos is not None:
+                            input_valid_ch[:, pos] &= keep_in
+                            target_valid_ch[:, pos] &= keep_tg
+                        else:
+                            if var == "windSpeed":
+                                ws_ok_in = keep_in if ws_ok_in is None else (ws_ok_in & keep_in)
+                                ws_ok_tg = keep_tg if ws_ok_tg is None else (ws_ok_tg & keep_tg)
+                            if var == "windDirection":
+                                wd_ok_in = keep_in if wd_ok_in is None else (wd_ok_in & keep_in)
+                                wd_ok_tg = keep_tg if wd_ok_tg is None else (wd_ok_tg & keep_tg)
+
+                # propagate windSpeed/Direction QC to u/v channels
+                if ("wind_u" in feat_pos) and ("wind_v" in feat_pos):
+                    if (ws_ok_in is not None) or (wd_ok_in is not None):
+                        cond_in = np.ones(input_idx.size, dtype=bool)
+                        if ws_ok_in is not None:
+                            cond_in &= ws_ok_in
+                        if wd_ok_in is not None:
+                            cond_in &= wd_ok_in
+                        input_valid_ch[:, feat_pos["wind_u"]] &= cond_in
+                        input_valid_ch[:, feat_pos["wind_v"]] &= cond_in
+                    if (ws_ok_tg is not None) or (wd_ok_tg is not None):
+                        cond_tg = np.ones(target_idx.size, dtype=bool)
+                        if ws_ok_tg is not None:
+                            cond_tg &= ws_ok_tg
+                        if wd_ok_tg is not None:
+                            cond_tg &= wd_ok_tg
+                        target_valid_ch[:, feat_pos["wind_u"]] &= cond_tg
+                        target_valid_ch[:, feat_pos["wind_v"]] &= cond_tg
+
+            # -------------------- Load raw arrays --------------------
+            def _get_feature(arrs, name, idx):
+                if name in arrs:
+                    return arrs[name][idx]
+                if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
+                    ws = arrs["windSpeed"][idx].astype(np.float32)
+                    wd = arrs["windDirection"][idx].astype(np.float32)
+                    wd_rad = wd if np.nanmax(wd) <= (2 * np.pi + 0.1) else wd * (np.pi / 180.0)
+                    u = -ws * np.sin(wd_rad)
+                    v = -ws * np.cos(wd_rad)
+                    return u if name == "wind_u" else v
+                raise KeyError(f"Requested feature '{name}' not found in Zarr and no fallback rule defined.")
+
+            input_features_raw = np.column_stack([_get_feature(z, k, input_idx) for k in feat_keys]).astype(np.float32)
+            input_metadata_raw = _stack_or_empty(z, meta_keys, input_idx)
             input_lat_raw = z["latitude"][input_idx]
             input_lon_raw = z["longitude"][input_idx]
             input_times_raw = z["time"][input_idx]
 
-            target_features_raw = np.column_stack([z[k][target_idx] for k in feat_keys]).astype(np.float32)
-            target_metadata_raw = np.column_stack([z[k][target_idx] for k in meta_keys]).astype(np.float32)
+            target_features_raw = np.column_stack([_get_feature(z, k, target_idx) for k in feat_keys]).astype(np.float32)
+            target_metadata_raw = _stack_or_empty(z, meta_keys, target_idx)
             target_lat_raw = z["latitude"][target_idx]
             target_lon_raw = z["longitude"][target_idx]
             target_times_raw = z["time"][target_idx]
 
-            # --- Replace Fill Values with NaN ---
+            # Replace fill values with NaN
             FILL_VALUE = 3.402823e38
             input_features_raw[input_features_raw >= FILL_VALUE] = np.nan
-            input_metadata_raw[input_metadata_raw >= FILL_VALUE] = np.nan
+            if input_metadata_raw.size:
+                input_metadata_raw[input_metadata_raw >= FILL_VALUE] = np.nan
             target_features_raw[target_features_raw >= FILL_VALUE] = np.nan
-            target_metadata_raw[target_metadata_raw >= FILL_VALUE] = np.nan
+            if target_metadata_raw.size:
+                target_metadata_raw[target_metadata_raw >= FILL_VALUE] = np.nan
 
-            # Build masks to drop rows with bad *metadata* (keep NaNs in target features for masking)
-            # INPUT: we still require both features+metadata to be present (as before)
-            input_combined = np.concatenate([input_features_raw, input_metadata_raw], axis=1)
-            valid_input_mask = ~np.isnan(input_combined).any(axis=1)
+            # -------------------- Row keeping for INPUTS --------------------
+            # Keep row if ANY channel is both observed and passes per-channel QC
+            observed_in = ~np.isnan(input_features_raw)
+            keep_inputs = (observed_in & input_valid_ch).any(axis=1)
 
-            # TARGET: require metadata only; allow per-channel NaNs in features
-            valid_target_mask_meta = ~np.isnan(target_metadata_raw).any(axis=1)
+            # Filter inputs by keep_inputs; targets will be filtered by metadata
+            if not keep_inputs.any():
+                del data_summary[bin_name][obs_type][inst_name]
+                continue
 
-            # Apply masks to arrays
-            input_idx = input_idx[valid_input_mask]
-            input_features_raw = input_features_raw[valid_input_mask]
-            input_metadata_raw = input_metadata_raw[valid_input_mask]
-            input_lat_raw = input_lat_raw[valid_input_mask]
-            input_lon_raw = input_lon_raw[valid_input_mask]
-            input_times_clean = input_times_raw[valid_input_mask]
+            input_idx = input_idx[keep_inputs]
+            input_features_raw = input_features_raw[keep_inputs]
+            input_lat_raw = input_lat_raw[keep_inputs]
+            input_lon_raw = input_lon_raw[keep_inputs]
+            input_times_clean = input_times_raw[keep_inputs]
+            input_valid_ch = input_valid_ch[keep_inputs]
+            if input_metadata_raw.size:
+                input_metadata_raw = input_metadata_raw[keep_inputs]
 
-            target_idx = target_idx[valid_target_mask_meta]
-            target_features_raw = target_features_raw[valid_target_mask_meta]
-            target_metadata_raw = target_metadata_raw[valid_target_mask_meta]
-            target_lat_raw = target_lat_raw[valid_target_mask_meta]
-            target_lon_raw = target_lon_raw[valid_target_mask_meta]
-            target_times_clean = target_times_raw[valid_target_mask_meta]
+            # TARGETS: require metadata only; allow per-channel NaNs
+            valid_target_meta = ~np.isnan(target_metadata_raw).any(axis=1) if target_metadata_raw.size else np.ones(target_idx.size, bool)
+            target_idx = target_idx[valid_target_meta]
+            target_features_raw = target_features_raw[valid_target_meta]
+            target_metadata_raw = target_metadata_raw[valid_target_meta] if target_metadata_raw.size else target_metadata_raw
+            target_lat_raw = target_lat_raw[valid_target_meta]
+            target_lon_raw = target_lon_raw[valid_target_meta]
+            target_times_clean = target_times_raw[valid_target_meta]
+            target_valid_ch = target_valid_ch[valid_target_meta]
 
-            # If after filtering, any array is empty, skip this bin
+            # Apply per-channel invalidation: set bad channels to NaN
+            input_features_raw[~input_valid_ch] = np.nan
+            target_features_raw[~target_valid_ch] = np.nan
+
+            # If empty after filtering, drop instrument
             if input_features_raw.shape[0] == 0 or target_features_raw.shape[0] == 0:
                 del data_summary[bin_name][obs_type][inst_name]
                 continue
 
-            # --- Create the final feature arrays using the CLEANED data ---
+            # -------------------- Feature engineering --------------------
             lat_rad_input = np.radians(input_lat_raw)[:, None]
             lon_rad_input = np.radians(input_lon_raw)[:, None]
             input_sin_lat = np.sin(lat_rad_input)
@@ -305,13 +456,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             lat_rad_target = np.radians(target_lat_raw)[:, None]
             lon_rad_target = np.radians(target_lon_raw)[:, None]
 
-            # --- Create Time Features ---
             input_timestamps = pd.to_datetime(input_times_clean, unit="s")
             input_dayofyear = np.array(
-                [
-                    (timestamp.timetuple().tm_yday - 1 + (timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second) / 86400) / 365.24219
-                    for timestamp in input_timestamps
-                ]
+                [(ts.timetuple().tm_yday - 1 + (ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400) / 365.24219 for ts in input_timestamps]
             )[:, None]
             input_time_fraction = np.array([(ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400 for ts in input_timestamps])
             input_sin_time = np.sin(2 * np.pi * input_time_fraction)[:, None]
@@ -322,28 +469,40 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             target_sin_time = np.sin(2 * np.pi * target_time_fraction)[:, None]
             target_cos_time = np.cos(2 * np.pi * target_time_fraction)[:, None]
 
-            # ---------------- Normalization ----------------
+            # -------------------- Normalization --------------------
             if obs_type == "satellite":
-                all_features_raw = np.concatenate([input_features_raw, target_features_raw], axis=0)
-                std_dev = np.std(all_features_raw, axis=0)
-                if np.any(std_dev == 0):
-                    print(f"WARNING: Bin {bin_name} for {inst_name} contains constant data...")
-                    all_features_norm = np.zeros_like(all_features_raw, dtype=np.float32)
+                # Prefer global YAML stats to avoid normalization leakage
+                means, stds = _stats_from_cfg(feature_stats, inst_name, feat_keys)
+
+                if means is None or stds is None:
+                    # Fallback: compute per-bin stats (still NaN-aware)
+                    all_features = np.vstack([input_features_raw, target_features_raw])
+                    means = np.nanmean(all_features, axis=0).astype(np.float32)
+                    stds = np.nanstd(all_features, axis=0).astype(np.float32)
+                    stds[(stds == 0) | ~np.isfinite(stds)] = 1.0
+                    means[~np.isfinite(means)] = 0.0
+
+                input_features_norm = (input_features_raw - means) / stds
+                target_features_norm = (target_features_raw - means) / stds
+
+                # Input metadata: angles → cos; impute NaN with column mean (cos-space)
+                if input_metadata_raw.size:
+                    input_metadata_rad = np.deg2rad(input_metadata_raw)
+                    input_metadata_cos = np.cos(input_metadata_rad)
+                    col_means = np.nanmean(input_metadata_cos, axis=0)
+                    col_means = np.where(np.isfinite(col_means), col_means, 0.0)
+                    input_metadata = np.where(np.isnan(input_metadata_cos), col_means, input_metadata_cos).astype(np.float32)
                 else:
-                    bin_scaler = StandardScaler()
-                    all_features_norm = bin_scaler.fit_transform(all_features_raw)
-                n_input = input_features_raw.shape[0]
-                input_features_norm = all_features_norm[:n_input]
-                target_features_norm = all_features_norm[n_input:]
+                    input_metadata = np.empty((input_features_norm.shape[0], 0), dtype=np.float32)
 
-                # Normalize to encode input metadata angles
-                input_metadata_rad = np.deg2rad(input_metadata_raw)
-                input_metadata_cos = np.cos(input_metadata_rad)
-                input_metadata = input_metadata_cos
-                # Normalize target metadata angles for the decoder
-                target_metadata_rad = np.deg2rad(target_metadata_raw)
-                target_metadata_cos = np.cos(target_metadata_rad)
+                # Target metadata angles
+                if target_metadata_raw.size:
+                    target_metadata_rad = np.deg2rad(target_metadata_raw)
+                    target_metadata_cos = np.cos(target_metadata_rad)
+                else:
+                    target_metadata_cos = np.empty((target_features_norm.shape[0], 0), dtype=np.float32)
 
+                # Assemble input features: geo/time + metadata + standardized features (NaN→0)
                 input_features_final = np.column_stack(
                     [
                         input_sin_lat,
@@ -354,34 +513,77 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
                         input_cos_time,
                         input_dayofyear,
                         input_metadata,
-                        input_features_norm,
+                        np.nan_to_num(input_features_norm, nan=0.0).astype(np.float32),
                     ]
                 )
-                scan_angle = target_metadata_cos[:, 0:1]
-                target_features_final = target_features_norm
+
+                # Targets: build mask then NaN→0
+                target_channel_mask = ~np.isnan(target_features_norm)
+                target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
+
+                scan_angle = (
+                    target_metadata_cos[:, 0:1]
+                    if target_metadata_cos.shape[1] > 0
+                    else np.zeros((target_features_final.shape[0], 1), dtype=np.float32)
+                )
                 target_metadata = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_cos])
 
             else:
-                # --------- CONVENTIONAL: NaN-safe per-channel standardization + mask ---------
-                # Compute per-channel mean/std over combined input+target, ignoring NaNs in target
-                combined = np.vstack([input_features_raw, target_features_raw])  # may include NaNs (from target)
-                means = np.nanmean(combined, axis=0)
-                stds = np.nanstd(combined, axis=0)
+                # Conventional
+                means = stds = None
+                if feature_stats is not None and inst_name in feature_stats:
+                    try:
+                        means = np.array([feature_stats[inst_name][k][0] for k in feat_keys], dtype=np.float32)
+                        stds = np.array([feature_stats[inst_name][k][1] for k in feat_keys], dtype=np.float32)
+                    except KeyError as e:
+                        raise KeyError(f"Missing stat for {inst_name}.{e}") from e
+
+                if means is None or stds is None:
+                    combined = np.vstack([input_features_raw, target_features_raw])
+                    means = np.nanmean(combined, axis=0).astype(np.float32)
+                    stds = np.nanstd(combined, axis=0).astype(np.float32)
+
                 stds[(stds == 0) | ~np.isfinite(stds)] = 1.0
                 means[~np.isfinite(means)] = 0.0
 
-                # Standardize
-                input_features_norm = (input_features_raw - means) / stds
-                target_features_norm = (target_features_raw - means) / stds  # NaNs preserved here
+                in_norm = (input_features_raw - means) / stds
+                tg_norm = (target_features_raw - means) / stds
+                input_channel_mask = ~np.isnan(in_norm)
+                target_channel_mask = ~np.isnan(tg_norm)
 
-                # Metadata normalization (unchanged)
-                features_scaler = StandardScaler()
-                input_metadata_norm = features_scaler.fit_transform(input_metadata_raw)
-                target_scaler = StandardScaler()
-                target_metadata_norm = target_scaler.fit_transform(target_metadata_raw)
+                # Sentinel-impute inputs in standardized space (so missing != near-mean)
+                ZLIM, SENT = 6.0, -9.0  # clip real z-scores; use sentinel far outside
+                x_in = np.clip(in_norm, -ZLIM, ZLIM)
+                x_in = np.where(input_channel_mask, x_in, SENT).astype(np.float32)
 
-                # Final input features for conventional
-                input_metadata = input_metadata_norm
+                # Inputs use sentinel; targets stay NaN->0
+                input_features_final = x_in
+                target_features_final = np.nan_to_num(tg_norm, nan=0.0).astype(np.float32)
+
+                # Debug fractions
+                if inst_name == "surface_obs":
+                    kept_in = input_channel_mask.mean(0)
+                    kept_tgt = target_channel_mask.mean(0)
+                    print(f"[{bin_name}][{inst_name}] kept fraction per INPUT channel:", {k: float(kept_in[i]) for i, k in enumerate(feat_keys)})
+                    print(f"[{bin_name}][{inst_name}] kept fraction per TARGET channel:", {k: float(kept_tgt[i]) for i, k in enumerate(feat_keys)})
+
+                # Input metadata: impute column means then scale
+                if input_metadata_raw.size:
+                    meta = input_metadata_raw.copy()
+                    col_means = np.nanmean(meta, axis=0)
+                    # fallback 0 if an entire column is NaN
+                    col_means = np.where(np.isfinite(col_means), col_means, 0.0)
+                    meta = np.where(np.isnan(meta), col_means, meta)
+                    input_metadata_norm = StandardScaler().fit_transform(meta)
+                else:
+                    input_metadata_norm = np.empty((input_features_final.shape[0], 0), dtype=np.float32)
+
+                # Target metadata: standardize (requirement already enforced via valid_target_meta)
+                if target_metadata_raw.size:
+                    target_metadata_norm = StandardScaler().fit_transform(target_metadata_raw)
+                else:
+                    target_metadata_norm = np.empty((target_features_final.shape[0], 0), dtype=np.float32)
+
                 input_features_final = np.column_stack(
                     [
                         input_sin_lat,
@@ -391,21 +593,15 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
                         input_sin_time,
                         input_cos_time,
                         input_dayofyear,
-                        input_metadata,
-                        input_features_norm,
+                        input_metadata_norm,
+                        input_features_final,
                     ]
                 )
 
-                # ---- Build target mask BEFORE filling NaNs ----
-                target_channel_mask = ~np.isnan(target_features_norm)  # shape [N, C]
-                # Replace NaNs with 0 AFTER standardization to keep tensor dense
-                target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
-
-                # Target metadata for plotting
                 target_metadata = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_norm])
                 scan_angle = np.zeros((target_features_final.shape[0], 1), dtype=np.float32)
 
-            # --- Assemble Final Data for the Bin ---
+            # -------------------- Assemble --------------------
             data_summary_bin["input_features_final"] = torch.tensor(input_features_final, dtype=torch.float32)
             data_summary_bin["target_features_final"] = torch.tensor(target_features_final, dtype=torch.float32)
 
@@ -420,15 +616,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             data_summary_bin["target_lat_deg"] = z["latitude"][target_idx]
             data_summary_bin["target_lon_deg"] = z["longitude"][target_idx]
 
-            NAME2ID = {"atms": 0, "surface_obs": 1, "radiosonde": 2}
+            NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]
 
-            # Add per-channel mask ONLY for conventional (surface_obs/radiosonde)
-            if obs_type != "satellite":
-                # Ensure boolean torch tensor
-                data_summary_bin["target_channel_mask"] = torch.tensor(target_channel_mask.astype(bool), dtype=torch.bool)
+            # Per-channel target mask for loss
+            data_summary_bin["target_channel_mask"] = torch.tensor(target_channel_mask.astype(bool), dtype=torch.bool)
 
-            print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
+            print(f"[{bin_name}] input_features_final shape:  {input_features_final.shape}")
             print(f"[{bin_name}] target_features_final shape: {target_features_final.shape}")
 
         if not data_summary[bin_name].get(obs_type):  # all instruments removed

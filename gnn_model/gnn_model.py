@@ -22,6 +22,14 @@ from torch_geometric.utils import scatter
 from loss import weighted_huber_loss
 
 
+def _build_instrument_map(observation_config: dict) -> dict[str, int]:
+    order = []
+    for group in ("satellite", "conventional"):
+        if group in observation_config:
+            order += sorted(observation_config[group].keys())
+    return {name: i for i, name in enumerate(order)}
+
+
 class GNNLightning(pl.LightningModule):
     """
     A Graph Neural Network (GNN) model for processing structured spatiotemporal data.
@@ -69,19 +77,25 @@ class GNNLightning(pl.LightningModule):
         self.lr = lr
         self.instrument_weights = instrument_weights or {}
         self.channel_weights = channel_weights or {}
-        self.channel_masks = {}
-        for inst_id, weights in self.channel_weights.items():
-            if isinstance(weights, torch.Tensor):
-                weights_tensor = weights.clone().detach()
-            else:
-                weights_tensor = torch.tensor(weights)
-            mask = weights_tensor > 0
-            self.channel_masks[int(inst_id)] = mask
         self.max_rollout_steps = max_rollout_steps
         self.rollout_schedule = rollout_schedule
 
         self.observation_config = observation_config
-        self.instrument_name_to_id = {"atms": 0, "surface_obs": 1, "radiosonde": 2}
+        # Mirror process_timeseries._name2id()
+        self.instrument_name_to_id = _build_instrument_map(self.observation_config)
+        self.instrument_id_to_name = {v: k for k, v in self.instrument_name_to_id.items()}
+
+        # Normalize user-provided weights (accept names or ids)
+        self.instrument_weights = self._normalize_inst_weights(instrument_weights)
+        self.channel_weights = self._normalize_channel_weights(channel_weights)
+
+        # Boolean masks per instrument for valid channels (weights > 0)
+        self.channel_masks = {inst_id: (w > 0) for inst_id, w in self.channel_weights.items()}
+
+        if self.verbose:
+            print("[MODEL] instrument map:", self.instrument_name_to_id)
+            print("[MODEL] instrument_weights:", {self.instrument_id_to_name[k]: float(v) for k, v in self.instrument_weights.items()})
+
         self.hidden_dim = hidden_dim
 
         # --- Create and store the mesh structure as part of the model ---
@@ -141,15 +155,17 @@ class GNNLightning(pl.LightningModule):
                 # Initial MLP to project raw features to hidden_dim
                 self.observation_embedders[node_type_input] = make_mlp([input_dim] + self.mlp_blueprint_end)
 
-                # Final MLP to map from hidden dim to output dim
-                if node_type_target == "atms_target":
+                # Final MLP: add scan-angle embedder for ATMS, AMSU-A, and AVHRR targets
+                targets_with_scan = {"atms_target", "amsua_target", "avhrr_target"}
+                if node_type_target in targets_with_scan:
+                    # define once; harmless if re-assigned identically
                     self.scan_angle_embed_dim = 8
-                    self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
+                    if not hasattr(self, "scan_angle_embedder"):
+                        self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
                     input_dim_for_mapper = hidden_dim + self.scan_angle_embed_dim
                 else:
                     input_dim_for_mapper = hidden_dim
 
-                # Add one more hidden layer to the output mapper as requested
                 output_map_layers = [input_dim_for_mapper] + [hidden_dim] * hidden_layers + [target_dim]
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
 
@@ -173,6 +189,53 @@ class GNNLightning(pl.LightningModule):
         self.register_buffer("mesh_x", _as_f32(mesh_x))
         self.register_buffer("mesh_edge_index", _as_i64(mesh_edge_index))
         self.register_buffer("mesh_edge_attr", _as_f32(mesh_edge_attr))
+
+    def _normalize_inst_weights(self, weights_in):
+        out = {}
+        if not weights_in:
+            return out
+        for k, v in weights_in.items():
+            if isinstance(k, str):
+                if k in self.instrument_name_to_id:
+                    out[self.instrument_name_to_id[k]] = float(v)
+            else:
+                out[int(k)] = float(v)
+        return out
+
+    def _normalize_channel_weights(self, ch_in):
+        """
+        Accepts {name_or_id: sequence/tensor} and returns {id: torch.tensor}
+        sized to that instrument's target_dim (slice/pad with 1.0 as needed).
+        """
+        out = {}
+        if not ch_in:
+            return out
+        for k, v in ch_in.items():
+            # resolve id and name
+            if isinstance(k, str):
+                if k not in self.instrument_name_to_id:
+                    continue
+                inst_name, inst_id = k, self.instrument_name_to_id[k]
+            else:
+                inst_id = int(k)
+                inst_name = getattr(self, "instrument_id_to_name", {}).get(inst_id, None)
+
+            # find expected target_dim from config
+            target_dim = None
+            for group, instruments in self.observation_config.items():
+                if inst_name in instruments:
+                    target_dim = instruments[inst_name]["target_dim"]
+                    break
+            if target_dim is None:
+                continue
+
+            w = torch.as_tensor(v, dtype=torch.float32)
+            if w.numel() > target_dim:
+                w = w[:target_dim]
+            elif w.numel() < target_dim:
+                w = torch.cat([w, torch.ones(target_dim - w.numel(), dtype=torch.float32)], dim=0)
+            out[inst_id] = w
+        return out
 
     def _feature_names_for_node(self, node_type: str):
         """Return ordered feature names for this target node."""
@@ -208,53 +271,80 @@ class GNNLightning(pl.LightningModule):
 
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
         """
-        Undo standardization (z-score) for predictions/targets.
+        Reverse a per-channel standardization: x = x * std + mean.
 
-        - If node_type is "atms_target": uses bt_channel_1..22 from feature_stats.
-        - If node_type is "surface_obs_target": uses feature order defined in observation_config["surface_obs"]["features"].
-        - Otherwise raises ValueError.
+        - If `mean` and `std` are provided, they are used directly.
+        - Otherwise we look up the instrument from `node_type` (expects "<instrument>_target"),
+        get the feature order from `self.observation_config`, and pull means/stds
+        from `self.feature_stats[instrument][feature] = [mean, std]`.
+
+        Args:
+            tensor:  (..., C) torch.Tensor — standardized values
+            node_type: str — e.g., "atms_target", "amsua_target", "surface_obs_target", "snow_cover_target"
+            mean, std: optional sequences/ndarrays/torch tensors of shape (C,)
+
+        Returns:
+            torch.Tensor with the same shape as `tensor`, un-normalized per channel.
         """
-        if node_type == "atms_target":
-            features = [f"bt_channel_{i}" for i in range(1, 23)]
-            mean_vec = torch.tensor(
-                [self.feature_stats[f][0] for f in features],
-                dtype=torch.float32,
-                device=self.device,
-            )
-            std_vec = torch.tensor(
-                [self.feature_stats[f][1] for f in features],
-                dtype=torch.float32,
-                device=self.device,
-            )
-            return tensor * std_vec + mean_vec
+        # If explicit stats are provided, use them
+        if mean is not None and std is not None:
+            device = tensor.device if torch.is_tensor(tensor) else getattr(self, "device", "cpu")
+            dtype = tensor.dtype if torch.is_tensor(tensor) else torch.float32
+            mean = torch.as_tensor(mean, dtype=dtype, device=device)
+            std = torch.as_tensor(std, dtype=dtype, device=device)
+            return tensor * std + mean
 
-        elif node_type == "surface_obs_target":
-            # Find the configured features for surface_obs
-            feats = None
-            for obs_type, instruments in self.observation_config.items():
-                if "surface_obs" in instruments:
-                    feats = instruments["surface_obs"]["features"]
-                    break
-            if feats is None:
-                raise ValueError("surface_obs config with 'features' not found for unnormalization")
+        # Parse "<instrument>_target" (also tolerate "<instrument>_input" just in case)
+        if not isinstance(node_type, str) or "_" not in node_type:
+            raise ValueError(f"node_type must look like '<instrument>_target', got: {node_type!r}")
+        inst_name = node_type.rsplit("_", 1)[0]  # drop trailing _target/_input/etc.
 
-            # Build mean/std vectors for the configured order
-            mean_vec = torch.tensor(
-                [self.feature_stats[f][0] for f in feats],
-                dtype=torch.float32,
-                device=self.device,
-            )
-            std_vec = torch.tensor(
-                [self.feature_stats[f][1] for f in feats],
-                dtype=torch.float32,
-                device=self.device,
-            )
+        # Find instrument block and feature order from the config
+        feats = None
+        found_in_obs_type = None
+        for obs_type, instruments in self.observation_config.items():
+            if inst_name in instruments:
+                feats = instruments[inst_name].get("features")
+                found_in_obs_type = obs_type
+                break
+        if not feats:
+            raise ValueError(f"Features for instrument '{inst_name}' not found in observation_config.")
 
-            # Broadcast to prediction shape if needed
-            return tensor * std_vec + mean_vec
+        # Pull stats for this instrument
+        if not hasattr(self, "feature_stats") or self.feature_stats is None:
+            raise ValueError("self.feature_stats is not set; cannot unnormalize without stats.")
 
+        if inst_name not in self.feature_stats:
+            # Some configs store stats under category keys; try a second chance lookup
+            cand = self.feature_stats.get(found_in_obs_type, {})
+            if inst_name in cand:
+                stats_block = cand[inst_name]
+            else:
+                raise KeyError(f"feature_stats has no entry for instrument '{inst_name}'.")
         else:
-            raise ValueError(f"Un-normalization not supported for node_type: {node_type}")
+            stats_block = self.feature_stats[inst_name]
+
+        # Build mean/std vectors following the feature order exactly
+        try:
+            mean_vec = [stats_block[f][0] for f in feats]
+            std_vec = [stats_block[f][1] for f in feats]
+        except KeyError as e:
+            missing = str(e).strip("'")
+            raise KeyError(f"Missing statistics for '{inst_name}.{missing}'. " f"Expected keys: {feats}. Have: {list(stats_block.keys())}") from e
+
+        device = tensor.device if torch.is_tensor(tensor) else getattr(self, "device", "cpu")
+        dtype = tensor.dtype if torch.is_tensor(tensor) else torch.float32
+        mean_vec = torch.tensor(mean_vec, dtype=dtype, device=device)
+        std_vec = torch.tensor(std_vec, dtype=dtype, device=device)
+
+        # Basic shape check: last dim must match number of features
+        if tensor.size(-1) != mean_vec.numel():
+            raise ValueError(
+                f"Channel mismatch for '{inst_name}': tensor last-dim={tensor.size(-1)} "
+                f"but have {mean_vec.numel()} feature stats. Feature order={feats}"
+            )
+
+        return tensor * std_vec + mean_vec
 
     def forward(self, data: HeteroData, step_data_list=None) -> Dict[str, torch.Tensor]:
 
@@ -288,7 +378,7 @@ class GNNLightning(pl.LightningModule):
             src_type, _, dst_type = edge_type
             if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
                 obs_features = embedded_features[src_type]
-                edge_attr = torch.empty((edge_index.size(1), self.hidden_dim), device=self.device)
+                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=self.device)
 
                 encoder = self.observation_encoders[self._edge_key(edge_type)]
                 encoder.edge_index = edge_index
@@ -325,7 +415,7 @@ class GNNLightning(pl.LightningModule):
         self.debug(f"[PROCESSOR] mesh after {self.hparams.num_layers} layers -> {processed_features['mesh'].shape}")
 
         # --------------------------------------------------------------------
-        # STAGE 5: DECODE (Identical to Ocelot2's `decode` method)
+        # STAGE 5: DECODE
         # --------------------------------------------------------------------
         predictions = {}
         mesh_features_processed = processed_features["mesh"]
@@ -338,7 +428,7 @@ class GNNLightning(pl.LightningModule):
                 decoder = self.observation_decoders[self._edge_key(edge_type)]
                 decoder.edge_index = edge_index
 
-                edge_attr = torch.empty((edge_index.size(1), self.hidden_dim), device=self.device)
+                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=self.device)
 
                 decoded_target_features = decoder(
                     send_rep=mesh_features_processed,
@@ -346,7 +436,7 @@ class GNNLightning(pl.LightningModule):
                     edge_rep=edge_attr,
                 )
 
-                if dst_type == "atms_target":
+                if dst_type in ("atms_target", "amsua_target", "avhrr_target"):
                     scan_angle = data[dst_type].x
                     scan_angle_embedded = self.scan_angle_embedder(scan_angle)
                     final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
@@ -535,6 +625,16 @@ class GNNLightning(pl.LightningModule):
 
                 instrument_ids = step_data_list[step].get(node_type, {}).get("instrument_ids", None)
                 valid_mask = step_data_list[step].get(node_type, {}).get("target_channel_mask", None)
+                # Ensure finite tensors
+                if not torch.isfinite(y_pred).all():
+                    y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
+                if not torch.isfinite(y_true).all():
+                    y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
+
+                # Skip if mask exists but nothing valid
+                if valid_mask is not None and valid_mask.sum() == 0:
+                    continue
+
                 channel_loss = weighted_huber_loss(
                     y_pred,
                     y_true,
@@ -545,22 +645,17 @@ class GNNLightning(pl.LightningModule):
                     valid_mask=valid_mask,
                 )
 
+                if not torch.isfinite(channel_loss):
+                    if self.trainer.is_global_zero:
+                        print(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
+                    continue
+
                 # Apply the overall instrument weight
                 weighted_loss = channel_loss * instrument_weight
 
                 # Add the loss for this instrument to the total
                 total_loss = total_loss + weighted_loss
                 num_predictions += 1
-                # Log the individual loss for debugging
-                self.log(
-                    f"train_loss_{node_type}",
-                    weighted_loss,
-                    on_step=False,
-                    on_epoch=True,
-                    prog_bar=False,
-                    logger=True,
-                    batch_size=1,
-                )
 
         dummy_loss = 0.0
         for param in self.parameters():
@@ -627,8 +722,16 @@ class GNNLightning(pl.LightningModule):
                 if y_pred.shape != y_true.shape:
                     continue
 
+                if not torch.isfinite(y_pred).all():
+                    y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
+                if not torch.isfinite(y_true).all():
+                    y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
                 instrument_ids = step_data_list[step].get(node_type, {}).get("instrument_ids", None)
                 valid_mask = step_data_list[step].get(node_type, {}).get("target_channel_mask", None)
+                if valid_mask is not None:
+                    valid_mask = valid_mask.to(dtype=torch.bool, device=y_pred.device)
+                    if valid_mask.numel() == 0 or valid_mask.sum() == 0:
+                        continue  # nothing valid for this node_type/step
                 # Get the channel-weighted loss
                 channel_loss = weighted_huber_loss(
                     y_pred,
@@ -640,6 +743,10 @@ class GNNLightning(pl.LightningModule):
                     valid_mask=valid_mask,
                 )
 
+                if not torch.isfinite(channel_loss):
+                    if self.trainer.is_global_zero:
+                        print(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
+                    continue
                 # Apply the overall instrument weight
                 weighted_loss = channel_loss * instrument_weight
 
@@ -647,10 +754,13 @@ class GNNLightning(pl.LightningModule):
                 num_predictions += 1
                 self.log(
                     f"val_loss_{node_type}",
-                    weighted_loss,
-                    sync_dist=True,
+                    weighted_loss.detach(),
+                    sync_dist=False,
                     on_epoch=True,
                     batch_size=1,
+                    prog_bar=False,
+                    logger=True,
+                    rank_zero_only=True,
                 )
 
                 # --- Metrics Calculation ---
@@ -743,28 +853,6 @@ class GNNLightning(pl.LightningModule):
             num_channels = all_step_rmse[node_type][0].shape[0] if all_step_rmse[node_type] else 1
             for step in range(n_steps, self.max_rollout_steps):
                 placeholder_metric = torch.tensor(float("nan"), device=self.device)
-                for i in range(num_channels):
-                    self.log(
-                        f"val_rmse_{node_type}_step{step+1}_ch_{i+1}",
-                        placeholder_metric,
-                        sync_dist=True,
-                        on_epoch=True,
-                        batch_size=1,
-                    )
-                    self.log(
-                        f"val_mae_{node_type}_step{step+1}_ch_{i+1}",
-                        placeholder_metric,
-                        sync_dist=True,
-                        on_epoch=True,
-                        batch_size=1,
-                    )
-                    self.log(
-                        f"val_bias_{node_type}_step{step+1}_ch_{i+1}",
-                        placeholder_metric,
-                        sync_dist=True,
-                        on_epoch=True,
-                        batch_size=1,
-                    )
 
         # --- Average metrics across steps for each node_type ---
         for node_type in decoder_names:
@@ -772,28 +860,6 @@ class GNNLightning(pl.LightningModule):
                 avg_rmse = torch.stack(all_step_rmse[node_type]).mean(dim=0)
                 avg_mae = torch.stack(all_step_mae[node_type]).mean(dim=0)
                 avg_bias = torch.stack(all_step_bias[node_type]).mean(dim=0)
-                for i in range(avg_rmse.shape[0]):
-                    self.log(
-                        f"val_rmse_{node_type}_ch_{i+1}",
-                        avg_rmse[i].item(),
-                        sync_dist=True,
-                        on_epoch=True,
-                        batch_size=1,
-                    )
-                    self.log(
-                        f"val_mae_{node_type}_ch_{i+1}",
-                        avg_mae[i].item(),
-                        on_epoch=True,
-                        sync_dist=True,
-                        batch_size=1,
-                    )
-                    self.log(
-                        f"val_bias_{node_type}_ch_{i+1}",
-                        avg_bias[i].item(),
-                        on_epoch=True,
-                        sync_dist=True,
-                        batch_size=1,
-                    )
 
         if self.trainer.is_global_zero and batch_idx == 0:
             for node_type in decoder_names:
