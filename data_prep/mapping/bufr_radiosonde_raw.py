@@ -50,11 +50,12 @@ class RawRadiosondeBuilder(ObsBuilder):
         prepbufr_lat = prepbufr_container.get('launchLatitude').filled()
         prepbufr_lon = prepbufr_container.get('launchLongitude').filled()
 
-        # Make hash table for fast lookup
         prepbufr_dict = {}
         for i, (t, lat, lon) in enumerate(zip(prepbufr_time, prepbufr_lat, prepbufr_lon)):
             key = (t, np.round(lat, 2), np.round(lon, 2))
-            prepbufr_dict[key] = i
+            if key not in prepbufr_dict:
+                prepbufr_dict[key] = []
+            prepbufr_dict[key].append(i)
 
         container_time = container.get('timestamp').filled()
         container_lat = container.get('latitude').filled()
@@ -62,10 +63,18 @@ class RawRadiosondeBuilder(ObsBuilder):
 
         # Use hash table to find matching indices in combined container
         indices = [-1] * len(container_time)
+        obs_idx = 0
+        last_key = None
         for i, (t, lat, lon) in enumerate(zip(container_time, container_lat, container_lon)):
             key = (t, np.round(lat, 2), np.round(lon, 2))
+
+            if key != last_key:
+                obs_idx = 0
+                last_key = key
+
             if key in prepbufr_dict:
-                indices[i] = prepbufr_dict[key]
+                indices[i] = prepbufr_dict[key][obs_idx]
+                obs_idx += 1
 
         indices = np.array(indices)
         valid_mask = indices != -1

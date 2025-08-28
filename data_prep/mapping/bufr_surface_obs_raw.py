@@ -33,7 +33,6 @@ class RawAdpsfcBuilder(ObsBuilder):
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         prepbufr_container.apply_mask(~prepbufr_container.get('obsTimeMinusCycleTime').mask)
-
         prepbufr_container.all_gather(comm)
 
         # Add timestamps to the prepbufr container
@@ -166,7 +165,5 @@ class RawAdpsfcBuilder(ObsBuilder):
         cycle_times = np.array([3600 * t for t in container.get('obsTimeMinusCycleTime')]).astype('timedelta64[s]')
         time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add('timestamp', time, ['*'])
-
-
 
 add_main_functions(RawAdpsfcBuilder)
