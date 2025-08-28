@@ -25,17 +25,8 @@ bufr:
     satelliteId:
       query: "*/SAID"
 
-    solarZenithAngle:
-      query: "*/SOZA"
-
-    solarAzimuthAngle:
-      query: "*/SOLAZI"
-
     sensorZenithAngle:
       query: "*/SAZA"
-
-    sensorAzimuthAngle:
-      query: "*/BEARAZ"
 
     sensorCentralFrequency:
       query: "*/SCCF"
@@ -105,27 +96,11 @@ encoder:
       source: variables/satelliteId
       longName: "Satellite Identifier"
 
-    - name: "solarZenithAngle"
-      source: variables/solarZenithAngle
-      longName: "Solar Zenith Angle"
-      units: "degree"
-      range: [0, 180]
-
-    - name: "solarAzimuthAngle"
-      source: variables/solarAzimuthAngle
-      longName: "Solar Azimuth Angle"
-      units: "degree"
-
     - name: "sensorZenithAngle"
       source: variables/sensorZenithAngle
       longName: "Sensor Zenith Angle"
       units: "degree"
       range: [0, 90]
-
-    - name: "sensorAzimuthAngle"
-      source: variables/sensorAzimuthAngle
-      longName: "Sensor Azimuth Angle"
-      units: "degree"
 
     - name: "sensorCentralFrequency"
       source: variables/sensorCentralFrequency
