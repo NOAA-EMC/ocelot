@@ -55,7 +55,7 @@ def _stable_seed(seed_base: int, bin_time: pd.Timestamp, obs_type: str, key: str
 
 
 @timing_resource_decorator
-def organize_bins_times(z_dict, start_date, end_date, observation_config, window_size="12h", verbose=False):
+def organize_bins_times(z_dict, start_date, end_date, observation_config, pipeline_cfg=None, window_size="12h", verbose=False):
     """
     Bin definition: a bin consists of a pair of input and targets, each covers window_size.
     Organizes observation times into time bins and creates input-target pairs.
@@ -82,7 +82,7 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
         raise ValueError("window_size must end with 'h' (e.g., '6h', '12h').")
 
     # subsampling config
-    subs_cfg = observation_config.get("pipeline", {}).get("subsample", {}) or {}
+    subs_cfg = (pipeline_cfg or {}).get("subsample", {}) or {}
     delta_satellite = int(subs_cfg.get("satellite", 25))
     delta_surface = int(subs_cfg.get("conventional", 20))
     mode_cfg = subs_cfg.get("mode", {}) or {}
@@ -173,8 +173,23 @@ def organize_bins_times(z_dict, start_date, end_date, observation_config, window
     return data_summary
 
 
+def _name2id(observation_config):
+    order = []
+    for obs_type in ("satellite", "conventional"):
+        if obs_type in observation_config:
+            order += sorted(observation_config[obs_type].keys())
+    return {name: i for i, name in enumerate(order)}
+
+
+# Helper that returns an empty (N,0) if there are no keys
+def _stack_or_empty(arrs, keys, idx):
+    if not keys:
+        return np.empty((len(idx), 0), dtype=np.float32)
+    return np.column_stack([arrs[k][idx] for k in keys]).astype(np.float32)
+
+
 @timing_resource_decorator
-def extract_features(z_dict, data_summary, bin_name, observation_config):
+def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None):
     """
     Loads and normalizes input and target features for each time bin individually.
     Adds per-channel masks for conventional targets so features can be missing independently.
@@ -182,6 +197,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
     print(f"\nProcessing {bin_name}...")
     for obs_type in list(data_summary[bin_name].keys()):
         for inst_name in list(data_summary[bin_name][obs_type].keys()):
+            target_channel_mask = None
             z = z_dict[obs_type][inst_name]
 
             data_summary_bin = data_summary[bin_name][obs_type][inst_name]
@@ -247,14 +263,30 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             feat_keys = observation_config[obs_type][inst_name]["features"]
             meta_keys = observation_config[obs_type][inst_name]["metadata"]
 
-            input_features_raw = np.column_stack([z[k][input_idx] for k in feat_keys]).astype(np.float32)
-            input_metadata_raw = np.column_stack([z[k][input_idx] for k in meta_keys]).astype(np.float32)
+            # Helper: fetch a feature, with fallbacks/derived transforms for conventional wind
+            def _get_feature(arrs, name, idx):
+                if name in arrs:
+                    return arrs[name][idx]
+                if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
+                    ws = arrs["windSpeed"][idx].astype(np.float32)
+                    wd = arrs["windDirection"][idx].astype(np.float32)
+                    # auto-detect units: if values are mostly > 2π, treat as degrees
+                    # (use nanmax to avoid NaNs; add small margin)
+                    wd_rad = wd if np.nanmax(wd) <= (2 * np.pi + 0.1) else wd * (np.pi / 180.0)
+                    # Meteorological convention: direction is the FROM direction.
+                    u = -ws * np.sin(wd_rad)
+                    v = -ws * np.cos(wd_rad)
+                    return u if name == "wind_u" else v
+                raise KeyError(f"Requested feature '{name}' not found in Zarr and no fallback rule defined.")
+
+            input_features_raw = np.column_stack([_get_feature(z, k, input_idx) for k in feat_keys]).astype(np.float32)
+            input_metadata_raw = _stack_or_empty(z, meta_keys, input_idx)
             input_lat_raw = z["latitude"][input_idx]
             input_lon_raw = z["longitude"][input_idx]
             input_times_raw = z["time"][input_idx]
 
-            target_features_raw = np.column_stack([z[k][target_idx] for k in feat_keys]).astype(np.float32)
-            target_metadata_raw = np.column_stack([z[k][target_idx] for k in meta_keys]).astype(np.float32)
+            target_features_raw = np.column_stack([_get_feature(z, k, target_idx) for k in feat_keys]).astype(np.float32)
+            target_metadata_raw = _stack_or_empty(z, meta_keys, target_idx)
             target_lat_raw = z["latitude"][target_idx]
             target_lon_raw = z["longitude"][target_idx]
             target_times_raw = z["time"][target_idx]
@@ -340,6 +372,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
                 input_metadata_rad = np.deg2rad(input_metadata_raw)
                 input_metadata_cos = np.cos(input_metadata_rad)
                 input_metadata = input_metadata_cos
+
                 # Normalize target metadata angles for the decoder
                 target_metadata_rad = np.deg2rad(target_metadata_raw)
                 target_metadata_cos = np.cos(target_metadata_rad)
@@ -357,28 +390,49 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
                         input_features_norm,
                     ]
                 )
-                scan_angle = target_metadata_cos[:, 0:1]
-                target_features_final = target_features_norm
+
+                # ---- per-channel mask for satellite targets + NaN-safe target features ----
+                target_channel_mask = ~np.isnan(target_features_norm)  # [N, C]
+                target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
+
+                scan_angle = target_metadata_cos[:, 0:1]  # cos(sensorZenithAngle)
                 target_metadata = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_cos])
 
             else:
-                # --------- CONVENTIONAL: NaN-safe per-channel standardization + mask ---------
-                # Compute per-channel mean/std over combined input+target, ignoring NaNs in target
-                combined = np.vstack([input_features_raw, target_features_raw])  # may include NaNs (from target)
-                means = np.nanmean(combined, axis=0)
-                stds = np.nanstd(combined, axis=0)
+                # --------- CONVENTIONAL: use global stats if provided; else fallback to per-bin ---------
+                # Try global (YAML) stats first, keyed by instrument name and ordered by feat_keys
+                means = stds = None
+                if feature_stats is not None and inst_name in feature_stats:
+                    try:
+                        means = np.array([feature_stats[inst_name][k][0] for k in feat_keys], dtype=np.float32)
+                        stds = np.array([feature_stats[inst_name][k][1] for k in feat_keys], dtype=np.float32)
+                    except KeyError as e:
+                        raise KeyError(f"Missing stat for {inst_name}.{e}") from e
+
+                # Fallback: per-bin stats (ignore NaNs in targets)
+                if means is None or stds is None:
+                    combined = np.vstack([input_features_raw, target_features_raw])  # targets may include NaNs
+                    means = np.nanmean(combined, axis=0).astype(np.float32)
+                    stds = np.nanstd(combined, axis=0).astype(np.float32)
+
+                # Guard degenerate stats
                 stds[(stds == 0) | ~np.isfinite(stds)] = 1.0
                 means[~np.isfinite(means)] = 0.0
 
-                # Standardize
+                # Standardize (preserve NaNs in targets for channel masks)
                 input_features_norm = (input_features_raw - means) / stds
-                target_features_norm = (target_features_raw - means) / stds  # NaNs preserved here
+                target_features_norm = (target_features_raw - means) / stds  # keep NaNs
 
-                # Metadata normalization (unchanged)
-                features_scaler = StandardScaler()
-                input_metadata_norm = features_scaler.fit_transform(input_metadata_raw)
-                target_scaler = StandardScaler()
-                target_metadata_norm = target_scaler.fit_transform(target_metadata_raw)
+                # Metadata normalization (per-bin; guard empty)
+                if input_metadata_raw.shape[1] > 0:
+                    input_metadata_norm = StandardScaler().fit_transform(input_metadata_raw)
+                else:
+                    input_metadata_norm = np.empty((input_metadata_raw.shape[0], 0), dtype=np.float32)
+
+                if target_metadata_raw.shape[1] > 0:
+                    target_metadata_norm = StandardScaler().fit_transform(target_metadata_raw)
+                else:
+                    target_metadata_norm = np.empty((target_metadata_raw.shape[0], 0), dtype=np.float32)
 
                 # Final input features for conventional
                 input_metadata = input_metadata_norm
@@ -398,7 +452,6 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
 
                 # ---- Build target mask BEFORE filling NaNs ----
                 target_channel_mask = ~np.isnan(target_features_norm)  # shape [N, C]
-                # Replace NaNs with 0 AFTER standardization to keep tensor dense
                 target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
 
                 # Target metadata for plotting
@@ -420,13 +473,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config):
             data_summary_bin["target_lat_deg"] = z["latitude"][target_idx]
             data_summary_bin["target_lon_deg"] = z["longitude"][target_idx]
 
-            NAME2ID = {"atms": 0, "surface_obs": 1, "radiosonde": 2}
+            NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]
 
-            # Add per-channel mask ONLY for conventional (surface_obs/radiosonde)
-            if obs_type != "satellite":
-                # Ensure boolean torch tensor
-                data_summary_bin["target_channel_mask"] = torch.tensor(target_channel_mask.astype(bool), dtype=torch.bool)
+            # satellite or conventional branch sets target_channel_mask
+            data_summary_bin["target_channel_mask"] = torch.tensor(target_channel_mask.astype(bool), dtype=torch.bool)
 
             print(f"[{bin_name}] input_features_final shape: {input_features_final.shape}")
             print(f"[{bin_name}] target_features_final shape: {target_features_final.shape}")

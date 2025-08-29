@@ -28,6 +28,7 @@ class BinDataset(Dataset):
         zarr_store,
         create_graph_fn,
         observation_config,
+        feature_stats=None,
         apply_masking=True,
     ):
         self.bin_names = bin_names
@@ -35,6 +36,7 @@ class BinDataset(Dataset):
         self.z = zarr_store
         self.create_graph_fn = create_graph_fn
         self.observation_config = observation_config
+        self.feature_stats = feature_stats
         self.apply_masking = apply_masking
 
     def __len__(self):
@@ -45,7 +47,7 @@ class BinDataset(Dataset):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         print(f"[Rank {rank}] Fetching {bin_name}...")
         try:
-            bin_data = extract_features(self.z, self.data_summary, bin_name, self.observation_config)[bin_name]
+            bin_data = extract_features(self.z, self.data_summary, bin_name, self.observation_config, feature_stats=self.feature_stats)[bin_name]
             graph_data = self.create_graph_fn(bin_data)
             graph_data.bin_name = bin_name
             return graph_data
@@ -64,11 +66,13 @@ class GNNDataModule(pl.LightningDataModule):
         mesh_structure,
         batch_size=1,
         num_neighbors=3,
+        feature_stats=None,
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
         self.mesh_structure = mesh_structure
+        self.feature_stats = feature_stats
         self.z = None
         self.data_summary = None
         self.train_bin_names = None
@@ -83,8 +87,28 @@ class GNNDataModule(pl.LightningDataModule):
                     src = inst_cfg.get("source", "zarr")
 
                     if src == "zarr":
-                        zarr_path = os.path.join(self.hparams.data_path, inst_name) + ".zarr"
+                        zarr_dir = inst_cfg.get("zarr_dir")  # full path override (absolute or relative)
+                        if zarr_dir:
+                            zarr_path = zarr_dir
+                        else:
+                            zname = inst_cfg.get("zarr_name", inst_name)  # basename or basename.zarr
+                            if not zname.endswith(".zarr"):
+                                zname += ".zarr"
+                            zarr_path = os.path.join(self.hparams.data_path, zname)
+
+                        if not os.path.isdir(zarr_path):
+                            raise FileNotFoundError(f"Conventional Zarr not found: {zarr_path}")
                         self.z[obs_type][inst_name] = zarr.open(LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=2e9), mode="r")
+                        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+                        if rank == 0:
+                            print(f"[ZARR] {obs_type}/{inst_name} -> {zarr_path}")
+                            print("  has keys:", list(self.z[obs_type][inst_name].keys())[:12])
+
+                        # Optional guard to ensure the right file is used for surface_obs
+                        if obs_type == "conventional" and inst_name == "surface_obs":
+                            if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
+                                print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
+
                     elif src == "nnja":
                         # Load DataFrame via dotted loader path
                         loader_path = inst_cfg["dataframe_loader"]
@@ -115,6 +139,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.start_date,
             self.hparams.end_date,
             self.hparams.observation_config,
+            pipeline_cfg=self.hparams.pipeline,
         )
         all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
 
@@ -128,6 +153,7 @@ class GNNDataModule(pl.LightningDataModule):
                 self.z,
                 self._create_graph_structure,
                 self.hparams.observation_config,
+                feature_stats=self.feature_stats,
                 apply_masking=True,
             )
 
@@ -165,13 +191,17 @@ class GNNDataModule(pl.LightningDataModule):
 
                     # --- TARGET NODES & EDGES ---
                     target_features = inst_data["target_features_final"]
-                    if inst_name == "atms":
-                        data[node_type_target].y = target_features  # [N, 22]
+                    if inst_name in ("atms", "amsua"):
+                        data[node_type_target].y = target_features  # [N, target_dim]
                         data[node_type_target].x = inst_data["scan_angle"].to(torch.float32)  # [N, 1]
                         # instrument IDs (long)
                         inst_id = int(inst_data["instrument_id"])
                         num_nodes = target_features.shape[0]
                         data[node_type_target].instrument_ids = torch.full((num_nodes,), inst_id, dtype=torch.long)
+                        if "target_channel_mask" in inst_data:
+                            data[node_type_target].target_channel_mask = inst_data["target_channel_mask"].to(torch.bool)
+                        else:
+                            data[node_type_target].target_channel_mask = torch.ones_like(target_features, dtype=torch.bool)
                     else:
                         # For other obs, all features are targets in '.y'
                         data[node_type_target].y = target_features  # [N, target_dim]
@@ -234,7 +264,7 @@ class GNNDataModule(pl.LightningDataModule):
             shuffle=True,
             num_workers=4,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,
         )
 
     def val_dataloader(self):
@@ -246,6 +276,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.z,
             self._create_graph_structure,
             self.hparams.observation_config,
+            feature_stats=self.feature_stats,
             apply_masking=False,
         )
         return PyGDataLoader(
