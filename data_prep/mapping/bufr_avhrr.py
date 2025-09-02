@@ -25,6 +25,9 @@ class AvhrrObsBuilder(ObsBuilder):
 
         return container
 
+    def _make_description(self):
+        description = bufr.encoders.Description(self.map_dict[AM_KEY])
+
 
 # Add main functions create_obs_file and create_obs_group
 add_main_functions(AvhrrObsBuilder)
