@@ -43,6 +43,7 @@ bufr:
 encoder:
   dimensions:
     - name: ch
+      path: '*/AVCSEQ'
       source: variables/channelNumber
 
   variables:

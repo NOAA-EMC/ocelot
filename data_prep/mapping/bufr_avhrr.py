@@ -17,7 +17,7 @@ class AvhrrObsBuilder(ObsBuilder):
                           PM_KEY:MAPPING_PATH}, log_name=os.path.basename(__file__))
 
     def make_obs(self, comm, input_dict):
-        container = bufr.Container()
+        container = bufr.DataContainer()
         if os.path.exists(input_dict[AM_KEY]):
             container.append(bufr.Parser(input_dict[AM_KEY], self.map_dict[AM_KEY]).parse(comm))
 
@@ -78,7 +78,7 @@ class AvhrrObsBuilder(ObsBuilder):
         return data
 
     def _make_description(self):
-        description = bufr.encoders.Description(self.map_dict[AM_KEY])
+        return bufr.encoders.Description(self.map_dict[AM_KEY])
 
 
 # Add main functions create_obs_file and create_obs_group
