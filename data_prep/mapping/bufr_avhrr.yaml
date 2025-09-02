@@ -1,8 +1,4 @@
 bufr:
-  subsets:
-    - NC005080
-    - NC005081
-
   variables:
     # MetaData
     timestamp:
@@ -15,63 +11,39 @@ bufr:
         second: "*/SECO"
 
     latitude:
-      # [NESDIS, EUMETSAT]
-      query: "[*/CLAT, */CLATH]"
+      query: "*/CLATH"
 
     longitude:
-      # [NESDIS, EUMETSAT]
-      query: "[*/CLON, */CLONH]"
+      query: "*/CLONH"
 
     satelliteId:
       query: "*/SAID"
 
-    sensorZenithAngle:
+    fieldOfViewNumber:
+      query: "*/FOVN"
+
+    satelliteZenithAngle:
       query: "*/SAZA"
 
-    sensorCentralFrequency:
-      query: "*/SCCF"
-      type: float
+    solarZenithAngle:
+      query: "*/SOZA"
 
-    pressure:
-      # [NESDIS, EUMETSAT]
-      query: "[*/PRLC, */PRLC[1]]"
-      type: float
+    cloudMask:
+      query: "*/CLAVR"
 
-    # Processing Center
-    dataProviderOrigin:
-      # [EUMETSAT, NESDIS] - ordered to provide unique search term first
-      query: "[*/OGCE[1], */OGCE]"
+    channelNumber:
+      query: "*/AVCSEQ/INCN"
 
-    # Generating Application - contains multiple types
-    generatingApplication:
-      # [NESDIS, EUMETSAT]
-      query: "[*/GQCPRMS/GNAP, */AMVQIC/GNAPS]"
+    albedo:
+      query: "*/AVCSEQ/ALBD"
 
-    # Quality Information - contains multiple types
-    qualityInformation:
-      # [NESDIS, EUMETSAT]
-      query: "[*/GQCPRMS/PCCF, */AMVQIC/PCCF]"
-      type: float
-
-    # Wind Retrieval Method Information - Computation
-    windComputationMethod:
-      query: '*/SWCM'
-
-    # ObsValue - Wind Direction
-    windDirection:
-      query: '*/WDIR'
-      type: float
-
-    # ObsValue - Wind Speed
-    windSpeed:
-      query: '*/WSPD'
+    brightnessTemperature:
+      query: "*/AVCSEQ/TMBR"
 
 encoder:
   dimensions:
-    - name: event
-      paths:
-        - "*/GQCPRMS"
-        - "*/AMVQIC"
+    - name: ch
+      source: variables/channelNumber
 
   variables:
     # MetaData
@@ -96,41 +68,33 @@ encoder:
       source: variables/satelliteId
       longName: "Satellite Identifier"
 
-    - name: "sensorZenithAngle"
-      source: variables/sensorZenithAngle
-      longName: "Sensor Zenith Angle"
-      units: "degree"
-      range: [0, 90]
-
-    - name: "sensorCentralFrequency"
-      source: variables/sensorCentralFrequency
-      longName: "Satellite Channel Center Frequency"
-      units: "Hz"
-
-    - name: "dataProviderOrigin"
-      source: variables/dataProviderOrigin
-      longName: "Identification of Originating/Generating Center"
-
-    - name: "windComputationMethod"
-      source: variables/windComputationMethod
-      longName: "Satellite-derived Wind Computation Method"
-
-    - name: "pressure"
-      source: variables/pressure
-      longName: "Pressure"
-      units: "Pa"
-
-    - name: "windDirection"
-      source: variables/windDirection
-      longName: "Wind Direction"
-      units: "degree"
-
-    - name: "windSpeed"
-      source: variables/windSpeed
-      longName: "Wind Speed"
-      units: "m s-1"
-
-    - name: "qualityInformation"
-      source: variables/qualityInformation
-      longName: "Quality Information"
+    - name: "fieldOfViewNumber"
+      source: variables/fieldOfViewNumber
+      longName: "Field of View Number"
       units: ""
+
+    - name: "satelliteZenithAngle"
+      source: variables/satelliteZenithAngle
+      longName: "Satellite Zenith Angle"
+      units: "degree"
+
+    - name: "solarZenithAngle"
+      source: variables/solarZenithAngle
+      longName: "Solar Zenith Angle"
+      units: "degree"
+
+    - name: "cloudMask"
+      source: variables/cloudMask
+      longName: "Cloud Mask"
+      units: ""
+
+    - name: "albedo"
+      source: variables/albedo
+      longName: "Albedo"
+      units: ""
+
+    - name: "brightnessTemperature"
+      source: variables/brightnessTemperature
+      longName: "Brightness Temperature"
+      units: ""
+
