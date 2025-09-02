@@ -3,7 +3,8 @@
 import os
 
 import bufr
-from bufr.obs_builder import ObsBuilder, add_main_functions, map_path, FILE_ENCODER_DICT
+from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
+from bufr.encoders import netcdf
 
 MAPPING_PATH = map_path('bufr_avhrr.yaml')
 
@@ -47,7 +48,7 @@ class AvhrrObsBuilder(ObsBuilder):
         # Encode the data
         if comm.rank() == 0:
             self.finalize_container(container)
-            FILE_ENCODER_DICT[type](self.description).encode(container, output, append)
+            netcdf.Encoder(self.description).encode(container, output, append)
 
         self.log.info(f'Return the encoded data')
 
