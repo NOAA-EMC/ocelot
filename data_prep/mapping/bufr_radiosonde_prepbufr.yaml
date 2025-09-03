@@ -15,6 +15,9 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
+    sequenceId:
+      query: "*/SID"
+
     driftCycleTime:
       query: "*/PRSLEVEL/DRFTINFO/HRDR"
 
@@ -26,7 +29,7 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
-    pressure:
+    airPressure:
       query: "*/PRSLEVEL/P___INFO/P__EVENT/POB"
 
     height_event:

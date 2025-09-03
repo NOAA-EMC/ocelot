@@ -23,57 +23,92 @@ class RawRadiosondeBuilder(ObsBuilder):
 
     # Override
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
-        prepbufr_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
+        prep_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
         container = bufr.Parser(input_dict[DumpKey], self.map_dict[DumpKey]).parse(comm)
 
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
-        prepbufr_container.apply_mask(~prepbufr_container.get('launchCycleTime').mask)
+        prep_container.apply_mask(~prep_container.get('launchCycleTime').mask)
 
-        prepbufr_container.all_gather(comm)
+        prep_container.all_gather(comm)
 
-        # Add timestamps to the prepbufr container
+        # Add timestamps to the prep container
         reference_time = self._get_reference_time(input_dict[PrepbufrKey])
         self._add_timestamp('launchCycleTime',
                             'launchTime',
-                            prepbufr_container,
+                            prep_container,
                             reference_time)
 
         self._add_timestamp('driftCycleTime',
                             'driftTime',
-                            prepbufr_container,
+                            prep_container,
                             reference_time)
 
-        # Add the prepbufr quality flag fields to the combined container
+        # Add the prep quality flag fields to the combined container
         # Use the timestamp, latitude and longitude to match the observations
-        prepbufr_time = prepbufr_container.get('launchTime').filled()
-        prepbufr_lat = prepbufr_container.get('launchLatitude').filled()
-        prepbufr_lon = prepbufr_container.get('launchLongitude').filled()
 
-        prepbufr_dict = {}
-        for i, (t, lat, lon) in enumerate(zip(prepbufr_time, prepbufr_lat, prepbufr_lon)):
+        prep_drift_lat =  prep_container.get('driftLatitude')
+
+        prep_container.apply_mask(~prep_drift_lat.mask)
+        prep_time = prep_container.get('launchTime')
+        prep_lat = prep_container.get('launchLatitude')
+        prep_lon = prep_container.get('launchLongitude')
+        prep_id = prep_container.get('sequenceId')
+        prep_pres = prep_container.get('airPressure')
+ 
+        prep_dict = {}
+        for i, (t, lat, lon) in enumerate(zip(prep_time, prep_lat, prep_lon)):
             key = (t, np.round(lat, 2), np.round(lon, 2))
-            if key not in prepbufr_dict:
-                prepbufr_dict[key] = []
-            prepbufr_dict[key].append(i)
+            if key not in prep_dict:
+                prep_dict[key] = []
+            prep_dict[key].append(i)
 
-        container_time = container.get('timestamp').filled()
-        container_lat = container.get('latitude').filled()
-        container_lon = container.get('longitude').filled()
 
+        print ('@@@ ', len(prep_dict))
+
+        dump_pres = container.get('windDirection')
+
+        container.apply_mask(~dump_pres.mask)
+        dump_time = container.get('timestamp')
+        dump_lat = container.get('latitude')
+        dump_lon = container.get('longitude')
+        dump_id = container.get('reportId')
+        dump_pres = container.get('airPressure')
+
+        dump_dict = {}
+        for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
+            key = (t, np.round(lat, 2), np.round(lon, 2))
+            if key in prep_dict:
+                if key not in dump_dict:
+                    dump_dict[key] = []
+                dump_dict[key].append(i)
+
+        print ('@@@ ', len(dump_dict))
+
+        for key in dump_dict.keys():
+            print(key, len(prep_dict[key]), len(dump_dict[key]))
+            print ('  dump: ', end='')
+            for i in dump_dict[key]:
+                print (f' {dump_pres[i]:.2f}', end='')
+            print('')
+            print ('  prep: ', end='')
+            for i in prep_dict[key]:
+                print (f' {prep_pres[i][0]:.2f}', end='')
+            print('')
+ 
         # Use hash table to find matching indices in combined container
-        indices = [-1] * len(container_time)
+        indices = [-1] * len(dump_time)
         obs_idx = 0
         last_key = None
-        for i, (t, lat, lon) in enumerate(zip(container_time, container_lat, container_lon)):
+        for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
             key = (t, np.round(lat, 2), np.round(lon, 2))
 
             if key != last_key:
                 obs_idx = 0
                 last_key = key
 
-            if key in prepbufr_dict:
-                indices[i] = prepbufr_dict[key][obs_idx]
+            if key in prep_dict:
+                indices[i] = prep_dict[key][obs_idx]
                 obs_idx += 1
 
         indices = np.array(indices)
@@ -86,7 +121,7 @@ class RawRadiosondeBuilder(ObsBuilder):
                     'driftLatitude',
                     'driftLongitude']:
 
-            quality_flags = prepbufr_container.get(var)[indices]
+            quality_flags = prep_container.get(var)[indices]
             container.add(var, quality_flags, ['*'])
 
         for var in ['height',
@@ -97,7 +132,7 @@ class RawRadiosondeBuilder(ObsBuilder):
                     'airPressureQuality',
                     'heightQuality']:
 
-            quality_flags = prepbufr_container.get(var)[indices]
+            quality_flags = prep_container.get(var)[indices]
             container.add(var, quality_flags, ['*', '*/EVENT'])
 
         return container

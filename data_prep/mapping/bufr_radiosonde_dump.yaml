@@ -1,5 +1,5 @@
 bufr:
-  group_by_variable: airPressure
+  group_by_variable: windDirection
   subsets:
     - NC002001
     - NC002003
@@ -19,6 +19,12 @@ bufr:
 
     longitude:
       query: "[*/CLON]"
+
+    reportId:
+      query: "*/RPID"
+
+    windDir:
+      query: "*/UAADF/MWDL"
 
     airPressure:
       query: "[*/UARLV/PRLC, */PRLC]"  # Air pressure at station level

@@ -67,7 +67,7 @@ class TankRunner(Runner):
     def run(self, comm, parameters: Parameters) -> bufr.DataContainer:
         combined_container = bufr.DataContainer()
 
-        if isinstance(self.type_config.paths, str):
+        if isinstance(self.type_config.paths, list):
             for day_str in self._day_strs(parameters.start_time, parameters.stop_time):
                 for path in self.type_config.paths:
                     input_path = os.path.join(settings.TANK_PATH, day_str, path)
