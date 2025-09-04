@@ -18,10 +18,10 @@ class AvhrrObsBuilder(ObsBuilder):
 
     def make_obs(self, comm, input_dict):
         container = bufr.DataContainer()
-        if os.path.exists(input_dict[AM_KEY]):
+        if AM_KEY in input_dict:
             container.append(bufr.Parser(input_dict[AM_KEY], self.map_dict[AM_KEY]).parse(comm))
 
-        if os.path.exists(input_dict[PM_KEY]):
+        if PM_KEY in input_dict:
             container.append(bufr.Parser(input_dict[PM_KEY], self.map_dict[PM_KEY]).parse(comm))
 
         return container
