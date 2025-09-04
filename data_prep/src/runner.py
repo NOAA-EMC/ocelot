@@ -73,7 +73,7 @@ class TankRunner(Runner):
                     input_path = os.path.join(settings.TANK_PATH, day_str, path)
 
                     if not os.path.exists(input_path):
-                        print(f"Input path {input_path} does not exist!")
+                        print(f"Input path {input_path} does not exist! Skipping it.")
                         continue
 
                     container = self._make_obs(comm, input_path)
@@ -89,7 +89,8 @@ class TankRunner(Runner):
                         input_path = os.path.join(settings.TANK_PATH, day_str, rel_path)
 
                         if not os.path.exists(input_path):
-                            raise Exception(f"Input path {input_path} does not exist!")
+                            print(f"Input path {input_path} does not exist! Skipping it.")
+                            continue
 
                         input_dict[key] = input_path
 
