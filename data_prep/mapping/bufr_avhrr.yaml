@@ -65,7 +65,7 @@ encoder:
       units: "degrees_east"
       range: [ -180, 180 ]
 
-    - name: "satellite"
+    - name: "satelliteId"
       source: variables/satelliteId
       longName: "Satellite Identifier"
 
