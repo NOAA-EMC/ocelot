@@ -54,17 +54,29 @@ class RawRadiosondeBuilder(ObsBuilder):
         prep_lat = prep_container.get('launchLatitude')
         prep_lon = prep_container.get('launchLongitude')
         prep_id = prep_container.get('sequenceId')
-        prep_pres = prep_container.get('airPressure')
+        prep_pres = prep_container.get('airPressure')[:,0]
+        prep_reason = prep_container.get('airPressureReasonCode').filled()
+        prep_program = prep_container.get('airPressureProgramCode').filled()
+
+        prep_pres.mask = (prep_reason != 100)
+
+        prep_pres = prep_pres.filled()
+
+        print (f'Num 100s: {float(np.sum(prep_reason == 100))/prep_reason.size:.3f}')
+
+        print ("prep reason code samples:")
+        print (prep_reason[:10, :])
+        print ('')
+        print ("prep program code samples:")
+        print (prep_program[:10, :])
+        print ('')
  
         prep_dict = {}
-        for i, (t, lat, lon) in enumerate(zip(prep_time, prep_lat, prep_lon)):
-            key = (t, np.round(lat, 2), np.round(lon, 2))
+        for i, (t, lat, lon, oid) in enumerate(zip(prep_time, prep_lat, prep_lon, prep_id)):
+            key = (t, np.round(lat, 2), np.round(lon, 2), int(oid))
             if key not in prep_dict:
                 prep_dict[key] = []
             prep_dict[key].append(i)
-
-
-        print ('@@@ ', len(prep_dict))
 
         dump_pres = container.get('windDirection')
 
@@ -73,35 +85,99 @@ class RawRadiosondeBuilder(ObsBuilder):
         dump_lat = container.get('latitude')
         dump_lon = container.get('longitude')
         dump_id = container.get('reportId')
-        dump_pres = container.get('airPressure')
+        dump_pres = container.get('airPressure').filled()
 
         dump_dict = {}
-        for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
-            key = (t, np.round(lat, 2), np.round(lon, 2))
+        for i, (t, lat, lon, oid) in enumerate(zip(dump_time, dump_lat, dump_lon, dump_id)):
+            key = (t, np.round(lat, 2), np.round(lon, 2), int(oid))
             if key in prep_dict:
                 if key not in dump_dict:
                     dump_dict[key] = []
                 dump_dict[key].append(i)
 
-        print ('@@@ ', len(dump_dict))
+        # for key in dump_dict.keys():
+        #     print(key, len(prep_dict[key]), len(dump_dict[key]))
+        #     print ('  dump: ', end='')
+        #     for i in dump_dict[key]:
+        #         print (f' {dump_pres[i]:.2f}', end='')
+        #     print('')
+        #     print ('  prep: ', end='')
+        #     for i in prep_dict[key]:
+        #         print (f' {prep_pres[i]:.2f}', end='')
+        #     print('')
+
+        # Walk the pressure lelvels between the two containers to discover the common
+        # pressure level runs.
 
         for key in dump_dict.keys():
+
             print(key, len(prep_dict[key]), len(dump_dict[key]))
             print ('  dump: ', end='')
             for i in dump_dict[key]:
                 print (f' {dump_pres[i]:.2f}', end='')
             print('')
+  
+            # Split the dump data into runs (same logic)
+            dump_runs = []
+            run_start = 0
+            for i in range(1, len(dump_dict[key])):
+                if abs(dump_pres[dump_dict[key][i]] - dump_pres[dump_dict[key][i-1]]) > 250:
+                    dump_runs.append(dump_dict[key][run_start:i])
+                    run_start = i
+
+            # print prep_pres in runs
+            for r in dump_runs:
+                print('  ** dump: ', end='')
+                for i in r:
+                    print (f' {dump_pres[i]:.2f}', end='')
+                print('')
+
+
+            # Split prepbufr data into runs (pressure values start high and go low). When the pressure jumps
+            # it means a new run.
+
             print ('  prep: ', end='')
             for i in prep_dict[key]:
-                print (f' {prep_pres[i][0]:.2f}', end='')
+                print (f' {prep_pres[i]:.2f}', end='')
             print('')
+
+
+            prep_runs = []
+            run_start = 0
+            for i in range(1, len(prep_dict[key])):
+                if abs(prep_pres[prep_dict[key][i]] - prep_pres[prep_dict[key][i-1]]) > 250:
+                    prep_runs.append(prep_dict[key][run_start:i])
+                    run_start = i
+
+            # print prep_pres in runs
+            for r in prep_runs:
+                print('  ** prep: ', end='')
+                for i in r:
+                    print (f' {prep_pres[i]:.2f}', end='')
+                print('')
+            
+
+            # Loop through the dump runs and find the best matching prep run. The prep run should contain
+            # all the pressure levels in the dump run, but may have extra values sprinkled in.
+            for d_run in dump_runs:
+                d_run = set([dump_pres[i] for i in d_run])
+                for p_run in prep_runs:
+                    p_run = set([prep_pres[i] for i in p_run])
+                    run_count = len(d_run.intersection(p_run))
+                    if run_count == len(d_run):
+                        print (f' {key}: {d_run} || {p_run}')
+                        break
+
+            
+
+
  
         # Use hash table to find matching indices in combined container
         indices = [-1] * len(dump_time)
         obs_idx = 0
         last_key = None
-        for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
-            key = (t, np.round(lat, 2), np.round(lon, 2))
+        for i, (t, lat, lon, oid) in enumerate(zip(dump_time, dump_lat, dump_lon, dump_id)):
+            key = (t, np.round(lat, 2), np.round(lon, 2), int(oid))
 
             if key != last_key:
                 obs_idx = 0

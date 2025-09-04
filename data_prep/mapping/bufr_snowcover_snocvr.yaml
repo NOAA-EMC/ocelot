@@ -21,11 +21,11 @@ bufr:
     snowDepth:
       query: "*/TOSD"
 
-    snowDensity:
-      query: "*/SDEN"
+    # snowDensity:
+    #   query: "*/SDEN"
 
-    snowWaterEquivalent:
-      query: '*/SWEMS'
+    # snowWaterEquivalent:
+    #   query: '*/SWEMS'
 
 encoder:
   variables:
@@ -58,12 +58,12 @@ encoder:
       longName: "Snow Depth"
       units: "m"
 
-    - name: "snowDensity"
-      source: variables/snowDensity
-      longName: "Snow Density"
-      units: "kg/m^3"
+    # - name: "snowDensity"
+    #   source: variables/snowDensity
+    #   longName: "Snow Density"
+    #   units: "kg/m^3"
 
-    - name: "snowWaterEquivalent"
-      source: variables/snowWaterEquivalent
-      longName: "Snow Water Equivalent"
-      units: "kg/m^2"
+    # - name: "snowWaterEquivalent"
+    #   source: variables/snowWaterEquivalent
+    #   longName: "Snow Water Equivalent"
+    #   units: "kg/m^2"
