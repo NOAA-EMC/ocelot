@@ -82,68 +82,69 @@ def weighted_huber_loss(
     # Helper to fetch weights for an instrument (or global)
     def _get_weights_for_inst(inst_key) -> torch.Tensor:
         if isinstance(channel_weights, dict):
-            # try int key then str key, else 'global'
-            w = channel_weights.get(inst_key, None)
+            w = channel_weights.get(inst_key)
             if w is None:
-                w = channel_weights.get(str(inst_key), None)
+                w = channel_weights.get(str(inst_key))
             if w is None:
-                w = channel_weights.get("global", None)
+                w = channel_weights.get("global")
         else:
             w = channel_weights  # Tensor[C] or None
         if w is None:
             w = torch.ones(C, device=device, dtype=huber.dtype)
-        return _broadcast_w(w)
+        w = torch.as_tensor(w, device=device, dtype=huber.dtype)
+        w = torch.clamp(w, min=0)  # <- no negative weights
+        return _broadcast_w(w)  # [1, C]
+
+    eps = torch.finfo(huber.dtype).eps
 
     # Single-group path (no instrument ids)
     if instrument_ids is None:
-        w = _get_weights_for_inst("global")
-        loss_mat = huber * w
+        w = _get_weights_for_inst("global")  # [1, C]
+        loss_mat = huber * w  # [N, C]
         if vm is not None:
-            loss_mat = loss_mat * vm
-            denom = vm.sum()
+            vm = vm.to(dtype=huber.dtype, device=device)
+            active = vm * (w > 0).to(vm.dtype)  # exclude zero-weight chans
+            loss_mat = loss_mat * active
+            denom = active.sum()
         else:
-            denom = torch.tensor(loss_mat.numel(), device=device, dtype=huber.dtype)
+            active = (w > 0).to(loss_mat.dtype, device=device).expand_as(loss_mat)
+            denom = active.sum()
         if denom <= 0:
             return torch.tensor(0.0, device=device)
-        return loss_mat.sum() / denom
+        return loss_mat.sum() / (denom + eps)
 
     # Per-instrument path
     total = torch.tensor(0.0, device=device, dtype=huber.dtype)
     denom_total = torch.tensor(0.0, device=device, dtype=huber.dtype)
 
-    unique_ids = torch.unique(instrument_ids)
-    for inst in unique_ids:
-        mask_rows = instrument_ids == inst  # [N]
+    for inst in torch.unique(instrument_ids):
+        mask_rows = instrument_ids == inst
         if not mask_rows.any():
             continue
-
-        w = _get_weights_for_inst(int(inst.item()))
-        # select rows for this instrument
+        w = _get_weights_for_inst(int(inst.item()))  # [1, C]
         h_i = huber[mask_rows] * w  # [Ni, C]
         if vm is not None:
             vm_i = vm[mask_rows]
-            h_i = h_i * vm_i
-            denom_i = vm_i.sum()
+            active_i = vm_i * (w > 0).to(vm_i.dtype)
+            h_i = h_i * active_i
+            denom_i = active_i.sum()
         else:
-            denom_i = torch.tensor(h_i.numel(), device=device, dtype=huber.dtype)
+            active_i = (w > 0).to(h_i.dtype).expand_as(h_i)
+            denom_i = active_i.sum()
 
         if denom_i <= 0:
-            continue  # no valid elements for this instrument
+            continue
 
         if rebalancing:
-            # each instrument contributes equally: mean within instrument, then average across instruments
-            loss_i = h_i.sum() / denom_i
-            total = total + loss_i
+            total = total + h_i.sum() / (denom_i + eps)  # equal weight per instrument
             denom_total = denom_total + 1.0
         else:
-            # global elementwise mean: sum/denom accumulates
             total = total + h_i.sum()
             denom_total = denom_total + denom_i
 
     if denom_total <= 0:
         return torch.tensor(0.0, device=device)
-
-    return total / denom_total
+    return total / (denom_total + eps)
 
 
 def ocelot_loss(

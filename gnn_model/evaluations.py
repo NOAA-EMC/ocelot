@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
+import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 
@@ -20,15 +21,124 @@ AUTO_ABS = {"airTemperature", "dewPointTemperature", "relativeHumidity", "wind_u
 CALM_WIND_THRESHOLD = 2.0  # m/s
 
 
-def _world_axes(axes):
-    """Fix axes to world bounds for readability."""
-    if isinstance(axes, (list, tuple, np.ndarray)):
+def _robust_sym_limits(x, q=99.0):
+    """Return symmetric limits [-m, m] using the qth percentile of |x|."""
+    if x.size == 0 or not np.isfinite(x).any():
+        return -1.0, 1.0
+    m = float(np.nanpercentile(np.abs(x), q))
+    if not np.isfinite(m) or m == 0:
+        m = float(np.nanmax(np.abs(x))) if np.isfinite(x).any() else 1.0
+    if m == 0:
+        m = 1.0
+    return -m, m
+
+
+def plot_ocelot_target_diff(
+    instrument_name: str,
+    epoch: int,
+    batch_idx: int,
+    num_channels: int = 1,
+    data_dir: str = "val_csv",
+    units: str | None = None,  # e.g., "K" for ATMS/AMSU-A
+    robust_q: float = 99.0,  # robust clipping for Difference panel
+    point_size: int = 7,
+    projection=ccrs.PlateCarree(),  # try ccrs.Robinson() or ccrs.Mollweide() to match your sample look
+):
+    """
+    Make a 3-panel figure: OCELOT (prediction), Target (truth), Difference (pred - true),
+    and annotate RMSE on the Difference panel.
+    """
+    filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+    try:
+        df = pd.read_csv(filepath)
+        print(f"\n--- OCELOT/Target/Difference for {instrument_name} from {filepath} ---")
+    except FileNotFoundError:
+        print(f"\nWarning: Could not find data file {filepath}. Skipping.")
+        return
+
+    feats = _discover_features(df, num_channels)
+
+    for fname in feats:
+        true_col = f"true_{fname}"
+        pred_col = f"pred_{fname}"
+        needed = [true_col, pred_col, "lon", "lat"]
+        if not all(c in df.columns for c in needed):
+            print(f"Warning: Missing columns for '{fname}'. Skipping.")
+            continue
+
+        # valid rows
+        t = _np(df[true_col])
+        p = _np(df[pred_col])
+        lon = _np(df["lon"])
+        lat = _np(df["lat"])
+        valid = np.isfinite(t) & np.isfinite(p) & np.isfinite(lon) & np.isfinite(lat)
+        if not np.any(valid):
+            print(f"Info: No valid rows for '{fname}'. Skipping.")
+            continue
+
+        t, p, lon, lat = t[valid], p[valid], lon[valid], lat[valid]
+        diff = p - t
+        rmse = float(np.sqrt(np.nanmean((diff) ** 2)))
+
+        # shared value limits for the first two panels
+        vmin = float(np.nanmin([t.min(), p.min()]))
+        vmax = float(np.nanmax([t.max(), p.max()]))
+
+        # symmetric robust limits for Difference
+        dmin, dmax = _robust_sym_limits(diff, q=robust_q)
+        diff_norm = TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)
+
+        # --- make figure ---
+        fig, axes = plt.subplots(1, 3, figsize=(20, 5), subplot_kw={"projection": projection}, sharey=True)
+
+        # Titles above each panel (matching your sample)
+        panel_titles = ["OCELOT", "Target", "Difference"]
+        for ax, ttl in zip(axes, panel_titles):
+            ax.set_title(ttl, fontsize=14)
+
+        # Suptitle with context
+        fig.suptitle(f"{instrument_name} • {fname} • Epoch {epoch}", fontsize=16, y=1.02)
+
+        # OCELOT (prediction)
+        sc0 = axes[0].scatter(lon, lat, c=p, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        cb0 = fig.colorbar(sc0, ax=axes[0], orientation="vertical", pad=0.02)
+        cb0.set_label(f"Value{f' ({units})' if units else ''}")
+
+        # Target (truth)
+        sc1 = axes[1].scatter(lon, lat, c=t, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        cb1 = fig.colorbar(sc1, ax=axes[1], orientation="vertical", pad=0.02)
+        cb1.set_label(f"Value{f' ({units})' if units else ''}")
+
+        # Difference (pred - true) with symmetric limits
+        sc2 = axes[2].scatter(lon, lat, c=diff, s=point_size, cmap="bwr", norm=diff_norm, transform=ccrs.PlateCarree())
+        cb2 = fig.colorbar(sc2, ax=axes[2], orientation="vertical", pad=0.02)
+        cb2.set_label(f"Pred − True{f' ({units})' if units else ''}")
+
+        # RMSE badge
+        rmse_text = f"RMSE = {rmse:.2f}{f' {units}' if units else ''}"
+        axes[2].text(
+            0.02,
+            0.98,
+            rmse_text,
+            transform=axes[2].transAxes,
+            ha="left",
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8, linewidth=0),
+        )
+
+        # Geo styling
         for ax in axes:
-            ax.set_xlim(-180, 180)
-            ax.set_ylim(-90, 90)
-    else:
-        axes.set_xlim(-180, 180)
-        axes.set_ylim(-90, 90)
+            ax.set_global()
+            _add_land_boundaries(ax)
+            ax.set_xlabel("Longitude")
+        axes[0].set_ylabel("Latitude")
+
+        plt.tight_layout()
+        safe_fname = str(fname).replace(" ", "_")
+        out_png = f"{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png"
+        plt.savefig(out_png, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  -> Saved plot: {out_png}")
 
 
 def _discover_features(df: pd.DataFrame, num_channels: int):
@@ -69,6 +179,19 @@ def _print_sanity(name, t, p, tiny=None):
         f"{name:20s} | N={t.size:6d} | AbsErr med/95%={med_ae:6.2f}/{p95_ae:6.2f} "
         f"| sMAPE% med/95%={med_sp:6.1f}/{p95_sp:6.1f} | dropped<tiny={dropped}"
     )
+
+
+def _add_land_boundaries(ax):
+    import cartopy.feature as cfeature
+
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, alpha=0.8)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.3, alpha=0.6)
+
+
+def _make_axes_triple(title):
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6), subplot_kw={"projection": ccrs.PlateCarree()}, sharey=True)
+    fig.suptitle(title, fontsize=16)
+    return fig, axes
 
 
 # ----------------- plotting -----------------
@@ -114,9 +237,7 @@ def plot_instrument_maps(
         valid &= np.isfinite(t) & np.isfinite(p) & np.isfinite(lon) & np.isfinite(lat)
 
         # resolve metric
-        metric = error_metric
-        if metric == "auto":
-            metric = "absolute" if fname in AUTO_ABS else "smape"
+        metric = "absolute" if (error_metric == "auto" and fname in AUTO_ABS) else ("smape" if (error_metric == "auto") else error_metric)
 
         # drop tiny truth for relative metrics
         tiny = TINY_THRESH.get(fname, 0.0)
@@ -136,16 +257,15 @@ def plot_instrument_maps(
         vmin = float(np.nanmin([t.min(), p.min()]))
         vmax = float(np.nanmax([t.max(), p.max()]))
 
-        fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
-        fig.suptitle(f"Instrument: {instrument_name} • {fname} • Epoch: {epoch}", fontsize=16)
+        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • {fname} • Epoch: {epoch}")
 
         # Ground Truth
-        sc1 = axes[0].scatter(lon, lat, c=t, cmap="jet", s=7, vmin=vmin, vmax=vmax)
+        sc1 = axes[0].scatter(lon, lat, c=t, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
         axes[0].set_title("Ground Truth")
 
         # Prediction
-        sc2 = axes[1].scatter(lon, lat, c=p, cmap="jet", s=7, vmin=vmin, vmax=vmax)
+        sc2 = axes[1].scatter(lon, lat, c=p, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
         axes[1].set_title("Prediction")
 
@@ -160,22 +280,22 @@ def plot_instrument_maps(
             err = 100.0 * (p - t) / denom
             err = np.clip(err, -200, 200)
             m = float(np.nanmax(np.abs(err))) if np.isfinite(err).any() else 1.0
-            label, cmap = "% Error", "bwr"
-            norm = TwoSlopeNorm(vmin=-m, vcenter=0.0, vmax=m)
+            label, cmap, norm = "% Error", "bwr", TwoSlopeNorm(vmin=-m, vcenter=0.0, vmax=m)
         else:  # smape
             err = _smape(p, t)
             lo, hi = np.nanpercentile(err, [1, 99])
             err = np.clip(err, lo, hi)
             label, cmap, norm = "sMAPE (%)", "jet", None
 
-        sc3 = axes[2].scatter(lon, lat, c=err, cmap=cmap, norm=norm, s=7)
+        sc3 = axes[2].scatter(lon, lat, c=err, cmap=cmap, norm=norm, s=7, transform=ccrs.PlateCarree())
         fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label(label)
         axes[2].set_title(label)
 
         for ax in axes:
             ax.set_xlabel("Longitude")
+            _add_land_boundaries(ax)
+            ax.set_global()
         axes[0].set_ylabel("Latitude")
-        _world_axes(axes)
 
         safe_fname = str(fname).replace(" ", "_")
         out_png = f"{instrument_name}_map_{safe_fname}_epoch_{epoch}_{metric}.png"
@@ -219,26 +339,26 @@ def plot_instrument_maps(
         vmin = float(np.nanmin([ts.min(), ps.min()]))
         vmax = float(np.nanmax([ts.max(), ps.max()]))
 
-        fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
-        fig.suptitle(f"Instrument: {instrument_name} • wind_speed • Epoch: {epoch}", fontsize=16)
+        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_speed • Epoch: {epoch}")
 
-        sc1 = axes[0].scatter(lon_all, lat_all, c=ts, cmap="jet", s=7, vmin=vmin, vmax=vmax)
+        sc1 = axes[0].scatter(lon_all, lat_all, c=ts, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
         axes[0].set_title("Ground Truth")
 
-        sc2 = axes[1].scatter(lon_all, lat_all, c=ps, cmap="jet", s=7, vmin=vmin, vmax=vmax)
+        sc2 = axes[1].scatter(lon_all, lat_all, c=ps, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
         axes[1].set_title("Prediction")
 
         lo, hi = np.nanpercentile(se, [1, 99])
-        sc3 = axes[2].scatter(lon_all, lat_all, c=np.clip(se, lo, hi), cmap="jet", s=7)
+        sc3 = axes[2].scatter(lon_all, lat_all, c=np.clip(se, lo, hi), cmap="jet", s=7, transform=ccrs.PlateCarree())
         fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("Abs Error (m/s)")
         axes[2].set_title("Abs Error (m/s)")
 
         for ax in axes:
             ax.set_xlabel("Longitude")
+            _add_land_boundaries(ax)
+            ax.set_global()
         axes[0].set_ylabel("Latitude")
-        _world_axes(axes)
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         out_png = f"{instrument_name}_map_wind_speed_epoch_{epoch}.png"
@@ -248,33 +368,33 @@ def plot_instrument_maps(
 
         # ---------- wind direction triple (subset to non-calm) ----------
         keep = ~np.isnan(ang_c)
-        lon_dir, lat_dir = lon_all[keep], lat_all[keep]
-        tdir_plot, pdir_plot, ang_plot = tdir_c[keep], pdir_c[keep], ang_c[keep]
+        if keep.any():
+            lon_dir, lat_dir = lon_all[keep], lat_all[keep]
+            tdir_plot, pdir_plot, ang_plot = tdir_c[keep], pdir_c[keep], ang_c[keep]
 
-        if len(lon_dir) > 0:
             vmin = float(np.nanmin([tdir_plot.min(), pdir_plot.min()]))
             vmax = float(np.nanmax([tdir_plot.max(), pdir_plot.max()]))
 
-            fig, axes = plt.subplots(1, 3, figsize=(20, 6), sharey=True)
-            fig.suptitle(f"Instrument: {instrument_name} • wind_direction • Epoch: {epoch}", fontsize=16)
+            fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_direction • Epoch: {epoch}")
 
-            sc1 = axes[0].scatter(lon_dir, lat_dir, c=tdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax)
+            sc1 = axes[0].scatter(lon_dir, lat_dir, c=tdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
             fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
             axes[0].set_title("Ground Truth")
 
-            sc2 = axes[1].scatter(lon_dir, lat_dir, c=pdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax)
+            sc2 = axes[1].scatter(lon_dir, lat_dir, c=pdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
             fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
             axes[1].set_title("Prediction")
 
             lo, hi = np.nanpercentile(ang_plot, [1, 99])
-            sc3 = axes[2].scatter(lon_dir, lat_dir, c=np.clip(ang_plot, lo, hi), cmap="jet", s=7)
+            sc3 = axes[2].scatter(lon_dir, lat_dir, c=np.clip(ang_plot, lo, hi), cmap="jet", s=7, transform=ccrs.PlateCarree())
             fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("Abs Error (deg)")
             axes[2].set_title("Abs Error (deg)")
 
             for ax in axes:
                 ax.set_xlabel("Longitude")
+                _add_land_boundaries(ax)
+                ax.set_global()
             axes[0].set_ylabel("Latitude")
-            _world_axes(axes)
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             out_png = f"{instrument_name}_map_wind_direction_epoch_{epoch}.png"
@@ -287,6 +407,18 @@ def plot_instrument_maps(
 if __name__ == "__main__":
     EPOCH_TO_PLOT = 99
     BATCH_IDX_TO_PLOT = 0
+    DATA_DIR = "val_csv"
+
+    # add the OCELOT | Target | Difference + RMSE figures
+    plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR)
+    plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR)
+
+    # brightness temperature instruments (add units to annotate RMSE like your sample)
+    plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, units="K")
+    plot_ocelot_target_diff("amsua", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=15, data_dir=DATA_DIR, units="K")
+
+    # AVHRR reflectance/albedo: omit units or add as needed
+    plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR)
 
     # Surface obs: ABS for thermo/u/v, sMAPE for pressure
     plot_instrument_maps(
@@ -294,18 +426,47 @@ if __name__ == "__main__":
         EPOCH_TO_PLOT,
         BATCH_IDX_TO_PLOT,
         num_channels=6,
-        data_dir="val_csv",
+        data_dir=DATA_DIR,
         error_metric="auto",  # ABS for most, sMAPE for pressure
         drop_small_truth=True,
     )
 
-    # ATMS: keep % error (symmetric color scale around 0)
+    plot_instrument_maps(
+        "snow_cover",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=2,
+        data_dir=DATA_DIR,
+        error_metric="auto",
+        drop_small_truth=True,
+    )
+
+    plot_instrument_maps(
+        "avhrr",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=3,
+        data_dir=DATA_DIR,
+        error_metric="percent",
+        drop_small_truth=False,
+    )
+
     plot_instrument_maps(
         "atms",
         EPOCH_TO_PLOT,
         BATCH_IDX_TO_PLOT,
         num_channels=22,
-        data_dir="val_csv",
+        data_dir=DATA_DIR,
+        error_metric="percent",
+        drop_small_truth=False,
+    )
+
+    plot_instrument_maps(
+        "amsua",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=15,
+        data_dir=DATA_DIR,
         error_metric="percent",
         drop_small_truth=False,
     )
