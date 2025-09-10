@@ -21,6 +21,15 @@ bufr:
     snowDepth:
       query: "[*/STGDSNDM/TOSD, */MTRMSC/TOSD, */SNWSQ1/TOSD]"
 
+    airTemperature:
+      query: "*/TMDB"
+      transforms:
+        - offset: -273.15 # Convert from Kelvin to Celsius
+
+    height:
+      query: "[*/SELV, */HSMSL]"
+
+
     # snowWaterEquivalent:
     #   query: '[*/BSYPCP2/TOPC, */MTRMSC/TOPC, */PCPSQ3/TOPC]'
 
@@ -53,6 +62,16 @@ encoder:
     - name: "snowDepth"
       source: variables/snowDepth
       longName: "Snow Depth"
+      units: "m"
+
+    - name: "airTemperature"
+      source: variables/airTemperature
+      longName: "Air Temperature"
+      units: "C"
+
+    - name: "height"
+      source: variables/height
+      longName: "Height Of Station Above Mean Sea Level"
       units: "m"
 
     # - name: "snowWaterEquivalent"
