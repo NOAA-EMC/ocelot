@@ -21,6 +21,126 @@ AUTO_ABS = {"airTemperature", "dewPointTemperature", "relativeHumidity", "wind_u
 CALM_WIND_THRESHOLD = 2.0  # m/s
 
 
+def _robust_sym_limits(x, q=99.0):
+    """Return symmetric limits [-m, m] using the qth percentile of |x|."""
+    if x.size == 0 or not np.isfinite(x).any():
+        return -1.0, 1.0
+    m = float(np.nanpercentile(np.abs(x), q))
+    if not np.isfinite(m) or m == 0:
+        m = float(np.nanmax(np.abs(x))) if np.isfinite(x).any() else 1.0
+    if m == 0:
+        m = 1.0
+    return -m, m
+
+
+def plot_ocelot_target_diff(
+    instrument_name: str,
+    epoch: int,
+    batch_idx: int,
+    num_channels: int = 1,
+    data_dir: str = "val_csv",
+    units: str | None = None,  # e.g., "K" for ATMS/AMSU-A
+    robust_q: float = 99.0,  # robust clipping for Difference panel
+    point_size: int = 7,
+    projection=ccrs.PlateCarree(),  # try ccrs.Robinson() or ccrs.Mollweide() to match your sample look
+):
+    """
+    Make a 3-panel figure: OCELOT (prediction), Target (truth), Difference (pred - true),
+    and annotate RMSE on the Difference panel.
+    """
+    filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+    try:
+        df = pd.read_csv(filepath)
+        print(f"\n--- OCELOT/Target/Difference for {instrument_name} from {filepath} ---")
+    except FileNotFoundError:
+        print(f"\nWarning: Could not find data file {filepath}. Skipping.")
+        return
+
+    feats = _discover_features(df, num_channels)
+
+    for fname in feats:
+        true_col = f"true_{fname}"
+        pred_col = f"pred_{fname}"
+        needed = [true_col, pred_col, "lon", "lat"]
+        if not all(c in df.columns for c in needed):
+            print(f"Warning: Missing columns for '{fname}'. Skipping.")
+            continue
+
+        # valid rows
+        t = _np(df[true_col])
+        p = _np(df[pred_col])
+        lon = _np(df["lon"])
+        lat = _np(df["lat"])
+        valid = np.isfinite(t) & np.isfinite(p) & np.isfinite(lon) & np.isfinite(lat)
+        if not np.any(valid):
+            print(f"Info: No valid rows for '{fname}'. Skipping.")
+            continue
+
+        t, p, lon, lat = t[valid], p[valid], lon[valid], lat[valid]
+        diff = p - t
+        rmse = float(np.sqrt(np.nanmean((diff) ** 2)))
+
+        # shared value limits for the first two panels
+        vmin = float(np.nanmin([t.min(), p.min()]))
+        vmax = float(np.nanmax([t.max(), p.max()]))
+
+        # symmetric robust limits for Difference
+        dmin, dmax = _robust_sym_limits(diff, q=robust_q)
+        diff_norm = TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)
+
+        # --- make figure ---
+        fig, axes = plt.subplots(1, 3, figsize=(20, 5), subplot_kw={"projection": projection}, sharey=True)
+
+        # Titles above each panel (matching your sample)
+        panel_titles = ["OCELOT", "Target", "Difference"]
+        for ax, ttl in zip(axes, panel_titles):
+            ax.set_title(ttl, fontsize=14)
+
+        # Suptitle with context
+        fig.suptitle(f"{instrument_name} • {fname} • Epoch {epoch}", fontsize=16, y=1.02)
+
+        # OCELOT (prediction)
+        sc0 = axes[0].scatter(lon, lat, c=p, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        cb0 = fig.colorbar(sc0, ax=axes[0], orientation="vertical", pad=0.02)
+        cb0.set_label(f"Value{f' ({units})' if units else ''}")
+
+        # Target (truth)
+        sc1 = axes[1].scatter(lon, lat, c=t, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        cb1 = fig.colorbar(sc1, ax=axes[1], orientation="vertical", pad=0.02)
+        cb1.set_label(f"Value{f' ({units})' if units else ''}")
+
+        # Difference (pred - true) with symmetric limits
+        sc2 = axes[2].scatter(lon, lat, c=diff, s=point_size, cmap="bwr", norm=diff_norm, transform=ccrs.PlateCarree())
+        cb2 = fig.colorbar(sc2, ax=axes[2], orientation="vertical", pad=0.02)
+        cb2.set_label(f"Pred − True{f' ({units})' if units else ''}")
+
+        # RMSE badge
+        rmse_text = f"RMSE = {rmse:.2f}{f' {units}' if units else ''}"
+        axes[2].text(
+            0.02,
+            0.98,
+            rmse_text,
+            transform=axes[2].transAxes,
+            ha="left",
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8, linewidth=0),
+        )
+
+        # Geo styling
+        for ax in axes:
+            ax.set_global()
+            _add_land_boundaries(ax)
+            ax.set_xlabel("Longitude")
+        axes[0].set_ylabel("Latitude")
+
+        plt.tight_layout()
+        safe_fname = str(fname).replace(" ", "_")
+        out_png = f"{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png"
+        plt.savefig(out_png, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  -> Saved plot: {out_png}")
+
+
 def _discover_features(df: pd.DataFrame, num_channels: int):
     pred_cols = [c for c in df.columns if c.startswith("pred_")]
     feats = [c[len("pred_"):] for c in pred_cols]
@@ -288,6 +408,17 @@ if __name__ == "__main__":
     EPOCH_TO_PLOT = 99
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
+
+    # add the OCELOT | Target | Difference + RMSE figures
+    plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR)
+    plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR)
+
+    # brightness temperature instruments (add units to annotate RMSE like your sample)
+    plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, units="K")
+    plot_ocelot_target_diff("amsua", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=15, data_dir=DATA_DIR, units="K")
+
+    # AVHRR reflectance/albedo: omit units or add as needed
+    plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR)
 
     # Surface obs: ABS for thermo/u/v, sMAPE for pressure
     plot_instrument_maps(

@@ -54,8 +54,7 @@ def _stable_seed(seed_base: int, bin_time: pd.Timestamp, obs_type: str, key: str
     return int(np.frombuffer(h, dtype=np.uint64)[0] % (2**32))
 
 
-def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str,
-                         default_stride: int, default_mode: str) -> tuple[int, str]:
+def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str, default_stride: int, default_mode: str) -> tuple[int, str]:
     """
     Resolve (stride, mode) for a given obs_type ('satellite'|'conventional') and instrument name.
     Supports legacy ints/strings and new per-instrument dicts with optional '_default'.
@@ -119,7 +118,7 @@ def organize_bins_times(
 
     # defaults if not specified (mode defaults to "random" for both)
     DEFAULTS = {
-        "satellite":    {"stride": 25, "mode": "random"},
+        "satellite": {"stride": 25, "mode": "random"},
         "conventional": {"stride": 20, "mode": "random"},
     }
 
@@ -189,14 +188,10 @@ def organize_bins_times(
 
             # Resolve subsampling policy for this instrument
             if obs_type == "satellite":
-                stride, mode = _resolve_stride_mode(
-                    subs_cfg, "satellite", key,
-                    DEFAULTS["satellite"]["stride"], DEFAULTS["satellite"]["mode"]
-                )
+                stride, mode = _resolve_stride_mode(subs_cfg, "satellite", key, DEFAULTS["satellite"]["stride"], DEFAULTS["satellite"]["mode"])
             else:
                 stride, mode = _resolve_stride_mode(
-                    subs_cfg, "conventional", key,
-                    DEFAULTS["conventional"]["stride"], DEFAULTS["conventional"]["mode"]
+                    subs_cfg, "conventional", key, DEFAULTS["conventional"]["stride"], DEFAULTS["conventional"]["mode"]
                 )
 
             # --- Build bins; reproducible per-bin subsampling ---
@@ -204,8 +199,8 @@ def organize_bins_times(
                 t_in = uniq_win[bi]
                 t_out = uniq_win[bi + 1]
 
-                m_in = (codes == bi)
-                m_out = (codes == bi + 1)
+                m_in = codes == bi
+                m_out = codes == bi + 1
 
                 input_indices = idx_all[m_in]
                 target_indices = idx_all[m_out]
@@ -232,10 +227,9 @@ def organize_bins_times(
 
             if verbose:
                 total_bins = sum(
-                    1 for _ in range(n_bins)
-                    if f"bin{_+1}" in data_summary and
-                       obs_type in data_summary[f"bin{_+1}"] and
-                       key in data_summary[f"bin{_+1}"][obs_type]
+                    1
+                    for _ in range(n_bins)
+                    if f"bin{_+1}" in data_summary and obs_type in data_summary[f"bin{_+1}"] and key in data_summary[f"bin{_+1}"][obs_type]
                 )
                 print(f"Created {total_bins} bins (pairs of input-target) for {obs_type}.{key}.")
 
@@ -406,6 +400,92 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             target_features_raw[target_features_raw >= FILL_VALUE] = np.nan
             if target_metadata_raw.size:
                 target_metadata_raw[target_metadata_raw >= FILL_VALUE] = np.nan
+
+            # -------------------- EXTRA CROSS-VARIABLE QC --------------------
+            rel = obs_cfg.get("qc_relations") or {}
+
+            def _es_hpa(Tc):
+                # Magnus (over water); Tc in °C → hPa
+                return 6.112 * np.exp(17.67 * Tc / (Tc + 243.5))
+
+            def _apply_relational_qc(feat_arr_in, feat_arr_tg, var2pos):
+                nonlocal input_valid_ch, target_valid_ch
+
+                # convenient accessors
+                def get_in(name):
+                    return feat_arr_in[:, var2pos[name]] if name in var2pos else None
+
+                def get_tg(name):
+                    return feat_arr_tg[:, var2pos[name]] if name in var2pos else None
+
+                # -- Td ≤ T (+0.5) and spread cap --
+                if rel.get("dewpoint_le_temp", False) and "airTemperature" in var2pos and "dewPointTemperature" in var2pos:
+                    jT = var2pos["airTemperature"]
+                    jTd = var2pos["dewPointTemperature"]
+                    for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
+                        T = arr[:, jT]
+                        Td = arr[:, jTd]
+                        m = np.isfinite(T) & np.isfinite(Td)
+                        bad_hi = m & (Td > T + 0.5)
+                        bad_spread = m & ((T - Td) > float(rel.get("max_temp_dewpoint_spread", 60.0)))
+                        bad = bad_hi | bad_spread
+                        mask[bad, jTd] = False  # drop Td; keep T
+
+                # -- RH consistency with (T, Td): RH* = 100 * es(Td)/es(T) --
+                tol = float(rel.get("rh_from_td_consistency_pct", np.nan))
+                if np.isfinite(tol) and "relativeHumidity" in var2pos and "airTemperature" in var2pos and "dewPointTemperature" in var2pos:
+                    jRH = var2pos["relativeHumidity"]
+                    jT = var2pos["airTemperature"]
+                    jTd = var2pos["dewPointTemperature"]
+                    for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
+                        RH = arr[:, jRH]
+                        T = arr[:, jT]
+                        Td = arr[:, jTd]
+                        m = np.isfinite(RH) & np.isfinite(T) & np.isfinite(Td)
+                        if not m.any():
+                            continue
+                        RH_star = 100.0 * (_es_hpa(Td[m]) / _es_hpa(T[m]))
+                        bad = np.zeros(RH.shape, dtype=bool)
+                        bad[m] = np.abs(RH[m] - RH_star) > tol
+                        mask[bad, jRH] = False  # prefer T/Td, drop RH
+
+                # -- Pressure vs height --
+                pvh = rel.get("pressure_vs_height") or {}
+                if pvh.get("enable", False) and "airPressure" in var2pos and ("height" in meta_keys):
+                    H = float(pvh.get("scale_height_m", 8000.0))
+                    tol = float(pvh.get("tolerance_hpa", 100.0))
+                    jP = var2pos["airPressure"]
+                    # inputs
+                    if input_metadata_raw.size:
+                        z = input_metadata_raw[:, meta_keys.index("height")]
+                        p = input_features_raw[:, jP]
+                        m = np.isfinite(p) & np.isfinite(z)
+                        if m.any():
+                            p_exp = 1013.25 * np.exp(-np.clip(z[m], -500.0, 9000.0) / H)
+                            bad = np.zeros_like(p, dtype=bool)
+                            bad[m] = np.abs(p[m] - p_exp) > tol
+                            input_valid_ch[bad, jP] = False
+                    # targets
+                    if target_metadata_raw.size:
+                        z = target_metadata_raw[:, meta_keys.index("height")]
+                        p = target_features_raw[:, jP]
+                        m = np.isfinite(p) & np.isfinite(z)
+                        if m.any():
+                            p_exp = 1013.25 * np.exp(-np.clip(z[m], -500.0, 9000.0) / H)
+                            bad = np.zeros_like(p, dtype=bool)
+                            bad[m] = np.abs(p[m] - p_exp) > tol
+                            target_valid_ch[bad, jP] = False
+
+            # Treat 9999 height as missing
+            if "height" in meta_keys:
+                j = meta_keys.index("height")
+                if input_metadata_raw.size:
+                    input_metadata_raw[:, j] = np.where(input_metadata_raw[:, j] >= 9999.0, np.nan, input_metadata_raw[:, j])
+                if target_metadata_raw.size:
+                    target_metadata_raw[:, j] = np.where(target_metadata_raw[:, j] >= 9999.0, np.nan, target_metadata_raw[:, j])
+
+            # call with current arrays/positions
+            _apply_relational_qc(input_features_raw, target_features_raw, feat_pos)
 
             # -------------------- Row keeping for INPUTS --------------------
             # Keep row if ANY channel is both observed and passes per-channel QC

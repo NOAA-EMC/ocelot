@@ -9,14 +9,16 @@ pipeline:
     conventional:
       _default: 10
       surface_obs: 10
-      snow_cover: 5
+      snow_cover: 1        # keep all (stride 1)
     mode:
       satellite:
         _default: random  # "stride" | "random" | "none"
         atms: random
         amsua: random
         avhrr: random
-      conventional: random
+      conventional:
+        _default: random
+        snow_cover: none    # ignore subsampling for snow_cover
 
 
 instrument_weights:
@@ -82,15 +84,15 @@ observation_config:
         airPressure:
           range: [300, 1200]
           qm_flag_col: airPressureQuality_event_1
-          keep: [1,2,3,4,9]
+          keep: [1,2,4,9]
         airTemperature:
           range: [-80, 60]
           qm_flag_col: airTemperatureQuality_event_1
-          keep: [1,2,3,4,9]
+          keep: [1,2,4,9]
         dewPointTemperature:
           range: [-100, 40]
           qm_flag_col: dewPointTemperatureQuality_event_1
-          keep: [1,2,3,4,9]
+          keep: [1,2,4,9]
         relativeHumidity:
           range: [0, 100]
         windSpeed:
@@ -98,89 +100,27 @@ observation_config:
         windDirection:
           range: [0, 360]   # degrees
 
+      qc_relations:                   # cross-variable checks
+        dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)
+        max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
+        rh_from_td_consistency_pct: 25  # %pts; invalidate RH if |RH - RH*| > 25
+        pressure_vs_height:
+          enable: true
+          tolerance_hpa: 100          # |p - p_exp(height)| ≤ 100 hPa
+          scale_height_m: 8000
+
     snow_cover:
       source: zarr
-      zarr_name: snow_cover           # resolves to .../snow_cover.zarr
+      zarr_name: snow_cover
       features: [snowDepth]
-      metadata: []                    # none available in this Zarr
-      input_dim: 8                    # 7 geo/time + 0 meta + 1 feats
+      metadata: [height, airTemperature]
+      qc_filters:
+        snowDepth:
+          range: [0, 6.5]
+      input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
       target_dim: 1
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
-      qc_filters:
-        snowDepth:
-          range: [0.0, 10.0]          # meters (max ~6.83)
-
-    # surface_obs:
-    #   source: nnja
-    #   dataframe_loader: my_loaders.load_adpsfc
-    #   time_col: OBS_TIMESTAMP
-    #   lat_col: LAT
-    #   lon_col: LON
-
-    #   var_map:
-    #     # pressure (adapter has fallback to PRSSQ1.PRES and auto Pa→hPa)
-    #     airPressure: PRESDATA.PRESSQ03.PRES
-    #     qm_airPressure: QMPR
-
-    #     # temperature (Kelvin in NC000101 → adapter converts to °C)
-    #     airTemperature: TEMHUMDA.TMDB
-    #     qm_airTemperature: QMAT
-
-    #     # dew point (adapter converts K→°C)
-    #     dewPointTemperature: TEMHUMDA.TMDP
-    #     qm_dewPointTemperature: QMDD
-
-    #     # humidity (as reported, %)
-    #     relativeHumidity: TEMHUMDA.REHU
-
-    #     # wind (speed & dir in NC000101; adapter computes wind_u, wind_v)
-    #     windSpeed: BSYWND1.WSPD
-    #     windDirection: BSYWND1.WDIR
-    #     qm_wind: QMWN
-
-    #     # metadata
-    #     height: SELV
-
-    #   # order here defines the target channel order everywhere (CSV, plotting, losses)
-    #   features: [airPressure, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
-    #   metadata: [height]
-    #   input_dim: 14  # input_dim  = 7 + len(metadata) + len(features)
-    #   target_dim: 6
-    #   encoder_hidden_layers: 2
-    #   decoder_hidden_layers: 2
-
-    #   qc_filters:
-    #     airPressure:
-    #       range: [300, 1200]       # hPa (adapter already converted Pa->hPa)
-    #       qm_flag_col: qm_airPressure
-    #       keep: [-1, 0, 1, 2, 4]            # -1=unknown/missing, 0=good, 2=Neutral or not checked, 1=probably good, 4=climo-ok
-
-    #     airTemperature:
-    #       range: [-80, 60]         # after K→°C conversion
-    #       qm_flag_col: qm_airTemperature
-    #       keep: [-1, 0, 1, 2, 4]
-
-    #     dewPointTemperature:
-    #       range: [-100, 40]                # °C (dew points)
-    #       qm_flag_col: qm_dewPointTemperature
-    #       keep: [-1, 0, 1, 2, 4]
-
-    #     relativeHumidity:
-    #       range: [0, 100]                  # %
-    #       # NC000101 does not expose a dedicated RH QM; leave qm_flag_col unset or use temperature QC as a proxy.
-    #       # qm_flag_col: qm_airTemperature
-    #       keep: [-1, 0, 1, 2, 4]
-
-    #     # wind components are signed m/s; use symmetric ranges
-    #     wind_u:
-    #       range: [-75, 75]                 # m/s
-    #       qm_flag_col: qm_wind
-    #       keep: [-1, 0, 1, 2, 4]
-    #     wind_v:
-    #       range: [-75, 75]                 # m/s
-    #       qm_flag_col: qm_wind
-    #       keep: [-1, 0, 1, 2, 4]
 
 feature_stats:  # Statistics for the features used in the model
   surface_obs:
@@ -193,7 +133,7 @@ feature_stats:  # Statistics for the features used in the model
     latitude: [30.06, 28.54]
     longitude: [-22.73, 84.78]
   snow_cover:
-    snowDepth: [0.39, 0.7]
+    snowDepth: [0.38, 0.68]
   atms:
     bt_channel_1: [259.20, 33.30]
     bt_channel_2: [254.39, 39.29]
