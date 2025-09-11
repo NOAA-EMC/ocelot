@@ -99,7 +99,7 @@ def main():
     hidden_dim = 64
     num_layers = 8
     lr = 0.001
-    max_epochs = 10
+    max_epochs = 100
     batch_size = 1
     # ----------------------------------------------------
 
@@ -200,9 +200,6 @@ def main():
         print("Using RANDOM sampling mode.")
         callbacks.append(
             ResampleDataCallback(
-                # full_start_date=FULL_START_DATE,
-                # full_end_date=FULL_END_DATE,
-                # window_days=WINDOW_DAYS,
                 train_start_date=TRAIN_START_DATE,
                 train_end_date=TRAIN_END_DATE,
                 val_start_date=VAL_START_DATE,
@@ -216,15 +213,9 @@ def main():
         print("Using SEQUENTIAL sampling mode.")
         callbacks.append(
             SequentialDataCallback(
-                # full_start_date=FULL_START_DATE,
-                # full_end_date=FULL_END_DATE,
-                # window_days=WINDOW_DAYS,
-                train_start_date=TRAIN_START_DATE,
-                train_end_date=TRAIN_END_DATE,
-                val_start_date=VAL_START_DATE,
-                val_end_date=VAL_END_DATE,
-                train_window_days=TRAIN_WINDOW_DAYS,
-                val_window_days=VALID_WINDOW_DAYS,
+                full_start_date=FULL_START_DATE,
+                full_end_date=FULL_END_DATE,
+                window_days=WINDOW_DAYS,
             )
         )
 

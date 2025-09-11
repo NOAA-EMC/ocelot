@@ -11,12 +11,12 @@ class ResampleDataCallback(pl.Callback):
     def __init__(self, train_start_date, train_end_date, val_start_date, val_end_date, train_window_days=14, val_window_days=3):
         # Training date range
         self.train_start_date = pd.to_datetime(train_start_date)
-        self.train_end_date = pd.to_datetime(train_end_date) - pd.Timedelta(days=train_window_days)
+        self.train_end_date = pd.to_datetime(train_end_date)
         self.train_window_days = pd.Timedelta(days=train_window_days)
 
         # Validation date range
         self.val_start_date = pd.to_datetime(val_start_date)
-        self.val_end_date = pd.to_datetime(val_end_date) - pd.Timedelta(days=val_window_days)
+        self.val_end_date = pd.to_datetime(val_end_date)
         self.val_window_days = pd.Timedelta(days=val_window_days)
 
         # Validate date ranges during initialization
@@ -25,7 +25,8 @@ class ResampleDataCallback(pl.Callback):
     def on_train_epoch_start(self, trainer, pl_module):
         """Sample from training date range"""
         total_train_days = (self.train_end_date - self.train_start_date).days
-        random_day_offset = random.randint(0, total_train_days)
+        max_offset = total_train_days - self.train_window_days.days
+        random_day_offset = random.randint(0, max_offset) if max_offset > 0 else 0
         new_start = self.train_start_date + pd.Timedelta(days=random_day_offset)
         new_end = new_start + self.train_window_days
         new_end = self._check_end_date(new_end, self.train_end_date, "TRAIN")
@@ -36,7 +37,8 @@ class ResampleDataCallback(pl.Callback):
     def on_validation_epoch_start(self, trainer, pl_module):
         """Sample from validation date range"""
         total_val_days = (self.val_end_date - self.val_start_date).days
-        random_day_offset = random.randint(0, total_val_days)
+        max_offset = total_val_days - self.val_window_days.days
+        random_day_offset = random.randint(0, max_offset) if max_offset > 0 else 0
         new_start = self.val_start_date + pd.Timedelta(days=random_day_offset)
         new_end = new_start + self.val_window_days
         new_end = self._check_end_date(new_end, self.val_end_date, "VAL")
@@ -74,7 +76,6 @@ class ResampleDataCallback(pl.Callback):
         datamodule.hparams.start_date = start_date
         datamodule.hparams.end_date = end_date
         datamodule.setup("fit")
-
 
 class SequentialDataCallback(pl.Callback):
     """
