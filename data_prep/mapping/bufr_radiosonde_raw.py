@@ -29,7 +29,6 @@ class RawRadiosondeBuilder(ObsBuilder):
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         prep_container.apply_mask(~prep_container.get('launchCycleTime').mask)
-
         prep_container.all_gather(comm)
 
         # Add timestamps to the prep container
@@ -48,37 +47,30 @@ class RawRadiosondeBuilder(ObsBuilder):
         # Use the timestamp, latitude and longitude to match the observations
 
         prep_drift_lat =  prep_container.get('driftLatitude')
+        prep_reason = prep_container.get('airPressureReasonCode')#[:,0]
 
-        prep_container.apply_mask(~prep_drift_lat.mask)
+        prep_container.apply_mask(prep_reason == 100)
+
         prep_time = prep_container.get('launchTime')
         prep_lat = prep_container.get('launchLatitude')
         prep_lon = prep_container.get('launchLongitude')
         prep_id = prep_container.get('sequenceId')
-        prep_pres = prep_container.get('airPressure')[:,0]
-        prep_reason = prep_container.get('airPressureReasonCode').filled()
-        prep_program = prep_container.get('airPressureProgramCode').filled()
-
-        prep_pres.mask = (prep_reason != 100)
+        prep_pres = prep_container.get('airPressure')#[:,0]
+        prep_drift_time =  prep_container.get('driftTime')
+        prep_drift_lat =  prep_container.get('driftLatitude')
+        prep_drift_lon =  prep_container.get('driftLongitude')
+        prep_reason = prep_container.get('airPressureReasonCode')#[:,0]
 
         prep_pres = prep_pres.filled()
-
-        print (f'Num 100s: {float(np.sum(prep_reason == 100))/prep_reason.size:.3f}')
-
-        print ("prep reason code samples:")
-        print (prep_reason[:10, :])
-        print ('')
-        print ("prep program code samples:")
-        print (prep_program[:10, :])
-        print ('')
  
         prep_dict = {}
-        for i, (t, lat, lon, oid) in enumerate(zip(prep_time, prep_lat, prep_lon, prep_id)):
-            key = (t, np.round(lat, 2), np.round(lon, 2), int(oid))
+        for i, (t, lat, lon) in enumerate(zip(prep_time, prep_lat, prep_lon)):
+            key = (t, np.round(lat, 2), np.round(lon, 2))
             if key not in prep_dict:
                 prep_dict[key] = []
             prep_dict[key].append(i)
 
-        dump_pres = container.get('windDirection')
+        dump_pres = container.get('airPressure')
 
         container.apply_mask(~dump_pres.mask)
         dump_time = container.get('timestamp')
@@ -88,116 +80,152 @@ class RawRadiosondeBuilder(ObsBuilder):
         dump_pres = container.get('airPressure').filled()
 
         dump_dict = {}
-        for i, (t, lat, lon, oid) in enumerate(zip(dump_time, dump_lat, dump_lon, dump_id)):
-            key = (t, np.round(lat, 2), np.round(lon, 2), int(oid))
+        for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
+            key = (t, np.round(lat, 2), np.round(lon, 2))
             if key in prep_dict:
                 if key not in dump_dict:
                     dump_dict[key] = []
                 dump_dict[key].append(i)
 
-        # for key in dump_dict.keys():
-        #     print(key, len(prep_dict[key]), len(dump_dict[key]))
-        #     print ('  dump: ', end='')
-        #     for i in dump_dict[key]:
-        #         print (f' {dump_pres[i]:.2f}', end='')
-        #     print('')
-        #     print ('  prep: ', end='')
-        #     for i in prep_dict[key]:
-        #         print (f' {prep_pres[i]:.2f}', end='')
-        #     print('')
-
-        # Walk the pressure lelvels between the two containers to discover the common
-        # pressure level runs.
-
+        matching_idxs = np.array([-1]*len(dump_time))
         for key in dump_dict.keys():
 
-            print(key, len(prep_dict[key]), len(dump_dict[key]))
-            print ('  dump: ', end='')
-            for i in dump_dict[key]:
-                print (f' {dump_pres[i]:.2f}', end='')
-            print('')
-  
-            # Split the dump data into runs (same logic)
-            dump_runs = []
-            run_start = 0
-            for i in range(1, len(dump_dict[key])):
-                if abs(dump_pres[dump_dict[key][i]] - dump_pres[dump_dict[key][i-1]]) > 250:
-                    dump_runs.append(dump_dict[key][run_start:i])
-                    run_start = i
-
-            # print prep_pres in runs
-            for r in dump_runs:
-                print('  ** dump: ', end='')
-                for i in r:
-                    print (f' {dump_pres[i]:.2f}', end='')
-                print('')
-
-
-            # Split prepbufr data into runs (pressure values start high and go low). When the pressure jumps
-            # it means a new run.
-
-            print ('  prep: ', end='')
+            # Make prepbufr look-up table for this key
+            prep_bufr_table = {}
             for i in prep_dict[key]:
-                print (f' {prep_pres[i]:.2f}', end='')
-            print('')
+                prep_bufr_table[prep_pres[i]] = i
 
+            # Match dump pressures to prepbufr pressures for this key
+            for i in dump_dict[key]:
+                dump_pressure = dump_pres[i]
+                if dump_pressure in prep_bufr_table:
+                    matching_idxs[i] = prep_bufr_table[dump_pressure]
 
-            prep_runs = []
-            run_start = 0
-            for i in range(1, len(prep_dict[key])):
-                if abs(prep_pres[prep_dict[key][i]] - prep_pres[prep_dict[key][i-1]]) > 250:
-                    prep_runs.append(prep_dict[key][run_start:i])
-                    run_start = i
+        
 
-            # print prep_pres in runs
-            for r in prep_runs:
-                print('  ** prep: ', end='')
-                for i in r:
-                    print (f' {prep_pres[i]:.2f}', end='')
-                print('')
+        # matching_idxs = np.array([-1]*len(dump_time))
+        # for key in dump_dict.keys():
+
+        #     # Split the dump data into runs (pressure values start high and go low). When the pressure jumps
+        #     # it means a new run.
+
+        #     dump_runs = []
+        #     run_start = 0
+        #     for i in range(1, len(dump_dict[key])):
+        #         if dump_pres[dump_dict[key][i]] > dump_pres[dump_dict[key][i-1]]:
+        #             dump_runs.append(dump_dict[key][run_start:i])
+        #             run_start = i
+        #         elif i == len(dump_dict[key]) - 1:
+        #             dump_runs.append(dump_dict[key][run_start:])
+
+        #     # Split prepbufr data into runs (pressure values start high and go low). When the pressure jumps
+        #     # it means a new run.
+
+        #     prep_runs = []
+        #     run_start = 0
+        #     for i in range(1, len(prep_dict[key])):
+        #         if prep_pres[prep_dict[key][i]] > prep_pres[prep_dict[key][i-1]]:
+        #             prep_runs.append(prep_dict[key][run_start:i])
+        #             run_start = i
+        #         elif i == len(prep_dict[key]) - 1:
+        #             prep_runs.append(prep_dict[key][run_start:])
+
             
 
-            # Loop through the dump runs and find the best matching prep run. The prep run should contain
-            # all the pressure levels in the dump run, but may have extra values sprinkled in.
-            for d_run in dump_runs:
-                d_run = set([dump_pres[i] for i in d_run])
-                for p_run in prep_runs:
-                    p_run = set([prep_pres[i] for i in p_run])
-                    run_count = len(d_run.intersection(p_run))
-                    if run_count == len(d_run):
-                        print (f' {key}: {d_run} || {p_run}')
-                        break
+        #     # Print the runs for comparison
 
-            
+        #     def print_col(title, arr, width=10):
+        #         if type(arr[0]) == str or type(arr[0]) == np.datetime64:
+        #             col_str = f'{title:<{width}}' + ''.join([f'{arr[i]:{width}}' for i in range(len(arr))])
+        #         else:
+        #             col_str = f'{title:<{width}}' + ''.join([f'{arr[i]:{width}.2f}' for i in range(len(arr))])
+        #         print(col_str)
 
+        #     for idx, dump_run in enumerate(dump_runs):
+        #         if len(prep_runs) <= idx:
+        #             break
+        #         print_col(f'dump_{idx}',[dump_pres[i] for i in dump_run])
+        #         print_col(f'prep_{idx}', [prep_pres[i] for i in prep_runs[idx]])
+        #         print_col(f'prep_time_{idx}', [datetime.fromtimestamp(prep_drift_time[i]).strftime("%H:%M:%S") for i in prep_runs[idx]])
+        #     print ('----')
+
+        #     # Line up the runs and make the outputs
+
+        #     for idx, prep_run in enumerate(prep_runs):
+        #         print ('Matching run', idx)
+        #         dump_run = dump_runs[idx]
+        #         prep_pos = 0
+
+        #         for dump_pos in range(len(dump_run)):
+        #             # print('*', len(prep_run), prep_pos, len(dump_run), dump_pos, ' | ', len(prep_pres), prep_run[prep_pos])
+        #             prep_pressure = prep_pres[prep_run[prep_pos]]
+        #             dump_pressure = dump_pres[dump_run[dump_pos]]
+                    
+        #             if prep_pressure < dump_pressure:
+        #                 continue
+
+        #             skip = False
+        #             while not np.isclose(prep_pressure, dump_pressure):
+        #                 if prep_pressure < dump_pressure:
+        #                     skip = True  # No match for this dump pressure
+        #                     break
+
+        #                 prep_pos += 1
+        #                 prep_pressure = prep_pres[prep_run[prep_pos]]
+
+        #             if skip:
+        #                 continue
+
+        #             print (dump_pressure, end=' ')
+
+        #             matching_idxs[dump_run[dump_pos]] = prep_run[prep_pos]
+
+        #         print ('')
+
+            # drift_dict = {}
+            # for i in prep_dict[key]:
+            #     if not prep_pres[i] in drift_dict:
+            #         drift_dict[prep_pres[i]] = (prep_drift_time[i], prep_drift_lat[i], prep_drift_lon[i])
+            #     else:
+            #         print (drift_dict[prep_pres[i]], (prep_drift_time[i], prep_drift_lat[i], prep_drift_lon[i]))
+            #         assert(drift_dict[prep_pres[i]] == (prep_drift_time[i], prep_drift_lat[i], prep_drift_lon[i]))
+
+
+            # dump_drift_lat = np.zeros(len(dump_dict[key]))
+            # prep_pos = 0
+            # dump_pos = 0
+            # for prep_idx, prep_run in enumerate(prep_runs):
+            #     if prep_idx >= len(dump_runs):
+            #         break
+
+            #     dump_run = dump_runs[prep_idx]
 
  
-        # Use hash table to find matching indices in combined container
-        indices = [-1] * len(dump_time)
-        obs_idx = 0
-        last_key = None
-        for i, (t, lat, lon, oid) in enumerate(zip(dump_time, dump_lat, dump_lon, dump_id)):
-            key = (t, np.round(lat, 2), np.round(lon, 2), int(oid))
+        # # Use hash table to find matching indices in combined container
+        # indices = [-1] * len(dump_time)
+        # obs_idx = 0
+        # last_key = None
+        # for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
+        #     key = (t, np.round(lat, 2), np.round(lon, 2))
 
-            if key != last_key:
-                obs_idx = 0
-                last_key = key
+        #     if key != last_key:
+        #         obs_idx = 0
+        #         last_key = key
 
-            if key in prep_dict:
-                indices[i] = prep_dict[key][obs_idx]
-                obs_idx += 1
+        #     if key in prep_dict:
+        #         indices[i] = prep_dict[key][obs_idx]
+        #         obs_idx += 1
 
-        indices = np.array(indices)
-        valid_mask = indices != -1
-        indices = indices[valid_mask]
-        container.apply_mask(~valid_mask)
+        valid_mask = matching_idxs != -1
+        matching_idxs = matching_idxs[valid_mask]
+        container.apply_mask(valid_mask)
 
         # Add the quality flags to the container
         for var in ['driftTime',
                     'driftLatitude',
                     'driftLongitude']:
 
-            quality_flags = prep_container.get(var)[indices]
+            quality_flags = prep_container.get(var)[matching_idxs]
             container.add(var, quality_flags, ['*'])
 
         for var in ['height',
@@ -208,8 +236,8 @@ class RawRadiosondeBuilder(ObsBuilder):
                     'airPressureQuality',
                     'heightQuality']:
 
-            quality_flags = prep_container.get(var)[indices]
-            container.add(var, quality_flags, ['*', '*/EVENT'])
+            quality_flags = prep_container.get(var)[matching_idxs]
+            container.add(var, quality_flags, ['*'])
 
         return container
 
@@ -280,7 +308,7 @@ class RawRadiosondeBuilder(ObsBuilder):
             }
         ])
 
-        description.add_dimension('event', ['*', '*/EVENT'])
+        # description.add_dimension('event', ['*', '*/EVENT'])
 
         return description
 

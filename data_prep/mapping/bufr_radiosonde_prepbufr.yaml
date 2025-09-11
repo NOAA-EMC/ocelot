@@ -30,32 +30,32 @@ bufr:
         - wrap: [ -180.0, 180.0 ]
 
     airPressure:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT/POB"
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
 
     airPressureReasonCode:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT/PRC"
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PRC"
 
     airPressureProgramCode:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT/PPC"
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PPC"
 
-    height_event:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1-3}/ZOB"
+    height:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
 
     # Quality Markers
-    airTemperatureQuality_event:
-      query: "*/PRSLEVEL/T___INFO/T__EVENT{1-3}/TQM"
+    airTemperatureQuality:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
 
-    specificHumidityQuality_event:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1-3}/QQM"
+    specificHumidityQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
-    dewPointTemperatureQuality_event:
-      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1-3}/QQM"
+    dewPointTemperatureQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
 
-    windQuality_event:
-      query: "*/PRSLEVEL/W___INFO/W__EVENT{1-3}/WQM"
+    windQuality:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
 
-    airPressureQuality_event:
-      query: "*/PRSLEVEL/P___INFO/P__EVENT{1-3}/PQM"
+    airPressureQuality:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
 
-    heightQuality_event:
-      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1-3}/ZQM"
+    heightQuality:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZQM"
