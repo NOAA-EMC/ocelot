@@ -149,11 +149,7 @@ def main():
         print(f"--- Rank {int(os.environ.get('SLURM_PROCID'))} is loading data prepared by main process... ---")
         data_module.setup("fit")
 
-    # MK: This part is no longer valid. Val date range is later updated in callbacks
-    # val_loader = data_module.val_dataloader()
-    # has_val_data = val_loader is not None and len(val_loader.dataset) > 0
-    # print(f"Initial validation loader has {len(val_loader.dataset) if val_loader is not None else 0} bins")
-    # MK: Assuming we always have val data since we split the date ranges
+    # Assuming we always have val data since we split the date ranges
     has_val_data = True
 
     setup_end_time = time.time()
