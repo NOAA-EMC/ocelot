@@ -77,6 +77,7 @@ class ResampleDataCallback(pl.Callback):
         datamodule.hparams.end_date = end_date
         datamodule.setup("fit")
 
+
 class SequentialDataCallback(pl.Callback):
     """
     Callback to process data sequentially, one window at a time.
