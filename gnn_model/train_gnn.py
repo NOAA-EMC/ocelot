@@ -49,7 +49,7 @@ def main():
         help="Path to a checkpoint to resume training from.",
     )
     parser.add_argument(
-        "--resume_from_latest", 
+            "--resume_from_latest",
         action="store_true",
         help="Resume from the most recent checkpoint found",
     )
@@ -166,7 +166,7 @@ def main():
         ModelCheckpoint(
             dirpath="checkpoints",
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
-            save_top_k=1, # Saves only the best one
+            save_top_k=1,  # Saves only the best one
             monitor="val_loss",
             mode="min",
             save_last=True,
@@ -243,7 +243,7 @@ def main():
         torch.cuda.synchronize()
 
     # === Checkpoint ===
-    resume_path=None
+    resume_path = None
     if args.resume_from_latest:
         resume_path = find_latest_checkpoint("checkpoints")
         if resume_path:
