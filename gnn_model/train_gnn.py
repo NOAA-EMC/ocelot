@@ -49,7 +49,7 @@ def main():
         help="Path to a checkpoint to resume training from.",
     )
     parser.add_argument(
-            "--resume_from_latest",
+        "--resume_from_latest",
         action="store_true",
         help="Resume from the most recent checkpoint found",
     )
