@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH -t 04:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -49,11 +49,9 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training (env is propagated to ranks)
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
 
 # Resume training from the latest checkpoint
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last.ckpt
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last-v5.ckpt
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last-v6.ckpt
 
