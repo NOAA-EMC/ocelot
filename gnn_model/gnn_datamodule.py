@@ -254,7 +254,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.z,
             self._create_graph_structure,
             self.hparams.observation_config,
-            apply_masking=True,
+            feature_stats=self.feature_stats,
         )
         return PyGDataLoader(
             train_dataset,
