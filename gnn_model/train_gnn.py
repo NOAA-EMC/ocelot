@@ -18,6 +18,7 @@ from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
+from ckpt_utils import find_latest_checkpoint
 from datetime import timedelta
 
 
@@ -47,6 +48,11 @@ def main():
         default=None,
         help="Path to a checkpoint to resume training from.",
     )
+    parser.add_argument(
+        "--resume_from_latest",
+        action="store_true",
+        help="Resume from the most recent checkpoint found",
+    )
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -71,12 +77,28 @@ def main():
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
     FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
-    WINDOW_DAYS = 7  # The size of the window for each epoch
+    TRAIN_WINDOW_DAYS = 14  # The size of the training window for each epoch
+    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
 
     # The initial start/end dates for the datamodule are the
     # first window of the full period. The callback will change this on subsequent epochs.
+    WINDOW_DAYS = 14  # The size of the window for each epoch
     initial_start_date = FULL_START_DATE
     initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    TRAIN_VAL_SPLIT_RATIO = 0.9  # 90% train, 10% val
+
+    # Calculate total days and split
+    total_days = (pd.to_datetime(FULL_END_DATE) - pd.to_datetime(FULL_START_DATE)).days
+    train_days = int(total_days * TRAIN_VAL_SPLIT_RATIO)
+
+    TRAIN_START_DATE = FULL_START_DATE
+    TRAIN_END_DATE = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=train_days)).strftime("%Y-%m-%d")
+    VAL_START_DATE = (pd.to_datetime(TRAIN_END_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")  # starting the day after train_end_date
+    VAL_END_DATE = FULL_END_DATE
+
+    print(f"Training period: {TRAIN_START_DATE} to {TRAIN_END_DATE}")
+    print(f"Validation period: {VAL_START_DATE} to {VAL_END_DATE}")
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
@@ -133,28 +155,32 @@ def main():
         print(f"--- Rank {int(os.environ.get('SLURM_PROCID'))} is loading data prepared by main process... ---")
         data_module.setup("fit")
 
-    val_loader = data_module.val_dataloader()
-    has_val_data = val_loader is not None and len(val_loader.dataset) > 0
-    print(f"Initial validation loader has {len(val_loader.dataset) if val_loader is not None else 0} bins")
-
     setup_end_time = time.time()
     print(f"Initial setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
 
     logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
 
     callbacks = []
-    if has_val_data:
-        callbacks.append(EarlyStopping(monitor="val_loss", patience=10, mode="min", verbose=True))
-        callbacks.append(
-            ModelCheckpoint(
-                dirpath="checkpoints",
-                filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
-                save_top_k=1,
-                monitor="val_loss",
-                mode="min",
-                save_last=True,
-            )
+    # Validation Checkpoint: save the BEST model based on validation loss
+    callbacks.append(
+        ModelCheckpoint(
+            dirpath="checkpoints",
+            filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
+            save_top_k=1,  # Saves only the best one
+            monitor="val_loss",
+            mode="min",
+            save_last=True,
         )
+    )
+    # Early stopping
+    callbacks.append(
+        EarlyStopping(
+            monitor="val_loss",
+            patience=10,
+            mode="min",
+            verbose=True,
+        )
+    )
 
     strategy = DDPStrategy(
         process_group_backend="nccl",
@@ -181,9 +207,12 @@ def main():
         print("Using RANDOM sampling mode.")
         callbacks.append(
             ResampleDataCallback(
-                full_start_date=FULL_START_DATE,
-                full_end_date=FULL_END_DATE,
-                window_days=WINDOW_DAYS,
+                train_start_date=TRAIN_START_DATE,
+                train_end_date=TRAIN_END_DATE,
+                val_start_date=VAL_START_DATE,
+                val_end_date=VAL_END_DATE,
+                train_window_days=TRAIN_WINDOW_DAYS,
+                val_window_days=VALID_WINDOW_DAYS,
             )
         )
 
@@ -198,10 +227,7 @@ def main():
         )
 
     trainer_kwargs["callbacks"] = callbacks
-
-    if has_val_data:
-        trainer_kwargs["check_val_every_n_epoch"] = 1
-
+    trainer_kwargs["check_val_every_n_epoch"] = 1
     trainer = pl.Trainer(**trainer_kwargs)
 
     # === TRAINING ===
@@ -216,14 +242,28 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    trainer.fit(model, data_module, ckpt_path=args.resume_from_checkpoint)
+    # === Checkpoint ===
+    resume_path = None
+    if args.resume_from_latest:
+        resume_path = find_latest_checkpoint("checkpoints")
+        if resume_path:
+            print(f"[INFO] Auto-resuming from: {resume_path}")
+        else:
+            print("[INFO] No checkpoint found, starting fresh")
+    elif args.resume_from_checkpoint:
+        resume_path = args.resume_from_checkpoint
+        print(f"[INFO] Resuming from: {resume_path}")
+    else:
+        print("[INFO] No checkpoint, starting fresh training")
+
+    trainer.fit(model, data_module, ckpt_path=resume_path)
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")
     print(f"Total time (setup + training): {(end_time - start_time) / 60:.2f} minutes")
 
     # === LOAD BEST MODEL AFTER TRAINING ===
-    if has_val_data and trainer.checkpoint_callback:
+    if trainer.checkpoint_callback:
         best_path = trainer.checkpoint_callback.best_model_path
         print(f"[INFO] Best model path: {best_path}")
         best_model = GNNLightning.load_from_checkpoint(best_path)
