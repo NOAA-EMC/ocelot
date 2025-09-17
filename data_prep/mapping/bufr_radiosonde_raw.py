@@ -11,20 +11,35 @@ from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
 
 PrepbufrKey = 'prepbufr'
-DumpKey = 'dump'
+LowResDumpKey = 'low_res_dump'
+HighResDumpKey = 'high_res_dump'
 
 PrepbufrMapPath = map_path('bufr_radiosonde_prepbufr.yaml')
-DumpMapPath = map_path('bufr_radiosonde_dump.yaml')
+LowResDumpMapPath = map_path('bufr_radiosonde_adpupa.yaml')
+HighResDumpMapPath = map_path('bufr_radiosonde_uprair.yaml')
 
 class RawRadiosondeBuilder(ObsBuilder):
+    last_flight_id: int = 0
+
     def __init__(self):
         super().__init__({PrepbufrKey: PrepbufrMapPath,
-                          DumpKey: DumpMapPath}, log_name=os.path.basename(__file__))
+                          LowResDumpKey: LowResDumpMapPath,
+                          HighResDumpKey: HighResDumpMapPath}, log_name=os.path.basename(__file__))
 
     # Override
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
         prep_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
-        container = bufr.Parser(input_dict[DumpKey], self.map_dict[DumpKey]).parse(comm)
+
+        container = bufr.Parser(input_dict[LowResDumpKey], self.map_dict[LowResDumpKey]).parse(comm)
+        container.apply_mask(~container.get('airPressure').mask)
+
+        if 'high_res_dump' in input_dict:
+            high_res_container = bufr.Parser(input_dict[HighResDumpKey], 
+                                    self.map_dict[HighResDumpKey], 
+                                    {'useHighResSettings':True}).parse(comm)
+
+            high_res_container.apply_mask(~high_res_container.get('airPressure').mask)
+            container.append(high_res_container)
 
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
@@ -56,24 +71,28 @@ class RawRadiosondeBuilder(ObsBuilder):
         prep_drift_time = prep_container.get('driftTime')
 
         prep_pres = prep_pres.filled()
- 
+   
         prep_dict = {}
         for i, (t, lat, lon) in enumerate(zip(prep_time, prep_lat, prep_lon)):
-            key = (t, np.round(lat, 2), np.round(lon, 2))
+            key = (t, self._floatToKey(lat), self._floatToKey(lon))
             if key not in prep_dict:
                 prep_dict[key] = []
             prep_dict[key].append(i)
 
-        container.apply_mask(~container.get('airPressure').mask)
-
         dump_time = container.get('timestamp')
         dump_lat = container.get('latitude')
         dump_lon = container.get('longitude')
-        dump_pres = container.get('airPressure').filled()
+        dump_pres = container.get('airPressure')
+
+        # round t up to the nearest hour (ceiling)
+        dump_time = np.ceil(dump_time / 3600) * 3600
+
+        #round dump pressure to nearest .1 hPa
+        dump_pres = np.round(dump_pres, 1)
 
         dump_dict = {}
         for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
-            key = (t, np.round(lat, 2), np.round(lon, 2))
+            key = (t, self._floatToKey(lat), self._floatToKey(lon))
             if key in prep_dict:
                 if key not in dump_dict:
                     dump_dict[key] = []
@@ -98,12 +117,18 @@ class RawRadiosondeBuilder(ObsBuilder):
             prep_bufr_times = list(prep_bufr_times)
             prep_bufr_times.sort()
 
-            # Match dump pressures to prepbufr pressures ordered by drift time
+            # Match dump pressures to prepbufr pressuresk ordered by drift time
             for time, prep_pressure in prep_bufr_times:
                 if prep_pressure in dump_bufr_table:
                     dump_idx = dump_bufr_table[prep_pressure]
                     prep_idx = prep_bufr_table[prep_pressure]
                     matching_idxs.append((dump_idx, prep_idx, flight_idx))
+
+            print (f'prep->{len(list(prep_bufr_table.keys()))}{list(prep_bufr_table.keys())[:100]}\n'
+                   f'dump->{len(list(dump_bufr_table.keys()))}{list(dump_bufr_table.keys())[:100]}\n')
+
+        print ('preptime: ', len(prep_time), ' dump: ', len(dump_time), ' matched: ', len(matching_idxs), f' percent: {100.0*float(len(matching_idxs))/len(prep_time):.2f}')
+        print (prep_pres)
 
         # Make new container with only the matched indices
         new_container = bufr.DataContainer()
@@ -131,13 +156,15 @@ class RawRadiosondeBuilder(ObsBuilder):
             new_container.add(var, matched_data, path)
 
         # Add the flight ID
-        flight_ids = np.array([flight_idx for dump_idx, prep_idx, flight_idx in matching_idxs])
+        flight_ids = np.array([RawRadiosondeBuilder.last_flight_id + flight_idx + 1 for dump_idx, prep_idx, flight_idx in matching_idxs])
         new_container.add('flightId', flight_ids, ['*'])
+
+        RawRadiosondeBuilder.last_flight_id = flight_ids[-1]
 
         return new_container
 
     def _make_description(self):
-        description = bufr.encoders.Description(self.map_dict[DumpKey])
+        description = bufr.encoders.Description(self.map_dict[LowResDumpKey])
 
         # Add the quality flag variables
         description.add_variables([
@@ -235,7 +262,7 @@ class RawRadiosondeBuilder(ObsBuilder):
         container.add(output_name, time, ['*'])
 
     def _floatToKey(self, f: float) -> str:
-        return f"{np.round(f, 2):.2f}"
+        return f"{np.round(f, 1):.2f}"
 
 add_main_functions(RawRadiosondeBuilder)
 

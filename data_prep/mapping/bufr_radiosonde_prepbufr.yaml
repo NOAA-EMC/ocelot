@@ -32,6 +32,9 @@ bufr:
     airPressure:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
 
+    airPressure2:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
+
     airPressureReasonCode:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PRC"
 
