@@ -28,18 +28,19 @@ class RawRadiosondeBuilder(ObsBuilder):
 
     # Override
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
+        if 'high_res_dump' in input_dict:
+            container = self._process_high_res_dump(comm, input_dict)
+        else:
+            container = self._process_low_res_dump(comm, input_dict)
+
+        return container
+
+    
+    def _process_low_res_dump(self, comm, input_dict) -> bufr.DataContainer:
         prep_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
 
         container = bufr.Parser(input_dict[LowResDumpKey], self.map_dict[LowResDumpKey]).parse(comm)
         container.apply_mask(~container.get('airPressure').mask)
-
-        if 'high_res_dump' in input_dict:
-            high_res_container = bufr.Parser(input_dict[HighResDumpKey], 
-                                    self.map_dict[HighResDumpKey], 
-                                    {'useHighResSettings':True}).parse(comm)
-
-            high_res_container.apply_mask(~high_res_container.get('airPressure').mask)
-            container.append(high_res_container)
 
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
@@ -127,9 +128,6 @@ class RawRadiosondeBuilder(ObsBuilder):
             print (f'prep->{len(list(prep_bufr_table.keys()))}{list(prep_bufr_table.keys())[:100]}\n'
                    f'dump->{len(list(dump_bufr_table.keys()))}{list(dump_bufr_table.keys())[:100]}\n')
 
-        print ('preptime: ', len(prep_time), ' dump: ', len(dump_time), ' matched: ', len(matching_idxs), f' percent: {100.0*float(len(matching_idxs))/len(prep_time):.2f}')
-        print (prep_pres)
-
         # Make new container with only the matched indices
         new_container = bufr.DataContainer()
         for var in container.list():
@@ -162,6 +160,18 @@ class RawRadiosondeBuilder(ObsBuilder):
         RawRadiosondeBuilder.last_flight_id = flight_ids[-1]
 
         return new_container
+
+    def _process_high_res_dump(self, comm, input_dict) -> bufr.DataContainer:
+        container = bufr.Parser(input_dict[HighResDumpKey], self.map_dict[HighResDumpKey]).parse(comm)
+        container.apply_mask(~container.get('airPressure').mask)
+
+        launch_time = np.datetime64('1970-01-01T00:00:00Z') + np.timedelta64(container.get('driftDisplacementTime'), 'seconds')
+        drift_time = launch_time + np.timedelta64(np.Data container.get('driftDisplacementTime'), 'seconds')
+        container.add('driftTime', drift_time.astype('datetime64[s]').astype('int64'), ['*'])
+
+        container.remove('driftDisplacementTime')
+
+        return container
 
     def _make_description(self):
         description = bufr.encoders.Description(self.map_dict[LowResDumpKey])
