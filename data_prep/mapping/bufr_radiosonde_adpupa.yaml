@@ -1,0 +1,86 @@
+bufr:
+  group_by_variable: windDirection
+  subsets:
+    - NC002001
+    - NC002003
+    - NC002004
+    - NC002005
+  variables:
+    timestamp:
+      datetime:
+        year: "*/YEAR"
+        month: "*/MNTH"
+        day: "*/DAYS"
+        hour: "*/HOUR"
+        minute: "*/MINU"
+
+    latitude:
+      query: "[*/CLAT]"
+
+    longitude:
+      query: "[*/CLON]"
+
+    reportId:
+      query: "*/RPID"
+
+    airPressure:
+      query: "[*/UARLV/PRLC, */PRLC]"  # Air pressure at station level
+      type: float
+      transforms:
+        - scale: 0.01  # Convert from Pa to hPa
+
+    airTemperature:
+      query: "[*/UARLV/UATMP/TMDB, */TMDB]"
+
+    dewPointTemperature:
+      query: "[*/UARLV/UATMP/TMDP, */TMDP]"
+
+    relativeHumidity: # only applies to NC004005
+      query: "*/REHU"
+
+    windDirection:
+      query: "[*/UARLV/UAWND/WDIR, */WDIR]"
+      type: float
+      transforms:
+        - scale: 0.0174533  # Convert degrees to radians
+
+    windSpeed:
+      query: "[*/UARLV/UAWND/WSPD, */WSPD]"
+      type: float
+
+encoder:
+  variables:
+    # MetaData
+
+    - name: "airTemperature"
+      source: airTemperature
+      longName: "Air Temperature"
+      units: "deg C"
+      range: [-100, 100]
+
+    - name: "dewPointTemperature"
+      source: dewPointTemperature
+      longName: "Dew Point Temperature"
+      units: "deg C"
+      range: [ -100, 100 ]
+
+    - name: "ralativeHumidity"
+      source: relativeHumidity
+      longName: "Specific Humidity"
+      units: "mg/kg"
+      range: [0, 50000]
+
+    - name: "windDirection"
+      source: windDirection
+      longName: "Wind Direction"
+      units: "radians"
+
+    - name: "windSpeed"
+      source: windSpeed
+      longName: "Wind Speed"
+      units: "m/s"
+
+    - name: "airPressure"
+      source: airPressure
+      longName: "Air Pressure"
+      units: "hPa"
