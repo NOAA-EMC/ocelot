@@ -29,8 +29,10 @@ class RawRadiosondeBuilder(ObsBuilder):
     # Override
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
         if 'high_res_dump' in input_dict:
+            print ("Processing high resolution dump")
             container = self._process_high_res_dump(comm, input_dict)
         else:
+            print ("Processing low resolution dump")
             container = self._process_low_res_dump(comm, input_dict)
 
         return container
@@ -85,9 +87,6 @@ class RawRadiosondeBuilder(ObsBuilder):
         dump_lon = container.get('longitude')
         dump_pres = container.get('airPressure')
 
-        # round t up to the nearest hour (ceiling)
-        dump_time = np.ceil(dump_time / 3600) * 3600
-
         #round dump pressure to nearest .1 hPa
         dump_pres = np.round(dump_pres, 1)
 
@@ -125,9 +124,6 @@ class RawRadiosondeBuilder(ObsBuilder):
                     prep_idx = prep_bufr_table[prep_pressure]
                     matching_idxs.append((dump_idx, prep_idx, flight_idx))
 
-            print (f'prep->{len(list(prep_bufr_table.keys()))}{list(prep_bufr_table.keys())[:100]}\n'
-                   f'dump->{len(list(dump_bufr_table.keys()))}{list(dump_bufr_table.keys())[:100]}\n')
-
         # Make new container with only the matched indices
         new_container = bufr.DataContainer()
         for var in container.list():
@@ -162,16 +158,160 @@ class RawRadiosondeBuilder(ObsBuilder):
         return new_container
 
     def _process_high_res_dump(self, comm, input_dict) -> bufr.DataContainer:
+        prep_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
+        prep_container.apply_mask(~prep_container.get('launchCycleTime').mask)
+
         container = bufr.Parser(input_dict[HighResDumpKey], self.map_dict[HighResDumpKey]).parse(comm)
+
+        container.apply_mask(~container.get('latitude').mask)
         container.apply_mask(~container.get('airPressure').mask)
 
-        launch_time = np.datetime64('1970-01-01T00:00:00Z') + np.timedelta64(container.get('driftDisplacementTime'), 'seconds')
-        drift_time = launch_time + np.timedelta64(np.Data container.get('driftDisplacementTime'), 'seconds')
-        container.add('driftTime', drift_time.astype('datetime64[s]').astype('int64'), ['*'])
+        # launch_time = np.datetime64('1970-01-01T00:00:00') + container.get('timestamp').astype('timedelta64[s]')
+        # drift_time = launch_time + container.get('driftDisplacementTime').astype('timedelta64[s]')
+        # container.add('driftTime', drift_time.astype('datetime64[s]').astype('int64'), ['*'])
 
-        container.remove('driftDisplacementTime')
+        reference_time = self._get_reference_time(input_dict[PrepbufrKey])
+        self._add_timestamp('launchCycleTime',
+                            'launchTime',
+                            prep_container,
+                            reference_time)
 
-        return container
+        self._add_timestamp('driftCycleTime',
+                            'driftTime',
+                            prep_container,
+                            reference_time)
+
+
+        # Mask out latitude and longitude missing in prepbufr from the container
+        prep_time = prep_container.get('launchTime')
+        prep_lat = prep_container.get('launchLatitude')
+        prep_lon = prep_container.get('launchLongitude')
+        prep_pres = prep_container.get('airPressure')
+        prep_drift_time = prep_container.get('driftTime')
+
+        dump_time = container.get('timestamp')
+        dump_lat = container.get('latitude')
+        dump_lon = container.get('longitude')
+
+        # dump_time = np.int(np.ceil(dump_time / 1800) * 1800)
+
+        dump_time_key = (np.round((dump_time + 1800) / 1800) * 1800).astype(int)
+        dump_pres = np.round(container.get('airPressure'), 1)
+        # prep_time_key = (np.ceil(prep_time / 3600) * 3600).astype(int)
+
+        prep_dict = {}
+        for i, (t, lat, lon) in enumerate(zip(prep_time, prep_lat, prep_lon)):
+            key = (t, self._floatToKey(lat), self._floatToKey(lon))
+            if key not in prep_dict:
+                prep_dict[key] = []
+            prep_dict[key].append(i)
+
+        # print (f'prep_dict {len(list(prep_dict.keys()))}: {list(prep_dict.keys())[:100]}')
+
+        dump_dict = {}
+        for i, (t, lat, lon) in enumerate(zip(dump_time_key, dump_lat, dump_lon)):
+            key = (t, self._floatToKey(lat), self._floatToKey(lon))
+            if key in prep_dict:
+                if key not in dump_dict:
+                    dump_dict[key] = []
+                dump_dict[key].append(i)
+
+        # print (f'dump_dict {len(list(dump_dict.keys()))}: {list(dump_dict.keys())[:100]}')
+
+        # num_matches = 0
+        # for key in dump_dict.keys():
+        #     if key in prep_dict:
+        #         num_matches += 1
+
+        # print (f'num_matches {num_matches} percent {100 * num_matches / len(list(dump_dict.keys())):.1f}%')
+
+        matching_idxs = []
+        for flight_idx, key in enumerate(dump_dict.keys()):
+
+            # Make prepbufr look-up table for this key
+            prep_bufr_table = {}
+            prep_bufr_times = set()
+            for i in prep_dict[key]:
+                prep_bufr_table[self._floatToKey(prep_pres[i])] = i
+                prep_bufr_times.add((prep_drift_time[i], self._floatToKey(prep_pres[i])))
+
+            # Make dump look-up table for this key
+            dump_bufr_table = {}
+            for i in dump_dict[key]:
+                dump_bufr_table[self._floatToKey(dump_pres[i])] = i
+
+            # Sort prep_bufr_times by first tuple element (drift time)
+            prep_bufr_times = list(prep_bufr_times)
+            prep_bufr_times.sort()
+
+            # Match dump pressures to prepbufr pressuresk ordered by drift time
+            for time, prep_pressure in prep_bufr_times:
+                if prep_pressure in dump_bufr_table:
+                    dump_idx = dump_bufr_table[prep_pressure]
+                    prep_idx = prep_bufr_table[prep_pressure]
+                    matching_idxs.append((dump_idx, prep_idx, flight_idx))
+
+            # print (f'match percent {100 * len(matching_idxs) / len(dump_bufr_table):.1f}% ')
+
+        # Make new container with only the matched indices
+        new_container = bufr.DataContainer()
+        for var in container.list():
+            data = container.get(var)
+            path = container.get_paths(var)
+            matched_data = np.array([data[dump_idx] for dump_idx, prep_idx, flight_idx in matching_idxs])
+            new_container.add(var, matched_data, path)
+
+
+
+        # driftLatitude = container.get('latitude') + container.get('driftLatitude')
+        # driftLongitude = container.get('longitude') + container.get('driftLongitude')
+
+        # container.replace('driftLatitude', driftLatitude)
+        # container.replace('driftLongitude', driftLongitude)
+
+        # print (drift_time)
+        # print (container.get('driftLatitude'))
+        # print (container.get('driftLongitude'))
+
+        # Add the prepbufr data to the new container
+        for var in ['driftTime',
+                    'driftLatitude',
+                    'driftLongitude',
+                    'height',
+                    'airTemperatureQuality',
+                    'specificHumidityQuality',
+                    'dewPointTemperatureQuality',
+                    'windQuality',
+                    'airPressureQuality',
+                    'heightQuality']:
+            
+            data = prep_container.get(var)
+            path = prep_container.get_paths(var)
+            matched_data = np.array([data[prep_idx] for dump_idx, prep_idx, flight_idx in matching_idxs])
+            if matched_data.dtype == np.dtype('float64'):
+                matched_data = matched_data.astype('float32')
+            new_container.add(var, matched_data, path)
+
+
+        report_ids = new_container.get('reportId')
+        flight_id_dict = {}
+        flight_id = RawRadiosondeBuilder.last_flight_id
+        for unique_rep in np.unique(report_ids):
+            if unique_rep not in flight_id_dict:
+                flight_id_dict[unique_rep] = flight_id + 1
+                flight_id += 1
+
+        # print ('ids ', report_ids.size)
+
+        flight_ids = np.array([flight_id_dict[report_id] for report_id in report_ids])
+        new_container.add('flightId', flight_ids, ['*'])
+
+        # # Mask out flights with less than 10 observations
+        # counts = np.bincount(flight_ids)
+        # valid_flights = np.where(counts >= 10)[0]
+        # container.apply_mask(~np.isin(flight_ids, valid_flights))
+
+        return new_container
 
     def _make_description(self):
         description = bufr.encoders.Description(self.map_dict[LowResDumpKey])
