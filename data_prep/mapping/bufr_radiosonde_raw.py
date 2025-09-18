@@ -84,7 +84,7 @@ class RawRadiosondeBuilder(ObsBuilder):
 
         dump_dict = {}
         for i, (t, lat, lon) in enumerate(zip(dump_time, dump_lat, dump_lon)):
-            key = (matching_time_dict[t], self._floatToKey(lat), self._floatToKey(lon))
+            key = (t, self._floatToKey(lat), self._floatToKey(lon))
             if key in prep_dict:
                 if key not in dump_dict:
                     dump_dict[key] = []
