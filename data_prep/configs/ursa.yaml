@@ -1,7 +1,7 @@
 data types:
   - name: atms
     type: tank
-    num_tasks: 24
+    num_tasks: 2
     batch_days: 15
     mapping: bufr_atms.py
     paths:
