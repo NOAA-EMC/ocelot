@@ -99,6 +99,108 @@ def create_weekly_data(start_date: datetime,
         _create_data_for_day(comm, date, data_type, output_type, out_path)
         date += day
 
+def create_monthly_data(start_date: datetime,
+                        end_date: datetime,
+                        data_type: str,
+                        output_type: str = 'parquet',
+                        suffix: str = None,
+                        append: bool = True) -> None:
+    """Create zarr files from BUFR data in month long chunks."""
+
+    bufr.mpi.App(sys.argv)
+    comm = bufr.mpi.Comm("world")
+
+    # Determine all month boundaries that intersect the range
+    month_ranges = []
+    current = start_date.replace(day=1)
+    while current <= end_date:
+        next_month = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
+        month_end = next_month - timedelta(days=1)
+        month_ranges.append((current, month_end))
+        current = next_month
+
+    extension = 'zarr' if output_type == 'zarr' else 'pqt'
+
+    # Generate output paths for each month
+    output_paths = {}
+    for mstart, mend in month_ranges:
+        if suffix:
+            file_name = f"{data_type}_{suffix}_{mstart:%Y%m}_{mend:%Y%m}.{extension}"
+        else:
+            file_name = f"{data_type}_{mstart:%Y%m}_{mend:%Y%m}.{extension}"
+        output_paths[(mstart, mend)] = os.path.join(settings.OUTPUT_PATH, file_name)
+
+    if output_type == 'zarr' and comm.rank() == 0:
+        # Ensure all output directories exist before processing
+        for path in output_paths.values():
+            if not append and os.path.exists(path):
+                import shutil
+                shutil.rmtree(path)
+            os.makedirs(path, exist_ok=True)
+        comm.barrier()
+
+    # Process each day and append to the appropriate monthly file
+    day = timedelta(days=1)
+    date = start_date
+    while date <= end_date:
+        month_start = date.replace(day=1)
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        month_end = next_month - timedelta(days=1)
+        out_path = output_paths[(month_start, month_end)]
+
+        _create_data_for_day(comm, date, data_type, output_type, out_path)
+        date += day
+
+def create_yearly_data(start_date: datetime,
+                       end_date: datetime,
+                       data_type: str,
+                       output_type: str = 'parquet',
+                       suffix: str = None,
+                       append: bool = True) -> None:
+     """Create zarr files from BUFR data in year long chunks."""
+    
+     bufr.mpi.App(sys.argv)
+     comm = bufr.mpi.Comm("world")
+    
+     # Determine all year boundaries that intersect the range
+     year_ranges = []
+     current = start_date.replace(month=1, day=1)
+     while current <= end_date:
+          year_end = current.replace(month=12, day=31)
+          year_ranges.append((current, year_end))
+          current = current.replace(year=current.year + 1, month=1, day=1)
+    
+     extension = 'zarr' if output_type == 'zarr' else 'pqt'
+    
+     # Generate output paths for each year
+     output_paths = {}
+     for ystart, yend in year_ranges:
+          if suffix:
+                file_name = f"{data_type}_{suffix}_{ystart:%Y}.{extension}"
+          else:
+                file_name = f"{data_type}_{ystart:%Y}.{extension}"
+          output_paths[(ystart, yend)] = os.path.join(settings.OUTPUT_PATH, file_name)
+    
+     if output_type == 'zarr' and comm.rank() == 0:
+          # Ensure all output directories exist before processing
+          for path in output_paths.values():
+                if not append and os.path.exists(path):
+                 import shutil
+                 shutil.rmtree(path)
+                os.makedirs(path, exist_ok=True)
+          comm.barrier()
+    
+     # Process each day and append to the appropriate yearly file
+     day = timedelta(days=1)
+     date = start_date
+     while date <= end_date:
+          year_start = date.replace(month=1, day=1)
+          year_end = date.replace(month=12, day=31)
+          out_path = output_paths[(year_start, year_end)]
+    
+          _create_data_for_day(comm, date, data_type, output_type, out_path)
+          date += day
+
 
 def _create_data_for_day(comm,
                         date: datetime,
@@ -162,6 +264,6 @@ if __name__ == "__main__":
     end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
 
     if args.output_type == 'zarr':
-        create_data(start_date, end_date, args.type, args.output_type, args.suffix, args.append)
+        create_yearly_data(start_date, end_date, args.type, args.output_type, args.suffix, args.append)
     elif args.output_type == 'parquet':
         create_weekly_data(start_date, end_date, args.type, args.output_type, args.suffix, args.append)
