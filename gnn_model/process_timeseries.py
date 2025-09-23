@@ -550,7 +550,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 mask[bad, jTd] = False
 
                     # -- RH vs Td consistency --
-                    if (np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and
+                    if (
+                        np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and
                         "relativeHumidity" in feat_pos and
                         "airTemperature" in feat_pos and
                         "dewPointTemperature" in feat_pos
