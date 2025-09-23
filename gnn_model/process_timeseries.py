@@ -550,7 +550,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 mask[bad, jTd] = False
 
                     # -- RH vs Td consistency --
-                    if np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and "relativeHumidity" in feat_pos and "airTemperature" in feat_pos and "dewPointTemperature" in feat_pos:
+                    if (np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and 
+                        "relativeHumidity" in feat_pos and 
+                        "airTemperature" in feat_pos and 
+                        "dewPointTemperature" in feat_pos):
                         jRH, jT, jTd = feat_pos["relativeHumidity"], feat_pos["airTemperature"], feat_pos["dewPointTemperature"]
                         for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
                             if arr.shape[0] == 0:
@@ -570,7 +573,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     if pvh.get("enable", False) and "airPressure" in feat_pos and ("height" in meta_keys):
                         H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
                         jP, jH = feat_pos["airPressure"], meta_keys.index("height")
-                        for feat_arr, meta_arr, vmask in ((input_features_raw, input_metadata_raw, input_valid_ch), (target_features_raw, target_metadata_raw, target_valid_ch)):
+                        for feat_arr, meta_arr, vmask in (
+                            (input_features_raw, input_metadata_raw, input_valid_ch), 
+                            (target_features_raw, target_metadata_raw, target_valid_ch)
+                        ):
                             if feat_arr.shape[0] == 0 or meta_arr.size == 0:
                                 continue
                             z_h, p = meta_arr[:, jH], feat_arr[:, jP]
@@ -885,7 +891,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]
 
-            print(f"[{bin_name}] {inst_name}: input {orig_in} -> {input_features_final.shape[0]}, targets {orig_tg_sizes} -> {[t.shape[0] for t in target_features_final_list]}")
+            print(f"[{bin_name}] {inst_name}: input {orig_in} -> "
+                  f"{input_features_final.shape[0]}, targets {orig_tg_sizes} -> "
+                  f"{[t.shape[0] for t in target_features_final_list]}")
 
         if not data_summary[bin_name].get(obs_type):
             del data_summary[bin_name][obs_type]
