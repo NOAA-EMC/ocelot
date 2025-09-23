@@ -550,10 +550,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 mask[bad, jTd] = False
 
                     # -- RH vs Td consistency --
-                    if (np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and 
-                        "relativeHumidity" in feat_pos and 
-                        "airTemperature" in feat_pos and 
-                        "dewPointTemperature" in feat_pos):
+                    if (np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and
+                        "relativeHumidity" in feat_pos and
+                        "airTemperature" in feat_pos and
+                        "dewPointTemperature" in feat_pos
+                    ):
                         jRH, jT, jTd = feat_pos["relativeHumidity"], feat_pos["airTemperature"], feat_pos["dewPointTemperature"]
                         for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
                             if arr.shape[0] == 0:
@@ -574,7 +575,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
                         jP, jH = feat_pos["airPressure"], meta_keys.index("height")
                         for feat_arr, meta_arr, vmask in (
-                            (input_features_raw, input_metadata_raw, input_valid_ch), 
+                            (input_features_raw, input_metadata_raw, input_valid_ch),
                             (target_features_raw, target_metadata_raw, target_valid_ch)
                         ):
                             if feat_arr.shape[0] == 0 or meta_arr.size == 0:
