@@ -77,14 +77,14 @@ def main():
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
     FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
-    TRAIN_WINDOW_DAYS = 14  # The size of the training window for each epoch
-    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
+    TRAIN_WINDOW_DAYS = 7  # The size of the training window for each epoch
+    VALID_WINDOW_DAYS = 1   # The size of the validation window for each epoch
 
     # The initial start/end dates for the datamodule are the
     # first window of the full period. The callback will change this on subsequent epochs.
-    WINDOW_DAYS = 14  # The size of the window for each epoch
+    WINDOW_DAYS = TRAIN_WINDOW_DAYS  # The size of the window for each epoch
     initial_start_date = FULL_START_DATE
-    initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
+    initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=TRAIN_WINDOW_DAYS)).strftime("%Y-%m-%d")
 
     TRAIN_VAL_SPLIT_RATIO = 0.9  # 90% train, 10% val
 
@@ -105,12 +105,18 @@ def main():
     hidden_dim = 64
     num_layers = 8
     lr = 0.001
-    max_epochs = 100
+    max_epochs = 10
     batch_size = 1
-    # ----------------------------------------------------
 
+    # Autoregressive rollout (not used)
     max_rollout_steps = 1
     rollout_schedule = "fixed"
+
+    # Latent rollout parameters
+    latent_step_hours = 3
+    # Set an integer to enable latent rollout (set to "3" for 3 hours per processor step)
+    # Set to "None" for standard processor (no latent rollout)
+    # ----------------------------------------------------
 
     start_time = time.time()
 
@@ -139,6 +145,8 @@ def main():
         num_neighbors=3,
         feature_stats=feature_stats,
         pipeline=pipeline_cfg,
+        window_size="12h",                    # pre-existing parameter, default to 12h
+        latent_step_hours=latent_step_hours,  # NEW: latent rollout parameter
     )
 
     is_main_process = os.environ.get("SLURM_PROCID", "0") == "0"
