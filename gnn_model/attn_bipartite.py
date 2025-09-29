@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import GATv2Conv
 
+
 class BipartiteGAT(nn.Module):
     """
     Multi-layer GATv2 for bipartite edges (src -> dst).
@@ -29,7 +30,7 @@ class BipartiteGAT(nn.Module):
     ):
         super().__init__()
         self.layers = nn.ModuleList()
-        self.norms  = nn.ModuleList()
+        self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
 
         in_src = send_dim
@@ -54,12 +55,14 @@ class BipartiteGAT(nn.Module):
 
         # if the very first dst dim != hidden_dim, build a projection for residual
         self.res_proj = (
-            nn.Linear(rec_dim, hidden_dim) if rec_dim != hidden_dim else nn.Identity()
+            nn.Linear(rec_dim, hidden_dim)
+            if rec_dim != hidden_dim else nn.Identity()
         )
 
     @property
     def edge_index(self):
-        # kept only for API parity with your InteractionNet usage where you set encoder.edge_index = ...
+        # kept only for API parity with your InteractionNet usage
+        # where you set encoder.edge_index = ...
         return getattr(self, "_edge_index", None)
 
     @edge_index.setter
@@ -87,4 +90,3 @@ class BipartiteGAT(nn.Module):
             x_src, x_dst, res0 = x_src, x_dst_new, x_dst_new
 
         return x_dst
-

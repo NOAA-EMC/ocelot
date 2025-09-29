@@ -581,8 +581,10 @@ class GNNLightning(pl.LightningModule):
                 current_mesh_features = self.swt(current_mesh_features)
             else:  # interaction processor
                 # pure latent: mesh->mesh only
-                processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
-                                if et[0] == "mesh" and et[2] == "mesh"}
+                processor_edges = {
+                    et: ei for et, ei in data.edge_index_dict.items()
+                    if et[0] == "mesh" and et[2] == "mesh"
+                }
 
                 # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
                 step_features = encoded_features.copy()
