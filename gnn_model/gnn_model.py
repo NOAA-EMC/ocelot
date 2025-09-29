@@ -20,6 +20,8 @@ from torch_geometric.data import HeteroData
 from typing import Dict, Tuple, List
 from torch_geometric.utils import scatter
 from loss import weighted_huber_loss
+from processor_transformer import SlidingWindowTransformerProcessor
+from attn_bipartite import BipartiteGAT
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -58,6 +60,19 @@ class GNNLightning(pl.LightningModule):
         max_rollout_steps=1,
         rollout_schedule="step",
         feature_stats=None,
+        processor_type: str = "interaction",
+        processor_window: int = 4,
+        processor_depth: int = 2,
+        processor_heads: int = 4,
+        processor_dropout: float = 0.0,
+        encoder_type: str = "interaction",
+        decoder_type: str = "interaction",
+        encoder_heads: int = 4,
+        decoder_heads: int = 4,
+        encoder_layers: int = 2,
+        decoder_layers: int = 2,
+        encoder_dropout: float = 0.0,
+        decoder_dropout: float = 0.0,
         **kwargs,
     ):
         """
@@ -134,23 +149,51 @@ class GNNLightning(pl.LightningModule):
 
                 # Encoder GNN (obs -> mesh)
                 edge_type_tuple_enc = (node_type_input, "to", "mesh")
-                self.observation_encoders[self._edge_key(edge_type_tuple_enc)] = InteractionNet(
-                    edge_index=None,
-                    send_dim=hidden_dim,
-                    rec_dim=hidden_dim,
-                    hidden_layers=hidden_layers,
-                    update_edges=False,
-                )
+                enc_key = self._edge_key(edge_type_tuple_enc)
+
+                if encoder_type == "gat":
+                    enc_edge_dim = hidden_dim   # <- match the zeros you already pass in forward
+                    self.observation_encoders[enc_key] = BipartiteGAT(
+                        send_dim=hidden_dim,
+                        rec_dim=hidden_dim,
+                        hidden_dim=hidden_dim,
+                        layers=encoder_layers,
+                        heads=encoder_heads,
+                        dropout=encoder_dropout,
+                        edge_dim=enc_edge_dim,   # <- use edge_attr exactly like InteractionNet path
+                    )
+                else:
+                    self.observation_encoders[enc_key] = InteractionNet(
+                        edge_index=None,
+                        send_dim=hidden_dim,
+                        rec_dim=hidden_dim,
+                        hidden_layers=hidden_layers,
+                        update_edges=False,
+                    )
 
                 # Decoder GNN (mesh -> target)
                 edge_type_tuple_dec = ("mesh", "to", node_type_target)
-                self.observation_decoders[self._edge_key(edge_type_tuple_dec)] = InteractionNet(
-                    edge_index=None,
-                    send_dim=hidden_dim,
-                    rec_dim=hidden_dim,
-                    hidden_layers=hidden_layers,
-                    update_edges=False,
-                )
+                dec_key = self._edge_key(edge_type_tuple_dec)
+
+                if decoder_type == "gat":
+                    dec_edge_dim = hidden_dim   # <- same idea for decoder
+                    self.observation_decoders[dec_key] = BipartiteGAT(
+                        send_dim=hidden_dim,
+                        rec_dim=hidden_dim,
+                        hidden_dim=hidden_dim,
+                        layers=decoder_layers,
+                        heads=decoder_heads,
+                        dropout=decoder_dropout,
+                        edge_dim=dec_edge_dim,
+                    )
+                else:
+                    self.observation_decoders[dec_key] = InteractionNet(
+                        edge_index=None,
+                        send_dim=hidden_dim,
+                        rec_dim=hidden_dim,
+                        hidden_layers=hidden_layers,
+                        update_edges=False,
+                    )
 
                 # Initial MLP to project raw features to hidden_dim
                 self.observation_embedders[node_type_input] = make_mlp([input_dim] + self.mlp_blueprint_end)
@@ -175,6 +218,23 @@ class GNNLightning(pl.LightningModule):
             edge_types=edge_types,
             num_message_passing_steps=num_layers,
         )
+
+        # --- wire processor choice ---
+        self.processor_type = processor_type  # "interaction" | "sliding_transformer"
+
+        if self.processor_type == "sliding_transformer":
+            self.swt = SlidingWindowTransformerProcessor(
+                hidden_dim=self.hidden_dim,
+                window=processor_window,
+                depth=processor_depth,
+                num_heads=processor_heads,
+                dropout=processor_dropout,
+                use_causal_mask=True,
+            )
+        elif self.processor_type == "interaction":
+            pass  # already built self.processor above
+        else:
+            raise ValueError(f"Unknown processor_type: {processor_type!r}")
 
         def _as_f32(x):
             import torch
@@ -387,6 +447,11 @@ class GNNLightning(pl.LightningModule):
                 encoder = self.observation_encoders[self._edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
+                use_edge_attr = getattr(encoder, "expects_edge_attr", False)  # set on init, see below
+                edge_rep = None
+                if use_edge_attr:
+                    edge_rep = data[edge_type].edge_attr if "edge_attr" in data[edge_type] else None
+
                 # --- Debugging ---
                 self.debug(f"\n[ENC] edge type: {edge_type}")
                 self.debug(f"  send_rep (obs) {obs_features.shape} | rec_rep (mesh) {encoded_mesh_features.shape}")
@@ -506,23 +571,24 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         # LATENT ROLLOUT LOOP: Sequential processor → decoder steps
         # --------------------------------------------------------------------
+        if self.processor_type == "sliding_transformer":
+            self.swt.reset()
+
         for step in range(num_latent_steps):
             self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
+            # --- PROCESS: evolve mesh one step ---
+            if self.processor_type == "sliding_transformer":
+                current_mesh_features = self.swt(current_mesh_features)
+            else:  # interaction processor
+                # pure latent: mesh->mesh only
+                processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
+                                if et[0] == "mesh" and et[2] == "mesh"}
 
-            # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
-            step_features = encoded_features.copy()
-            step_features["mesh"] = current_mesh_features
-
-            # Create processor-only edge dict (no target edges)
-            processor_edges = {}
-            for edge_type, edge_index in data.edge_index_dict.items():
-                src_type, _, dst_type = edge_type
-                if dst_type == "mesh" or (src_type == "mesh" and dst_type == "mesh"):
-                    processor_edges[edge_type] = edge_index
-
-            # processed_features = self.processor(step_features, data.edge_index_dict)
-            processed_features = self.processor(step_features, processor_edges)
-            current_mesh_features = processed_features["mesh"]  # Update for next step
+                # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
+                step_features = encoded_features.copy()
+                step_features["mesh"] = current_mesh_features
+                processed = self.processor(step_features, processor_edges)
+                current_mesh_features = processed["mesh"]
 
             self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
 

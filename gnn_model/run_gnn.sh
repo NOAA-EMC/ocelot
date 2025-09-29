@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 08:00:00
+#SBATCH -t 00:30:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -23,8 +23,8 @@ conda activate gnn-env
 # export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
 
 # Debug + performance
-export NCCL_DEBUG=INFO
-export NCCL_DEBUG_SUBSYS=INIT,NET
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=INIT,NET
 export TORCH_NCCL_BLOCKING_WAIT=1          # explicit
 export NCCL_SHM_DISABLE=1                  # avoid shm edge cases
 export NCCL_NET_GDR_LEVEL=PHB              # conservative GPUDirect setting
