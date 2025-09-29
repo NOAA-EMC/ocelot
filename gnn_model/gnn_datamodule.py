@@ -86,13 +86,13 @@ class GNNDataModule(pl.LightningDataModule):
                     src = inst_cfg.get("source", "zarr")
 
                     if src == "zarr":
-                        zarr_dir = inst_cfg.get("zarr_dir")  # full path override (absolute or relative)
+                        zarr_dir = inst_cfg.get("zarr_dir")
                         if zarr_dir:
                             zarr_path = zarr_dir
                         else:
-                            zname = inst_cfg.get("zarr_name", inst_name)  # basename or basename.zarr
+                            zname = inst_cfg.get("zarr_name", inst_name)
                             if not zname.endswith(".zarr"):
-                                zname += "_2022.zarr"
+                                zname += ".zarr"
                             zarr_path = os.path.join(self.hparams.data_path, zname)
 
                         if not os.path.isdir(zarr_path):
@@ -134,7 +134,7 @@ class GNNDataModule(pl.LightningDataModule):
             dist.barrier()
 
         # MODIFIED: Pass latent_step_hours and window_size parameters
-        print(f"[MK]start: {self.hparams.start_date}; end: {self.hparams.end_date}")
+        print(f"start: {self.hparams.start_date}; end: {self.hparams.end_date}")
         self.data_summary = organize_bins_times(
             self.z,
             self.hparams.start_date,
@@ -145,7 +145,7 @@ class GNNDataModule(pl.LightningDataModule):
             latent_step_hours=self.hparams.latent_step_hours,
         )
         self.all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
-        print(f"[MK] all bin names: {self.all_bin_names}")
+        print(f"all bin names: {self.all_bin_names}")
 
         if stage == "fit" or stage is None:
             self.train_bin_names = self.all_bin_names

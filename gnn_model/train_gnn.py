@@ -93,8 +93,12 @@ def main():
     train_days = int(total_days * TRAIN_VAL_SPLIT_RATIO)
 
     TRAIN_START_DATE = FULL_START_DATE
-    TRAIN_END_DATE = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=train_days)).strftime("%Y-%m-%d")
-    VAL_START_DATE = (pd.to_datetime(TRAIN_END_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")  # starting the day after train_end_date
+    TRAIN_END_DATE = (
+        pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=train_days)
+    ).strftime("%Y-%m-%d")
+    VAL_START_DATE = (
+        pd.to_datetime(TRAIN_END_DATE) + pd.Timedelta(days=1)
+    ).strftime("%Y-%m-%d")  # starting the day after train_end_date
     VAL_END_DATE = FULL_END_DATE
 
     print(f"Training period: {TRAIN_START_DATE} to {TRAIN_END_DATE}")
@@ -133,6 +137,21 @@ def main():
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
         feature_stats=feature_stats,
+        # Model options
+        processor_type="sliding_transformer",           # or "sliding_transformer"
+        processor_window=4,                     # 12h / 3h = 4
+        processor_depth=2,
+        processor_heads=4,
+        processor_dropout=0.0,
+        # Encoder/decoder choices
+        encoder_type="gat",    # or "gat"
+        decoder_type="gat",    # or "gat"
+        encoder_layers=2,
+        decoder_layers=2,
+        encoder_heads=4,
+        decoder_heads=4,
+        encoder_dropout=0.0,
+        decoder_dropout=0.0,
     )
 
     data_module = GNNDataModule(
