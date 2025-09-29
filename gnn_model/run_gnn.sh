@@ -1,19 +1,22 @@
-#!/bin/bash -l 
+#!/bin/bash -l
 #SBATCH --exclude=u22g09,u22g08,u22g10
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
-#SBATCH -q gpuwf
+#SBATCH -q gpu
 #SBATCH --gres=gpu:h100:2
 #SBATCH -J gnn_train
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 04:00:00
+#SBATCH -t 00:30:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 
+echo "Running on H100 nodes..."
+echo "Node: $(hostname)"
+echo "Architecture: $(uname -m)"
 
 # Load Conda environment
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
@@ -23,8 +26,8 @@ conda activate gnn-env
 # export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
 
 # Debug + performance
-export NCCL_DEBUG=INFO
-export NCCL_DEBUG_SUBSYS=INIT,NET
+# export NCCL_DEBUG=INFO
+# export NCCL_DEBUG_SUBSYS=INIT,NET
 export TORCH_NCCL_BLOCKING_WAIT=1          # explicit
 export NCCL_SHM_DISABLE=1                  # avoid shm edge cases
 export NCCL_NET_GDR_LEVEL=PHB              # conservative GPUDirect setting
@@ -36,6 +39,11 @@ export NCCL_IB_DISABLE=0
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_P2P_LEVEL=NVL
 export PYTHONFAULTHANDLER=1
+
+# Fix distributed timeout issues
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600    # 1 hour timeout
+export TORCH_NCCL_DESYNC_DEBUG=1                # Better error reporting  
+export NCCL_TIMEOUT=3600                        # NCCL timeout 1 hour
 export TORCH_DISTRIBUTED_DEBUG=OFF # INFO
 # export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -54,4 +62,3 @@ nvidia-smi
 # Resume training from the latest checkpoint
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last.ckpt
-

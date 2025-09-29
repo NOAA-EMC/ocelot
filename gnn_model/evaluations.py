@@ -66,15 +66,45 @@ def plot_ocelot_target_diff(
             print(f"Warning: Missing columns for '{fname}'. Skipping.")
             continue
 
-        # valid rows
+        # valid rows - include mask checking for QC-failed observations
         t = _np(df[true_col])
         p = _np(df[pred_col])
         lon = _np(df["lon"])
         lat = _np(df["lat"])
+
+        # Start with basic finite checks
         valid = np.isfinite(t) & np.isfinite(p) & np.isfinite(lon) & np.isfinite(lat)
+
+        # Check for mask columns (QC validity masks)
+        mask_col = f"mask_{fname}"
+        if mask_col in df.columns:
+            mask = df[mask_col].fillna(False).astype(bool).to_numpy()
+            valid &= mask
+            print(f"  Using QC mask for {fname}: {mask.sum()}/{len(mask)} valid observations")
+
+        # Additional checks for surface observations to exclude extreme/sentinel values
+        if instrument_name == "surface_obs":
+            # Exclude obvious sentinel/fill values that might have passed through
+            if fname == "airTemperature":
+                valid &= (t >= -80) & (t <= 60) & (p >= -80) & (p <= 60)
+            elif fname == "airPressure":
+                valid &= (t >= 300) & (t <= 1200) & (p >= 300) & (p <= 1200)
+            elif fname == "dewPointTemperature":
+                valid &= (t >= -100) & (t <= 40) & (p >= -100) & (p <= 40)
+            elif fname == "relativeHumidity":
+                valid &= (t >= 0) & (t <= 100) & (p >= 0) & (p <= 100)
+            elif fname in ["wind_u", "wind_v"]:
+                valid &= (np.abs(t) <= 75) & (np.abs(p) <= 75)
+
         if not np.any(valid):
-            print(f"Info: No valid rows for '{fname}'. Skipping.")
+            print(f"Info: No valid rows for '{fname}' after QC filtering. Skipping.")
             continue
+
+        # Apply validity filter and report filtering stats
+        total_obs = len(t)
+        valid_obs = valid.sum()
+        filtered_obs = total_obs - valid_obs
+        print(f"  {fname}: {valid_obs}/{total_obs} observations retained ({filtered_obs} filtered by QC)")
 
         t, p, lon, lat = t[valid], p[valid], lon[valid], lat[valid]
         diff = p - t
@@ -405,7 +435,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 99
+    EPOCH_TO_PLOT = 199
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 

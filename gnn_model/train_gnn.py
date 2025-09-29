@@ -27,7 +27,7 @@ torch.set_float32_matmul_precision("medium")
 
 @timing_resource_decorator
 def main():
-    # Corrected print statements for style
+    # Basic environment prints
     print(f"Hostname: {socket.gethostname()}")
     print(f"  SLURM_PROCID: {os.environ.get('SLURM_PROCID')}")
     print(f"  SLURM_LOCALID: {os.environ.get('SLURM_LOCALID')}")
@@ -53,16 +53,30 @@ def main():
         action="store_true",
         help="Resume from the most recent checkpoint found",
     )
+    # Debug mode arguments
+    parser.add_argument("--debug_mode", action="store_true", help="Enable debug mode with minimal training")
+    parser.add_argument("--max_epochs", type=int, default=None, help="Override max epochs")
+    parser.add_argument("--limit_train_batches", type=int, default=None, help="Limit training batches per epoch")
+    parser.add_argument("--limit_val_batches", type=int, default=None, help="Limit validation batches per epoch")
+    parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
+    parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
 
+    # Use random seed for better diversity with year-long data
+    import random
+    import numpy as np
+    # random_seed = random.randint(1, 1000000)
+    # print(f"Using random seed: {random_seed}")
+    # pl.seed_everything(random_seed, workers=True)
+
+    # For reproducible debugging, uncomment the line below:
     pl.seed_everything(42, workers=True)
 
     # === DATA & MODEL CONFIGURATION ===
     cfg_path = "configs/observation_config.yaml"
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
-    # grab top-level pipeline from the same YAML
     with open(cfg_path, "r") as f:
         _raw_cfg = yaml.safe_load(f)
     pipeline_cfg = _raw_cfg.get("pipeline", {})
@@ -77,40 +91,54 @@ def main():
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
     FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
-    TRAIN_WINDOW_DAYS = 14  # The size of the training window for each epoch
-    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
+    TRAIN_WINDOW_DAYS = 7  # The size of the training window for each epoch
+    VALID_WINDOW_DAYS = 2   # The size of the validation window for each epoch
+    WINDOW_DAYS = TRAIN_WINDOW_DAYS
 
-    # The initial start/end dates for the datamodule are the
-    # first window of the full period. The callback will change this on subsequent epochs.
-    WINDOW_DAYS = 14  # The size of the window for each epoch
-    initial_start_date = FULL_START_DATE
-    initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=WINDOW_DAYS)).strftime("%Y-%m-%d")
-
+    # --- Compute train/val split BEFORE using VAL_START_DATE ---
     TRAIN_VAL_SPLIT_RATIO = 0.9  # 90% train, 10% val
-
-    # Calculate total days and split
     total_days = (pd.to_datetime(FULL_END_DATE) - pd.to_datetime(FULL_START_DATE)).days
     train_days = int(total_days * TRAIN_VAL_SPLIT_RATIO)
 
     TRAIN_START_DATE = FULL_START_DATE
     TRAIN_END_DATE = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=train_days)).strftime("%Y-%m-%d")
-    VAL_START_DATE = (pd.to_datetime(TRAIN_END_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")  # starting the day after train_end_date
+    VAL_START_DATE = (pd.to_datetime(TRAIN_END_DATE) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     VAL_END_DATE = FULL_END_DATE
 
-    print(f"Training period: {TRAIN_START_DATE} to {TRAIN_END_DATE}")
-    print(f"Validation period: {VAL_START_DATE} to {VAL_END_DATE}")
+    print(f"Training period:  {TRAIN_START_DATE} -> {TRAIN_END_DATE}")
+    print(f"Validation period:{VAL_START_DATE} -> {VAL_END_DATE}")
+
+    # --- Initial windows for epoch 0 (DM uses these before callbacks resample) ---
+    initial_start_date = FULL_START_DATE
+    initial_end_date = (pd.to_datetime(FULL_START_DATE) + pd.Timedelta(days=TRAIN_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    initial_val_start_date = VAL_START_DATE
+    initial_val_end_date = (pd.to_datetime(VAL_START_DATE) + pd.Timedelta(days=VALID_WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    # --- Sanity checks ---
+    ts = pd.to_datetime
+    assert ts(FULL_START_DATE) < ts(FULL_END_DATE), "FULL date range must be positive"
+    assert ts(TRAIN_START_DATE) <= ts(TRAIN_END_DATE), "Train range invalid"
+    assert ts(VAL_START_DATE) <= ts(VAL_END_DATE), "Val range invalid"
+    # Ensure no overlap between train and val pools
+    assert ts(VAL_START_DATE) >= ts(TRAIN_END_DATE) + pd.Timedelta(days=1), "Train/Val pools should not overlap"
+    # Ensure epoch-0 windows are within their pools
+    assert ts(initial_start_date) >= ts(TRAIN_START_DATE) and ts(initial_end_date) <= ts(TRAIN_END_DATE), "Initial train window outside pool"
+    assert ts(initial_val_start_date) >= ts(VAL_START_DATE) and ts(initial_val_end_date) <= ts(VAL_END_DATE), "Initial val window outside pool"
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
     hidden_dim = 64
     num_layers = 8
     lr = 0.001
-    max_epochs = 100
+    max_epochs = 200
     batch_size = 1
-    # ----------------------------------------------------
 
+    # Rollout settings
     max_rollout_steps = 1
     rollout_schedule = "fixed"
+
+    # Latent rollout parameters (enable by setting integer hours)
+    latent_step_hours = 3
 
     start_time = time.time()
 
@@ -127,6 +155,23 @@ def main():
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
         feature_stats=feature_stats,
+        # Model options
+        processor_type="interaction",   # sliding_transformer or "interaction"
+        processor_window=4,                     # 12h / 3h = 4
+        processor_depth=4,
+        processor_heads=4,
+        processor_dropout=0.1,  # Add dropout for regularization
+        # Dropout settings
+        node_dropout=0.03,      # Slight node dropout for Phase 2 regularization
+        # Encoder/decoder choices
+        encoder_type="interaction",    # gat or "interaction"
+        decoder_type="interaction",    # or "interaction"
+        encoder_layers=2,
+        decoder_layers=2,
+        encoder_heads=4,
+        decoder_heads=4,
+        encoder_dropout=0.1,  # Add dropout for regularization
+        decoder_dropout=0.1,  # Add dropout for regularization
     )
 
     data_module = GNNDataModule(
@@ -139,56 +184,50 @@ def main():
         num_neighbors=3,
         feature_stats=feature_stats,
         pipeline=pipeline_cfg,
+        window_size="12h",
+        latent_step_hours=latent_step_hours,
+        train_val_split_ratio=TRAIN_VAL_SPLIT_RATIO,  # Pass the split ratio from training script
+        # ensure epoch 0 validation uses the val split, not the train slice
+        train_start=initial_start_date,
+        train_end=initial_end_date,
+        val_start=initial_val_start_date,
+        val_end=initial_val_end_date,
     )
 
-    is_main_process = os.environ.get("SLURM_PROCID", "0") == "0"
-
-    if is_main_process:
-        print("--- Main process is preparing data... ---")
-        data_module.setup("fit")
-
-    # All other processes will wait here until the main process is done
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
-
-    if not is_main_process:
-        print(f"--- Rank {int(os.environ.get('SLURM_PROCID'))} is loading data prepared by main process... ---")
-        data_module.setup("fit")
-
+    # Let Lightning handle setup() per rank at the correct time
     setup_end_time = time.time()
-    print(f"Initial setup time: {(setup_end_time - start_time) / 60:.2f} minutes")
+    print(f"Initial setup time (pre-trainer): {(setup_end_time - start_time) / 60:.2f} minutes")
 
     logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
 
-    callbacks = []
-    # Validation Checkpoint: save the BEST model based on validation loss
-    callbacks.append(
+    callbacks = [
         ModelCheckpoint(
             dirpath="checkpoints",
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
-            save_top_k=1,  # Saves only the best one
+            save_top_k=1,
             monitor="val_loss",
             mode="min",
             save_last=True,
-        )
-    )
-    # Early stopping
-    callbacks.append(
+            every_n_epochs=2,        # Save less frequently to avoid timeout
+            save_on_train_epoch_end=False,  # Only save after validation
+        ),
         EarlyStopping(
             monitor="val_loss",
-            patience=10,
+            patience=10,             # Increase patience for full year training
             mode="min",
+            min_delta=1e-5,          # Smaller threshold for year-long convergence
             verbose=True,
-        )
-    )
+        ),
+    ]
 
     strategy = DDPStrategy(
         process_group_backend="nccl",
         broadcast_buffers=False,
-        find_unused_parameters=True,
+        find_unused_parameters=False,  # Changed from True - improves performance
         gradient_as_bucket_view=True,
-        timeout=timedelta(minutes=15),
+        timeout=timedelta(hours=1),    # Increase timeout to 1 hour for checkpoints
     )
+
     trainer_kwargs = {
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
@@ -201,6 +240,8 @@ def main():
         "num_sanity_val_steps": 0,
         "gradient_clip_val": 0.5,
         "enable_progress_bar": False,
+        "reload_dataloaders_every_n_epochs": 1,   # IMPORTANT for resampling
+        "check_val_every_n_epoch": 1,
     }
 
     if args.sampling_mode == "random":
@@ -213,10 +254,12 @@ def main():
                 val_end_date=VAL_END_DATE,
                 train_window_days=TRAIN_WINDOW_DAYS,
                 val_window_days=VALID_WINDOW_DAYS,
+                mode="random",        # or "sequential"
+                resample_val=False,  # Validation for reliable ES/checkpointing
+                seq_stride_days=1,    # only used if mode="sequential"
             )
         )
-
-    elif args.sampling_mode == "sequential":
+    else:
         print("Using SEQUENTIAL sampling mode.")
         callbacks.append(
             SequentialDataCallback(
@@ -227,7 +270,6 @@ def main():
         )
 
     trainer_kwargs["callbacks"] = callbacks
-    trainer_kwargs["check_val_every_n_epoch"] = 1
     trainer = pl.Trainer(**trainer_kwargs)
 
     # === TRAINING ===
@@ -242,7 +284,7 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    # === Checkpoint ===
+    # === Checkpoint resume ===
     resume_path = None
     if args.resume_from_latest:
         resume_path = find_latest_checkpoint("checkpoints")
