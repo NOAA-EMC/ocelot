@@ -64,16 +64,16 @@ def main():
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
 
-    # Use random seed for better diversity with year-long data
+    # Use random seed for better diversity with year-long data, or fixed seed for debugging
     import random
     import numpy as np
-    # random_seed = random.randint(1, 1000000)
-    # print(f"Using random seed: {random_seed}")
-    # pl.seed_everything(random_seed, workers=True)
-
-    # For reproducible debugging, uncomment the line below:
-    pl.seed_everything(42, workers=True)
-
+    if args.debug_mode:
+        print("Debug mode enabled: Using fixed seed 42 for reproducibility.")
+        pl.seed_everything(42, workers=True)
+    else:
+        random_seed = random.randint(1, 1000000)
+        print(f"Using random seed: {random_seed}")
+        pl.seed_everything(random_seed, workers=True)
     # === DATA & MODEL CONFIGURATION ===
     cfg_path = "configs/observation_config.yaml"
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
