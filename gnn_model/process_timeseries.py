@@ -287,8 +287,19 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 del data_summary[bin_name][obs_type][inst_name]
                 continue
 
-            # --- Config & feature ordering ---
+            # --- Level selection ---
             obs_cfg = observation_config[obs_type][inst_name]
+            level_selection = obs_cfg.get('level_selection')
+            if level_selection:
+                level_variable = z[level_selection['filter_col']][input_idx]
+                level_mask = np.isin(level_variable, level_selection['levels'])
+                input_idx &= level_mask
+                level_variable = z[level_selection['filter_col']][target_idx]
+                level_mask = np.isin(level_variable, level_selection['levels'])
+                target_idx &= level_mask
+
+            # --- Config & feature ordering ---
+            
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
             feat_keys = observation_config[obs_type][inst_name]["features"]
             meta_keys = observation_config[obs_type][inst_name]["metadata"]
