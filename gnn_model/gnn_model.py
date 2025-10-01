@@ -235,6 +235,23 @@ class GNNLightning(pl.LightningModule):
             num_message_passing_steps=num_layers,
         )
 
+        # --- wire processor choice ---
+        self.processor_type = processor_type  # "interaction" | "sliding_transformer"
+
+        if self.processor_type == "sliding_transformer":
+            self.swt = SlidingWindowTransformerProcessor(
+                hidden_dim=self.hidden_dim,
+                window=processor_window,
+                depth=processor_depth,
+                num_heads=processor_heads,
+                dropout=processor_dropout,
+                use_causal_mask=True,
+            )
+        elif self.processor_type == "interaction":
+            pass  # already built self.processor above
+        else:
+            raise ValueError(f"Unknown processor_type: {processor_type!r}")
+
         def _as_f32(x):
             import torch
 
