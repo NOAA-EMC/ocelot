@@ -1,0 +1,179 @@
+pipeline:
+  subsample:
+    seed: 12345
+    satellite:         
+      _default: 40     # default for any unspecified instrument
+      atms: 40         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
+      avhrr: 100
+      amsua: 30   
+    conventional:
+      _default: 10
+      surface_obs: 10
+      snow_cover: 1        # keep all (stride 1)
+    mode:
+      satellite:
+        _default: random  # "stride" | "random" | "none"
+        atms: random
+        amsua: random
+        avhrr: random
+      conventional:
+        _default: random
+        snow_cover: none    # ignore subsampling for snow_cover
+
+
+instrument_weights:
+  atms: 1.0
+  amsua: 1.0
+  avhrr: 1.0
+  surface_obs: 1.0
+  snow_cover: 1.0
+
+channel_weights:
+  atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
+  amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  avhrr: [1.0, 1.0, 1.0]
+  surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
+  snow_cover: [1.0]            # snowDepth
+
+observation_config:
+  satellite:
+    atms:
+      sat_ids: [224, 225]
+      features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
+                 bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
+                 bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15,
+                 bt_channel_16, bt_channel_17, bt_channel_18, bt_channel_19, bt_channel_20,
+                 bt_channel_21, bt_channel_22]
+      metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+      input_dim: 32
+      target_dim: 22
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    amsua:
+      sat_ids: [3, 5, 206, 209, 223]
+      features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
+                bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
+                bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15]
+      metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+      input_dim: 25
+      target_dim: 15
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    avhrr:
+      sat_ids: [3, 5, 209, 223]
+      features: [brightnessTemperature_ch_50, brightnessTemperature_ch_51, brightnessTemperature_ch_52]
+      metadata: [satelliteZenithAngle, solarZenithAngle]
+      input_dim: 12
+      target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+  conventional:
+    surface_obs:
+      source: zarr
+      zarr_name: raw_surface_obs
+      features: [airPressure, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
+      metadata: [height]
+      input_dim: 14                      # 7 (geo/time enc) + 1 meta + 6 feats
+      target_dim: 6
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        airPressure:
+          range: [300, 1200]
+          qm_flag_col: airPressureQuality_event_1
+          keep: [1,2,4,9]
+        airTemperature:
+          range: [-80, 60]
+          qm_flag_col: airTemperatureQuality_event_1
+          keep: [1,2,4,9]
+        dewPointTemperature:
+          range: [-100, 40]
+          qm_flag_col: dewPointTemperatureQuality_event_1
+          keep: [1,2,4,9]
+        relativeHumidity:
+          range: [0, 100]
+        windSpeed:
+          range: [0, 75]
+        windDirection:
+          range: [0, 360]   # degrees
+
+      qc_relations:                   # cross-variable checks
+        dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)
+        max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
+        rh_from_td_consistency_pct: 25  # %pts; invalidate RH if |RH - RH*| > 25
+        pressure_vs_height:
+          enable: true
+          tolerance_hpa: 100          # |p - p_exp(height)| ≤ 100 hPa
+          scale_height_m: 8000
+
+    snow_cover:
+      source: zarr
+      zarr_name: snow_cover
+      features: [snowDepth]
+      metadata: [height, airTemperature]
+      qc_filters:
+        snowDepth:
+          range: [0, 6.5]
+      input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
+      target_dim: 1
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+feature_stats:  # Statistics for the features used in the model
+  surface_obs:
+    airPressure: [977.32, 57.51]
+    airTemperature: [17.0, 9.96]
+    dewPointTemperature: [10.39, 9.53]
+    relativeHumidity: [71.89, 20.25]
+    wind_u: [0.08, 4.17]
+    wind_v: [0.25, 3.37]
+    latitude: [30.06, 28.54]
+    longitude: [-22.73, 84.78]
+  snow_cover:
+    snowDepth: [0.38, 0.68]
+  atms:
+    bt_channel_1: [259.20, 33.30]
+    bt_channel_2: [254.39, 39.29]
+    bt_channel_3: [266.43, 18.62]
+    bt_channel_4: [267.84, 11.89]
+    bt_channel_5: [264.40, 7.48]
+    bt_channel_6: [252.46, 6.54]
+    bt_channel_7: [236.02, 5.08]
+    bt_channel_8: [225.50, 3.65]
+    bt_channel_9: [218.70, 3.33]
+    bt_channel_10: [214.40, 4.22]
+    bt_channel_11: [217.72, 3.05]
+    bt_channel_12: [225.02, 2.63]
+    bt_channel_13: [234.56, 3.12]
+    bt_channel_14: [246.21, 3.41]
+    bt_channel_15: [255.89, 3.24]
+    bt_channel_16: [269.68, 20.06]
+    bt_channel_17: [276.82, 13.88]
+    bt_channel_18: [270.94, 11.07]
+    bt_channel_19: [265.76, 9.77]
+    bt_channel_20: [260.43, 8.85]
+    bt_channel_21: [253.80, 8.09]
+    bt_channel_22: [247.68, 7.61]
+  amsua:
+    bt_channel_1: [210.44, 42.44]
+    bt_channel_2: [202.56, 43.82]
+    bt_channel_3: [240.98, 21.74]
+    bt_channel_4: [253.28, 14.63]
+    bt_channel_5: [246.12, 11.41]
+    bt_channel_6: [231.76, 7.61]
+    bt_channel_7: [222.96, 5.97]
+    bt_channel_8: [216.95, 6.56]
+    bt_channel_9: [211.74, 8.73]
+    bt_channel_10: [214.12, 8.38]
+    bt_channel_11: [219.24, 9.86]
+    bt_channel_12: [227.0, 12.03]
+    bt_channel_13: [237.14, 13.31]
+    bt_channel_14: [247.58, 12.83]
+    bt_channel_15: [239.84, 28.86]
+  avhrr:
+    brightnessTemperature_ch_50: [284.58, 17.52]
+    brightnessTemperature_ch_51: [283.07, 15.83]
+    brightnessTemperature_ch_52: [281.21, 15.2]
