@@ -9,11 +9,14 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 00:30:00
+#SBATCH -t 01:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 
+echo "Running on H100 nodes..."
+echo "Node: $(hostname)"
+echo "Architecture: $(uname -m)"
 
 # Load Conda environment
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
@@ -36,6 +39,11 @@ export NCCL_IB_DISABLE=0
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_P2P_LEVEL=NVL
 export PYTHONFAULTHANDLER=1
+
+# Fix distributed timeout issues
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600    # 1 hour timeout
+export TORCH_NCCL_DESYNC_DEBUG=1                # Better error reporting  
+export NCCL_TIMEOUT=3600                        # NCCL timeout 1 hour
 export TORCH_DISTRIBUTED_DEBUG=OFF # INFO
 # export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

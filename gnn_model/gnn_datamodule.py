@@ -1,16 +1,16 @@
 import os
+import importlib
 import lightning.pytorch as pl
 import pandas as pd
 import torch
 import torch.distributed as dist
 import zarr
-import importlib
-from nnja_adapter import build_zlike_from_df
+from zarr.storage import LRUStoreCache
 from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
-from zarr.storage import LRUStoreCache
 
+from nnja_adapter import build_zlike_from_df
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
 
@@ -19,6 +19,9 @@ def _t32(x):
     return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
 
 
+# -------------------------
+# Dataset per bin
+# -------------------------
 class BinDataset(Dataset):
     def __init__(
         self,
@@ -28,13 +31,15 @@ class BinDataset(Dataset):
         create_graph_fn,
         observation_config,
         feature_stats=None,
+        tag="TRAIN",
     ):
-        self.bin_names = bin_names
+        self.bin_names = list(bin_names) if bin_names is not None else []
         self.data_summary = data_summary
         self.z = zarr_store
         self.create_graph_fn = create_graph_fn
         self.observation_config = observation_config
         self.feature_stats = feature_stats
+        self.tag = tag
 
     def __len__(self):
         return len(self.bin_names)
@@ -42,17 +47,27 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(f"[Rank {rank}] Fetching {bin_name}...")
+        print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
-            bin_data = extract_features(self.z, self.data_summary, bin_name, self.observation_config, feature_stats=self.feature_stats)[bin_name]
+            out = extract_features(
+                self.z,
+                self.data_summary,
+                bin_name,
+                self.observation_config,
+                feature_stats=self.feature_stats,
+            )
+            bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
             graph_data.bin_name = bin_name
             return graph_data
         except Exception as e:
-            print(f"[Rank {rank}] Error processing bin {bin_name}: {e}")
+            print(f"[Rank {rank}] [{self.tag}] ERROR processing {bin_name}: {e}")
             raise
 
 
+# -------------------------
+# DataModule
+# -------------------------
 class GNNDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -64,20 +79,69 @@ class GNNDataModule(pl.LightningDataModule):
         batch_size=1,
         num_neighbors=3,
         feature_stats=None,
-        latent_step_hours=None,  # NEW: Added latent rollout parameter
-        window_size="12h",       # NEW: Added window_size parameter
+        latent_step_hours=None,   # latent rollout support
+        window_size="12h",        # binning window
+        train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
+
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
+
+        # Zarr handles (stable across window changes)
         self.z = None
-        self.data_summary = None
-        self.train_bin_names = None
-        self.val_bin_names = None
+
+        # Separate train/val summaries + bin name lists
+        self.train_data_summary = None
+        self.val_data_summary = None
+        self.train_bin_names = []
+        self.val_bin_names = []
+
+        # Version counters (for debugging staleness)
+        self._train_version = 0
+        self._val_version = 0
+
+        # If callbacks want separate windows, they will set these:
+        # Default: create non-overlapping train/val split to prevent data leakage
+        # Use split ratio passed from training script for consistency
+        total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        train_days = int(total_days * train_val_split_ratio)
+
+        default_train_start = pd.to_datetime(start_date)
+        default_train_end = default_train_start + pd.Timedelta(days=train_days)
+        default_val_start = default_train_end  # Validation starts where training ends
+        default_val_end = pd.to_datetime(end_date)
+
+        self.hparams.train_start = pd.to_datetime(kwargs.get("train_start", default_train_start))
+        self.hparams.train_end = pd.to_datetime(kwargs.get("train_end", default_train_end))
+        self.hparams.val_start = pd.to_datetime(kwargs.get("val_start", default_val_start))
+        self.hparams.val_end = pd.to_datetime(kwargs.get("val_end", default_val_end))
+
+        # Validate no overlap between train and validation windows to prevent data leakage
+        if self.hparams.train_end > self.hparams.val_start:
+            raise ValueError(
+                f"Data leakage detected! Training window ({self.hparams.train_start} to {self.hparams.train_end}) "
+                f"overlaps with validation window ({self.hparams.val_start} to {self.hparams.val_end}). "
+                f"Ensure train_end <= val_start for proper temporal split."
+            )
+
+        # Log the train/val split for transparency
+        train_days = (self.hparams.train_end - self.hparams.train_start).days
+        val_days = (self.hparams.val_end - self.hparams.val_start).days
+        total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        print(f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days/total_days*100:.1f}%), "
+              f"Val: {val_days} days ({val_days/total_days*100:.1f}%)")
+        print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
+        print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
+
+    # ------------- Setup / Zarr open -------------
 
     def setup(self, stage=None):
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+
+        # Open Zarrs once
         if self.z is None:
             self.z = {}
             for obs_type, instruments in self.hparams.observation_config.items():
@@ -96,30 +160,40 @@ class GNNDataModule(pl.LightningDataModule):
                             zarr_path = os.path.join(self.hparams.data_path, zname)
 
                         if not os.path.isdir(zarr_path):
-                            raise FileNotFoundError(f"Conventional Zarr not found: {zarr_path}")
-                        self.z[obs_type][inst_name] = zarr.open(LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=2e9), mode="r")
-                        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+                            raise FileNotFoundError(f"Zarr not found: {zarr_path}")
+
+                        # Use LRU cache; ensure int for max_size
+                        store = LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=int(2e9))
+                        self.z[obs_type][inst_name] = zarr.open(store, mode="r")
+
                         if rank == 0:
                             print(f"[ZARR] {obs_type}/{inst_name} -> {zarr_path}")
-                            print("  has keys:", list(self.z[obs_type][inst_name].keys())[:12])
+                            try:
+                                print("       keys:", list(self.z[obs_type][inst_name].keys())[:12])
+                            except Exception:
+                                pass
 
-                        # Optional guard to ensure the right file is used for surface_obs
                         if obs_type == "conventional" and inst_name == "surface_obs":
                             if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
                                 print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
 
                     elif src == "nnja":
-                        # Load DataFrame via dotted loader path
                         loader_path = inst_cfg["dataframe_loader"]
                         mod_name, fn_name = loader_path.rsplit(".", 1)
                         load_fn = getattr(importlib.import_module(mod_name), fn_name)
 
-                        # Columns to request = var_map values + coords/time
                         need = list(inst_cfg["var_map"].values())
-                        need += [inst_cfg.get("lat_col", "LAT"), inst_cfg.get("lon_col", "LON"), inst_cfg.get("time_col", "OBS_TIMESTAMP")]
+                        need += [
+                            inst_cfg.get("lat_col", "LAT"),
+                            inst_cfg.get("lon_col", "LON"),
+                            inst_cfg.get("time_col", "OBS_TIMESTAMP"),
+                        ]
 
-                        df = load_fn(start_date=self.hparams.start_date, end_date=self.hparams.end_date, columns=need)
-
+                        df = load_fn(
+                            start_date=self.hparams.start_date,  # initial window used for first setup
+                            end_date=self.hparams.end_date,
+                            columns=need,
+                        )
                         self.z[obs_type][inst_name] = build_zlike_from_df(
                             df,
                             var_map=inst_cfg["var_map"],
@@ -133,41 +207,88 @@ class GNNDataModule(pl.LightningDataModule):
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-        # MODIFIED: Pass latent_step_hours and window_size parameters
-        print(f"start: {self.hparams.start_date}; end: {self.hparams.end_date}")
-        self.data_summary = organize_bins_times(
+        # Build TRAIN and VAL summaries for current windows
+        print(
+            f"[Rank {rank}] [DM.setup stage={stage}] "
+            f"train_window={self.hparams.train_start}..{self.hparams.train_end} | "
+            f"val_window={self.hparams.val_start}..{self.hparams.val_end}"
+        )
+
+        self._rebuild_train_summary()
+        self._rebuild_val_summary()
+
+        if stage in (None, "fit"):
+            # For now we use the full lists produced by organize_bins_times;
+            # callbacks can narrow them by changing windows and triggering reload.
+            pass
+
+    # ------------- Summary (re)builders -------------
+    def _rebuild_train_summary(self):
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        self.train_data_summary = organize_bins_times(
             self.z,
-            self.hparams.start_date,
-            self.hparams.end_date,
+            self.hparams.train_start,
+            self.hparams.train_end,
             self.hparams.observation_config,
             pipeline_cfg=self.hparams.pipeline,
             window_size=self.hparams.window_size,
             latent_step_hours=self.hparams.latent_step_hours,
         )
-        self.all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
-        print(f"all bin names: {self.all_bin_names}")
+        self.train_bin_names = sorted(self.train_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+        print(
+            f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
+            f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
+        )
 
-        if stage == "fit" or stage is None:
-            self.train_bin_names = self.all_bin_names
-            self.val_bin_names = self.all_bin_names
-            pass
+    def _rebuild_val_summary(self):
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        self.val_data_summary = organize_bins_times(
+            self.z,
+            self.hparams.val_start,
+            self.hparams.val_end,
+            self.hparams.observation_config,
+            pipeline_cfg=self.hparams.pipeline,
+            window_size=self.hparams.window_size,
+            latent_step_hours=self.hparams.latent_step_hours,
+        )
+        self.val_bin_names = sorted(self.val_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+        print(
+            f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
+            f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"
+        )
+
+    # ------------- Window setters for callbacks -------------
+    def set_train_window(self, start_dt, end_dt):
+        self.hparams.train_start = pd.to_datetime(start_dt)
+        self.hparams.train_end = pd.to_datetime(end_dt)
+        self._train_version += 1
+        print(f"[DM.set_train_window] v{self._train_version} -> {self.hparams.train_start} .. {self.hparams.train_end}")
+        # Rebuild summary/bin names immediately so the *next* dataloader reload sees fresh objects
+        self._rebuild_train_summary()
+
+    def set_val_window(self, start_dt, end_dt):
+        self.hparams.val_start = pd.to_datetime(start_dt)
+        self.hparams.val_end = pd.to_datetime(end_dt)
+        self._val_version += 1
+        print(f"[DM.set_val_window]   v{self._val_version} -> {self.hparams.val_start} .. {self.hparams.val_end}")
+        self._rebuild_val_summary()
+
+    # ------------- Graph builder -------------
 
     def _create_graph_structure(self, bin_data):
         data = HeteroData()
 
-        # 1. Mesh node features and edges
+        # 1) Mesh nodes and edges
         data["mesh"].x = _t32(self.mesh_structure["mesh_features_torch"][0])
         data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
-        # 2. Processor edges (mesh-to-mesh)
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
         m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
-
         reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
         data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
 
-        # 3. Determine mode from datamodule configuration
+        # 2) Determine mode from datamodule configuration
         is_batch_latent_mode = self.hparams.latent_step_hours is not None
         if is_batch_latent_mode:
             window_hours = int(self.hparams.window_size.replace('h', ''))
@@ -175,7 +296,7 @@ class GNNDataModule(pl.LightningDataModule):
         else:
             num_latent_steps = 1
 
-        # 4. Observation data and mesh connections
+        # 3) Observation data and mesh connections
         # ALL instruments get the same node structure based on detected batch mode
         for obs_type, instruments in self.hparams.observation_config.items():
             for inst_name, inst_cfg in instruments.items():
@@ -379,39 +500,60 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
         data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
 
+    # ------------- DataLoaders -------------
+    def _worker_init(self, worker_id):
+        import numpy as np
+        base_seed = int(torch.initial_seed()) % 2**31
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        print(
+            f"[WorkerInit] rank={rank} worker={worker_id} pid={os.getpid()} seed={base_seed} "
+            f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
+        )
+
     def train_dataloader(self):
-        train_dataset = BinDataset(
+        ds = BinDataset(
             self.train_bin_names,
-            self.data_summary,
+            self.train_data_summary,
             self.z,
             self._create_graph_structure,
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
+            tag="TRAIN",
         )
-        return PyGDataLoader(
-            train_dataset,
-            batch_size=1,
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
             shuffle=True,
             num_workers=4,
             pin_memory=True,
-            persistent_workers=False,
+            persistent_workers=False,   # safer while debugging stale refs
+            worker_init_fn=self._worker_init,
         )
+        print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
+              f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
+        return loader
 
     def val_dataloader(self):
         if not self.val_bin_names:
             return None
-        val_dataset = BinDataset(
+        ds = BinDataset(
             self.val_bin_names,
-            self.data_summary,
+            self.val_data_summary,
             self.z,
             self._create_graph_structure,
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
+            tag="VAL",
         )
-        return PyGDataLoader(
-            val_dataset,
-            batch_size=1,
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
             num_workers=4,
             pin_memory=True,
             persistent_workers=False,
+            worker_init_fn=self._worker_init,
         )
+        print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
+              f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
+        return loader

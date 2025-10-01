@@ -60,13 +60,13 @@ class GNNLightning(pl.LightningModule):
         max_rollout_steps=1,
         rollout_schedule="step",
         feature_stats=None,
-        processor_type: str = "interaction",
+        processor_type: str = "interaction",  # "interaction" | "sliding_transformer"
         processor_window: int = 4,
         processor_depth: int = 2,
         processor_heads: int = 4,
         processor_dropout: float = 0.0,
-        encoder_type: str = "interaction",
-        decoder_type: str = "interaction",
+        encoder_type: str = "interaction",     # "interaction" | "gat"
+        decoder_type: str = "interaction",     # "interaction" | "gat"
         encoder_heads: int = 4,
         decoder_heads: int = 4,
         encoder_layers: int = 2,
@@ -136,6 +136,23 @@ class GNNLightning(pl.LightningModule):
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
+        # --- wire processor choice ---
+        self.processor_type = processor_type  # "interaction" | "sliding_transformer"
+
+        if self.processor_type == "sliding_transformer":
+            self.swt = SlidingWindowTransformerProcessor(
+                hidden_dim=self.hidden_dim,
+                window=processor_window,
+                depth=processor_depth,
+                num_heads=processor_heads,
+                dropout=processor_dropout,
+                use_causal_mask=True,
+            )
+        elif self.processor_type == "interaction":
+            pass  # already built self.processor above
+        else:
+            raise ValueError(f"Unknown processor_type: {processor_type!r}")
+
         for obs_type, instruments in observation_config.items():
             for inst_name, cfg in instruments.items():
                 node_type_input = f"{inst_name}_input"
@@ -170,7 +187,6 @@ class GNNLightning(pl.LightningModule):
                         hidden_layers=hidden_layers,
                         update_edges=False,
                     )
-
                 # Decoder GNN (mesh -> target)
                 edge_type_tuple_dec = ("mesh", "to", node_type_target)
                 dec_key = self._edge_key(edge_type_tuple_dec)
@@ -250,6 +266,12 @@ class GNNLightning(pl.LightningModule):
         self.register_buffer("mesh_edge_index", _as_i64(mesh_edge_index))
         self.register_buffer("mesh_edge_attr", _as_f32(mesh_edge_attr))
 
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        # PyG Data/HeteroData implements .to()
+        if hasattr(batch, "to"):
+            return batch.to(device)
+        return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
     def _normalize_inst_weights(self, weights_in):
         out = {}
         if not weights_in:
@@ -321,17 +343,32 @@ class GNNLightning(pl.LightningModule):
         return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
 
     def on_train_epoch_start(self):
-        if self.trainer.is_global_zero:
+        super().on_train_epoch_start()
+        rank = int(os.environ.get("RANK", "0"))
+
+        # One concise banner (only once on global zero)
+        if getattr(self.trainer, "is_global_zero", True):
             print(f"=== Starting Epoch {self.current_epoch} ===")
 
-        # Call set_epoch only if the distributed group is initialized
-        if is_initialized():
-            train_loaders = self.trainer.train_dataloader
-            if isinstance(train_loaders, DataLoader):
-                train_loaders = [train_loaders]
-            for loader in train_loaders:
-                if hasattr(loader, "sampler") and isinstance(loader.sampler, DistributedSampler):
-                    loader.sampler.set_epoch(self.current_epoch)
+        print(f"[Rank {rank}] === TRAIN EPOCH {self.current_epoch} START ===")
+
+        dm = self.trainer.datamodule
+        train_start = getattr(dm.hparams, "train_start", None)
+        train_end = getattr(dm.hparams, "train_end", None)
+        sum_id = id(getattr(dm, "train_data_summary", None))
+        print(f"[TrainWindow] {train_start} .. {train_end} (sum_id={sum_id})")
+
+        # reset first-batch flag for this epoch
+        self._printed_first_train_batch = False
+
+    def on_validation_epoch_start(self):
+        super().on_validation_epoch_start()
+        rank = int(os.environ.get("RANK", "0"))
+        print(f"\n[Rank {rank}] === VAL EPOCH {self.current_epoch} START ===")
+        dm = self.trainer.datamodule
+        print(f"[ValWindow]   {getattr(dm.hparams, 'val_start', None)} .. {getattr(dm.hparams, 'val_end', None)} "
+              f"(sum_id={id(getattr(dm,'val_data_summary',None))})")
+        self._printed_first_val_batch = False
 
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
         """
@@ -442,7 +479,9 @@ class GNNLightning(pl.LightningModule):
             src_type, _, dst_type = edge_type
             if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
                 obs_features = embedded_features[src_type]
-                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=self.device)
+                # Use device from input data instead of self.device to avoid checkpoint loading issues
+                device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device
+                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=device)
 
                 encoder = self.observation_encoders[self._edge_key(edge_type)]
                 encoder.edge_index = edge_index
@@ -474,7 +513,9 @@ class GNNLightning(pl.LightningModule):
             if node_type not in encoded_features:
                 if node_type in data.node_types:
                     num_nodes = data[node_type].num_nodes
-                    encoded_features[node_type] = torch.zeros(num_nodes, self.hidden_dim, device=self.device)
+                    # Use device from existing encoded features to avoid checkpoint loading issues
+                    reference_device = encoded_mesh_features.device
+                    encoded_features[node_type] = torch.zeros(num_nodes, self.hidden_dim, device=reference_device)
 
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
@@ -508,12 +549,14 @@ class GNNLightning(pl.LightningModule):
         for edge_type, edge_index in data.edge_index_dict.items():
             src_type, _, dst_type = edge_type
             if src_type == "mesh" and dst_type.endswith("_target"):
-                target_features_initial = torch.zeros(data[dst_type].num_nodes, self.hidden_dim, device=self.device)
+                # Use device from processed mesh features to avoid checkpoint loading issues
+                reference_device = mesh_features_processed.device
+                target_features_initial = torch.zeros(data[dst_type].num_nodes, self.hidden_dim, device=reference_device)
 
                 decoder = self.observation_decoders[self._edge_key(edge_type)]
                 decoder.edge_index = edge_index
 
-                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=self.device)
+                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=reference_device)
 
                 decoded_target_features = decoder(
                     send_rep=mesh_features_processed,
@@ -581,10 +624,8 @@ class GNNLightning(pl.LightningModule):
                 current_mesh_features = self.swt(current_mesh_features)
             else:  # interaction processor
                 # pure latent: mesh->mesh only
-                processor_edges = {
-                    et: ei for et, ei in data.edge_index_dict.items()
-                    if et[0] == "mesh" and et[2] == "mesh"
-                }
+                processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
+                                   if et[0] == "mesh" and et[2] == "mesh"}
 
                 # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
                 step_features = encoded_features.copy()
@@ -626,8 +667,10 @@ class GNNLightning(pl.LightningModule):
                     decoder.edge_index = step_edge_index
 
                     # Decode mesh features to target predictions
-                    target_features_initial = torch.zeros(data[step_node_type].num_nodes, self.hidden_dim, device=self.device)
-                    edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=self.device)
+                    # Use device from mesh features to avoid checkpoint loading issues
+                    reference_device = mesh_features_processed.device
+                    target_features_initial = torch.zeros(data[step_node_type].num_nodes, self.hidden_dim, device=reference_device)
+                    edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
 
                     decoded_target_features = decoder(
                         send_rep=mesh_features_processed,
@@ -823,9 +866,15 @@ class GNNLightning(pl.LightningModule):
             allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
-        print(f"[training_step] batch: {batch.bin_name}")
+        # Print first-batch info for window validation
+        if not getattr(self, "_printed_first_train_batch", False):
+            bt = getattr(batch, "input_time", None) or getattr(batch, "time", None)
+            print(f"[FirstTrainBatch] batch_idx=0 time={bt}")
+            self._printed_first_train_batch = True
 
-        # Forward pass - no step_data_list needed anymore
+        print(f"[training_step] batch: {getattr(batch, 'bin_name', 'N/A')}")
+
+        # ---- Forward pass and loss calculation ----
         all_predictions = self(batch)
 
         # Extract ground truths based on rollout mode
@@ -1121,8 +1170,12 @@ class GNNLightning(pl.LightningModule):
                                 df[f"mask_{col}"] = vm_cpu[:, i]
 
                         filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step{step}.csv"
-                        df.to_csv(filename, index=False)
-                        print(f"Saved: {filename}")
+                        try:
+                            df.to_csv(filename, index=False)
+                            print(f"Saved: {filename}")
+                        except Exception as e:
+                            if self.trainer.is_global_zero:
+                                print(f"[WARN] Could not save {filename}: {e}")
 
             # Placeholder logging for missing steps (to ensure stable CSV shape for loggers)
             num_channels = all_step_rmse[node_type][0].shape[0] if all_step_rmse[node_type] else 1
@@ -1152,26 +1205,47 @@ class GNNLightning(pl.LightningModule):
 
                 n_channels = y_pred_unnorm.shape[1]
                 for i in range(min(5, n_channels)):
-                    plt.figure()
-                    plt.hist(
-                        y_true_unnorm[:, i].cpu().numpy(),
-                        bins=100,
-                        alpha=0.6,
-                        color="blue",
-                        label="y_true",
-                    )
-                    plt.hist(
-                        y_pred_unnorm[:, i].cpu().numpy(),
-                        bins=100,
-                        alpha=0.6,
-                        color="orange",
-                        label="y_pred",
-                    )
-                    plt.xlabel(f"{node_type} - Channel {i+1}")
-                    plt.ylabel("Frequency")
-                    plt.title(f"Histogram - {node_type} Channel {i+1} (Epoch {self.current_epoch})")
-                    plt.legend()
-                    plt.tight_layout()
+                    try:
+                        plt.figure()
+                        # Get data and remove any NaN/inf values
+                        y_true_data = y_true_unnorm[:, i].cpu().numpy()
+                        y_pred_data = y_pred_unnorm[:, i].cpu().numpy()
+
+                        # Filter out non-finite values
+                        y_true_finite = y_true_data[np.isfinite(y_true_data)]
+                        y_pred_finite = y_pred_data[np.isfinite(y_pred_data)]
+
+                        # Skip if no finite data
+                        if len(y_true_finite) == 0 or len(y_pred_finite) == 0:
+                            plt.close()
+                            continue
+
+                        # Use auto bins or limit to reasonable number
+                        n_bins = min(50, max(10, len(y_true_finite) // 20))
+
+                        plt.hist(
+                            y_true_finite,
+                            bins=n_bins,
+                            alpha=0.6,
+                            color="blue",
+                            label="y_true",
+                        )
+                        plt.hist(
+                            y_pred_finite,
+                            bins=n_bins,
+                            alpha=0.6,
+                            color="orange",
+                            label="y_pred",
+                        )
+                        plt.xlabel(f"{node_type} - Channel {i+1}")
+                        plt.ylabel("Frequency")
+                        plt.title(f"Histogram - {node_type} Channel {i+1} (Epoch {self.current_epoch})")
+                        plt.legend()
+                        plt.tight_layout()
+                    except Exception as e:
+                        print(f"Warning: Could not create histogram for {node_type} channel {i+1}: {e}")
+                        plt.close()
+                        continue
                     plt.savefig(f"hist_{node_type}_ch_{i+1}_epoch{self.current_epoch}.png")
                     plt.close()
 
@@ -1327,9 +1401,10 @@ class GNNLightning(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",  # Reduce LR when the monitored metric has stopped decreasing
-            factor=0.2,  # new_lr = lr * factor (a more aggressive decay can be good)
-            patience=5,  # Number of epochs with no improvement after which LR will be reduced
+            factor=0.5,  # new_lr = lr * factor (conservative decay; lower factor is more aggressive)
+            patience=3,  # Number of epochs with no improvement after which LR will be reduced
             verbose=True,  # Print a message when the LR is changed
+            min_lr=1e-6,  # safeguard against vanishing lr
         )
 
         return {

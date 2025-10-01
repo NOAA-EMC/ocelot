@@ -522,7 +522,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
             def _es_hpa(Tc):
                 # Magnus (over water); Tc in °C → hPa
-                return 6.112 * np.exp(17.67 * Tc / (Tc + 243.5))
+                # Clip Tc first to prevent overflow in the calculation
+                Tc_safe = np.clip(Tc, -100.0, 100.0)  # Reasonable temperature range in Celsius
+                x = 17.67 * Tc_safe / (Tc_safe + 243.5)
+                x = np.clip(x, -50.0, 50.0)   # keeps exp argument in a safe numeric range
+                return 6.112 * np.exp(x)
 
             def _apply_relational_qc():
                 # Apply to input + ALL targets
