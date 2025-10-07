@@ -291,12 +291,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             obs_cfg = observation_config[obs_type][inst_name]
             level_selection = obs_cfg.get('level_selection')
             if level_selection:
-                level_variable = z[level_selection['filter_col']][input_idx]
-                level_mask = np.isin(level_variable, level_selection['levels'])
-                input_idx &= level_mask
-                level_variable = z[level_selection['filter_col']][target_idx]
-                level_mask = np.isin(level_variable, level_selection['levels'])
-                target_idx &= level_mask
+                if level_selection:
+                    col = level_selection["filter_col"]
+                    levels = np.asarray(level_selection["levels"])
+                    if input_idx.size:
+                        input_idx = input_idx[np.isin(z[col][input_idx], levels)]
+                    if target_idx.size:
+                        target_idx = target_idx[np.isin(z[col][target_idx], levels)]
 
             # --- Config & feature ordering ---
             
