@@ -67,6 +67,7 @@ class PcaConfig(DataTypeConfig):
     def filename_regex(self):
         return self.config['filename_regex']
 
+
 class Config:
     def __init__(self, yaml_path=''):
         if not yaml_path:

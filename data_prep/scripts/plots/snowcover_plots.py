@@ -39,7 +39,6 @@ def main():
     scatter = MapScatter(lats, lons, data=temp)
     scatter.markersize = .25
 
-
     # Create plot object and add features
     plot1 = CreatePlot()
     plot1.plot_layers = [scatter]

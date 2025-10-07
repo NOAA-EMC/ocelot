@@ -49,6 +49,7 @@ def create_data(start_date: datetime,
         _create_data_for_day(comm, date, data_type, output_type, output_path)
         date += day
 
+
 def create_weekly_data(start_date: datetime,
                        end_date: datetime,
                        data_type: str,
@@ -101,11 +102,11 @@ def create_weekly_data(start_date: datetime,
 
 
 def _create_data_for_day(comm,
-                        date: datetime,
-                        data_type: str,
-                        output_type: str,
-                        output_path: str,
-                        append: bool = True) -> None:
+                         date: datetime,
+                         data_type: str,
+                         output_type: str,
+                         output_path: str,
+                         append: bool = True) -> None:
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 

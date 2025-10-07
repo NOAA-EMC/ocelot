@@ -10,6 +10,7 @@ from emcpy.plots import CreatePlot, CreateFigure
 from emcpy.plots.map_tools import Domain, MapProjection
 from emcpy.plots.map_plots import MapScatter
 
+
 def plot(domain: str = "conus"):
     parser = argparse.ArgumentParser(description="Plot Raw Radiosonde Data")
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
@@ -44,12 +45,12 @@ def plot(domain: str = "conus"):
 
     plt.savefig(f'radiosonde_{domain}.png', dpi=300)
 
+
 def make_gif(domain: str = 'conus'):
     parser = argparse.ArgumentParser(description="Plot Raw Radiosonde Data")
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
     args = parser.parse_args()
     z = zarr.open(args.zarr_path)
-
 
     time = z["time"][:]
     time = np.array([np.datetime64(int(t), "s") for t in time])
