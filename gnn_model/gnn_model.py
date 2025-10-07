@@ -321,7 +321,12 @@ class GNNLightning(pl.LightningModule):
 
     def _feature_names_for_node(self, node_type: str):
         """Return ordered feature names for this target node."""
-        inst_name = node_type.replace("_target", "")
+        # MK: handles target_step0, target_step1, etc
+        # inst_name = node_type.replace("_target", "")
+        if "_target_step" in node_type:
+            inst_name = node_type.split("_target_step")[0]
+        else:
+            inst_name = node_type.replace("_target", "")
         for obs_type, instruments in self.observation_config.items():
             if inst_name in instruments:
                 return instruments[inst_name].get("features", None)
@@ -894,7 +899,12 @@ class GNNLightning(pl.LightningModule):
                 continue
 
             # Get the base instrument name (e.g., "atms" from "atms_target")
-            inst_name = node_type.replace("_target", "")
+            # MK: handles target_step in latent mode
+            # inst_name = node_type.replace("_target", "")
+            if "_target_step" in node_type:
+                inst_name = node_type.split("_target_step")[0]
+            else:
+                inst_name = node_type.replace("_target", "")
             inst_id = self.instrument_name_to_id.get(inst_name, None)
             instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
 
@@ -1011,7 +1021,12 @@ class GNNLightning(pl.LightningModule):
                 continue
 
             feats = None
-            inst_name = node_type.replace("_target", "")
+            # MK: handles target_step0, target_step1, etc
+            # inst_name = node_type.replace("_target", "")
+            if "_target_step" in node_type:
+                inst_name = node_type.split("_target_step")[0]
+            else:
+                inst_name = node_type.replace("_target", "")
             inst_id = self.instrument_name_to_id.get(inst_name, None)
             instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
 

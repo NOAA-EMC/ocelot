@@ -227,16 +227,30 @@ def organize_bins_times(
                     seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
                     input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
 
-                    # For each sub-window, filter and subsample
-                    for step in range(num_latent_steps):
-                        t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
-
-                        m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
-                        target_indices_step = idx_target_full[m_step]
-
-                        seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
-                        subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
+                    # MK Special case: if only 1 latent step, use exact same logic as standard rollout
+                    if num_latent_steps == 1:
+                        # Use the full target window (same as standard rollout)
+                        seed_out = _stable_seed(seed_base, t_target_start, obs_type, key, is_target=True)
+                        subsampled_indices = _subsample_by_mode(idx_target_full, mode, stride, seed_out)
                         target_indices_list.append(subsampled_indices)
+                    else:
+                        # Multiple steps: use time-based filtering
+                        # For each sub-window, filter and subsample
+                        for step in range(num_latent_steps):
+                            t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
+
+                            # Include end boundary for the last step
+                            if step == num_latent_steps - 1:
+                                m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
+                            else:
+                                m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
+
+                            # m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
+                            target_indices_step = idx_target_full[m_step]
+
+                            seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
+                            subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
+                            target_indices_list.append(subsampled_indices)
 
                     if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
                         continue
