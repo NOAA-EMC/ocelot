@@ -18,6 +18,7 @@ PrepbufrMapPath = map_path('bufr_surface_obs_prepbufr.yaml')
 AdpsfcMapPath = map_path('bufr_surface_obs_adpsfc.yaml')
 SfcshpMapPath = map_path('bufr_surface_obs_sfcshp.yaml')
 
+
 class RawAdpsfcBuilder(ObsBuilder):
     def __init__(self):
         super().__init__({PrepbufrKey: PrepbufrMapPath,
@@ -171,5 +172,6 @@ class RawAdpsfcBuilder(ObsBuilder):
         cycle_times = np.array([3600 * t for t in container.get('obsTimeMinusCycleTime')]).astype('timedelta64[s]')
         time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add('timestamp', time, ['*'])
+
 
 add_main_functions(RawAdpsfcBuilder)
