@@ -300,7 +300,6 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         target_idx = target_idx[np.isin(z[col][target_idx], levels)]
 
             # --- Config & feature ordering ---
-            
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
             feat_keys = observation_config[obs_type][inst_name]["features"]
             meta_keys = observation_config[obs_type][inst_name]["metadata"]
