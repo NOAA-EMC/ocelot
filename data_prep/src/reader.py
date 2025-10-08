@@ -18,7 +18,23 @@ def create_data(start_date: datetime,
                 output_type: str,
                 suffix: str = None,
                 append: bool = True) -> None:
-    """Create zarr files from BUFR data in week long chunks."""
+    """
+    Create data files from BUFR data for each day in the specified date range.
+
+    Parameters
+    ----------
+    start_date : datetime
+        Start date (inclusive).
+    end_date : datetime
+        End date (inclusive).
+    data_type : str
+        Data type to process (must be defined in config).
+    output_type : str
+        Output file type ('zarr' or 'parquet').
+    suffix : str, optional
+        Suffix to append to the output file name.
+    append : bool, optional
+    """
 
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
@@ -56,7 +72,24 @@ def create_weekly_data(start_date: datetime,
                        output_type: str = 'parquet',
                        suffix: str = None,
                        append: bool = True) -> None:
-    """Create zarr files from BUFR data in week long chunks."""
+
+    """
+    Create data files from BUFR data for each week in the specified date range.
+
+    Parameters
+    ----------
+    start_date : datetime
+        Start date (inclusive).
+    end_date : datetime
+        End date (inclusive).
+    data_type : str
+        Data type to process (must be defined in config).
+    output_type : str
+        Output file type ('zarr' or 'parquet').
+    suffix : str, optional
+        Suffix to append to the output file name.
+    append : bool, optional
+    """
 
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
