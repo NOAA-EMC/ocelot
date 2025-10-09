@@ -321,8 +321,7 @@ class GNNLightning(pl.LightningModule):
 
     def _feature_names_for_node(self, node_type: str):
         """Return ordered feature names for this target node."""
-        # MK: handles target_step0, target_step1, etc
-        # inst_name = node_type.replace("_target", "")
+        # Latent mode: target_step0, target_step1, etc
         if "_target_step" in node_type:
             inst_name = node_type.split("_target_step")[0]
         else:
@@ -633,9 +632,9 @@ class GNNLightning(pl.LightningModule):
             if self.processor_type == "sliding_transformer":
                 current_mesh_features = self.swt(current_mesh_features)
             else:  # interaction processor
-                # pure latent: mesh->mesh only
+                # Remove decoder edges (mesh → target), but keep encoder edges (input → mesh)
                 processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
-                                   if et[0] == "mesh" and et[2] == "mesh"}
+                   if "_target" not in et[2]}
 
                 # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
                 step_features = encoded_features.copy()
@@ -899,8 +898,7 @@ class GNNLightning(pl.LightningModule):
                 continue
 
             # Get the base instrument name (e.g., "atms" from "atms_target")
-            # MK: handles target_step in latent mode
-            # inst_name = node_type.replace("_target", "")
+            # Add handling for target_step in latent mode
             if "_target_step" in node_type:
                 inst_name = node_type.split("_target_step")[0]
             else:
@@ -1021,8 +1019,7 @@ class GNNLightning(pl.LightningModule):
                 continue
 
             feats = None
-            # MK: handles target_step0, target_step1, etc
-            # inst_name = node_type.replace("_target", "")
+            # Latent mode: target_step0, target_step1, etc
             if "_target_step" in node_type:
                 inst_name = node_type.split("_target_step")[0]
             else:
