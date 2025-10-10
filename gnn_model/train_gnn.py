@@ -73,7 +73,8 @@ def main():
     else:
         random_seed = random.randint(1, 1000000)
         print(f"Using random seed: {random_seed}")
-        pl.seed_everything(random_seed, workers=True)
+        # pl.seed_everything(random_seed, workers=True)
+        pl.seed_everything(42, workers=True)
     # === DATA & MODEL CONFIGURATION ===
     cfg_path = "configs/observation_config.yaml"
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
@@ -86,7 +87,7 @@ def main():
     if region == "conus":
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
-        data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v5/global"
+        data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
@@ -138,7 +139,11 @@ def main():
     rollout_schedule = "fixed"
 
     # Latent rollout parameters (enable by setting integer hours)
-    latent_step_hours = 3
+    data_window_hours = 12  # Total window size in hours; default: 12h
+    latent_step_hours = 3   # Size of each latent step (set to data_window_hours for no latent rollout)
+
+    if data_window_hours % latent_step_hours != 0:
+        raise ValueError(f"target_hours ({data_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})")
 
     start_time = time.time()
 
@@ -157,7 +162,7 @@ def main():
         feature_stats=feature_stats,
         # Model options
         processor_type="interaction",   # sliding_transformer or "interaction"
-        processor_window=4,                     # 12h / 3h = 4
+        processor_window=data_window_hours // latent_step_hours,  # Number of latent steps; default: 12h / 3h = 4
         processor_depth=4,
         processor_heads=4,
         processor_dropout=0.1,  # Add dropout for regularization
@@ -184,7 +189,7 @@ def main():
         num_neighbors=3,
         feature_stats=feature_stats,
         pipeline=pipeline_cfg,
-        window_size="12h",
+        window_size=f"{data_window_hours}h",
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=TRAIN_VAL_SPLIT_RATIO,  # Pass the split ratio from training script
         # ensure epoch 0 validation uses the val split, not the train slice
@@ -208,12 +213,12 @@ def main():
             monitor="val_loss",
             mode="min",
             save_last=True,
-            every_n_epochs=2,        # Save less frequently to avoid timeout
+            every_n_epochs=1,        # Save less frequently to avoid timeout
             save_on_train_epoch_end=False,  # Only save after validation
         ),
         EarlyStopping(
             monitor="val_loss",
-            patience=10,             # Increase patience for full year training
+            patience=25,             # Increase patience for full year training
             mode="min",
             min_delta=1e-5,          # Smaller threshold for year-long convergence
             verbose=True,
