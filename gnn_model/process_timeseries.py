@@ -388,6 +388,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     rng = cfg.get("range") if isinstance(cfg, dict) else (cfg if isinstance(cfg, (list, tuple)) else None)
                     flag_col = cfg.get("qm_flag_col") if isinstance(cfg, dict) else None
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
+                    reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
 
                     # --- range QC ---
@@ -447,6 +448,32 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                     ws_ok_tg_list[step] = keep_tg if ws_ok_tg_list[step] is None else (ws_ok_tg_list[step] & keep_tg)
                                 if var == "windDirection":
                                     wd_ok_tg_list[step] = keep_tg if wd_ok_tg_list[step] is None else (wd_ok_tg_list[step] & keep_tg)
+
+                    if isinstance(cfg, dict) and flag_col and ("reject" in cfg) and (flag_col in z):
+                        # Apply to inputs
+                        in_flags = z[flag_col][input_idx]
+                        reject_in = ~np.isin(in_flags, list(reject))
+                        if pos is not None:
+                            input_valid_ch[:, pos] &= reject_in
+                        else:
+                            if var == "windSpeed":
+                                ws_ok_in = reject_in if ws_ok_in is None else (ws_ok_in & reject_in)
+                            if var == "windDirection":
+                                wd_ok_in = reject_in if wd_ok_in is None else (wd_ok_in & reject_in)
+
+                        # Apply to ALL target windows
+                        for step, target_idx in enumerate(target_indices_list):
+                            if target_idx.size == 0:
+                                continue
+                            tg_flags = z[flag_col][target_idx]
+                            reject_tg = ~np.isin(tg_flags, list(reject))
+                            if pos is not None:
+                                target_valid_ch_list[step][:, pos] &= reject_tg
+                            else:
+                                if var == "windSpeed":
+                                    ws_ok_tg_list[step] = reject_tg if ws_ok_tg_list[step] is None else (ws_ok_tg_list[step] & reject_tg)
+                                if var == "windDirection":
+                                    wd_ok_tg_list[step] = reject_tg if wd_ok_tg_list[step] is None else (wd_ok_tg_list[step] & reject_tg)
 
                 # Wind component propagation
                 if ("wind_u" in feat_pos) and ("wind_v" in feat_pos):
