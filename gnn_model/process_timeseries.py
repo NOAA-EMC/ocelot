@@ -321,6 +321,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     rng = cfg.get("range") if isinstance(cfg, dict) else (cfg if isinstance(cfg, (list, tuple)) else None)
                     flag_col = cfg.get("qm_flag_col") if isinstance(cfg, dict) else None
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
+                    reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
 
                     # --- range ---
@@ -347,6 +348,24 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         tg_flags = z[flag_col][target_idx]
                         keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0)
                         keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0)
+
+                        if pos is not None:
+                            input_valid_ch[:, pos] &= keep_in
+                            target_valid_ch[:, pos] &= keep_tg
+                        else:
+                            if var == "windSpeed":
+                                ws_ok_in = keep_in if ws_ok_in is None else (ws_ok_in & keep_in)
+                                ws_ok_tg = keep_tg if ws_ok_tg is None else (ws_ok_tg & keep_tg)
+                            if var == "windDirection":
+                                wd_ok_in = keep_in if wd_ok_in is None else (wd_ok_in & keep_in)
+                                wd_ok_tg = keep_tg if wd_ok_tg is None else (wd_ok_tg & keep_tg)
+
+                    # --- QM flags (reject-list) ---
+                    if isinstance(cfg, dict) and flag_col and ("reject" in cfg) and (flag_col in z):
+                        in_flags = z[flag_col][input_idx]
+                        tg_flags = z[flag_col][target_idx]
+                        keep_in = ~np.isin(in_flags, list(reject)) | (in_flags < 0)
+                        keep_tg = ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
 
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
