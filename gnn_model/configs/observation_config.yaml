@@ -132,11 +132,11 @@ observation_config:
         airTemperature:
           range: [173, 370]
           qm_flag_col: airTemperatureQuality
-          reject: [13, 14, 15,]
+          keep: [1, 2, 3, 9]
         dewPointTemperature:
           range: [135, 350]
           qm_flag_col: dewPointTemperatureQuality
-          reject: [13, 14, 15,]
+          keep: [1, 2, 3, 9]
         windSpeed:
           range: [0, 75]
           qm_flag_col: windQuality
