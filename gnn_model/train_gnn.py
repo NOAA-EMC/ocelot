@@ -138,7 +138,7 @@ def main():
     rollout_schedule = "fixed"
 
     # Latent rollout parameters (enable by setting integer hours)
-    latent_step_hours = 3
+    latent_step_hours = None
 
     start_time = time.time()
 

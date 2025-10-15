@@ -362,8 +362,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     levels = np.asarray(level_selection["levels"])
                     if input_idx.size:
                         input_idx = input_idx[np.isin(z[col][input_idx], levels)]
-                    if target_idx.size:
-                        target_idx = target_idx[np.isin(z[col][target_idx], levels)]
+                    for i, idx in enumerate(target_indices_list):
+                        if idx.size:
+                            target_indices_list[i] = idx[np.isin(z[col][idx], levels)]
 
             # --- Config & feature ordering ---
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
