@@ -405,7 +405,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 60
+    EPOCH_TO_PLOT = 50
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
