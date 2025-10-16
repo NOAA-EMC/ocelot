@@ -465,6 +465,7 @@ class GNNLightning(pl.LightningModule):
         embedded_features = {}
         # Embed static mesh features
         for node_type, x in data.x_dict.items():
+            print(f"embed: [node_type] {node_type}: {x.shape}")
             if node_type == "mesh":
                 embedded_features[node_type] = self.mesh_embedder(x)
             elif node_type.endswith("_input"):
@@ -477,6 +478,7 @@ class GNNLightning(pl.LightningModule):
 
         for edge_type, edge_index in data.edge_index_dict.items():
             src_type, _, dst_type = edge_type
+            print(f"encode: [edge_type] {edge_type}: {edge_index.shape}")
             if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
                 obs_features = embedded_features[src_type]
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
@@ -510,6 +512,7 @@ class GNNLightning(pl.LightningModule):
         encoded_features["mesh"] = encoded_mesh_features
 
         for node_type in self.processor.norms[0].keys():
+            print(f"prep: [node_type] ", node_type)
             if node_type not in encoded_features:
                 if node_type in data.node_types:
                     num_nodes = data[node_type].num_nodes
@@ -547,6 +550,7 @@ class GNNLightning(pl.LightningModule):
         mesh_features_processed = processed_features["mesh"]
 
         for edge_type, edge_index in data.edge_index_dict.items():
+            print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
             src_type, _, dst_type = edge_type
             if src_type == "mesh" and dst_type.endswith("_target"):
                 # Use device from processed mesh features to avoid checkpoint loading issues
@@ -574,6 +578,7 @@ class GNNLightning(pl.LightningModule):
 
         # Wrap predictions in a list to be compatible with rollout logic
         for node_type, pred_tensor in predictions.items():
+            print(f"predict: [node_type] {node_type}: {pred_tensor.shape}")
             predictions[node_type] = [pred_tensor]
 
         return predictions
@@ -1001,6 +1006,7 @@ class GNNLightning(pl.LightningModule):
 
         # --- Loop over all node_types/decoders ---
         for node_type, preds_list in all_predictions.items():
+            print(f"[validation_step] Processing node_type: {node_type}")
             if node_type not in ground_truth_data:
                 continue
 
@@ -1019,6 +1025,7 @@ class GNNLightning(pl.LightningModule):
             for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
+                print(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
                 if y_pred is None or y_true is None or y_pred.numel() == 0:
                     continue
                 if y_pred.shape != y_true.shape:

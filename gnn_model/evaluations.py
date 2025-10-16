@@ -20,6 +20,8 @@ AUTO_ABS = {"airTemperature", "dewPointTemperature", "relativeHumidity", "wind_u
 
 CALM_WIND_THRESHOLD = 2.0  # m/s
 
+PLOT_DIR = "figures"
+
 
 def _robust_sym_limits(x, q=99.0):
     """Return symmetric limits [-m, m] using the qth percentile of |x|."""
@@ -165,7 +167,7 @@ def plot_ocelot_target_diff(
 
         plt.tight_layout()
         safe_fname = str(fname).replace(" ", "_")
-        out_png = f"{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png"
+        out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png"
         plt.savefig(out_png, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -328,7 +330,7 @@ def plot_instrument_maps(
         axes[0].set_ylabel("Latitude")
 
         safe_fname = str(fname).replace(" ", "_")
-        out_png = f"{instrument_name}_map_{safe_fname}_epoch_{epoch}_{metric}.png"
+        out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_map_{safe_fname}_epoch_{epoch}_{metric}.png"
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig(out_png, dpi=150)
         plt.close()
@@ -391,7 +393,7 @@ def plot_instrument_maps(
         axes[0].set_ylabel("Latitude")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        out_png = f"{instrument_name}_map_wind_speed_epoch_{epoch}.png"
+        out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_map_wind_speed_epoch_{epoch}.png"
         plt.savefig(out_png, dpi=150)
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -427,7 +429,7 @@ def plot_instrument_maps(
             axes[0].set_ylabel("Latitude")
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            out_png = f"{instrument_name}_map_wind_direction_epoch_{epoch}.png"
+            out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_map_wind_direction_epoch_{epoch}.png"
             plt.savefig(out_png, dpi=150)
             plt.close()
             print(f"  -> Saved plot: {out_png}")
@@ -435,13 +437,17 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 199
+    EPOCH_TO_PLOT = 50
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
+
+    plot_dir = os.path.join(DATA_DIR, PLOT_DIR)
+    os.makedirs(plot_dir, exist_ok=True)
 
     # add the OCELOT | Target | Difference + RMSE figures
     plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR)
     plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR)
+    plot_ocelot_target_diff("radiosonde", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=5, data_dir=DATA_DIR)
 
     # brightness temperature instruments (add units to annotate RMSE like your sample)
     plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, units="K")
@@ -456,6 +462,16 @@ if __name__ == "__main__":
         EPOCH_TO_PLOT,
         BATCH_IDX_TO_PLOT,
         num_channels=6,
+        data_dir=DATA_DIR,
+        error_metric="auto",  # ABS for most, sMAPE for pressure
+        drop_small_truth=True,
+    )
+
+    plot_instrument_maps(
+        "radiosonde",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=5,
         data_dir=DATA_DIR,
         error_metric="auto",  # ABS for most, sMAPE for pressure
         drop_small_truth=True,

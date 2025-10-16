@@ -10,6 +10,7 @@ pipeline:
       _default: 10
       surface_obs: 10
       snow_cover: 1        # keep all (stride 1)
+      radiosonde: 1
     mode:
       satellite:
         _default: random  # "stride" | "random" | "none"
@@ -27,6 +28,7 @@ instrument_weights:
   avhrr: 1.0
   surface_obs: 1.0
   snow_cover: 1.0
+  radiosonde: 1.0
 
 channel_weights:
   atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
@@ -34,6 +36,7 @@ channel_weights:
   avhrr: [1.0, 1.0, 1.0]
   surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
   snow_cover: [1.0]            # snowDepth
+  radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
 
 observation_config:
   satellite:
@@ -109,6 +112,40 @@ observation_config:
           tolerance_hpa: 100          # |p - p_exp(height)| ≤ 100 hPa
           scale_height_m: 8000
 
+    radiosonde:
+      source: zarr
+      zarr_name: raw_radiosonde
+      features: [airPressure, airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: []
+      input_dim: 12                     # 7 (geo/time enc) + 1 meta + 6 feats
+      target_dim: 5
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      level_selection:
+        filter_col: airPressure
+        levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+      qc_filters:
+        airPressure:
+          range: [1, 1200]
+          qm_flag_col: airPressureQuality
+          keep: [1, 2]
+        airTemperature:
+          range: [173, 370]
+          qm_flag_col: airTemperatureQuality
+          reject: [13, 14, 15,]
+        dewPointTemperature:
+          range: [135, 350]
+          qm_flag_col: dewPointTemperatureQuality
+          reject: [13, 14, 15,]
+        windSpeed:
+          range: [0, 75]
+          qm_flag_col: windQuality
+          keep: [2,]
+        windDirection:
+          range: [0, 6.28]  # radians
+          qm_flag_col: windQuality
+          keep: [2,]
+
     snow_cover:
       source: zarr
       zarr_name: snow_cover
@@ -132,6 +169,14 @@ feature_stats:  # Statistics for the features used in the model
     wind_v: [0.25, 3.37]
     latitude: [30.06, 28.54]
     longitude: [-22.73, 84.78]
+  radiosonde:  
+    airPressure: [319, 308]
+    airTemperature: [242, 30]
+    dewPointTemperature: [227, 35]
+    wind_u: [2, 8.25]
+    wind_v: [0.50, 5.5]
+    latitude: [31.6, 25.90]
+    longitude: [6, 95]
   snow_cover:
     snowDepth: [0.38, 0.68]
   atms:
