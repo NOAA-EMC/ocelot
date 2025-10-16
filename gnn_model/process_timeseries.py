@@ -428,7 +428,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
                         keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0) if ("keep" in cfg) else \
-                             ~np.isin(in_flags, list(reject)) | (in_flags < 0)
+                                  ~np.isin(in_flags, list(reject)) | (in_flags < 0)
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
@@ -436,14 +436,14 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 ws_ok_in = keep_in if ws_ok_in is None else (ws_ok_in & keep_in)
                             if var == "windDirection":
                                 wd_ok_in = keep_in if wd_ok_in is None else (wd_ok_in & keep_in)
-                
+
                         # Apply to ALL target windows
                         for step, target_idx in enumerate(target_indices_list):
                             if target_idx.size == 0:
                                 continue
                             tg_flags = z[flag_col][target_idx]
                             keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0) if ("keep" in cfg) else \
-                                    ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
+                                      ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
                             if pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
