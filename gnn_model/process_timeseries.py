@@ -428,7 +428,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
                         keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0) if ("keep" in cfg) else \
-                                  ~np.isin(in_flags, list(reject)) | (in_flags < 0)
+                            ~np.isin(in_flags, list(reject)) | (in_flags < 0)
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
@@ -443,7 +443,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 continue
                             tg_flags = z[flag_col][target_idx]
                             keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0) if ("keep" in cfg) else \
-                                      ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
+                                ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
                             if pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
