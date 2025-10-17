@@ -158,7 +158,6 @@ class GNNDataModule(pl.LightningDataModule):
                             if not zname.endswith(".zarr"):
                                 # Try without year tag first (for v5 data or when year is already in yaml)
                                 zarr_path_test = os.path.join(self.hparams.data_path, f"{zname}.zarr")
-                                print(f"MK: testing zarr: {zarr_path_test}")
 
                                 if os.path.isdir(zarr_path_test):
                                     zname += ".zarr"
@@ -168,7 +167,6 @@ class GNNDataModule(pl.LightningDataModule):
                                     zname += f"_{year}.zarr"
 
                             zarr_path = os.path.join(self.hparams.data_path, zname)
-                            print(f"MK: using this: {zarr_path}")
 
                         if not os.path.isdir(zarr_path):
                             raise FileNotFoundError(f"Zarr not found: {zarr_path}")
