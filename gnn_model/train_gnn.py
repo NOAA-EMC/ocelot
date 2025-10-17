@@ -162,7 +162,7 @@ def main():
         feature_stats=feature_stats,
         # Model options
         processor_type="interaction",   # sliding_transformer or "interaction"
-        processor_window=data_window_hours // latent_step_hours,  # Number of latent steps; default: 12h / 3h = 4
+        processor_window=4,     # default: 12h / 3h = 4
         processor_depth=4,
         processor_heads=4,
         processor_dropout=0.1,  # Add dropout for regularization
