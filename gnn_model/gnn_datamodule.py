@@ -156,8 +156,19 @@ class GNNDataModule(pl.LightningDataModule):
                         else:
                             zname = inst_cfg.get("zarr_name", inst_name)
                             if not zname.endswith(".zarr"):
-                                zname += ".zarr"
+                                # Try without year tag first (for v5 data or when year is already in yaml)
+                                zarr_path_test = os.path.join(self.hparams.data_path, f"{zname}.zarr")
+                                print(f"MK: testing zarr: {zarr_path_test}")
+
+                                if os.path.isdir(zarr_path_test):
+                                    zname += ".zarr"
+                                else:
+                                    # Add year tag for v6 data (extracted from start_date)
+                                    year = self.hparams.start_date.split('-')[0]
+                                    zname += f"_{year}.zarr"
+
                             zarr_path = os.path.join(self.hparams.data_path, zname)
+                            print(f"MK: using this: {zarr_path}")
 
                         if not os.path.isdir(zarr_path):
                             raise FileNotFoundError(f"Zarr not found: {zarr_path}")

@@ -91,9 +91,9 @@ def main():
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
-    FULL_END_DATE = "2024-06-15"  # e.g., 3 months of data
-    TRAIN_WINDOW_DAYS = 7  # The size of the training window for each epoch
-    VALID_WINDOW_DAYS = 2   # The size of the validation window for each epoch
+    FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
+    TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
+    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
 
     # --- Compute train/val split BEFORE using VAL_START_DATE ---
@@ -131,7 +131,7 @@ def main():
     hidden_dim = 64
     num_layers = 8
     lr = 0.001
-    max_epochs = 200
+    max_epochs = 100
     batch_size = 1
 
     # Rollout settings
