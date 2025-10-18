@@ -73,8 +73,7 @@ def main():
     else:
         random_seed = random.randint(1, 1000000)
         print(f"Using random seed: {random_seed}")
-        # pl.seed_everything(random_seed, workers=True)
-        pl.seed_everything(42, workers=True)
+        pl.seed_everything(random_seed, workers=True)
     # === DATA & MODEL CONFIGURATION ===
     cfg_path = "configs/observation_config.yaml"
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)

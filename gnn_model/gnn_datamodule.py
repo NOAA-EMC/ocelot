@@ -338,76 +338,79 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder
 
         # Handle target features for each latent step
-        if "target_features_final_list" in inst_dict:
-            for step in range(num_latent_steps):
-                node_type_target = f"{inst_name}_target_step{step}"
+        if "target_features_final_list" not in inst_dict:
+            return
+        for step in range(num_latent_steps):
+            node_type_target = f"{inst_name}_target_step{step}"
 
-                if step < len(inst_dict["target_features_final_list"]):
-                    target_features = inst_dict["target_features_final_list"][step]
+            if step >= len(inst_dict["target_features_final_list"]):
+                continue
 
-                    # Get channel mask and check validity
-                    target_channel_mask = inst_dict.get("target_channel_mask_list", [None])[step] if step < len(
-                        inst_dict.get("target_channel_mask_list", [])) else None
+            target_features = inst_dict["target_features_final_list"][step]
 
-                    if target_channel_mask is not None:
-                        target_channel_mask = target_channel_mask.to(torch.bool)
-                        keep_t = target_channel_mask.any(dim=1)  # Keep rows with ANY valid channel
-                    else:
-                        keep_t = torch.ones((target_features.shape[0],), dtype=torch.bool)
+            # Get channel mask and check validity
+            target_channel_mask = inst_dict.get("target_channel_mask_list", [None])[step] if step < len(
+                inst_dict.get("target_channel_mask_list", [])) else None
 
-                    # Handle empty case
-                    if keep_t.sum() == 0:
-                        data[node_type_target].y = torch.empty((0, target_features.shape[1]), dtype=torch.float32)
-                        data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
-                        data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
-                        data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
-                        data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
-                    else:
-                        keep_np = keep_t.cpu().numpy()
+            if target_channel_mask is not None:
+                target_channel_mask = target_channel_mask.to(torch.bool)
+                keep_t = target_channel_mask.any(dim=1)  # Keep rows with ANY valid channel
+            else:
+                keep_t = torch.ones((target_features.shape[0],), dtype=torch.bool)
 
-                        # Filter all data
-                        y_t = target_features[keep_t]
-                        mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
+            # Handle empty case
+            if keep_t.sum() == 0:
+                data[node_type_target].y = torch.empty((0, target_features.shape[1]), dtype=torch.float32)
+                data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
+                data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
+                data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
+                data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
+            else:
+                keep_np = keep_t.cpu().numpy()
 
-                        data[node_type_target].y = _t32(y_t)
-                        data[node_type_target].target_channel_mask = _t32(mask_t)
+                # Filter all data
+                y_t = target_features[keep_t]
+                mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
-                        # Metadata
-                        if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
-                            tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
-                            data[node_type_target].target_metadata = _t32(tgt_meta)
+                data[node_type_target].y = _t32(y_t)
+                data[node_type_target].target_channel_mask = _t32(mask_t)
 
-                        # Scan angle: only for satellite instruments (atms, amsua, avhrr)
-                        if inst_name in ("atms", "amsua", "avhrr") and "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
-                            x_aux = inst_dict["scan_angle_list"][step][keep_t]
-                        else:
-                            x_aux = torch.zeros((y_t.shape[0], 1), dtype=torch.float32)
-                        data[node_type_target].x = _t32(x_aux)
+                # Metadata
+                if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
+                    tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
+                    data[node_type_target].target_metadata = _t32(tgt_meta)
 
-                        # Instrument ID
-                        if "instrument_id" in inst_dict:
-                            data[node_type_target].instrument_ids = torch.full(
-                                (y_t.shape[0],),
-                                inst_dict["instrument_id"],
-                                dtype=torch.long
-                            )
+                # Scan angle: only for satellite instruments (atms, amsua, avhrr)
+                if inst_name in ("atms", "amsua", "avhrr") and "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
+                    x_aux = inst_dict["scan_angle_list"][step][keep_t]
+                else:
+                    x_aux = torch.zeros((y_t.shape[0], 1), dtype=torch.float32)
+                data[node_type_target].x = _t32(x_aux)
 
-                        # Edges - filter lat/lon too
-                        if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
-                            target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
-                            target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
+                # Instrument ID
+                if "instrument_id" in inst_dict:
+                    data[node_type_target].instrument_ids = torch.full(
+                        (y_t.shape[0],),
+                        inst_dict["instrument_id"],
+                        dtype=torch.long
+                    )
 
-                            if len(target_lat_deg) > 0:
-                                edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
-                                    target_lat_deg,
-                                    target_lon_deg,
-                                    self.mesh_structure["m2m_graphs"],
-                                    self.mesh_structure["mesh_lat_lon_list"],
-                                    self.mesh_structure["mesh_list"],
-                                    o2m=False,
-                                )
-                                data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                                data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+                # Edges - filter lat/lon too
+                if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
+                    target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
+                    target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
+
+                    if len(target_lat_deg) > 0:
+                        edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                            target_lat_deg,
+                            target_lon_deg,
+                            self.mesh_structure["m2m_graphs"],
+                            self.mesh_structure["mesh_lat_lon_list"],
+                            self.mesh_structure["mesh_list"],
+                            o2m=False,
+                        )
+                        data["mesh", "to", node_type_target].edge_index = edge_index_decoder
+                        data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
