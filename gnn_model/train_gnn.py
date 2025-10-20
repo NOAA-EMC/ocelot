@@ -139,8 +139,10 @@ def main():
 
     # Latent rollout parameters (enable by setting integer hours)
     data_window_hours = 12  # Total window size in hours; default: 12h
-    latent_step_hours = 3   # Size of each latent step (set to data_window_hours for no latent rollout)
+    latent_step_hours = 3   # Size of each latent step (set to data_window_hours for a single latent step/no latent rollout)
 
+    # Parameter checks
+    latent_step_hours = data_window_hours if latent_step_hours is None else latent_step_hours
     if data_window_hours % latent_step_hours != 0:
         raise ValueError(f"target_hours ({data_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})")
 

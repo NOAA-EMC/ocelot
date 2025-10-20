@@ -85,7 +85,7 @@ def organize_bins_times(
     observation_config,
     pipeline_cfg=None,
     window_size="12h",
-    latent_step_hours=None,
+    latent_step_hours=12,
     verbose=False,
 ):
     """
@@ -228,7 +228,6 @@ def organize_bins_times(
                     else:
                         m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
 
-                    # m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
                     target_indices_step = idx_target_full[m_step]
 
                     seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)

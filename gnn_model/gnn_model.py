@@ -366,9 +366,10 @@ class GNNLightning(pl.LightningModule):
         self._printed_first_train_batch = False
 
         # learning rate tracking
-        current_lr = self.optimizers().param_groups[0]['lr']
-        print(f"[Epoch {self.current_epoch}] Current LR: {current_lr}")
-        self.log("learning_rate", current_lr)
+        opts = self.optimizers()
+        opt = opts[0] if isinstance(opts, (list, tuple)) else opts
+        current_lr = opt.param_groups[0]["lr"]
+        self.log("learning_rate", current_lr, prog_bar=False, on_epoch=True, on_step=False)
 
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()

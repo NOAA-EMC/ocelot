@@ -79,8 +79,8 @@ class GNNDataModule(pl.LightningDataModule):
         batch_size=1,
         num_neighbors=3,
         feature_stats=None,
-        latent_step_hours=None,   # latent rollout support
-        window_size="12h",        # binning window
+        latent_step_hours=12,       # latent rollout support
+        window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         **kwargs,
     ):
@@ -136,6 +136,11 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
         print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
 
+        # Ensure latent_step_hours has a valid value
+        if self.hparams.latent_step_hours is None:
+            window_hours = int(self.hparams.window_size.replace('h', ''))
+            self.hparams.latent_step_hours = window_hours
+
     # ------------- Setup / Zarr open -------------
 
     def setup(self, stage=None):
@@ -156,7 +161,7 @@ class GNNDataModule(pl.LightningDataModule):
                         else:
                             zname = inst_cfg.get("zarr_name", inst_name)
                             if not zname.endswith(".zarr"):
-                                # Try without year tag first (for v5 data or when year is already in yaml)
+                                # Try without year tag first (for v5 data or when the zarr_name field already includes the year)
                                 zarr_path_test = os.path.join(self.hparams.data_path, f"{zname}.zarr")
 
                                 if os.path.isdir(zarr_path_test):
@@ -298,6 +303,11 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
 
         window_hours = int(self.hparams.window_size.replace('h', ''))
+
+        # Sanity check: ensure window_hours is divisible by latent_step_hours
+        if window_hours % self.hparams.latent_step_hours != 0:
+            raise ValueError(f"window_size ({window_hours}h) must be divisible by latent_step_hours ({self.hparams.latent_step_hours}h)")
+
         num_latent_steps = window_hours // self.hparams.latent_step_hours
 
         # 3) Observation data and mesh connections
@@ -340,12 +350,12 @@ class GNNDataModule(pl.LightningDataModule):
         # Handle target features for each latent step
         if "target_features_final_list" not in inst_dict:
             return
-        for step in range(num_latent_steps):
-            node_type_target = f"{inst_name}_target_step{step}"
 
+        for step in range(num_latent_steps):
             if step >= len(inst_dict["target_features_final_list"]):
                 continue
 
+            node_type_target = f"{inst_name}_target_step{step}"
             target_features = inst_dict["target_features_final_list"][step]
 
             # Get channel mask and check validity
@@ -365,52 +375,53 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
                 data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
+                continue
+
+            keep_np = keep_t.cpu().numpy()
+
+            # Filter all data
+            y_t = target_features[keep_t]
+            mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
+
+            data[node_type_target].y = _t32(y_t)
+            data[node_type_target].target_channel_mask = _t32(mask_t)
+
+            # Metadata
+            if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
+                tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
+                data[node_type_target].target_metadata = _t32(tgt_meta)
+
+            # Scan angle: only for satellite instruments (atms, amsua, avhrr)
+            if inst_name in ("atms", "amsua", "avhrr") and "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
+                x_aux = inst_dict["scan_angle_list"][step][keep_t]
             else:
-                keep_np = keep_t.cpu().numpy()
+                x_aux = torch.zeros((y_t.shape[0], 1), dtype=torch.float32)
+            data[node_type_target].x = _t32(x_aux)
 
-                # Filter all data
-                y_t = target_features[keep_t]
-                mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
+            # Instrument ID
+            if "instrument_id" in inst_dict:
+                data[node_type_target].instrument_ids = torch.full(
+                    (y_t.shape[0],),
+                    inst_dict["instrument_id"],
+                    dtype=torch.long
+                )
 
-                data[node_type_target].y = _t32(y_t)
-                data[node_type_target].target_channel_mask = _t32(mask_t)
+            # Edges - filter lat/lon too
+            if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
+                target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
+                target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
 
-                # Metadata
-                if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
-                    tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
-                    data[node_type_target].target_metadata = _t32(tgt_meta)
-
-                # Scan angle: only for satellite instruments (atms, amsua, avhrr)
-                if inst_name in ("atms", "amsua", "avhrr") and "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
-                    x_aux = inst_dict["scan_angle_list"][step][keep_t]
-                else:
-                    x_aux = torch.zeros((y_t.shape[0], 1), dtype=torch.float32)
-                data[node_type_target].x = _t32(x_aux)
-
-                # Instrument ID
-                if "instrument_id" in inst_dict:
-                    data[node_type_target].instrument_ids = torch.full(
-                        (y_t.shape[0],),
-                        inst_dict["instrument_id"],
-                        dtype=torch.long
+                if len(target_lat_deg) > 0:
+                    edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                        target_lat_deg,
+                        target_lon_deg,
+                        self.mesh_structure["m2m_graphs"],
+                        self.mesh_structure["mesh_lat_lon_list"],
+                        self.mesh_structure["mesh_list"],
+                        o2m=False,
                     )
-
-                # Edges - filter lat/lon too
-                if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
-                    target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
-                    target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
-
-                    if len(target_lat_deg) > 0:
-                        edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
-                            target_lat_deg,
-                            target_lon_deg,
-                            self.mesh_structure["m2m_graphs"],
-                            self.mesh_structure["mesh_lat_lon_list"],
-                            self.mesh_structure["mesh_list"],
-                            o2m=False,
-                        )
-                        data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                        data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+                    data["mesh", "to", node_type_target].edge_index = edge_index_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
@@ -428,6 +439,8 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
+            data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, 2), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
 
