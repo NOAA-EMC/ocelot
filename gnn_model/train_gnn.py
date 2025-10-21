@@ -86,13 +86,13 @@ def main():
     if region == "conus":
         data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
     else:
-        data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v5/global"
+        data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
     FULL_START_DATE = "2024-04-01"
-    FULL_END_DATE = "2024-06-15"  # e.g., 3 months of data
-    TRAIN_WINDOW_DAYS = 7  # The size of the training window for each epoch
-    VALID_WINDOW_DAYS = 2   # The size of the validation window for each epoch
+    FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
+    TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
+    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
 
     # --- Compute train/val split BEFORE using VAL_START_DATE ---
@@ -130,7 +130,7 @@ def main():
     hidden_dim = 64
     num_layers = 8
     lr = 0.001
-    max_epochs = 200
+    max_epochs = 100
     batch_size = 1
 
     # Rollout settings
@@ -138,7 +138,13 @@ def main():
     rollout_schedule = "fixed"
 
     # Latent rollout parameters (enable by setting integer hours)
-    latent_step_hours = 3
+    data_window_hours = 12  # Total window size in hours; default: 12h
+    latent_step_hours = 3   # Size of each latent step (set to data_window_hours for a single latent step/no latent rollout)
+
+    # Parameter checks
+    latent_step_hours = data_window_hours if latent_step_hours is None else latent_step_hours
+    if data_window_hours % latent_step_hours != 0:
+        raise ValueError(f"target_hours ({data_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})")
 
     start_time = time.time()
 
@@ -157,7 +163,7 @@ def main():
         feature_stats=feature_stats,
         # Model options
         processor_type="interaction",   # sliding_transformer or "interaction"
-        processor_window=4,                     # 12h / 3h = 4
+        processor_window=4,     # default: 12h / 3h = 4
         processor_depth=4,
         processor_heads=4,
         processor_dropout=0.1,  # Add dropout for regularization
@@ -184,7 +190,7 @@ def main():
         num_neighbors=3,
         feature_stats=feature_stats,
         pipeline=pipeline_cfg,
-        window_size="12h",
+        window_size=f"{data_window_hours}h",
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=TRAIN_VAL_SPLIT_RATIO,  # Pass the split ratio from training script
         # ensure epoch 0 validation uses the val split, not the train slice
@@ -208,12 +214,12 @@ def main():
             monitor="val_loss",
             mode="min",
             save_last=True,
-            every_n_epochs=2,        # Save less frequently to avoid timeout
+            every_n_epochs=1,        # Save less frequently to avoid timeout
             save_on_train_epoch_end=False,  # Only save after validation
         ),
         EarlyStopping(
             monitor="val_loss",
-            patience=10,             # Increase patience for full year training
+            patience=25,             # Increase patience for full year training
             mode="min",
             min_delta=1e-5,          # Smaller threshold for year-long convergence
             verbose=True,

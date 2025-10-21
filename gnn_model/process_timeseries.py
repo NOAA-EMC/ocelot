@@ -85,7 +85,7 @@ def organize_bins_times(
     observation_config,
     pipeline_cfg=None,
     window_size="12h",
-    latent_step_hours=None,  # NEW PARAMETER
+    latent_step_hours=12,
     verbose=False,
 ):
     """
@@ -116,19 +116,11 @@ def organize_bins_times(
         "conventional": {"stride": 20, "mode": "random"},
     }
 
-    # START: LATENT ROLLOUT SETUP
-    use_latent_rollout = latent_step_hours is not None
-    if use_latent_rollout:
-        target_hours = int(window_size[:-1])
-        if target_hours % latent_step_hours != 0:
-            raise ValueError(f"target_hours ({target_hours}) must be divisible by latent_step_hours ({latent_step_hours})")
-        num_latent_steps = target_hours // latent_step_hours
-        sub_window_freq = f"{latent_step_hours}h"
-        if verbose:
-            print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
-    else:
-        num_latent_steps = 1
-    # END: LATENT ROLLOUT SETUP
+    # latent rollout setup
+    target_hours = int(window_size[:-1])
+    num_latent_steps = target_hours // latent_step_hours
+    sub_window_freq = f"{latent_step_hours}h"
+    print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
     t0 = int(start_date.timestamp())
     t1 = int(end_date.timestamp())
@@ -209,74 +201,50 @@ def organize_bins_times(
                 m_in = codes == bi
                 input_indices = idx_all[m_in]
 
-                if use_latent_rollout:
-                    # LATENT ROLLOUT: Split target window into sub-windows
-                    t_target_start = uniq_win[bi + 1]
+                # LATENT ROLLOUT: Split target window into sub-windows
+                t_target_start = uniq_win[bi + 1]
 
-                    # Get all indices in the main target window
-                    m_target_full = codes == (bi + 1)
-                    idx_target_full = idx_all[m_target_full]
-                    ts_target_full = time_ts[m_target_full]
+                # Get all indices in the main target window
+                m_target_full = codes == (bi + 1)
+                idx_target_full = idx_all[m_target_full]
+                ts_target_full = time_ts[m_target_full]
 
-                    # Generate the start/end times for each sub-window
-                    target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
+                # Generate the start/end times for each sub-window
+                target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
 
-                    target_indices_list = []
+                target_indices_list = []
 
-                    # Subsample input once
-                    seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
-                    input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
+                # Subsample input once
+                seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
+                input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
 
-                    # For each sub-window, filter and subsample
-                    for step in range(num_latent_steps):
-                        t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
+                # For each target sub-window, filter and subsample
+                for step in range(num_latent_steps):
+                    t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
 
+                    # Include end boundary for the last step
+                    if step == num_latent_steps - 1:
+                        m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
+                    else:
                         m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
-                        target_indices_step = idx_target_full[m_step]
 
-                        seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
-                        subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
-                        target_indices_list.append(subsampled_indices)
+                    target_indices_step = idx_target_full[m_step]
 
-                    if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
-                        continue
+                    seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
+                    subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
+                    target_indices_list.append(subsampled_indices)
 
-                    bin_name = f"bin{bi+1}"
-                    data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                        "input_time": t_in,
-                        "input_time_index": input_indices,
-                        "target_times": list(target_sub_window_times[:-1]),  # List of timestamps
-                        "target_time_indices": target_indices_list,         # List of index arrays
-                        "num_latent_steps": num_latent_steps,
-                        "is_latent_rollout": True,
-                    }
+                if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
+                    continue
 
-                else:
-                    # STANDARD ROLLOUT: Single target window (original behavior)
-                    t_out = uniq_win[bi + 1]
-                    m_out = codes == bi + 1
-                    target_indices = idx_all[m_out]
-
-                    # Per-bin stable seeds
-                    seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
-                    seed_out = _stable_seed(seed_base, t_out, obs_type, key, is_target=True)
-
-                    # Apply subsampling
-                    input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
-                    target_indices = _subsample_by_mode(target_indices, mode, stride, seed_out)
-
-                    # Skip empty bin if both sides empty after subsampling
-                    if input_indices.size == 0 and target_indices.size == 0:
-                        continue
-
-                    bin_name = f"bin{bi+1}"
-                    data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                        "input_time": t_in,
-                        "target_time": t_out,
-                        "input_time_index": input_indices,
-                        "target_time_index": target_indices,
-                        "is_latent_rollout": False,
-                    }
+                bin_name = f"bin{bi+1}"
+                data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
+                    "input_time": t_in,
+                    "input_time_index": input_indices,
+                    "target_times": list(target_sub_window_times[:-1]),  # List of timestamps
+                    "target_time_indices": target_indices_list,          # List of index arrays
+                    "num_latent_steps": num_latent_steps,
+                }
 
             if verbose:
                 total_bins = sum(
@@ -336,15 +304,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
             input_idx = np.asarray(data_summary_bin["input_time_index"])
 
-            # Detect if this is latent rollout or standard rollout
-            is_latent_rollout = data_summary_bin.get("is_latent_rollout", False)
-
-            if is_latent_rollout:
-                target_indices_list = [np.asarray(ti) for ti in data_summary_bin["target_time_indices"]]
-                num_latent_steps = data_summary_bin["num_latent_steps"]
-            else:
-                target_indices_list = [np.asarray(data_summary_bin["target_time_index"])]
-                num_latent_steps = 1
+            target_indices_list = [np.asarray(ti) for ti in data_summary_bin["target_time_indices"]]
+            num_latent_steps = data_summary_bin["num_latent_steps"]
 
             orig_in = input_idx.size
             orig_tg_sizes = [idx.size for idx in target_indices_list]
@@ -890,24 +851,14 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
 
-            if is_latent_rollout:
-                data_summary_bin.update({
-                    "target_features_final_list": target_features_final_list,
-                    "target_metadata_list": target_metadata_list,
-                    "scan_angle_list": scan_angle_list,
-                    "target_channel_mask_list": target_channel_mask_list,
-                    "target_lat_deg_list": target_lat_deg_list,
-                    "target_lon_deg_list": target_lon_deg_list
-                })
-            else:
-                data_summary_bin.update({
-                    "target_features_final": target_features_final_list[0],
-                    "target_metadata": target_metadata_list[0],
-                    "scan_angle": scan_angle_list[0],
-                    "target_channel_mask": target_channel_mask_list[0],
-                    "target_lat_deg": target_lat_deg_list[0],
-                    "target_lon_deg": target_lon_deg_list[0]
-                })
+            data_summary_bin.update({
+                "target_features_final_list": target_features_final_list,
+                "target_metadata_list": target_metadata_list,
+                "scan_angle_list": scan_angle_list,
+                "target_channel_mask_list": target_channel_mask_list,
+                "target_lat_deg_list": target_lat_deg_list,
+                "target_lon_deg_list": target_lon_deg_list
+            })
 
             NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]

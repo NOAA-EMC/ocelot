@@ -9,7 +9,7 @@ pipeline:
     conventional:
       _default: 10
       surface_obs: 10
-      snow_cover: 1        # keep all (stride 1)
+        #      snow_cover: 1        # keep all (stride 1)
       radiosonde: 1
     mode:
       satellite:
@@ -19,7 +19,7 @@ pipeline:
         avhrr: random
       conventional:
         _default: random
-        snow_cover: none    # ignore subsampling for snow_cover
+          #        snow_cover: none    # ignore subsampling for snow_cover
 
 
 instrument_weights:
@@ -27,7 +27,7 @@ instrument_weights:
   amsua: 1.0
   avhrr: 1.0
   surface_obs: 1.0
-  snow_cover: 1.0
+    #  snow_cover: 1.0
   radiosonde: 1.0
 
 channel_weights:
@@ -35,7 +35,7 @@ channel_weights:
   amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   avhrr: [1.0, 1.0, 1.0]
   surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
-  snow_cover: [1.0]            # snowDepth
+    #  snow_cover: [1.0]            # snowDepth
   radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
 
 observation_config:
@@ -146,18 +146,18 @@ observation_config:
           qm_flag_col: windQuality
           keep: [2,]
 
-    snow_cover:
-      source: zarr
-      zarr_name: snow_cover
-      features: [snowDepth]
-      metadata: [height, airTemperature]
-      qc_filters:
-        snowDepth:
-          range: [0, 6.5]
-      input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
-      target_dim: 1
-      encoder_hidden_layers: 2
-      decoder_hidden_layers: 2
+            #    snow_cover:
+            #      source: zarr
+            #      zarr_name: snow_cover
+            #      features: [snowDepth]
+            #      metadata: [height, airTemperature]
+            #      qc_filters:
+            #        snowDepth:
+            #          range: [0, 6.5]
+            #      input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
+            #      target_dim: 1
+            #      encoder_hidden_layers: 2
+            #      decoder_hidden_layers: 2
 
 feature_stats:  # Statistics for the features used in the model
   surface_obs:
@@ -177,8 +177,8 @@ feature_stats:  # Statistics for the features used in the model
     wind_v: [0.50, 5.5]
     latitude: [31.6, 25.90]
     longitude: [6, 95]
-  snow_cover:
-    snowDepth: [0.38, 0.68]
+      #  snow_cover:
+      #    snowDepth: [0.38, 0.68]
   atms:
     bt_channel_1: [259.20, 33.30]
     bt_channel_2: [254.39, 39.29]
