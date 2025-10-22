@@ -139,13 +139,15 @@ def organize_bins_times(
             idx_parts = []
             if obs_type == "satellite":
                 conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                # Handle different satellite ID field names
+                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
                 for i0 in range(0, n_total, chunk):
                     i1 = min(i0 + chunk, n_total)
                     t = time_arr[i0:i1]
                     m_time = (t >= t0) & (t < t1)
                     if not m_time.any():
                         continue
-                    sats = z["satelliteId"][i0:i1]
+                    sats = z[sat_id_field][i0:i1]
                     m = m_time & np.isin(sats, conf_sat_ids)
                     if m.any():
                         idx_parts.append(np.flatnonzero(m) + i0)
@@ -352,6 +354,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
                     reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
+                    # Map per-channel variables to channel indices (generic pattern for any instrument)
+                    if pos is None and "_ch_" in var:
+                        for ch in range(1, 10):  # Support up to 9 channels
+                            if var.endswith(f"_ch_{ch}"):
+                                pos = ch - 1  # channel N -> index N-1
+                                break
 
                     # --- range QC ---
                     if rng is not None and var in z:
@@ -386,10 +394,16 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
+                        # Use qc_strict_flags from config to determine if missing values should be rejected
+                        strict_flags = bool(obs_cfg.get("qc_strict_flags", False))
+
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
-                        keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0) if ("keep" in cfg) else \
-                            ~np.isin(in_flags, list(reject)) | (in_flags < 0)
+                        if strict_flags:
+                            keep_in = np.isin(in_flags, list(keep))                   # missing (-1/3) => rejected
+                        else:
+                            keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0)  # legacy: accept missing
+
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
@@ -403,8 +417,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if target_idx.size == 0:
                                 continue
                             tg_flags = z[flag_col][target_idx]
-                            keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0) if ("keep" in cfg) else \
-                                ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
+                            if strict_flags:
+                                keep_tg = np.isin(tg_flags, list(keep))              # missing => rejected
+                            else:
+                                keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0)
+
                             if pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
@@ -739,9 +756,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_data = target_data_cleaned[step]
 
                     if target_data['features'].shape[0] == 0:
+                        scan_cols = obs_cfg.get("scan_angle_channels", 1)
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
                         target_metadata_list.append(torch.empty(0, len(meta_keys) + 2, dtype=torch.float32))
-                        scan_angle_list.append(torch.empty(0, 1, dtype=torch.float32))
+                        scan_angle_list.append(torch.empty(0, scan_cols, dtype=torch.float32))
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
@@ -763,8 +781,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask = ~np.isnan(target_features_norm)
                     target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
 
-                    scan_angle = target_metadata_cos[:, 0:1] if target_metadata_cos.shape[1] > 0 else np.zeros(
-                        (target_features_final.shape[0], 1), dtype=np.float32)
+                    # Handle scan angle geometry (config-driven)
+                    scan_cols = obs_cfg.get("scan_angle_channels", 1)
+                    if target_metadata_cos.shape[1] >= scan_cols:
+                        scan_angle = target_metadata_cos[:, 0:scan_cols].astype(np.float32)
+                    else:
+                        scan_angle = np.zeros((target_features_final.shape[0], scan_cols), dtype=np.float32)
+
                     target_metadata_final = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_cos])
 
                     target_features_final_list.append(torch.tensor(target_features_final, dtype=torch.float32))
