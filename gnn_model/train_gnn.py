@@ -89,10 +89,10 @@ def main():
         data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
-    FULL_START_DATE = "2024-04-01"
-    FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
+    FULL_START_DATE = "2022-01-01"
+    FULL_END_DATE = "2022-12-31"
     TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
-    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
+    VALID_WINDOW_DAYS = 8   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
 
     # --- Compute train/val split BEFORE using VAL_START_DATE ---
@@ -127,9 +127,9 @@ def main():
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
-    hidden_dim = 64
-    num_layers = 8
-    lr = 0.001
+    hidden_dim = 96
+    num_layers = 10
+    lr = 5e-4
     max_epochs = 100
     batch_size = 1
 
@@ -162,7 +162,7 @@ def main():
         rollout_schedule=rollout_schedule,
         feature_stats=feature_stats,
         # Model options
-        processor_type="interaction",   # sliding_transformer or "interaction"
+        processor_type="sliding_transformer",   # sliding_transformer or "interaction"
         processor_window=4,     # default: 12h / 3h = 4
         processor_depth=4,
         processor_heads=4,
@@ -170,8 +170,8 @@ def main():
         # Dropout settings
         node_dropout=0.03,      # Slight node dropout for Phase 2 regularization
         # Encoder/decoder choices
-        encoder_type="interaction",    # gat or "interaction"
-        decoder_type="interaction",    # or "interaction"
+        encoder_type="gat",    # gat or "interaction"
+        decoder_type="gat",    # or "interaction"
         encoder_layers=2,
         decoder_layers=2,
         encoder_heads=4,
@@ -223,6 +223,11 @@ def main():
             mode="min",
             min_delta=1e-5,          # Smaller threshold for year-long convergence
             verbose=True,
+            check_finite=True,       # Check for finite values
+            stopping_threshold=None, # No absolute threshold
+            divergence_threshold=None, # No divergence threshold
+            check_on_train_epoch_end=False,  # Only check after validation
+            strict=False,
         ),
     ]
 
@@ -243,7 +248,7 @@ def main():
         "precision": "16-mixed",
         "log_every_n_steps": 1,
         "logger": logger,
-        "num_sanity_val_steps": 0,
+        "num_sanity_val_steps": 2,  # Changed from 0 to run validation checks
         "gradient_clip_val": 0.5,
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,   # IMPORTANT for resampling
