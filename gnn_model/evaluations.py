@@ -41,6 +41,7 @@ def plot_ocelot_target_diff(
     batch_idx: int,
     num_channels: int = 1,
     data_dir: str = "val_csv",
+    fig_dir: str = PLOT_DIR,
     units: str | None = None,  # e.g., "K" for ATMS/AMSU-A
     robust_q: float = 99.0,  # robust clipping for Difference panel
     point_size: int = 7,
@@ -57,6 +58,8 @@ def plot_ocelot_target_diff(
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
+
+    os.makedirs(fig_dir, exist_ok=True)
 
     feats = _discover_features(df, num_channels)
 
@@ -167,7 +170,7 @@ def plot_ocelot_target_diff(
 
         plt.tight_layout()
         safe_fname = str(fname).replace(" ", "_")
-        out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png"
+        out_png = os.path.join(fig_dir, f"{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png")
         plt.savefig(out_png, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -233,6 +236,7 @@ def plot_instrument_maps(
     batch_idx: int,
     num_channels: int = 1,
     data_dir: str = "val_csv",
+    fig_dir: str = PLOT_DIR,
     error_metric: str = "auto",  # "auto" | "absolute" | "percent" | "smape"
     drop_small_truth: bool = True,  # for percent/sMAPE
 ):
@@ -246,6 +250,8 @@ def plot_instrument_maps(
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
+
+    os.makedirs(fig_dir, exist_ok=True)
 
     feats = _discover_features(df, num_channels)
 
@@ -330,8 +336,7 @@ def plot_instrument_maps(
         axes[0].set_ylabel("Latitude")
 
         safe_fname = str(fname).replace(" ", "_")
-        out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_map_{safe_fname}_epoch_{epoch}_{metric}.png"
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        out_png = os.path.join(fig_dir, f"{instrument_name}_map_{safe_fname}_epoch_{epoch}_{metric}.png")
         plt.savefig(out_png, dpi=150)
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -393,7 +398,7 @@ def plot_instrument_maps(
         axes[0].set_ylabel("Latitude")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_map_wind_speed_epoch_{epoch}.png"
+        out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_speed_epoch_{epoch}.png")
         plt.savefig(out_png, dpi=150)
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -429,7 +434,7 @@ def plot_instrument_maps(
             axes[0].set_ylabel("Latitude")
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            out_png = f"{data_dir}/{PLOT_DIR}/{instrument_name}_map_wind_direction_epoch_{epoch}.png"
+            out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_direction_epoch_{epoch}.png")
             plt.savefig(out_png, dpi=150)
             plt.close()
             print(f"  -> Saved plot: {out_png}")
@@ -437,16 +442,16 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 56
+    EPOCH_TO_PLOT = 42
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
-    plot_dir = os.path.join(DATA_DIR, PLOT_DIR)
+    plot_dir = os.path.abspath(PLOT_DIR)
     os.makedirs(plot_dir, exist_ok=True)
 
     # add the OCELOT | Target | Difference + RMSE figures
     # ASCAT backscatter: add units for sigma0 
-    plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, units="dB")
+    plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
 
     # brightness temperature instruments (add units to annotate RMSE like your sample)
     plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, units="K")
@@ -465,6 +470,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=3,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="absolute",  # Absolute error for backscatter coefficients
         drop_small_truth=False,
     )
@@ -476,6 +482,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=6,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="auto",  # ABS for most, sMAPE for pressure
         drop_small_truth=True,
     )
@@ -486,6 +493,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=5,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="auto",  # ABS for most, sMAPE for pressure
         drop_small_truth=True,
     )
@@ -496,6 +504,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=2,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="auto",
         drop_small_truth=True,
     )
@@ -506,6 +515,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=3,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="percent",
         drop_small_truth=False,
     )
@@ -516,6 +526,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=22,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="percent",
         drop_small_truth=False,
     )
@@ -526,6 +537,7 @@ if __name__ == "__main__":
         BATCH_IDX_TO_PLOT,
         num_channels=15,
         data_dir=DATA_DIR,
+        fig_dir=plot_dir,
         error_metric="percent",
         drop_small_truth=False,
     )
