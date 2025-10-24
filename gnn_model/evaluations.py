@@ -450,7 +450,7 @@ if __name__ == "__main__":
     os.makedirs(plot_dir, exist_ok=True)
 
     # add the OCELOT | Target | Difference + RMSE figures
-    # ASCAT backscatter: add units for sigma0 
+    # ASCAT backscatter: add units for sigma0
     plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
 
     # brightness temperature instruments (add units to annotate RMSE like your sample)

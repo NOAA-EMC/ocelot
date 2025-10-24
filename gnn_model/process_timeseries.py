@@ -496,9 +496,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
                         if strict_flags:
-                            keep_in = np.isin(in_flags, list(keep))                  # missing (-1/3) => rejected
+                            keep_in = np.isin(in_flags, list(keep))                   # missing (-1/3) => rejected
                         else:
-                            keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0) # legacy: accept missing
+                            keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0)  # legacy: accept missing
 
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
@@ -525,7 +525,6 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                     ws_ok_tg_list[step] = keep_tg if ws_ok_tg_list[step] is None else (ws_ok_tg_list[step] & keep_tg)
                                 if var == "windDirection":
                                     wd_ok_tg_list[step] = keep_tg if wd_ok_tg_list[step] is None else (wd_ok_tg_list[step] & keep_tg)
-
 
                 # Wind component propagation
                 if ("wind_u" in feat_pos) and ("wind_v" in feat_pos):

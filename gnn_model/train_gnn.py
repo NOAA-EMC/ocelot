@@ -219,13 +219,13 @@ def main():
         ),
         EarlyStopping(
             monitor="val_loss",
-            patience=25,             # Increase patience for full year training
+            patience=25,                # Increase patience for full year training
             mode="min",
-            min_delta=1e-5,          # Smaller threshold for year-long convergence
+            min_delta=1e-5,             # Smaller threshold for year-long convergence
             verbose=True,
-            check_finite=True,       # Check for finite values
-            stopping_threshold=None, # No absolute threshold
-            divergence_threshold=None, # No divergence threshold
+            check_finite=True,          # Check for finite values
+            stopping_threshold=None,    # No absolute threshold
+            divergence_threshold=None,  # No divergence threshold
             check_on_train_epoch_end=False,  # Only check after validation
             strict=False,
         ),

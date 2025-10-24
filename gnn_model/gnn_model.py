@@ -641,7 +641,7 @@ class GNNLightning(pl.LightningModule):
                     # Apply scan angle embedding if needed
                     if base_type in ("atms_target", "amsua_target", "avhrr_target", "ascat_target"):
                         scan_angle = data[step_node_type].x
-                        
+
                         # Handle ASCAT channel-specific geometry
                         if base_type == "ascat_target":
                             # ASCAT scan_angle has shape [batch, 3] for 3 channels
@@ -649,7 +649,7 @@ class GNNLightning(pl.LightningModule):
                         else:
                             # Use regular embedder for single-channel instruments
                             scan_angle_embedded = self.scan_angle_embedder(scan_angle)
-                        
+
                         final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
                         step_prediction = self.output_mappers[base_type](final_features)
                     else:
