@@ -384,12 +384,16 @@ class GNNDataModule(pl.LightningDataModule):
             mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
             data[node_type_target].y = _t32(y_t)
-            data[node_type_target].target_channel_mask = _t32(mask_t)
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
 
             # Metadata
             if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
                 tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
                 data[node_type_target].target_metadata = _t32(tgt_meta)
+
+            if "target_prediction_index_list" in inst_dict and step < len(inst_dict["target_prediction_index_list"]):
+                pred_idx = inst_dict["target_prediction_index_list"][step]
+                data[node_type_target].prediction_indices = pred_idx[keep_t.cpu()]
 
             # Scan angle handling per-instrument
             scan_angle_cols = 3 if inst_name == "ascat" else 1

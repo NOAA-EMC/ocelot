@@ -288,6 +288,102 @@ def _stats_from_cfg(feature_stats, inst_name, feat_keys):
     return means, stds
 
 
+def _align_and_sort_target_records(target_records):
+    """
+    Align ASCAT target records by their original indices so every tensor (features,
+    metadata, masks) shares the exact same ordering used by the model rollout.
+
+    This performs an inner join on the shared index key, aggregates duplicate rows,
+    and returns records sorted by index to guarantee deterministic layouts across
+    preprocessing runs.
+    """
+
+    aligned = []
+
+    for record in target_records:
+        idx = np.asarray(record.get("indices", []), dtype=np.int64)
+        if idx.size == 0:
+            aligned.append(record)
+            continue
+
+        # Group by index (duplicates can appear from upstream QC merges)
+        uniq_raw, inverse = np.unique(idx, return_inverse=True)
+        sort_order = np.argsort(uniq_raw, kind="stable")
+        # Remap group ids into sorted order for easy aggregation
+        order_lookup = np.zeros_like(sort_order)
+        order_lookup[sort_order] = np.arange(sort_order.size)
+        inv_sorted = order_lookup[inverse]
+
+        def _aggregate(arr, reducer="mean"):
+            if arr is None:
+                return None
+            arr_np = np.asarray(arr)
+
+            if arr_np.ndim == 2 and arr_np.shape[1] == 0:
+                return np.empty((sort_order.size, 0), dtype=arr_np.dtype)
+            if arr_np.ndim == 1:
+                out = np.empty(sort_order.size, dtype=arr_np.dtype)
+            else:
+                out = np.empty((sort_order.size,) + arr_np.shape[1:], dtype=arr_np.dtype)
+
+            for group in range(sort_order.size):
+                mask = inv_sorted == group
+                if not np.any(mask):
+                    if out.ndim == 1:
+                        out[group] = np.nan if out.dtype.kind == "f" else 0
+                    else:
+                        fill_val = np.nan if out.dtype.kind == "f" else 0
+                        out[group] = fill_val
+                    continue
+
+                subset = arr_np[mask]
+                if reducer == "mean":
+                    if subset.size == 0 or np.all(np.isnan(subset)):
+                        fill_val = np.nan if out.dtype.kind == "f" else 0
+                        out[group] = fill_val
+                    else:
+                        out[group] = np.nanmean(subset, axis=0)
+                elif reducer == "first":
+                    out[group] = subset[0]
+                elif reducer == "any":
+                    out[group] = np.any(subset.astype(bool), axis=0)
+                else:
+                    raise ValueError(f"Unsupported reducer {reducer}")
+
+            return out
+
+        aligned_record = {
+            **record,
+            "indices": uniq_raw[sort_order].astype(np.int64),
+        }
+
+        aligned_record["features"] = _aggregate(record.get("features"), "mean").astype(np.float32)
+        metadata = record.get("metadata")
+        aligned_record["metadata"] = (
+            _aggregate(metadata, "mean").astype(np.float32)
+            if metadata is not None and metadata.size
+            else np.empty((aligned_record["indices"].shape[0], 0), dtype=np.float32)
+        )
+
+        valid_ch = record.get("valid_ch")
+        if valid_ch is not None and valid_ch.size:
+            aligned_record["valid_ch"] = _aggregate(valid_ch, "any").astype(bool)
+        else:
+            aligned_record["valid_ch"] = np.empty((aligned_record["indices"].shape[0], 0), dtype=bool)
+
+        for key in ("lat", "lon", "times"):
+            values = record.get(key)
+            if values is None or len(values) == 0:
+                aligned_record[key] = np.array([], dtype=np.float32)
+            else:
+                agg = _aggregate(values, "first").astype(np.float32)
+                aligned_record[key] = agg
+
+        aligned.append(aligned_record)
+
+    return aligned
+
+
 @timing_resource_decorator
 def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None):
     """
@@ -682,6 +778,21 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if target_data['features'].shape[0] > 0:
                     target_data['features'][~target_data['valid_ch']] = np.nan
 
+            # ASCAT: ensure all tensors share identical ordering by aligning on indices
+            if inst_name.lower() == "ascat":
+                target_data_cleaned = _align_and_sort_target_records(target_data_cleaned)
+                for step, aligned_data in enumerate(target_data_cleaned):
+                    target_indices_list[step] = aligned_data["indices"]
+                    data_summary_bin["target_time_indices"][step] = aligned_data["indices"]
+                    if aligned_data["valid_ch"].size:
+                        target_valid_ch_list[step] = aligned_data["valid_ch"]
+
+                # Re-apply NaN masking after alignment in case aggregation introduced new values
+                for step in range(num_latent_steps):
+                    target_data = target_data_cleaned[step]
+                    if target_data['features'].shape[0] > 0 and target_data['valid_ch'].size:
+                        target_data['features'][~target_data['valid_ch']] = np.nan
+
             # Check if we have any valid data left
             if input_features_raw_clean.shape[0] == 0 or all(td['features'].shape[0] == 0 for td in target_data_cleaned):
                 del data_summary[bin_name][obs_type][inst_name]
@@ -888,7 +999,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 "scan_angle_list": scan_angle_list,
                 "target_channel_mask_list": target_channel_mask_list,
                 "target_lat_deg_list": target_lat_deg_list,
-                "target_lon_deg_list": target_lon_deg_list
+                "target_lon_deg_list": target_lon_deg_list,
+                "target_prediction_index_list": [
+                    torch.tensor(target_data_cleaned[step]["indices"], dtype=torch.long)
+                    for step in range(num_latent_steps)
+                ],
             })
 
             NAME2ID = _name2id(observation_config)

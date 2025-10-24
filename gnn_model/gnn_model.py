@@ -782,29 +782,40 @@ class GNNLightning(pl.LightningModule):
             if base_type not in all_predictions:
                 continue
 
-            results[base_type] = {
-                "gts_list": [],
-                "instrument_ids_list": [],
-                "valid_mask_list": []
-            }
+            steps = sorted(steps_dict.keys())
+            gts_list, ids_list, mask_list, node_types, pred_idx_list = [], [], [], [], []
 
-            # Extract ground truths for each step
-            for step in sorted(steps_dict.keys()):
-                step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
-
-                if step_node_type in batch.node_types:
-                    y_true = batch[step_node_type].y
-                    instrument_ids = getattr(batch[step_node_type], "instrument_ids", None)
-                    valid_mask = getattr(batch[step_node_type], "target_channel_mask", None)
-
-                    results[base_type]["gts_list"].append(y_true)
-                    results[base_type]["instrument_ids_list"].append(instrument_ids)
-                    results[base_type]["valid_mask_list"].append(valid_mask)
+            for step in steps:
+                node_type = steps_dict[step]
+                if node_type in batch.node_types:
+                    y_true = batch[node_type].y
+                    instrument_ids = getattr(batch[node_type], "instrument_ids", None)
+                    valid_mask = getattr(batch[node_type], "target_channel_mask", None)
+                    prediction_indices = getattr(batch[node_type], "prediction_indices", None)
+                    if valid_mask is not None and valid_mask.dtype is not torch.bool:
+                        valid_mask = valid_mask.to(torch.bool)
                 else:
-                    # Handle missing step data
-                    results[base_type]["gts_list"].append(None)
-                    results[base_type]["instrument_ids_list"].append(None)
-                    results[base_type]["valid_mask_list"].append(None)
+                    y_true = instrument_ids = valid_mask = None
+                    prediction_indices = None
+
+                gts_list.append(y_true)
+                ids_list.append(instrument_ids)
+                mask_list.append(valid_mask)
+                node_types.append(node_type)
+                pred_idx_list.append(prediction_indices)
+
+            results[base_type] = {
+                "steps": steps,
+                "gts_list": gts_list,
+                "instrument_ids_list": ids_list,
+                "valid_mask_list": mask_list,
+                "node_types": node_types,
+                "gts_by_step": dict(zip(steps, gts_list)),
+                "instrument_ids_by_step": dict(zip(steps, ids_list)),
+                "valid_mask_by_step": dict(zip(steps, mask_list)),
+                "prediction_indices_list": pred_idx_list,
+                "prediction_indices_by_step": dict(zip(steps, pred_idx_list)),
+            }
 
         return results
 
@@ -833,60 +844,116 @@ class GNNLightning(pl.LightningModule):
         num_predictions = 0
 
         # Calculate loss for each observation type and add it to the total
-        for node_type, preds_list in all_predictions.items():
-            if node_type not in ground_truth_data:
+        for base_type, preds_list in all_predictions.items():
+            if base_type not in ground_truth_data:
                 continue
 
-            # Get the base instrument name (e.g., "atms" from "atms_target")
-            # Add handling for target_step in latent mode
-            if "_target_step" in node_type:
-                inst_name = node_type.split("_target_step")[0]
-            else:
-                inst_name = node_type.replace("_target", "")
+            inst_name = base_type.replace("_target", "")
             inst_id = self.instrument_name_to_id.get(inst_name, None)
             instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
 
-            gt_data = ground_truth_data[node_type]
-            gts_list = gt_data["gts_list"]
-            instrument_ids_list = gt_data["instrument_ids_list"]
-            valid_mask_list = gt_data["valid_mask_list"]
+            info = ground_truth_data[base_type]
+            steps = info["steps"]
+            node_types = info.get("node_types", [f"{base_type}_step{s}" for s in steps])
 
-            for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
-                zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
-            ):
+            preds_by_step = {
+                steps[idx]: preds_list[idx]
+                for idx in range(min(len(steps), len(preds_list)))
+            }
+            gts_by_step = info.get("gts_by_step") or dict(zip(steps, info["gts_list"]))
+            ids_by_step = info.get("instrument_ids_by_step") or dict(zip(steps, info["instrument_ids_list"]))
+            mask_by_step = info.get("valid_mask_by_step") or dict(zip(steps, info["valid_mask_list"]))
+            pred_idx_by_step = info.get("prediction_indices_by_step") or {}
+
+            if len(preds_list) != len(steps) and self.trainer.is_global_zero:
+                print(
+                    f"[WARN] Prediction count mismatch for {base_type}: "
+                    f"preds={len(preds_list)} steps={len(steps)}"
+                )
+
+            for step_idx, step in enumerate(steps):
+                node_type = node_types[step_idx] if step_idx < len(node_types) else f"{base_type}_step{step}"
+                y_pred = preds_by_step.get(step)
+                y_true = gts_by_step.get(step)
+                instrument_ids = ids_by_step.get(step)
+                valid_mask = mask_by_step.get(step)
+                prediction_indices = pred_idx_by_step.get(step)
+
                 if y_pred is None or y_true is None or y_pred.numel() == 0:
                     continue
 
-                # Ensure finite tensors
+                if y_true.numel() == 0:
+                    if getattr(self.trainer, "is_global_zero", False):
+                        print(
+                            f"[WARN] Empty ground truth for {base_type} step={step}; "
+                            "loss term skipped."
+                        )
+                    continue
+
+                if y_pred.shape != y_true.shape:
+                    raise RuntimeError(
+                        "[LOSS SHAPE MISMATCH] "
+                        f"bin={getattr(batch, 'bin_name', 'N/A')} base={base_type} step={step} "
+                        f"node={node_type} pred={tuple(y_pred.shape)} true={tuple(y_true.shape)}"
+                    )
+
                 if not torch.isfinite(y_pred).all():
                     y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
                 if not torch.isfinite(y_true).all():
                     y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
 
-                # Skip if mask exists but nothing valid
-                if valid_mask is not None and valid_mask.sum() == 0:
-                    continue
+                if valid_mask is not None:
+                    if valid_mask.shape != y_pred.shape:
+                        raise RuntimeError(
+                            "[LOSS MASK SHAPE] "
+                            f"bin={getattr(batch, 'bin_name', 'N/A')} base={base_type} step={step} "
+                            f"node={node_type} mask={tuple(valid_mask.shape)} pred={tuple(y_pred.shape)}"
+                        )
+                    if valid_mask.dtype is not torch.bool:
+                        valid_mask = valid_mask.to(torch.bool)
+                    if valid_mask.sum() == 0:
+                        if self.trainer.is_global_zero:
+                            print(
+                                f"[WARN] Empty valid_mask for {base_type} step={step}; term skipped."
+                            )
+                        continue
+                    valid_mask = valid_mask.to(device=y_pred.device)
+
+                if instrument_ids is not None:
+                    if instrument_ids.ndim != 1 or instrument_ids.numel() != y_pred.shape[0]:
+                        raise RuntimeError(
+                            "[LOSS INSTR SHAPE] "
+                            f"bin={getattr(batch, 'bin_name', 'N/A')} base={base_type} step={step} "
+                            f"node={node_type} instr={instrument_ids.shape} pred_rows={y_pred.shape[0]}"
+                        )
+                    if instrument_ids.dtype is not torch.long:
+                        instrument_ids = instrument_ids.to(torch.long)
+                    instrument_ids = instrument_ids.to(device=y_pred.device)
+
+                if prediction_indices is not None:
+                    if prediction_indices.ndim != 1 or prediction_indices.numel() != y_pred.shape[0]:
+                        raise RuntimeError(
+                            "[LOSS IDX SHAPE] "
+                            f"bin={getattr(batch, 'bin_name', 'N/A')} base={base_type} step={step} "
+                            f"node={node_type} idx={tuple(prediction_indices.shape)} pred_rows={y_pred.shape[0]}"
+                        )
+                    if not torch.all(prediction_indices[:-1] <= prediction_indices[1:]):
+                        raise RuntimeError(
+                            "[LOSS IDX ORDER] "
+                            f"bin={getattr(batch, 'bin_name', 'N/A')} base={base_type} step={step} node={node_type}"
+                            " prediction indices must be sorted after preprocessing"
+                        )
 
                 channel_loss = weighted_huber_loss(
                     y_pred,
                     y_true,
                     instrument_ids=instrument_ids,
-                    channel_weights=self.channel_weights,  # dict keyed by int ids
+                    channel_weights=self.channel_weights,
                     delta=0.1,
                     rebalancing=True,
                     valid_mask=valid_mask,
                 )
-
-                if not torch.isfinite(channel_loss):
-                    if self.trainer.is_global_zero:
-                        print(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
-                    continue
-
-                # Apply the overall instrument weight
-                weighted_loss = channel_loss * instrument_weight
-
-                # Add the loss for this instrument to the total
-                total_loss = total_loss + weighted_loss
+                total_loss = total_loss + channel_loss * instrument_weight
                 num_predictions += 1
 
         dummy_loss = 0.0
