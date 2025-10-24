@@ -55,19 +55,42 @@ def weighted_huber_loss(
         if it has at least 1 valid element).
       - If rebalancing=False → global mean over all valid elements across instruments.
     """
+    if pred.shape != target.shape:
+        raise ValueError(
+            f"weighted_huber_loss expects pred/target shapes to match, got {pred.shape} vs {target.shape}"
+        )
+
     device = pred.device
     N, C = pred.shape
 
-    # elementwise Huber [N, C]
-    huber = nn.HuberLoss(delta=delta, reduction="none")(pred, target)
-
-    # Optional elementwise mask
     if valid_mask is not None:
-        if valid_mask.shape != huber.shape:
-            raise ValueError(f"valid_mask shape {valid_mask.shape} must match pred/target {huber.shape}.")
-        vm = valid_mask.to(dtype=huber.dtype, device=device)
+        if valid_mask.shape != pred.shape:
+            raise ValueError(
+                f"valid_mask shape {valid_mask.shape} must match pred/target {pred.shape}."
+            )
+        if valid_mask.dtype is not torch.bool:
+            valid_mask = valid_mask.to(torch.bool)
+        vm = valid_mask.to(dtype=pred.dtype, device=device)
+        if vm.sum() == 0:
+            return torch.tensor(0.0, device=device, dtype=pred.dtype)
     else:
         vm = None
+
+    if instrument_ids is not None:
+        if instrument_ids.ndim != 1:
+            raise ValueError(
+                f"instrument_ids must be 1D, received shape {instrument_ids.shape}"
+            )
+        if instrument_ids.numel() != N:
+            raise ValueError(
+                f"instrument_ids length {instrument_ids.numel()} does not match batch {N}"
+            )
+        if instrument_ids.dtype is not torch.long:
+            instrument_ids = instrument_ids.to(torch.long)
+        instrument_ids = instrument_ids.to(device=device)
+
+    # elementwise Huber [N, C]
+    huber = nn.HuberLoss(delta=delta, reduction="none")(pred, target)
 
     # Helper to broadcast a channel-weight vector to [*, C]
     def _broadcast_w(w: torch.Tensor) -> torch.Tensor:
@@ -102,7 +125,6 @@ def weighted_huber_loss(
         w = _get_weights_for_inst("global")  # [1, C]
         loss_mat = huber * w  # [N, C]
         if vm is not None:
-            vm = vm.to(dtype=huber.dtype, device=device)
             active = vm * (w > 0).to(vm.dtype)  # exclude zero-weight chans
             loss_mat = loss_mat * active
             denom = active.sum()

@@ -384,18 +384,32 @@ class GNNDataModule(pl.LightningDataModule):
             mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
             data[node_type_target].y = _t32(y_t)
-            data[node_type_target].target_channel_mask = _t32(mask_t)
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
 
             # Metadata
             if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
                 tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
                 data[node_type_target].target_metadata = _t32(tgt_meta)
 
-            # Scan angle: only for satellite instruments (atms, amsua, avhrr)
-            if inst_name in ("atms", "amsua", "avhrr") and "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
+            if "target_prediction_index_list" in inst_dict and step < len(inst_dict["target_prediction_index_list"]):
+                pred_idx = inst_dict["target_prediction_index_list"][step]
+                data[node_type_target].prediction_indices = pred_idx[keep_t.cpu()]
+
+            # Scan angle handling per-instrument
+            scan_angle_cols = 3 if inst_name == "ascat" else 1
+            if "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
                 x_aux = inst_dict["scan_angle_list"][step][keep_t]
+
+                # Ensure ASCAT scan angles always provide 3 columns
+                if inst_name == "ascat" and x_aux.shape[-1] != 3:
+                    if x_aux.shape[-1] > 3:
+                        x_aux = x_aux[:, :3]
+                    else:
+                        pad_cols = 3 - x_aux.shape[-1]
+                        padding = torch.zeros((x_aux.shape[0], pad_cols), dtype=x_aux.dtype, device=x_aux.device)
+                        x_aux = torch.cat([x_aux, padding], dim=-1)
             else:
-                x_aux = torch.zeros((y_t.shape[0], 1), dtype=torch.float32)
+                x_aux = torch.zeros((y_t.shape[0], scan_angle_cols), dtype=torch.float32)
             data[node_type_target].x = _t32(x_aux)
 
             # Instrument ID
@@ -435,8 +449,11 @@ class GNNDataModule(pl.LightningDataModule):
         for step in range(num_latent_steps):
             node_type_target = f"{inst_name}_target_step{step}"
             data[node_type_target].y = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.float32)
-            data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
-            data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
+            # ASCAT uses 3 channels for scan_angle, others use 1
+            scan_angle_dim = 3 if inst_name == "ascat" else 1
+            data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
+            metadata_dim = len(inst_cfg.get("metadata", [])) + 2  # lat/lon + metadata columns
+            data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)

@@ -139,13 +139,15 @@ def organize_bins_times(
             idx_parts = []
             if obs_type == "satellite":
                 conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                # Handle different satellite ID field names
+                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
                 for i0 in range(0, n_total, chunk):
                     i1 = min(i0 + chunk, n_total)
                     t = time_arr[i0:i1]
                     m_time = (t >= t0) & (t < t1)
                     if not m_time.any():
                         continue
-                    sats = z["satelliteId"][i0:i1]
+                    sats = z[sat_id_field][i0:i1]
                     m = m_time & np.isin(sats, conf_sat_ids)
                     if m.any():
                         idx_parts.append(np.flatnonzero(m) + i0)
@@ -286,6 +288,102 @@ def _stats_from_cfg(feature_stats, inst_name, feat_keys):
     return means, stds
 
 
+def _align_and_sort_target_records(target_records):
+    """
+    Align ASCAT target records by their original indices so every tensor (features,
+    metadata, masks) shares the exact same ordering used by the model rollout.
+
+    This performs an inner join on the shared index key, aggregates duplicate rows,
+    and returns records sorted by index to guarantee deterministic layouts across
+    preprocessing runs.
+    """
+
+    aligned = []
+
+    for record in target_records:
+        idx = np.asarray(record.get("indices", []), dtype=np.int64)
+        if idx.size == 0:
+            aligned.append(record)
+            continue
+
+        # Group by index (duplicates can appear from upstream QC merges)
+        uniq_raw, inverse = np.unique(idx, return_inverse=True)
+        sort_order = np.argsort(uniq_raw, kind="stable")
+        # Remap group ids into sorted order for easy aggregation
+        order_lookup = np.zeros_like(sort_order)
+        order_lookup[sort_order] = np.arange(sort_order.size)
+        inv_sorted = order_lookup[inverse]
+
+        def _aggregate(arr, reducer="mean"):
+            if arr is None:
+                return None
+            arr_np = np.asarray(arr)
+
+            if arr_np.ndim == 2 and arr_np.shape[1] == 0:
+                return np.empty((sort_order.size, 0), dtype=arr_np.dtype)
+            if arr_np.ndim == 1:
+                out = np.empty(sort_order.size, dtype=arr_np.dtype)
+            else:
+                out = np.empty((sort_order.size,) + arr_np.shape[1:], dtype=arr_np.dtype)
+
+            for group in range(sort_order.size):
+                mask = inv_sorted == group
+                if not np.any(mask):
+                    if out.ndim == 1:
+                        out[group] = np.nan if out.dtype.kind == "f" else 0
+                    else:
+                        fill_val = np.nan if out.dtype.kind == "f" else 0
+                        out[group] = fill_val
+                    continue
+
+                subset = arr_np[mask]
+                if reducer == "mean":
+                    if subset.size == 0 or np.all(np.isnan(subset)):
+                        fill_val = np.nan if out.dtype.kind == "f" else 0
+                        out[group] = fill_val
+                    else:
+                        out[group] = np.nanmean(subset, axis=0)
+                elif reducer == "first":
+                    out[group] = subset[0]
+                elif reducer == "any":
+                    out[group] = np.any(subset.astype(bool), axis=0)
+                else:
+                    raise ValueError(f"Unsupported reducer {reducer}")
+
+            return out
+
+        aligned_record = {
+            **record,
+            "indices": uniq_raw[sort_order].astype(np.int64),
+        }
+
+        aligned_record["features"] = _aggregate(record.get("features"), "mean").astype(np.float32)
+        metadata = record.get("metadata")
+        aligned_record["metadata"] = (
+            _aggregate(metadata, "mean").astype(np.float32)
+            if metadata is not None and metadata.size
+            else np.empty((aligned_record["indices"].shape[0], 0), dtype=np.float32)
+        )
+
+        valid_ch = record.get("valid_ch")
+        if valid_ch is not None and valid_ch.size:
+            aligned_record["valid_ch"] = _aggregate(valid_ch, "any").astype(bool)
+        else:
+            aligned_record["valid_ch"] = np.empty((aligned_record["indices"].shape[0], 0), dtype=bool)
+
+        for key in ("lat", "lon", "times"):
+            values = record.get(key)
+            if values is None or len(values) == 0:
+                aligned_record[key] = np.array([], dtype=np.float32)
+            else:
+                agg = _aggregate(values, "first").astype(np.float32)
+                aligned_record[key] = agg
+
+        aligned.append(aligned_record)
+
+    return aligned
+
+
 @timing_resource_decorator
 def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None):
     """
@@ -352,6 +450,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
                     reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
+                    # Map ASCAT per-channel flags (…_ch_1/2/3) to the matching backscatter channel index
+                    if pos is None and inst_name.lower() == "ascat":
+                        for ch in (1, 2, 3):
+                            if var.endswith(f"_ch_{ch}"):
+                                pos = ch - 1  # backscatter_ch_1/2/3 -> indices 0/1/2
+                                break
 
                     # --- range QC ---
                     if rng is not None and var in z:
@@ -386,10 +490,16 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
+                        # For ASCAT, enforce strict flags (no missing accepted). Else allow opt-in via qc_strict_flags: true
+                        strict_flags = (inst_name.lower() == "ascat") or bool(obs_cfg.get("qc_strict_flags", False))
+
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
-                        keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0) if ("keep" in cfg) else \
-                            ~np.isin(in_flags, list(reject)) | (in_flags < 0)
+                        if strict_flags:
+                            keep_in = np.isin(in_flags, list(keep))                   # missing (-1/3) => rejected
+                        else:
+                            keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0)  # legacy: accept missing
+
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
@@ -403,8 +513,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if target_idx.size == 0:
                                 continue
                             tg_flags = z[flag_col][target_idx]
-                            keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0) if ("keep" in cfg) else \
-                                ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
+                            if strict_flags:
+                                keep_tg = np.isin(tg_flags, list(keep))              # missing => rejected
+                            else:
+                                keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0)
+
                             if pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
@@ -664,6 +777,21 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if target_data['features'].shape[0] > 0:
                     target_data['features'][~target_data['valid_ch']] = np.nan
 
+            # ASCAT: ensure all tensors share identical ordering by aligning on indices
+            if inst_name.lower() == "ascat":
+                target_data_cleaned = _align_and_sort_target_records(target_data_cleaned)
+                for step, aligned_data in enumerate(target_data_cleaned):
+                    target_indices_list[step] = aligned_data["indices"]
+                    data_summary_bin["target_time_indices"][step] = aligned_data["indices"]
+                    if aligned_data["valid_ch"].size:
+                        target_valid_ch_list[step] = aligned_data["valid_ch"]
+
+                # Re-apply NaN masking after alignment in case aggregation introduced new values
+                for step in range(num_latent_steps):
+                    target_data = target_data_cleaned[step]
+                    if target_data['features'].shape[0] > 0 and target_data['valid_ch'].size:
+                        target_data['features'][~target_data['valid_ch']] = np.nan
+
             # Check if we have any valid data left
             if input_features_raw_clean.shape[0] == 0 or all(td['features'].shape[0] == 0 for td in target_data_cleaned):
                 del data_summary[bin_name][obs_type][inst_name]
@@ -739,9 +867,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_data = target_data_cleaned[step]
 
                     if target_data['features'].shape[0] == 0:
+                        scan_cols = 3 if inst_name.lower() == "ascat" else 1
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
                         target_metadata_list.append(torch.empty(0, len(meta_keys) + 2, dtype=torch.float32))
-                        scan_angle_list.append(torch.empty(0, 1, dtype=torch.float32))
+                        scan_angle_list.append(torch.empty(0, scan_cols, dtype=torch.float32))
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
@@ -763,8 +892,20 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask = ~np.isnan(target_features_norm)
                     target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
 
-                    scan_angle = target_metadata_cos[:, 0:1] if target_metadata_cos.shape[1] > 0 else np.zeros(
-                        (target_features_final.shape[0], 1), dtype=np.float32)
+                    # Handle ASCAT channel-specific geometry
+                    if inst_name.lower() == 'ascat':
+                        if target_metadata_cos.shape[1] >= 6:
+                            # [radarIncidenceAngle_ch_1, ch_2, ch_3]
+                            scan_angle = target_metadata_cos[:, 0:3].astype(np.float32)
+                        else:
+                            # Fallback must still be 3 columns for ASCAT
+                            scan_angle = np.zeros((target_features_final.shape[0], 3), dtype=np.float32)
+                    else:
+                        # Single-channel instruments (ATMS/AMSU-A/AVHRR/...)
+                        if target_metadata_cos.shape[1] > 0:
+                            scan_angle = target_metadata_cos[:, 0:1].astype(np.float32)
+                        else:
+                            scan_angle = np.zeros((target_features_final.shape[0], 1), dtype=np.float32)
                     target_metadata_final = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_cos])
 
                     target_features_final_list.append(torch.tensor(target_features_final, dtype=torch.float32))
@@ -857,7 +998,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 "scan_angle_list": scan_angle_list,
                 "target_channel_mask_list": target_channel_mask_list,
                 "target_lat_deg_list": target_lat_deg_list,
-                "target_lon_deg_list": target_lon_deg_list
+                "target_lon_deg_list": target_lon_deg_list,
+                "target_prediction_index_list": [
+                    torch.tensor(target_data_cleaned[step]["indices"], dtype=torch.long)
+                    for step in range(num_latent_steps)
+                ],
             })
 
             NAME2ID = _name2id(observation_config)
