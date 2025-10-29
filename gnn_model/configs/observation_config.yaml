@@ -5,8 +5,8 @@ pipeline:
       _default: 30    # default for any unspecified instrument
       atms: 6         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
       avhrr: 100
-      amsua: 2   
-      ascat: 1        # keep all samples
+      amsua: 3   
+      ascat: 2
     conventional:
       _default: 1
       surface_obs: 1
@@ -97,15 +97,15 @@ observation_config:
         backscatter_ch_1:
           range: [-55.0, 3.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.8, -2.3]; allow +0.7 dB buffer
           qm_flag_col: ascatSigma0Usability_ch_1
-          keep: [0]
+          keep: [0,1]
         backscatter_ch_2:
           range: [-55.0, 5.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-35.6, -0.6]; retain wet-snow spikes
           qm_flag_col: ascatSigma0Usability_ch_2
-          keep: [0]
+          keep: [0,1]
         backscatter_ch_3:
           range: [-55.0, 3.2]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.6, -2.4]
           qm_flag_col: ascatSigma0Usability_ch_3
-          keep: [0]
+          keep: [0,1]
 
   conventional:
     surface_obs:

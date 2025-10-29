@@ -851,7 +851,8 @@ class GNNLightning(pl.LightningModule):
             for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
-                if y_pred is None or y_true is None or y_pred.numel() == 0:
+                # Skip if either prediction or ground truth is None or empty
+                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
 
                 # Ensure finite tensors
@@ -862,6 +863,14 @@ class GNNLightning(pl.LightningModule):
 
                 # Skip if mask exists but nothing valid
                 if valid_mask is not None and valid_mask.sum() == 0:
+                    continue
+
+                # Shape validation before loss calculation
+                if y_pred.shape[0] != y_true.shape[0]:
+                    print(f"[ERROR] Shape mismatch for {node_type} step {step}:")
+                    print(f"  y_pred: {y_pred.shape} ({y_pred.shape[0]} obs)")
+                    print(f"  y_true: {y_true.shape} ({y_true.shape[0]} obs)")
+                    print(f"  Skipping this prediction to avoid crash")
                     continue
 
                 channel_loss = weighted_huber_loss(
@@ -967,7 +976,8 @@ class GNNLightning(pl.LightningModule):
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
                 print(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
-                if y_pred is None or y_true is None or y_pred.numel() == 0:
+                # Skip if either prediction or ground truth is None or empty
+                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
                 if y_pred.shape != y_true.shape:
                     continue
