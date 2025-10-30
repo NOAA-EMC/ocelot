@@ -42,6 +42,10 @@ bufr:
 
 
 encoder:
+  dimensions:
+    - name: ch
+      path: "*/AMSR2CHN"
+
   variables:
     # MetaData
     - name: "time"
@@ -90,7 +94,7 @@ encoder:
       source: variables/qualityFlag
       longName: "Quality Flag"
 
-    - name: "brightnessTemperature"
+    - name: "bt"
       source: variables/brightnessTemperature
       longName: "Brightness Temperature"
       units: "K"
