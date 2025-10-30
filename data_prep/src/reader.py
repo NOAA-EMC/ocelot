@@ -158,7 +158,7 @@ def create_yearly_data(start_date: datetime,
                        output_type: str = 'parquet',
                        suffix: str = None,
                        append: bool = True) -> None:
-     """Create zarr files from BUFR data in year long chunks."""
+    """Create zarr files from BUFR data in year long chunks."""
     
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
