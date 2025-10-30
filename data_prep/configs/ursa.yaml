@@ -87,6 +87,17 @@ data types:
       - 12/atmos/gdas.t12z.ssmisu.tm00.bufr_d
       - 18/atmos/gdas.t18z.ssmisu.tm00.bufr_d
 
+  - name: severi
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_ssmis.py
+    paths:
+      - 00/atmos/gdas.t00z.ssmisu.tm00.bufr_d
+      - 06/atmos/gdas.t06z.ssmisu.tm00.bufr_d
+      - 12/atmos/gdas.t12z.ssmisu.tm00.bufr_d
+      - 18/atmos/gdas.t18z.ssmisu.tm00.bufr_d
+
   - name: amsua
     type: tank
     num_tasks: 4
