@@ -113,7 +113,7 @@ data types:
     type: tank
     num_tasks: 24
     batch_days: 15
-    mapping: bufr_amsua.py
+    mapping: bufr_amsr.py
     paths:
       - 00/atmos/gdas.t00z.amsr2.tm00.bufr_d
       - 06/atmos/gdas.t06z.amsr2.tm00.bufr_d
