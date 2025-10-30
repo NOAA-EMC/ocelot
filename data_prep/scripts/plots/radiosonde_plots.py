@@ -106,9 +106,9 @@ def make_gif(domain:str='conus'):
     ani.save(f"radiosonde_{domain}.gif", writer="imagemagick", fps=5, dpi=300)
 
 if __name__ == '__main__':
-    plot(domain='conus')
+    # plot(domain='conus')
     # plot(domain='global')
     make_gif(domain='conus')
-    make_gif(domain='global')
+    # make_gif(domain='global')
     # make_gif(domain='europe')
     # make_gif(domain='northeast')

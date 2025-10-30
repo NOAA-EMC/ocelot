@@ -1,7 +1,7 @@
 data types:
   - name: atms
     type: tank
-    num_tasks: 2
+    num_tasks: 24
     batch_days: 15
     mapping: bufr_atms.py
     paths:
@@ -23,8 +23,9 @@ data types:
 
   - name: raw_surface_obs
     type: tank
-    num_tasks: 4
+    num_tasks: 1
     batch_days: 30
+    memory: 48G
     mapping: bufr_surface_obs_raw.py
     paths:
       prepbufr:
@@ -57,7 +58,7 @@ data types:
   - name: raw_radiosonde
     type: tank
     num_tasks: 1
-    batch_days: 30
+    batch_days: 15
     mapping: bufr_radiosonde_raw.py
     paths:
       prepbufr:
@@ -98,6 +99,17 @@ data types:
       - 12/atmos/gdas.t12z.1bamua.tm00.bufr_d
       - 18/atmos/gdas.t18z.1bamua.tm00.bufr_d
 
+  - name: ascat
+    type: tank
+    num_tasks: 16
+    batch_days: 30
+    mapping: bufr_ascat.py
+    paths:
+      - 00/atmos/gdas.t00z.ascatt.tm00.bufr_d
+      - 06/atmos/gdas.t06z.ascatt.tm00.bufr_d
+      - 12/atmos/gdas.t12z.ascatt.tm00.bufr_d
+      - 18/atmos/gdas.t18z.ascatt.tm00.bufr_d
+
   - name: viirs
     type: tank
     num_tasks: 24
@@ -111,8 +123,9 @@ data types:
 
   - name: avhrr
     type: tank
-    num_tasks: 24
+    num_tasks: 64
     batch_days: 15
+    memory: 128G
     mapping: bufr_avhrr.py
     paths:
       am:
