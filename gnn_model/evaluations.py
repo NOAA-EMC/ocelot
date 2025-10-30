@@ -442,7 +442,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 42
+    EPOCH_TO_PLOT = 50
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
@@ -454,14 +454,14 @@ if __name__ == "__main__":
     plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
 
     # brightness temperature instruments (add units to annotate RMSE like your sample)
-    plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, units="K")
-    plot_ocelot_target_diff("amsua", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=15, data_dir=DATA_DIR, units="K")
+    plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+    plot_ocelot_target_diff("amsua", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=15, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
 
     # AVHRR reflectance/albedo: omit units or add as needed
-    plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR)
+    plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir)
     # Surface obs and snow cover: omit units or add as needed
-    plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR)
-    plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR)
+    plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
+    plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR, fig_dir=plot_dir)
 
     # ASCAT backscatter: use absolute error for sigma0 measurements
     plot_instrument_maps(

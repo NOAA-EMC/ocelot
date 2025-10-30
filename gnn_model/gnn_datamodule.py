@@ -14,6 +14,9 @@ from nnja_adapter import build_zlike_from_df
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
 
+# Number of columns for latitude and longitude in metadata
+LAT_LON_COLUMNS = 2
+
 
 def _t32(x):
     return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
@@ -452,13 +455,13 @@ class GNNDataModule(pl.LightningDataModule):
             obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
             scan_angle_dim = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
             data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
-            metadata_dim = len(inst_cfg.get("metadata", [])) + 2  # lat/lon + metadata columns
+            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS  # lat/lon + metadata columns
             data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
-            data[node_type_target].pos = torch.empty((0, 2), dtype=torch.float32)  # from standard mode, seems unused
+            data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
 
     # ------------- DataLoaders -------------

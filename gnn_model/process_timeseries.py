@@ -5,6 +5,9 @@ import torch
 from sklearn.preprocessing import StandardScaler
 from timing_utils import timing_resource_decorator
 
+# Maximum number of channels supported for per-channel variable mapping
+MAX_SUPPORTED_CHANNELS = 9
+
 
 def _subsample_by_mode(indices: np.ndarray, mode: str, stride: int, seed: int | None):
     """
@@ -356,7 +359,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     pos = feat_pos.get(var, None)
                     # Map per-channel variables to channel indices (generic pattern for any instrument)
                     if pos is None and "_ch_" in var:
-                        for ch in range(1, 10):  # Support up to 9 channels
+                        for ch in range(1, MAX_SUPPORTED_CHANNELS + 1):
                             if var.endswith(f"_ch_{ch}"):
                                 pos = ch - 1  # channel N -> index N-1
                                 break
