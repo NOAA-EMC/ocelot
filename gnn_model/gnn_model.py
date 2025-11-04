@@ -133,6 +133,11 @@ class GNNLightning(pl.LightningModule):
         self.mlp_blueprint_end = [hidden_dim] * (hidden_layers + 1)
         self.mesh_embedder = make_mlp([mesh_feature_dim] + self.mlp_blueprint_end)
 
+        # Create scan-angle embedders once to avoid loop-order surprises
+        self.scan_angle_embed_dim = 8
+        self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
+        self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
+
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
@@ -214,13 +219,10 @@ class GNNLightning(pl.LightningModule):
                 # Initial MLP to project raw features to hidden_dim
                 self.observation_embedders[node_type_input] = make_mlp([input_dim] + self.mlp_blueprint_end)
 
-                # Final MLP: add scan-angle embedder for ATMS, AMSU-A, and AVHRR targets
-                targets_with_scan = {"atms_target", "amsua_target", "avhrr_target"}
+                # Final MLP: add scan-angle embedder for ATMS, AMSU-A, AVHRR, and ASCAT targets
+                targets_with_scan = {"atms_target", "amsua_target", "avhrr_target", "ascat_target"}
                 if node_type_target in targets_with_scan:
-                    # define once; harmless if re-assigned identically
-                    self.scan_angle_embed_dim = 8
-                    if not hasattr(self, "scan_angle_embedder"):
-                        self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
+                    # Embedders already created above; just use them
                     input_dim_for_mapper = hidden_dim + self.scan_angle_embed_dim
                 else:
                     input_dim_for_mapper = hidden_dim
@@ -637,8 +639,13 @@ class GNNLightning(pl.LightningModule):
                     )
 
                     # Apply scan angle embedding if needed
-                    if base_type in ("atms_target", "amsua_target", "avhrr_target"):
-                        scan_angle = data[step_node_type].x
+                    scan_angle = data[step_node_type].x
+
+                    if base_type == "ascat_target":
+                        scan_angle_embedded = self.ascat_scan_angle_embedder(scan_angle)
+                        final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
+                        step_prediction = self.output_mappers[base_type](final_features)
+                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
                         scan_angle_embedded = self.scan_angle_embedder(scan_angle)
                         final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
                         step_prediction = self.output_mappers[base_type](final_features)
@@ -844,7 +851,8 @@ class GNNLightning(pl.LightningModule):
             for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
-                if y_pred is None or y_true is None or y_pred.numel() == 0:
+                # Skip if either prediction or ground truth is None or empty
+                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
 
                 # Ensure finite tensors
@@ -855,6 +863,14 @@ class GNNLightning(pl.LightningModule):
 
                 # Skip if mask exists but nothing valid
                 if valid_mask is not None and valid_mask.sum() == 0:
+                    continue
+
+                # Shape validation before loss calculation
+                if y_pred.shape[0] != y_true.shape[0]:
+                    print(f"[ERROR] Shape mismatch for {node_type} step {step}:")
+                    print(f"  y_pred: {y_pred.shape} ({y_pred.shape[0]} obs)")
+                    print(f"  y_true: {y_true.shape} ({y_true.shape[0]} obs)")
+                    print(f"  Skipping this prediction to avoid crash")
                     continue
 
                 channel_loss = weighted_huber_loss(
@@ -960,7 +976,8 @@ class GNNLightning(pl.LightningModule):
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
                 print(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
-                if y_pred is None or y_true is None or y_pred.numel() == 0:
+                # Skip if either prediction or ground truth is None or empty
+                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
                 if y_pred.shape != y_true.shape:
                     continue

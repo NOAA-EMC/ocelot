@@ -2,14 +2,15 @@ pipeline:
   subsample:
     seed: 12345
     satellite:         
-      _default: 40     # default for any unspecified instrument
-      atms: 40         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
+      _default: 30    # default for any unspecified instrument
+      atms: 6         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
       avhrr: 100
-      amsua: 30   
+      amsua: 3   
+      ascat: 2
     conventional:
-      _default: 10
-      surface_obs: 10
-        #      snow_cover: 1        # keep all (stride 1)
+      _default: 1
+      surface_obs: 1
+    # snow_cover: 1        # keep all (stride 1)
       radiosonde: 1
     mode:
       satellite:
@@ -17,31 +18,34 @@ pipeline:
         atms: random
         amsua: random
         avhrr: random
+        ascat: random   # ASCAT sampling mode
       conventional:
         _default: random
-          #        snow_cover: none    # ignore subsampling for snow_cover
+    #   snow_cover: none    # ignore subsampling for snow_cover
 
 
 instrument_weights:
   atms: 1.0
   amsua: 1.0
   avhrr: 1.0
-  surface_obs: 1.0
-    #  snow_cover: 1.0
-  radiosonde: 1.0
+  surface_obs: 2.0
+  radiosonde: 2.0
+  ascat: 1.0
+  # snow_cover: 1.0
 
 channel_weights:
   atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
   amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   avhrr: [1.0, 1.0, 1.0]
-  surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
-    #  snow_cover: [1.0]            # snowDepth
+  surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
   radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
+  ascat: [1.0, 1.0, 1.0]
 
 observation_config:
   satellite:
     atms:
       sat_ids: [224, 225]
+      scan_angle_channels: 1  # Number of scan angle dimensions
       features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
                  bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
                  bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15,
@@ -55,6 +59,7 @@ observation_config:
 
     amsua:
       sat_ids: [3, 5, 206, 209, 223]
+      scan_angle_channels: 1  # Number of scan angle dimensions
       features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
                 bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
                 bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15]
@@ -66,12 +71,41 @@ observation_config:
 
     avhrr:
       sat_ids: [3, 5, 209, 223]
+      scan_angle_channels: 1  # Number of scan angle dimensions
       features: [brightnessTemperature_ch_50, brightnessTemperature_ch_51, brightnessTemperature_ch_52]
       metadata: [satelliteZenithAngle, solarZenithAngle]
       input_dim: 12
       target_dim: 3
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+
+    ascat:
+      sat_ids: [3]  # MetOp satellite IDs
+      scan_angle_channels: 3  # ASCAT has 3 beams, each with its own scan angle
+      features: [backscatter_ch_1, backscatter_ch_2, backscatter_ch_3]  # fore, mid, aft beams
+      metadata: [radarIncidenceAngle_ch_1, radarIncidenceAngle_ch_2, radarIncidenceAngle_ch_3,
+                 antennaBeamAzimuthAngle_ch_1, antennaBeamAzimuthAngle_ch_2, antennaBeamAzimuthAngle_ch_3]  # angles for each channel (beam IDs are implicit in channel order)
+      input_dim: 16   # 7 (geo/time) + 6 (metadata) + 3 (features)
+      target_dim: 3   # 3 backscatter channels
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_strict_flags: true     # ensure missing flags are rejected
+      qc_filters:
+        # QC filters: Based on empirical data analysis (1M samples)
+        # ascatSigma0Usability: 0=usable (96-99% of data), 1=good (1-4%), 2147483647=missing
+        # Both 0 and 1 contain valid backscatter data matching feature_stats means
+        backscatter_ch_1:
+          range: [-55.0, 3.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.8, -2.3]; allow +0.7 dB buffer
+          qm_flag_col: ascatSigma0Usability_ch_1
+          keep: [0]
+        backscatter_ch_2:
+          range: [-55.0, 5.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-35.6, -0.6]; retain wet-snow spikes
+          qm_flag_col: ascatSigma0Usability_ch_2
+          keep: [0]
+        backscatter_ch_3:
+          range: [-55.0, 3.2]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.6, -2.4]
+          qm_flag_col: ascatSigma0Usability_ch_3
+          keep: [0]
 
   conventional:
     surface_obs:
@@ -146,29 +180,28 @@ observation_config:
           qm_flag_col: windQuality
           keep: [2,]
 
-            #    snow_cover:
-            #      source: zarr
-            #      zarr_name: snow_cover
-            #      features: [snowDepth]
-            #      metadata: [height, airTemperature]
-            #      qc_filters:
-            #        snowDepth:
-            #          range: [0, 6.5]
-            #      input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
-            #      target_dim: 1
-            #      encoder_hidden_layers: 2
-            #      decoder_hidden_layers: 2
+#   snow_cover:
+#     source: zarr
+#     zarr_name: snow_cover
+#     features: [snowDepth]
+#     metadata: [height, airTemperature]
+#     qc_filters:
+#       snowDepth:
+#         range: [0, 6.5]
+#     input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
+#     target_dim: 1
+#     encoder_hidden_layers: 2
+#     decoder_hidden_layers: 2
 
 feature_stats:  # Statistics for the features used in the model
   surface_obs:
-    airPressure: [977.32, 57.51]
-    airTemperature: [17.0, 9.96]
-    dewPointTemperature: [10.39, 9.53]
-    relativeHumidity: [71.89, 20.25]
-    wind_u: [0.08, 4.17]
-    wind_v: [0.25, 3.37]
-    latitude: [30.06, 28.54]
-    longitude: [-22.73, 84.78]
+    airPressure: [978.24, 57.32]
+    airTemperature: [14.12, 12.15]
+    dewPointTemperature: [8.07, 11.52]
+    relativeHumidity: [74.38, 19.18]
+    wind_u: [0.16, 3.64]
+    wind_v: [0.10, 3.37]
+
   radiosonde:  
     airPressure: [319, 308]
     airTemperature: [242, 30]
@@ -180,45 +213,49 @@ feature_stats:  # Statistics for the features used in the model
       #  snow_cover:
       #    snowDepth: [0.38, 0.68]
   atms:
-    bt_channel_1: [259.20, 33.30]
-    bt_channel_2: [254.39, 39.29]
-    bt_channel_3: [266.43, 18.62]
-    bt_channel_4: [267.84, 11.89]
-    bt_channel_5: [264.40, 7.48]
-    bt_channel_6: [252.46, 6.54]
-    bt_channel_7: [236.02, 5.08]
-    bt_channel_8: [225.50, 3.65]
-    bt_channel_9: [218.70, 3.33]
-    bt_channel_10: [214.40, 4.22]
-    bt_channel_11: [217.72, 3.05]
-    bt_channel_12: [225.02, 2.63]
-    bt_channel_13: [234.56, 3.12]
-    bt_channel_14: [246.21, 3.41]
-    bt_channel_15: [255.89, 3.24]
-    bt_channel_16: [269.68, 20.06]
-    bt_channel_17: [276.82, 13.88]
-    bt_channel_18: [270.94, 11.07]
-    bt_channel_19: [265.76, 9.77]
-    bt_channel_20: [260.43, 8.85]
-    bt_channel_21: [253.80, 8.09]
-    bt_channel_22: [247.68, 7.61]
+    bt_channel_1: [211.00, 40.60]
+    bt_channel_2: [201.65, 42.08]
+    bt_channel_3: [239.09, 22.24]
+    bt_channel_4: [248.58, 17.55]
+    bt_channel_5: [252.58, 14.32]
+    bt_channel_6: [245.75, 11.47]
+    bt_channel_7: [231.98, 8.21]
+    bt_channel_8: [222.52, 6.76]
+    bt_channel_9: [216.10, 7.30]
+    bt_channel_10: [211.99, 9.49]
+    bt_channel_11: [215.01, 9.37]
+    bt_channel_12: [221.00, 10.17]
+    bt_channel_13: [229.26, 11.30]
+    bt_channel_14: [240.06, 11.97]
+    bt_channel_15: [250.28, 11.52]
+    bt_channel_16: [237.76, 28.61]
+    bt_channel_17: [258.29, 29.35]
+    bt_channel_18: [260.31, 22.15]
+    bt_channel_19: [258.26, 18.46]
+    bt_channel_20: [255.12, 15.34]
+    bt_channel_21: [250.24, 12.39]
+    bt_channel_22: [245.38, 10.41]
   amsua:
-    bt_channel_1: [210.44, 42.44]
-    bt_channel_2: [202.56, 43.82]
-    bt_channel_3: [240.98, 21.74]
-    bt_channel_4: [253.28, 14.63]
-    bt_channel_5: [246.12, 11.41]
-    bt_channel_6: [231.76, 7.61]
-    bt_channel_7: [222.96, 5.97]
-    bt_channel_8: [216.95, 6.56]
-    bt_channel_9: [211.74, 8.73]
-    bt_channel_10: [214.12, 8.38]
-    bt_channel_11: [219.24, 9.86]
-    bt_channel_12: [227.0, 12.03]
-    bt_channel_13: [237.14, 13.31]
-    bt_channel_14: [247.58, 12.83]
-    bt_channel_15: [239.84, 28.86]
+    bt_channel_1: [209.92, 40.44]
+    bt_channel_2: [201.16, 42.14]
+    bt_channel_3: [239.63, 20.68]
+    bt_channel_4: [252.44, 14.20]
+    bt_channel_5: [245.45, 11.31]
+    bt_channel_6: [231.10, 7.86]
+    bt_channel_7: [222.16, 6.51]
+    bt_channel_8: [216.24, 7.12]
+    bt_channel_9: [211.48, 9.39]
+    bt_channel_10: [214.51, 9.34]
+    bt_channel_11: [220.23, 10.18]
+    bt_channel_12: [228.57, 11.32]
+    bt_channel_13: [239.08, 11.94]
+    bt_channel_14: [249.39, 11.47]
+    bt_channel_15: [237.78, 28.23]
   avhrr:
     brightnessTemperature_ch_50: [284.58, 17.52]
     brightnessTemperature_ch_51: [283.07, 15.83]
     brightnessTemperature_ch_52: [281.21, 15.2]
+  ascat:
+    backscatter_ch_1: [-17.84, 5.77]   # 2022-2024 dB mean/std (filtered to [-80, 40] dB)
+    backscatter_ch_2: [-14.84, 5.12]
+    backscatter_ch_3: [-17.81, 5.73]

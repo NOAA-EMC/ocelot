@@ -14,6 +14,9 @@ from nnja_adapter import build_zlike_from_df
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
 
+# Number of columns for latitude and longitude in metadata
+LAT_LON_COLUMNS = 2
+
 
 def _t32(x):
     return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
@@ -391,11 +394,24 @@ class GNNDataModule(pl.LightningDataModule):
                 tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
                 data[node_type_target].target_metadata = _t32(tgt_meta)
 
-            # Scan angle: only for satellite instruments (atms, amsua, avhrr)
-            if inst_name in ("atms", "amsua", "avhrr") and "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
+            # Scan angle handling per-instrument (config-driven)
+            # Determine observation type to look up config
+            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+            scan_angle_cols = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+
+            if "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
                 x_aux = inst_dict["scan_angle_list"][step][keep_t]
+
+                # Validate and pad/truncate to expected dimensions
+                if x_aux.shape[-1] != scan_angle_cols:
+                    if x_aux.shape[-1] > scan_angle_cols:
+                        x_aux = x_aux[:, :scan_angle_cols]
+                    else:
+                        pad_cols = scan_angle_cols - x_aux.shape[-1]
+                        padding = torch.zeros((x_aux.shape[0], pad_cols), dtype=x_aux.dtype, device=x_aux.device)
+                        x_aux = torch.cat([x_aux, padding], dim=-1)
             else:
-                x_aux = torch.zeros((y_t.shape[0], 1), dtype=torch.float32)
+                x_aux = torch.zeros((y_t.shape[0], scan_angle_cols), dtype=torch.float32)
             data[node_type_target].x = _t32(x_aux)
 
             # Instrument ID
@@ -435,13 +451,17 @@ class GNNDataModule(pl.LightningDataModule):
         for step in range(num_latent_steps):
             node_type_target = f"{inst_name}_target_step{step}"
             data[node_type_target].y = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.float32)
-            data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
-            data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
+            # Get scan angle dimension from config
+            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+            scan_angle_dim = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+            data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
+            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS  # lat/lon + metadata columns
+            data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
-            data[node_type_target].pos = torch.empty((0, 2), dtype=torch.float32)  # from standard mode, seems unused
+            data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
 
     # ------------- DataLoaders -------------
