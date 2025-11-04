@@ -402,10 +402,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
-                        if strict_flags:
-                            keep_in = np.isin(in_flags, list(keep))                   # missing (-1/3) => rejected
+                        if "reject" in cfg:
+                            keep_in = ~np.isin(in_flags, list(cfg["reject"]))          # reject listed flags
                         else:
-                            keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0)  # legacy: accept missing
+                            keep_in = np.isin(in_flags, list(cfg["keep"]))             # keep listed flags
+                        if not strict_flags:
+                            keep_in = keep_in | (in_flags < 0)                         # accept missing when not strict
 
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
@@ -420,10 +422,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if target_idx.size == 0:
                                 continue
                             tg_flags = z[flag_col][target_idx]
-                            if strict_flags:
-                                keep_tg = np.isin(tg_flags, list(keep))              # missing => rejected
+                            if "reject" in cfg:
+                                keep_tg = ~np.isin(tg_flags, list(cfg["reject"]))
                             else:
-                                keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0)
+                                keep_tg = np.isin(tg_flags, list(cfg["keep"]))
+                            if not strict_flags:
+                                keep_tg = keep_tg | (tg_flags < 0)
 
                             if pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
