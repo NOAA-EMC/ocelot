@@ -57,7 +57,7 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training (env is propagated to ranks)
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --compute_fsoi
 
 # Resume training from the latest checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest

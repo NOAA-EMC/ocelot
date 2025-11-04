@@ -22,6 +22,7 @@ from torch_geometric.utils import scatter
 from loss import weighted_huber_loss
 from processor_transformer import SlidingWindowTransformerProcessor
 from attn_bipartite import BipartiteGAT
+from fsoi_utils import FSOICalculator
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -94,6 +95,8 @@ class GNNLightning(pl.LightningModule):
         self.channel_weights = channel_weights or {}
         self.max_rollout_steps = max_rollout_steps
         self.rollout_schedule = rollout_schedule
+        self.fsoi_calculator = FSOICalculator(observation_config=observation_config, feature_stats=feature_stats)
+        self.compute_fsoi = kwargs.get('compute_fsoi', False)
 
         self.observation_config = observation_config
         # Mirror process_timeseries._name2id()
@@ -925,6 +928,15 @@ class GNNLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         print(f"VALIDATION STEP batch: {batch.bin_name}")
 
+        # Store original requires_grad state for FSOI computation
+        original_states = {}
+        if self.compute_fsoi:
+            for node_type in batch.node_types:
+                if node_type.endswith('_input'):
+                    if hasattr(batch[node_type], 'x'):
+                        original_states[node_type] = batch[node_type].x.requires_grad
+                        batch[node_type].x.requires_grad = True
+
         # Build decoder names from config (all possible node_types with targets)
         decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
 
@@ -1152,18 +1164,81 @@ class GNNLightning(pl.LightningModule):
         # --- Final loss calculation for the entire validation step ---
         avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
 
-        self.log(
-            "val_loss",
-            avg_loss,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-            batch_size=1,
-        )
         if self.trainer.is_global_zero:
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
+
+        # --- FSOI COMPUTATION ---
+        if self.compute_fsoi and num_predictions > 0:
+            # Backward to compute gradients
+            avg_loss.backward(retain_graph=False)
+            
+            # Extract gradients and compute FSOI for each input type
+            for node_type in batch.node_types:
+                if not node_type.endswith('_input'):
+                    continue
+                
+                input_node = batch[node_type]
+                if not hasattr(input_node, 'x') or input_node.x.grad is None:
+                    continue
+                
+                # Get gradient w.r.t. input observations
+                gradients = input_node.x.grad.detach()
+                
+                # Get innovations (stored during data preprocessing)
+                if hasattr(input_node, 'innovations'):
+                    innovations = input_node.innovations
+                else:
+                    print(f"[WARN] No innovations found for {node_type}, skipping FSOI")
+                    continue
+                
+                # Extract metadata
+                metadata = {}
+                if hasattr(input_node, 'input_metadata'):
+                    metadata['lat'] = input_node.input_metadata[:, 0]
+                    metadata['lon'] = input_node.input_metadata[:, 1]
+                
+                if hasattr(input_node, 'instrument_ids'):
+                    metadata['instrument_ids'] = input_node.instrument_ids
+                
+                # Compute FSOI
+                fsoi_results = self.fsoi_calculator.compute_fsoi(
+                    gradients=gradients,
+                    innovations=innovations,
+                    metadata=metadata,
+                    node_type=node_type,
+                )
+                
+                # Accumulate for later analysis
+                self.fsoi_calculator.accumulate(fsoi_results)
+                
+                # Log FSOI statistics
+                if self.trainer.is_global_zero:
+                    fsoi_mean = fsoi_results['fsoi_by_channel'].mean().item()
+                    print(f"[FSOI] {node_type}: mean FSOI = {fsoi_mean:.6e}")
+                    self.log(f"fsoi_mean_{node_type}", fsoi_mean, 
+                            on_epoch=True, sync_dist=False, rank_zero_only=True)
+        
+        # Restore original requires_grad states
+        for node_type, orig_state in original_states.items():
+            if hasattr(batch[node_type], 'x'):
+                batch[node_type].x.requires_grad = orig_state
+
+        # Log validation loss
+        self.log("val_loss", avg_loss, on_epoch=True, prog_bar=True, 
+                sync_dist=True, batch_size=1)
+        
         return avg_loss
+
+    
+    def on_validation_epoch_end(self):
+        """Save FSOI results at end of validation epoch."""
+        super().on_validation_epoch_end()
+        
+        if self.compute_fsoi and self.trainer.is_global_zero:
+            fsoi_dir = "fsoi_results"
+            self.fsoi_calculator.save_fsoi_to_csv(fsoi_dir, self.current_epoch)
+            self.fsoi_calculator.reset()
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
                                       valid_mask_list, out_dir, batch_idx):

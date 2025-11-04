@@ -60,6 +60,7 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None, help="Limit validation batches per epoch")
     parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
+    parser.add_argument('--compute_fsoi', action='store_true', help='Compute FSOI during validation')
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -178,6 +179,7 @@ def main():
         decoder_heads=4,
         encoder_dropout=0.1,  # Add dropout for regularization
         decoder_dropout=0.1,  # Add dropout for regularization
+        compute_fsoi=args.compute_fsoi,
     )
 
     data_module = GNNDataModule(

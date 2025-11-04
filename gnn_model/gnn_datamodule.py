@@ -335,6 +335,34 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
+            # --- INNOVATIONS FOR FSOI ---
+            # For your model: predict obs(t+12) from obs(t-12 to t)
+            # Innovation = observation - background
+            # Background = climatological mean (represented by normalization)
+            # The normalized input features ARE essentially the innovations
+            # because normalization does: (obs - mean) / std
+            
+            # Get number of actual observation features (exclude geo/time encoding)
+            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+            inst_cfg = self.hparams.observation_config[obs_type][inst_name]
+            n_obs_features = len(inst_cfg["features"])
+            
+            # Extract just the observation part (last n_obs_features columns)
+            # Input structure: [geo_encoding(7), metadata, normalized_observations]
+            total_features = input_features.shape[1]
+            obs_start_idx = total_features - n_obs_features
+            
+            # The normalized observations already represent innovations from climatology
+            # Innovation = (obs - climatological_mean) / std
+            innovations_normalized = input_features[:, obs_start_idx:]
+            
+            # Store innovations for FSOI computation
+            data[node_type_input].innovations = _t32(innovations_normalized)
+            
+            # Also store metadata for FSOI analysis
+            if "input_metadata" in inst_dict:
+                data[node_type_input].input_metadata = _t32(inst_dict["input_metadata"])
+
             # Create encoder edges (observation to mesh)
             if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
                 grid_lat_deg = inst_dict["input_lat_deg"]

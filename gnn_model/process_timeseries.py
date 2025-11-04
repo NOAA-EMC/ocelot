@@ -880,6 +880,14 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_metadata"] = torch.tensor(np.column_stack([lat_rad_input, lon_rad_input]), dtype=torch.float32)
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
+            # In extract_features function, around line 879, BEFORE normalization
+
+            # Store RAW input features for innovation computation
+            # Innovation = observation - background (climatological mean)
+            # The background is represented by the normalization mean
+            data_summary_bin["input_features_raw_for_innovations"] = input_features_raw_clean.copy()
+            data_summary_bin["normalization_means"] = means.copy()
+            data_summary_bin["normalization_stds"] = stds.copy()
 
             data_summary_bin.update({
                 "target_features_final_list": target_features_final_list,
