@@ -135,7 +135,7 @@ if ("wind_u" in z) and ("wind_v" in z):
     spd_src = pd.to_numeric(pd.Series(z.get("windSpeed", np.full_like(u, np.nan))), errors="coerce")
     if np.isfinite(spd_src).any():
         se = np.abs(spd_rec - spd_src)
-        print(f"\nWind speed |abs(rec - src)|: median={np.nanmedian(se):.2f} m/s, 95%={np.nanpercentile(se,95):.2f} m/s")
+        print(f"\nWind speed |abs(rec - src)|: median={np.nanmedian(se):.2f} m/s, 95%={np.nanpercentile(se, 95):.2f} m/s")
 
     # Direction from (u,v): met convention atan2(-u, -v)
     wdir_src = pd.to_numeric(pd.Series(z.get("windDirection", np.full_like(u, np.nan))), errors="coerce")
@@ -146,13 +146,13 @@ if ("wind_u" in z) and ("wind_v" in z):
 
     if np.isfinite(wdir_src).any():
         dang = shortest_arc(tdir, wdir_src)
-        print(f"Wind direction error: median={np.nanmedian(dang):.1f}°, 95%={np.nanpercentile(dang,95):.1f}°")
+        print(f"Wind direction error: median={np.nanmedian(dang):.1f}°, 95%={np.nanpercentile(dang, 95):.1f}°")
 
 # ------------ coverage in 12h bins ------------
 t = pd.to_datetime(df["OBS_TIMESTAMP"], utc=True, errors="coerce")
 bins = t.dt.floor("12H")
 counts = bins.value_counts().sort_index()
-print(f"\n12h bins: {counts.size}, zero bins: {(counts==0).sum()}")
+print(f"\n12h bins: {counts.size}, zero bins: {(counts == 0).sum()}")
 print(counts.head(5).to_string())
 
 

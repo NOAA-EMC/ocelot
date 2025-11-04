@@ -329,7 +329,7 @@ def obs_mesh_conn(
         f"Created graph with {num_grid_nodes} grid nodes "
         f"connected to {num_mesh_nodes}"
     )
-    print(f"#grid / #mesh = {num_grid_nodes/num_mesh_nodes :.2f}")
+    print(f"#grid / #mesh = {num_grid_nodes/num_mesh_nodes:.2f}")
     if o2m:
         return (g2m_edge_index_torch, g2m_features_torch)
     else:

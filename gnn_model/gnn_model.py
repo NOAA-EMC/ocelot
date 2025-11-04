@@ -1172,35 +1172,35 @@ class GNNLightning(pl.LightningModule):
         if self.compute_fsoi and num_predictions > 0:
             # Backward to compute gradients
             avg_loss.backward(retain_graph=False)
-            
+
             # Extract gradients and compute FSOI for each input type
             for node_type in batch.node_types:
                 if not node_type.endswith('_input'):
                     continue
-                
+
                 input_node = batch[node_type]
                 if not hasattr(input_node, 'x') or input_node.x.grad is None:
                     continue
-                
+
                 # Get gradient w.r.t. input observations
                 gradients = input_node.x.grad.detach()
-                
+
                 # Get innovations (stored during data preprocessing)
                 if hasattr(input_node, 'innovations'):
                     innovations = input_node.innovations
                 else:
                     print(f"[WARN] No innovations found for {node_type}, skipping FSOI")
                     continue
-                
+
                 # Extract metadata
                 metadata = {}
                 if hasattr(input_node, 'input_metadata'):
                     metadata['lat'] = input_node.input_metadata[:, 0]
                     metadata['lon'] = input_node.input_metadata[:, 1]
-                
+
                 if hasattr(input_node, 'instrument_ids'):
                     metadata['instrument_ids'] = input_node.instrument_ids
-                
+
                 # Compute FSOI
                 fsoi_results = self.fsoi_calculator.compute_fsoi(
                     gradients=gradients,
@@ -1208,33 +1208,32 @@ class GNNLightning(pl.LightningModule):
                     metadata=metadata,
                     node_type=node_type,
                 )
-                
+
                 # Accumulate for later analysis
                 self.fsoi_calculator.accumulate(fsoi_results)
-                
+
                 # Log FSOI statistics
                 if self.trainer.is_global_zero:
                     fsoi_mean = fsoi_results['fsoi_by_channel'].mean().item()
                     print(f"[FSOI] {node_type}: mean FSOI = {fsoi_mean:.6e}")
-                    self.log(f"fsoi_mean_{node_type}", fsoi_mean, 
-                            on_epoch=True, sync_dist=False, rank_zero_only=True)
-        
+                    self.log(f"fsoi_mean_{node_type}", fsoi_mean,
+                             on_epoch=True, sync_dist=False, rank_zero_only=True)
+
         # Restore original requires_grad states
         for node_type, orig_state in original_states.items():
             if hasattr(batch[node_type], 'x'):
                 batch[node_type].x.requires_grad = orig_state
 
         # Log validation loss
-        self.log("val_loss", avg_loss, on_epoch=True, prog_bar=True, 
-                sync_dist=True, batch_size=1)
-        
+        self.log("val_loss", avg_loss, on_epoch=True, prog_bar=True,
+                 sync_dist=True, batch_size=1)
+
         return avg_loss
 
-    
     def on_validation_epoch_end(self):
         """Save FSOI results at end of validation epoch."""
         super().on_validation_epoch_end()
-        
+
         if self.compute_fsoi and self.trainer.is_global_zero:
             fsoi_dir = "fsoi_results"
             self.fsoi_calculator.save_fsoi_to_csv(fsoi_dir, self.current_epoch)
