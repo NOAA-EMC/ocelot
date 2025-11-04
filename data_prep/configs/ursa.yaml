@@ -110,9 +110,10 @@ data types:
       - 18/atmos/gdas.t18z.sstvcw.tm00.bufr_d
       -
   - name: amsr2
+    memory: 128G
     type: tank
-    num_tasks: 24
-    batch_days: 15
+    num_tasks: 4
+    batch_days: 10
     mapping: bufr_amsr2.py
     paths:
       - 00/atmos/gdas.t00z.amsr2.tm00.bufr_d
