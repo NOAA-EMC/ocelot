@@ -26,7 +26,7 @@ bufr:
       query: "*/SOZA"
 
     bt_clear:
-      query: "*/RPSEQ7/TMBRST"
+      query: "*/RPSEQ7{1-11}/TMBRST"
 
 encoder:
   dimensions:
