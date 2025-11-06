@@ -25,13 +25,16 @@ bufr:
     solarZenithAngle:
       query: "*/SOZA"
 
-    bt_all:
-      query: "*/MISSING"
-
     bt_clear:
       query: "*/RPSEQ7/TMBRST"
 
 encoder:
+  dimensions:
+    - name: ch
+      paths: 
+        - "*/RPSEQ7"
+        - "*/RPSEQ10"
+
   variables:
     # MetaData
     - name: "time"

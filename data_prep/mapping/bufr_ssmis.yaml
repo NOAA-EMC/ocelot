@@ -19,14 +19,8 @@ bufr:
     latitude1:
       query: "*/SATEPHEM{1}/CLATH"
 
-    longitude1:
-      query: "*/SATEPHEM{1}/CLONH"
-
     latitude2:
       query: "*/SATEPHEM{2}/CLATH"
-
-    longitude2:
-      query: "*/SATEPHEM{2}/CLONH"
 
     satelliteId:
       query: "*/SAID"

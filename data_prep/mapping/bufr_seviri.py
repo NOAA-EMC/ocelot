@@ -2,6 +2,7 @@
 
 import os
 
+import numpy.ma as ma
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
@@ -22,6 +23,9 @@ class SeviriBuilder(ObsBuilder):
         container = bufr.DataContainer()
         if SevCsrKey in input_dict:
             container.append(bufr.Parser(input_dict[SevCsrKey], self.map_dict[SevCsrKey]).parse(comm))
+            bt_all = ma.masked_all_like(container.get('bt_clear'))
+            container.add('bt_all', bt_all, container.get_paths('bt_clear'))
+
         if SevAsrKey in input_dict:
             container.append(bufr.Parser(input_dict[SevAsrKey], self.map_dict[SevAsrKey]).parse(comm))
 
