@@ -37,8 +37,8 @@ encoder:
   dimensions:
     - name: ch
       paths: 
-        - "*/RPSEQ7"
-        - "*/RPSEQ10"
+        - "*/RPSEQ7{1-11}"
+        - "*/RPSEQ10{1-11}"
         
   variables:
     # MetaData
