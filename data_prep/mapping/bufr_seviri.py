@@ -22,12 +22,16 @@ class SeviriBuilder(ObsBuilder):
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
         container = bufr.DataContainer()
         if SevCsrKey in input_dict:
-            container.append(bufr.Parser(input_dict[SevCsrKey], self.map_dict[SevCsrKey]).parse(comm))
-            bt_all = ma.masked_all_like(container.get('bt_clear'))
-            container.add('bt_all', bt_all, container.get_paths('bt_clear'))
+            csr_container = bufr.Parser(input_dict[SevCsrKey], self.map_dict[SevCsrKey]).parse(comm)
+            if csr_container.size() > 0:
+                bt_all = ma.masked_all_like(csr_container.get('bt_clear'))
+                csr_container.add('bt_all', bt_all, csr_container.get_paths('bt_clear'))
+                container.append(csr_container)
 
         if SevAsrKey in input_dict:
-            container.append(bufr.Parser(input_dict[SevAsrKey], self.map_dict[SevAsrKey]).parse(comm))
+            asr_container = bufr.Parser(input_dict[SevAsrKey], self.map_dict[SevAsrKey]).parse(comm)
+            if asr_container.size() > 0:
+                container.append(asr_container)
 
         return container
 
