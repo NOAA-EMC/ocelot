@@ -13,13 +13,21 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from callbacks import ResampleDataCallback, SequentialDataCallback
+from callbacks import ResampleDataCallback, SequentialDataCallback, AdvanceSamplerEpoch
 from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
 from ckpt_utils import find_latest_checkpoint
 from datetime import timedelta
+
+# FSOI callback (imported conditionally based on args)
+try:
+    from fsoi_callback import FSOICallback
+    FSOI_AVAILABLE = True
+except ImportError:
+    FSOI_AVAILABLE = False
+    print("[WARNING] FSOI callback not available. Install required packages or check fsoi_callback.py")
 
 
 torch.set_float32_matmul_precision("medium")
@@ -43,6 +51,13 @@ def main():
         help="The data sampling strategy ('random' or 'sequential').",
     )
     parser.add_argument(
+        "--window_mode",
+        type=str,
+        default="sequential",
+        choices=["random", "sequential"],
+        help="For sequential sampling: window selection mode ('random' for random windows, 'sequential' for sliding windows).",
+    )
+    parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
@@ -60,6 +75,19 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None, help="Limit validation batches per epoch")
     parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
+    # FSOI arguments
+    parser.add_argument("--enable_fsoi", action="store_true", help="Enable FSOI computation during training")
+    parser.add_argument("--fsoi_every_n_epochs", type=int, default=10, help="Compute FSOI every N epochs")
+    parser.add_argument("--fsoi_start_epoch", type=int, default=10, help="Start computing FSOI from this epoch")
+    parser.add_argument("--fsoi_batches", type=int, default=2, help="Number of batches to analyze for FSOI")
+    parser.add_argument("--fsoi_mode", type=str, default="fast", choices=["exact", "fast"], 
+                        help="FSOI computation mode: fast (GraphDOP two-state adjoint) or exact (exact LOO, slow but gold standard)")
+    parser.add_argument("--fsoi_conventional_only", action="store_true",
+                        help="Compute FSOI only for conventional obs (surface_obs + radiosonde) representing u,v,T,q,p. "
+                             "This measures how all observations affect prediction of prognostic variables.")
+    parser.add_argument("--max_obs_for_loo", type=int, default=None,
+                        help="Maximum observations per instrument for exact LOO (random sample if exceeded). "
+                             "Recommended: 1000-5000 for large datasets")
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -193,6 +221,7 @@ def main():
         window_size=f"{data_window_hours}h",
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=TRAIN_VAL_SPLIT_RATIO,  # Pass the split ratio from training script
+        sampling_mode=args.sampling_mode,  # Pass sampling mode to control bin distribution
         # ensure epoch 0 validation uses the val split, not the train slice
         train_start=initial_start_date,
         train_end=initial_end_date,
@@ -229,6 +258,7 @@ def main():
             check_on_train_epoch_end=False,  # Only check after validation
             strict=False,
         ),
+        AdvanceSamplerEpoch(),  # Ensure random samplers reshuffle each epoch
     ]
 
     strategy = DDPStrategy(
@@ -256,7 +286,7 @@ def main():
     }
 
     if args.sampling_mode == "random":
-        print("Using RANDOM sampling mode.")
+        print("Using RANDOM sampling mode (SYNCHRONIZED across ranks).")
         callbacks.append(
             ResampleDataCallback(
                 train_start_date=TRAIN_START_DATE,
@@ -265,20 +295,66 @@ def main():
                 val_end_date=VAL_END_DATE,
                 train_window_days=TRAIN_WINDOW_DAYS,
                 val_window_days=VALID_WINDOW_DAYS,
-                mode="random",        # or "sequential"
-                resample_val=False,  # Validation for reliable ES/checkpointing
-                seq_stride_days=1,    # only used if mode="sequential"
+                mode="random",        # train windows chosen randomly (on rank-0), then broadcast
+                resample_val=False,   # keep validation fixed for stable ES/CKPT
             )
         )
     else:
-        print("Using SEQUENTIAL sampling mode.")
+        print(f"Using SEQUENTIAL sampling mode with {args.window_mode} windows (synchronized across ranks).")
         callbacks.append(
             SequentialDataCallback(
-                full_start_date=FULL_START_DATE,
-                full_end_date=FULL_END_DATE,
-                window_days=WINDOW_DAYS,
+                full_start_date=TRAIN_START_DATE,  # Use training pool, not full range
+                full_end_date=TRAIN_END_DATE,
+                window_days=TRAIN_WINDOW_DAYS,
+                stride_days=TRAIN_WINDOW_DAYS,  # Non-overlapping windows
+                mode=args.window_mode,  # "sequential" or "random"
+                wrap_sequential=True,  # Wrap to start when reaching end
             )
         )
+
+    # === FSOI CALLBACK (OPTIONAL) ===
+    if args.enable_fsoi:
+        if FSOI_AVAILABLE:
+            # Determine FSOI mode
+            use_loo = (args.fsoi_mode == "exact")
+            
+            print(f"\n[FSOI] Enabling FSOI computation:")
+            print(f"  - Computing every {args.fsoi_every_n_epochs} epochs")
+            print(f"  - Starting from epoch {args.fsoi_start_epoch}")
+            print(f"  - Analyzing {args.fsoi_batches} batches per epoch")
+            print(f"  - Mode: {'EXACT LOO (slow, gold standard)' if use_loo else 'FAST (GraphDOP two-state adjoint)'}")
+            print(f"  - Background: Model predictions (GraphDOP x_b)")
+            print(f"  - Innovation: (obs - model_forecast)")
+            
+            if args.max_obs_for_loo:
+                print(f"  - Max observations for exact LOO: {args.max_obs_for_loo} (random sample if exceeded)")
+            
+            if args.fsoi_conventional_only:
+                print(f"  - Target observations: CONVENTIONAL ONLY (surface_obs + radiosonde)")
+                print(f"  - This measures impact on prognostic variables (u, v, T, q, p)")
+            else:
+                print(f"  - Target observations: ALL (satellite + conventional)")
+            
+            save_dir = "fsoi_results_conventional" if args.fsoi_conventional_only else "fsoi_results"
+            
+            callbacks.append(
+                FSOICallback(
+                    compute_every_n_epochs=args.fsoi_every_n_epochs,
+                    save_dir=save_dir,
+                    max_batches=args.fsoi_batches,
+                    generate_plots=True,
+                    start_epoch=args.fsoi_start_epoch,
+                    feature_stats=feature_stats,
+                    use_loo=use_loo,
+                    max_obs_for_loo=args.max_obs_for_loo,
+                    conventional_only=args.fsoi_conventional_only,
+                )
+            )
+            print(f"  - Results will be saved to: {save_dir}/")
+        else:
+            print("\n[WARNING] FSOI requested but not available. Continuing without FSOI.")
+    else:
+        print("\n[INFO] FSOI disabled. Use --enable_fsoi to enable FSOI tracking during training.")
 
     trainer_kwargs["callbacks"] = callbacks
     trainer = pl.Trainer(**trainer_kwargs)

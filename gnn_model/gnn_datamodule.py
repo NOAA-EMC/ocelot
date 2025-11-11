@@ -6,7 +6,7 @@ import torch
 import torch.distributed as dist
 import zarr
 from zarr.storage import LRUStoreCache
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
@@ -17,6 +17,61 @@ from create_mesh_graph_global import obs_mesh_conn
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
 
+
+def _ddp_world():
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_world_size(), dist.get_rank()
+    return 1, 0
+
+class BalancedSequentialShard(Sampler[int]):
+    """Contiguous shards, uneven allowed, no padding, no drop_last."""
+    def __init__(self, num_samples: int, num_replicas: int=None, rank: int=None):
+        if num_samples < 1:
+            raise ValueError("BalancedSequentialShard: num_samples must be >= 1")
+        ws, rk = _ddp_world()
+        self.num_replicas = ws if num_replicas is None else num_replicas
+        self.rank         = rk if rank is None else rank
+        self.total        = num_samples
+
+        base = self.total // self.num_replicas
+        rem  = self.total %  self.num_replicas
+        self.num_local = base + (1 if self.rank < rem else 0)
+
+        start = self.rank * base + min(self.rank, rem)
+        end   = start + self.num_local
+        self._indices = list(range(self.total))[start:end]
+
+    def __iter__(self): return iter(self._indices)
+    def __len__(self):  return self.num_local
+    def set_epoch(self, _:int): pass
+
+class BalancedRandomShard(Sampler[int]):
+    """Shuffled shards per epoch, uneven allowed, no padding, no drop_last."""
+    def __init__(self, num_samples: int, seed: int=0, num_replicas: int=None, rank: int=None):
+        if num_samples < 1:
+            raise ValueError("BalancedRandomShard: num_samples must be >= 1")
+        ws, rk = _ddp_world()
+        self.num_replicas = ws if num_replicas is None else num_replicas
+        self.rank         = rk if rank is None else rank
+        self.total        = num_samples
+        self.seed         = seed
+        self.epoch        = 0
+
+        base = self.total // self.num_replicas
+        rem  = self.total %  self.num_replicas
+        self.num_local = base + (1 if self.rank < rem else 0)
+
+        self._start = self.rank * base + min(self.rank, rem)
+        self._end   = self._start + self.num_local
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        order = torch.randperm(self.total, generator=g).tolist()
+        return iter(order[self._start:self._end])
+
+    def __len__(self):  return self.num_local
+    def set_epoch(self, epoch:int): self.epoch = epoch
 
 def _t32(x):
     return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
@@ -50,6 +105,7 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        print(f"[Rank {rank}] [{self.tag}] Fetching bin: {bin_name} (idx={idx})")  # DEBUG: Show exact order
         print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
             out = extract_features(
@@ -85,6 +141,7 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours=12,       # latent rollout support
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
+        sampling_mode="sequential",  # "sequential" or "random" - controls bin distribution within ranks
         **kwargs,
     ):
         super().__init__()
@@ -114,7 +171,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         default_train_start = pd.to_datetime(start_date)
         default_train_end = default_train_start + pd.Timedelta(days=train_days)
-        default_val_start = default_train_end  # Validation starts where training ends
+        default_val_start = default_train_end + pd.Timedelta(days=1)
         default_val_end = pd.to_datetime(end_date)
 
         self.hparams.train_start = pd.to_datetime(kwargs.get("train_start", default_train_start))
@@ -131,13 +188,15 @@ class GNNDataModule(pl.LightningDataModule):
             )
 
         # Log the train/val split for transparency
+        pool_total_days = (self.hparams.val_end - self.hparams.train_start).days
         train_days = (self.hparams.train_end - self.hparams.train_start).days
         val_days = (self.hparams.val_end - self.hparams.val_start).days
         total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
-        print(f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days/total_days*100:.1f}%), "
-              f"Val: {val_days} days ({val_days/total_days*100:.1f}%)")
-        print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
-        print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
+        print(
+            "[DataModule] Train/Val Split - "
+            f"Train: {train_days} days ({(train_days / max(1, pool_total_days)) * 100:.1f}%), "
+            f"Val: {val_days} days ({(val_days / max(1, pool_total_days)) * 100:.1f}%)"
+        )
 
         # Ensure latent_step_hours has a valid value
         if self.hparams.latent_step_hours is None:
@@ -256,6 +315,14 @@ class GNNDataModule(pl.LightningDataModule):
             f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
             f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
         )
+        # Print window time coverage for debug
+        print(
+            f"[Rank {rank}] [DM.train_window] start={self.hparams.train_start} "
+            f"end={self.hparams.train_end}  ({len(self.train_bin_names)} bins)"
+        )
+        if len(self.train_bin_names) > 0:
+            print(f"[Rank {rank}] [DM.train_window] sample bins: {self.train_bin_names[:3]} ... {self.train_bin_names[-3:]}")
+
 
     def _rebuild_val_summary(self):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -273,6 +340,14 @@ class GNNDataModule(pl.LightningDataModule):
             f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
             f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"
         )
+
+        # Print validation window coverage for debug
+        print(
+            f"[Rank {rank}] [DM.val_window] start={self.hparams.val_start} "
+            f"end={self.hparams.val_end}  ({len(self.val_bin_names)} bins)"
+        )
+        if len(self.val_bin_names) > 0:
+            print(f"[Rank {rank}] [DM.val_window] sample bins: {self.val_bin_names[:3]} ... {self.val_bin_names[-3:]}")
 
     # ------------- Window setters for callbacks -------------
     def set_train_window(self, start_dt, end_dt):
@@ -484,22 +559,47 @@ class GNNDataModule(pl.LightningDataModule):
             feature_stats=self.feature_stats,
             tag="TRAIN",
         )
+
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        n = len(self.train_bin_names)
+
+        if self.hparams.sampling_mode == "random":
+            sampler = BalancedRandomShard(n, seed=0, num_replicas=world_size, rank=rank)
+            sampler_type = "BalancedRandomShard"
+        else:
+            sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
+            sampler_type = "BalancedSequentialShard"
+
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
-            shuffle=True,
+            shuffle=False,
+            sampler=sampler,
             num_workers=4,
             pin_memory=True,
-            persistent_workers=False,   # safer while debugging stale refs
+            persistent_workers=False,
             worker_init_fn=self._worker_init,
         )
-        print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
-              f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
+
+        # Safe preview of a couple indices for logging (works for both samplers)
+        idx_preview = list(iter(sampler))
+        first_bin = self.train_bin_names[idx_preview[0]] if idx_preview else None
+        last_bin  = self.train_bin_names[idx_preview[-1]] if idx_preview else None
+
+        # (Optional) if random, initialize epoch=0 here; Lightning won't call set_epoch for custom samplers
+        if isinstance(sampler, BalancedRandomShard):
+            sampler.set_epoch(0)
+
+        print(f"[DL] TRAIN window={self.hparams.train_start.date()}..{self.hparams.train_end.date()} "
+            f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
+            f"first={first_bin} last={last_bin} sampler={sampler_type}")
         return loader
 
     def val_dataloader(self):
         if not self.val_bin_names:
             return None
+
         ds = BinDataset(
             self.val_bin_names,
             self.val_data_summary,
@@ -509,15 +609,29 @@ class GNNDataModule(pl.LightningDataModule):
             feature_stats=self.feature_stats,
             tag="VAL",
         )
+
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        rank = dist.get_rank()       if dist.is_available() and dist.is_initialized() else 0
+        n = len(self.val_bin_names)
+
+        sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
+
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
+            sampler=sampler,
             num_workers=4,
             pin_memory=True,
             persistent_workers=False,
             worker_init_fn=self._worker_init,
         )
-        print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
-              f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
+
+        idx_preview = list(iter(sampler))
+        first_bin = self.val_bin_names[idx_preview[0]] if idx_preview else None
+        last_bin  = self.val_bin_names[idx_preview[-1]] if idx_preview else None
+
+        print(f"[DL] VAL   window={self.hparams.val_start.date()}..{self.hparams.val_end.date()} "
+            f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
+            f"first={first_bin} last={last_bin} sampler=BalancedSequentialShard")
         return loader

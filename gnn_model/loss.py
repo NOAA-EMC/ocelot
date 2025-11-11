@@ -107,7 +107,7 @@ def weighted_huber_loss(
             loss_mat = loss_mat * active
             denom = active.sum()
         else:
-            active = (w > 0).to(loss_mat.dtype, device=device).expand_as(loss_mat)
+            active = (w > 0).to(dtype=loss_mat.dtype, device=device).expand_as(loss_mat)
             denom = active.sum()
         if denom <= 0:
             return torch.tensor(0.0, device=device)

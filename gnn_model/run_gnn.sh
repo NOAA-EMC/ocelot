@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --exclude=u22g09,u22g08,u22g10
-#SBATCH -A gpu-emc-ai
+#SBATCH -A gpu-ai4wp
 #SBATCH -p u1-h100
 #SBATCH -q gpu
 #SBATCH --gres=gpu:h100:2
@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 04:00:00
+#SBATCH -t 01:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -57,8 +57,45 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training (env is propagated to ranks)
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
+# TRUE GraphDOP FSOI: Uses sequential batches with forecast from previous window as background
+# Sequential mode ensures temporal continuity for TRUE GraphDOP background (x_b = prev forecast)
 
-# Resume training from the latest checkpoint
+# NEW TRAINING (from scratch) - SEQUENTIAL MODE with TRUE GraphDOP FSOI
+# Start FSOI early (epoch 0) to see results quickly
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+    --sampling_mode sequential \
+    --window_mode sequential \
+    --enable_fsoi \
+    --fsoi_mode fast \
+    --fsoi_conventional_only \
+    --fsoi_every_n_epochs=1 \
+    --fsoi_start_epoch=0 \
+    --fsoi_batches=3 \
+    --max_epochs 100
+
+# RESUME from latest checkpoint (automatic) - SEQUENTIAL MODE
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+#     --resume_from_latest \
+#     --sampling_mode sequential \
+#     --window_mode sequential \
+#     --enable_fsoi \
+#     --fsoi_conventional_only \
+#     --fsoi_mode fast \
+#     --fsoi_every_n_epochs=10 \
+#     --fsoi_start_epoch=10 \
+#     --fsoi_batches=5
+
+# RESUME from specific checkpoint - SEQUENTIAL MODE
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+#     --resume_from_checkpoint checkpoints/last.ckpt \
+#     --sampling_mode sequential \
+#     --window_mode sequential \
+#     --enable_fsoi \
+#     --fsoi_mode fast \
+#     --fsoi_every_n_epochs=10 \
+#     --fsoi_start_epoch=10 \
+#     --fsoi_batches=5
+
+# Resume training from the latest checkpoint (no FSOI)
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last.ckpt
