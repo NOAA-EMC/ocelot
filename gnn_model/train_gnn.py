@@ -320,8 +320,8 @@ def main():
             print(f"  - Computing every {args.fsoi_every_n_epochs} epochs")
             print(f"  - Starting from epoch {args.fsoi_start_epoch}")
             print(f"  - Analyzing {args.fsoi_batches} batches per epoch")
-            print(f"  - Mode: GraphDOP two-state adjoint (fast)")
-            print(f"  - Background: Model predictions (GraphDOP x_b)")
+            print(f"  - Method: Two-state adjoint")
+            print(f"  - Background: Sequential forecast (x_b from previous batch)")
             print(f"  - Innovation: (obs - model_forecast)")
             
             if args.fsoi_conventional_only:

@@ -3,7 +3,7 @@
 FSOI Evaluation Script
 
 Evaluate FSOI on a trained model checkpoint without retraining.
-Uses sequential sampling on validation set to enable TRUE GraphDOP with
+Uses sequential sampling on validation set to enable FSOI with
 sequential background (x_b = forecast from previous batch).
 
 Usage:
@@ -63,12 +63,11 @@ def main():
     print("=" * 60)
     print("FSOI EVALUATION CONFIGURATION")
     print("=" * 60)
-    print(f"Checkpoint:      {args.checkpoint}")
-    print(f"Output dir:      {args.output_dir}")
-    print(f"FSOI mode:       GraphDOP (fast)")
-    print(f"FSOI batches:    {args.fsoi_batches}")
+    print(f"Checkpoint:        {args.checkpoint}")
+    print(f"Output dir:        {args.output_dir}")
+    print(f"FSOI batches:      {args.fsoi_batches}")
     print(f"Conventional only: {args.conventional_only}")
-    print(f"Val batches:     {args.limit_val_batches}")
+    print(f"Val batches:       {args.limit_val_batches}")
     print("=" * 60)
     print()
     
@@ -86,6 +85,7 @@ def main():
         "--max_epochs", "1",
         "--limit_train_batches", "0",  # Skip training
         "--limit_val_batches", str(args.limit_val_batches),
+        "--devices", "1",  # Force single device to avoid DDP issues
     ]
     
     if args.conventional_only:
