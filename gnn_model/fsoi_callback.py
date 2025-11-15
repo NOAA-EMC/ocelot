@@ -97,13 +97,12 @@ class FSOICallback(pl.Callback):
         """
         Compute FSOI at the end of validation batches.
         
-        With GlobalSequentialSampler, all ranks process the same batch sequentially.
-        Only rank 0 computes FSOI (to avoid redundant computation), but all ranks
-        cache predictions for the next batch.
+        Per-rank sequential mode: Each rank processes its bins sequentially.
+        Sequential background works within each rank (bin2 uses bin1 forecast on same GPU).
         
         If use_sequential_background=True and previous batch exists:
         - Uses forecast from previous batch as background (x_b)
-        - Implements true GraphDOP FSOI
+        - Implements per-rank sequential GraphDOP FSOI
         Otherwise:
         - Uses zero/climatological background (approximate)
         """
@@ -121,11 +120,11 @@ class FSOICallback(pl.Callback):
         if batch_idx >= self.max_batches:
             return
 
-        # All ranks cache predictions, but only rank 0 computes FSOI
-        is_rank_zero = trainer.is_global_zero
+        # Only run on rank 0 to avoid duplication in distributed setting
+        if not trainer.is_global_zero:
+            return
 
-        if is_rank_zero:
-            print(f"\n[FSOI Callback] Computing FSOI for epoch {current_epoch}, batch {batch_idx}")
+        print(f"\n[FSOI Callback] Computing FSOI for epoch {current_epoch}, batch {batch_idx}")
 
         # Check if we can use sequential background
         can_use_sequential = (
@@ -134,86 +133,90 @@ class FSOICallback(pl.Callback):
             and self._can_link_batches(self._previous_batch, batch)
         )
 
-        if is_rank_zero:
-            if can_use_sequential:
-                print(f"[FSOI Callback] Using TRUE GraphDOP background from previous batch")
+        if can_use_sequential:
+            print(f"[FSOI Callback] Using sequential background from previous batch (per-rank)")
+            print(f"[FSOI Callback]   Previous: {self._previous_bin_name}")
+            print(f"[FSOI Callback]   Current:  {batch.bin_name}")
+        else:
+            if self.use_sequential_background and self._previous_batch is None:
+                print(f"[FSOI Callback] First batch - using climatological background (x_b=0)")
+            elif self.use_sequential_background:
+                print(f"[FSOI Callback] Non-sequential bins - using climatological background")
                 print(f"[FSOI Callback]   Previous: {self._previous_bin_name}")
                 print(f"[FSOI Callback]   Current:  {batch.bin_name}")
             else:
-                if self.use_sequential_background and self._previous_batch is None:
-                    print(f"[FSOI Callback] First batch - using climatological background (x_b=0)")
-                elif self.use_sequential_background:
-                    print(f"[FSOI Callback] Non-sequential bins - using climatological background")
-                    print(f"[FSOI Callback]   Previous: {self._previous_bin_name}")
-                    print(f"[FSOI Callback]   Current:  {batch.bin_name}")
-                else:
-                    print(f"[FSOI Callback] Sequential background disabled - using climatological")
+                print(f"[FSOI Callback] Sequential background disabled - using climatological")
 
-        # Only rank 0 computes FSOI (avoid redundant computation)
-        if is_rank_zero:
-            try:
-                # Use unified compute_batch_fsoi from fsoi.py
-                mode_str = "EXACT LOO (gold standard)" if self.use_loo else "FAST (GraphDOP two-state adjoint)"
-                print(f"[FSOI Callback] Using {mode_str}")
-                if self.conventional_only:
-                    print(f"[FSOI Callback] Target: CONVENTIONAL obs only (surface_obs + radiosonde)")
-                
-                # Compute FSOI (function will use previous predictions if available)
-                fsoi_values, stats_df = compute_batch_fsoi(
-                    model=pl_module,
-                    batch=batch,
-                    save_dir=os.path.join(self.save_dir, "detailed"),
-                    epoch=current_epoch,
-                    batch_idx=batch_idx,
-                    compute_sensitivity=True,
-                    feature_stats=self.feature_stats,
-                    conventional_only=self.conventional_only,
-                    # NEW: Pass previous batch info for true GraphDOP background
-                    previous_batch=self._previous_batch if can_use_sequential else None,
-                    previous_predictions=self._previous_predictions if can_use_sequential else None,
-                )
+        try:
+            # Clear model gradients before FSOI computation
+            pl_module.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+            
+            # Use unified compute_batch_fsoi from fsoi.py
+            mode_str = "EXACT LOO (gold standard)" if self.use_loo else "FAST (GraphDOP two-state adjoint)"
+            print(f"[FSOI Callback] Using {mode_str}")
+            if self.conventional_only:
+                print(f"[FSOI Callback] Target: CONVENTIONAL obs only (surface_obs + radiosonde)")
+            
+            # Compute FSOI (function will use previous predictions if available)
+            fsoi_values, stats_df = compute_batch_fsoi(
+                model=pl_module,
+                batch=batch,
+                save_dir=os.path.join(self.save_dir, "detailed"),
+                epoch=current_epoch,
+                batch_idx=batch_idx,
+                compute_sensitivity=True,
+                feature_stats=self.feature_stats,
+                conventional_only=self.conventional_only,
+                # Pass previous batch info for sequential background
+                previous_batch=self._previous_batch if can_use_sequential else None,
+                previous_predictions=self._previous_predictions if can_use_sequential else None,
+            )
 
-                if len(stats_df) > 0:
-                    # Generate summary plots if requested
-                    if self.generate_plots and batch_idx == 0:  # Only for first batch
-                        plot_dir = os.path.join(self.save_dir, "plots", f"epoch{current_epoch}")
-                        create_fsoi_summary_report(
-                            stats_df=stats_df, output_dir=plot_dir, epoch=current_epoch, batch_idx=batch_idx
-                        )
+            # Cache current batch and predictions for next iteration
+            self._previous_batch = batch
+            self._previous_bin_name = batch.bin_name
+            
+            # Generate predictions to cache (no_grad to save memory)
+            with torch.no_grad():
+                pl_module.eval()
+                self._previous_predictions = pl_module(batch)
 
-                    # Store summary statistics
-                    summary = summarize_fsoi_by_instrument(stats_df)
-                    summary["epoch"] = current_epoch
-                    summary["batch_idx"] = batch_idx
-                    self.fsoi_history.append(summary)
+            if len(stats_df) > 0:
+                # Generate summary plots if requested
+                if self.generate_plots and batch_idx == 0:  # Only for first batch
+                    plot_dir = os.path.join(self.save_dir, "plots", f"epoch{current_epoch}")
+                    create_fsoi_summary_report(
+                        stats_df=stats_df, output_dir=plot_dir, epoch=current_epoch, batch_idx=batch_idx
+                    )
 
-                    # Log key metrics to trainer (avoid batch_size extraction from HeteroData)
-                    mean_fsoi = float(stats_df["fsoi_value"].mean())
-                    std_fsoi = float(stats_df["fsoi_value"].std())
-                    beneficial_pct = float(100 * (stats_df["fsoi_value"] > 0).sum() / len(stats_df))
+                # Store summary statistics
+                summary = summarize_fsoi_by_instrument(stats_df)
+                summary["epoch"] = current_epoch
+                summary["batch_idx"] = batch_idx
+                self.fsoi_history.append(summary)
 
-                    # Use prog_bar=False and batch_size=1 to avoid HeteroData iteration error
-                    pl_module.log("fsoi_mean", mean_fsoi, on_epoch=True, prog_bar=False, batch_size=1)
-                    pl_module.log("fsoi_std", std_fsoi, on_epoch=True, prog_bar=False, batch_size=1)
-                    pl_module.log("fsoi_beneficial_pct", beneficial_pct, on_epoch=True, prog_bar=False, batch_size=1)
+                # Log key metrics to trainer (avoid batch_size extraction from HeteroData)
+                mean_fsoi = float(stats_df["fsoi_value"].mean())
+                std_fsoi = float(stats_df["fsoi_value"].std())
+                beneficial_pct = float(100 * (stats_df["fsoi_value"] > 0).sum() / len(stats_df))
 
-                    print(f"[FSOI Callback] Mean FSOI: {mean_fsoi:.4e}, Beneficial: {beneficial_pct:.1f}%")
+                # Use prog_bar=False and batch_size=1 to avoid HeteroData iteration error
+                pl_module.log("fsoi_mean", mean_fsoi, on_epoch=True, prog_bar=False, batch_size=1)
+                pl_module.log("fsoi_std", std_fsoi, on_epoch=True, prog_bar=False, batch_size=1)
+                pl_module.log("fsoi_beneficial_pct", beneficial_pct, on_epoch=True, prog_bar=False, batch_size=1)
 
-            except Exception as e:
-                print(f"[FSOI Callback] Error computing FSOI: {e}")
-                import traceback
+                print(f"[FSOI Callback] Mean FSOI: {mean_fsoi:.4e}, Beneficial: {beneficial_pct:.1f}%")
+            
+            # Clear FSOI computation results to free memory
+            del fsoi_values, stats_df
+            torch.cuda.empty_cache()
 
-                traceback.print_exc()
+        except Exception as e:
+            print(f"[FSOI Callback] Error computing FSOI: {e}")
+            import traceback
 
-        # ALL ranks cache predictions for next batch (not just rank 0)
-        # This ensures every rank has the previous predictions for sequential background
-        self._previous_batch = batch
-        self._previous_bin_name = batch.bin_name
-        
-        # Generate predictions to cache (no_grad to save memory)
-        with torch.no_grad():
-            pl_module.eval()
-            self._previous_predictions = pl_module(batch)
+            traceback.print_exc()
 
     def _can_link_batches(self, batch_prev, batch_curr) -> bool:
         """

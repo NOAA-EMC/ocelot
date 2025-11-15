@@ -482,6 +482,9 @@ def compute_observation_sensitivity_graphdop(
                 # Set background state and enable gradients
                 batch_background[node_type].x = background.clone().requires_grad_(True)
     
+    # Clear any cached gradients before forward pass
+    torch.cuda.empty_cache()
+    
     # Forward pass at background state with gradients enabled
     with torch.enable_grad():
         preds_background = model(batch_background)
@@ -592,6 +595,15 @@ def compute_observation_sensitivity_graphdop(
         fsoi = -increment * sum_sensitivity
         
         fsoi_values[node_type] = fsoi
+    
+    # Aggressive memory cleanup
+    del batch_background, preds_background, preds_analysis
+    del sensitivities_background, sensitivities_analysis
+    if 'loss_background' in locals():
+        del loss_background
+    if 'loss_analysis' in locals():
+        del loss_analysis
+    torch.cuda.empty_cache()
     
     return fsoi_values
 

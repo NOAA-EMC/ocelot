@@ -171,6 +171,7 @@ class GNNDataModule(pl.LightningDataModule):
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         sampling_mode="sequential",  # "sequential" or "random" - controls bin distribution within ranks
+        global_sequential_validation=True,  # Use GlobalSequentialSampler for TRUE GraphDOP FSOI
         **kwargs,
     ):
         super().__init__()
@@ -643,9 +644,10 @@ class GNNDataModule(pl.LightningDataModule):
         rank = dist.get_rank()       if dist.is_available() and dist.is_initialized() else 0
         n = len(self.val_bin_names)
 
-        # Use GlobalSequentialSampler for TRUE GraphDOP (all ranks process same batches sequentially)
-        sampler = GlobalSequentialSampler(n, num_replicas=world_size, rank=rank)
-        sampler_name = "GlobalSequentialSampler"
+        # Use BalancedSequentialShard: Each rank gets contiguous bins, processes sequentially
+        # This enables per-rank sequential background for FSOI
+        sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
+        sampler_name = "BalancedSequentialShard"
 
         loader = PyGDataLoader(
             ds,
@@ -665,5 +667,5 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[DL] VAL   window={self.hparams.val_start.date()}..{self.hparams.val_end.date()} "
             f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
             f"first={first_bin} last={last_bin} sampler={sampler_name}")
-        print(f"[DL] VAL   GLOBAL SEQUENTIAL MODE: All ranks process ALL bins in order (bin1→bin2→bin3...)")
+        print(f"[DL] VAL   Per-rank sequential: Each rank processes its bins in order (bin{idx_preview[0]+1}→bin{idx_preview[-1]+1})")
         return loader

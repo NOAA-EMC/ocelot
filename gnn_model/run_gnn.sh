@@ -73,6 +73,10 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
     --fsoi_batches=3 \
     --max_epochs 100
 
+# NOTE: Using BalancedSequentialShard (per-rank sequential)
+# Each GPU processes its bins sequentially: GPU0 does bin1→bin2→bin3, GPU1 does bin4→bin5→bin6, etc.
+# Sequential background works within each GPU (bin2 uses bin1 forecast on same GPU)
+
 # RESUME from latest checkpoint (automatic) - SEQUENTIAL MODE
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 #     --resume_from_latest \
