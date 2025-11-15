@@ -72,7 +72,6 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
     --sampling_mode sequential \
     --window_mode sequential \
     --enable_fsoi \
-    --fsoi_mode fast \
     --fsoi_conventional_only \
     --fsoi_batches 5 \
     --fsoi_every_n_epochs 1 \

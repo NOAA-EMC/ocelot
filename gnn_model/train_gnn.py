@@ -81,14 +81,9 @@ def main():
     parser.add_argument("--fsoi_every_n_epochs", type=int, default=10, help="Compute FSOI every N epochs")
     parser.add_argument("--fsoi_start_epoch", type=int, default=10, help="Start computing FSOI from this epoch")
     parser.add_argument("--fsoi_batches", type=int, default=2, help="Number of batches to analyze for FSOI")
-    parser.add_argument("--fsoi_mode", type=str, default="fast", choices=["exact", "fast"], 
-                        help="FSOI computation mode: fast (GraphDOP two-state adjoint) or exact (exact LOO, slow but gold standard)")
     parser.add_argument("--fsoi_conventional_only", action="store_true",
                         help="Compute FSOI only for conventional obs (surface_obs + radiosonde) representing u,v,T,q,p. "
                              "This measures how all observations affect prediction of prognostic variables.")
-    parser.add_argument("--max_obs_for_loo", type=int, default=None,
-                        help="Maximum observations per instrument for exact LOO (random sample if exceeded). "
-                             "Recommended: 1000-5000 for large datasets")
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -321,19 +316,13 @@ def main():
     # === FSOI CALLBACK (OPTIONAL) ===
     if args.enable_fsoi:
         if FSOI_AVAILABLE:
-            # Determine FSOI mode
-            use_loo = (args.fsoi_mode == "exact")
-            
             print(f"\n[FSOI] Enabling FSOI computation:")
             print(f"  - Computing every {args.fsoi_every_n_epochs} epochs")
             print(f"  - Starting from epoch {args.fsoi_start_epoch}")
             print(f"  - Analyzing {args.fsoi_batches} batches per epoch")
-            print(f"  - Mode: {'EXACT LOO (slow, gold standard)' if use_loo else 'FAST (GraphDOP two-state adjoint)'}")
+            print(f"  - Mode: GraphDOP two-state adjoint (fast)")
             print(f"  - Background: Model predictions (GraphDOP x_b)")
             print(f"  - Innovation: (obs - model_forecast)")
-            
-            if args.max_obs_for_loo:
-                print(f"  - Max observations for exact LOO: {args.max_obs_for_loo} (random sample if exceeded)")
             
             if args.fsoi_conventional_only:
                 print(f"  - Target observations: CONVENTIONAL ONLY (surface_obs + radiosonde)")
@@ -352,8 +341,6 @@ def main():
                     generate_plots=True,
                     start_epoch=args.fsoi_start_epoch,
                     feature_stats=feature_stats,
-                    use_loo=use_loo,
-                    max_obs_for_loo=args.max_obs_for_loo,
                     conventional_only=args.fsoi_conventional_only,
                 )
             )

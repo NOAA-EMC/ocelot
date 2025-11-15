@@ -5,20 +5,21 @@ This implementation follows operational FSOI methodology from:
 - Baker & Daley (2000): Observation and background adjoint sensitivity
 - Langland & Baker (2004): Estimation of observation impact using adjoint
 - Cardinali (2009): Monitoring observation impact on short-range forecast
-- Laloyaux et al. (2025): FSOI applied to GraphDOP (arXiv:2510.27388)
 
 FSOI measures the impact of individual observations on forecast accuracy by computing:
 1. Sensitivity: gradient of forecast loss with respect to input observations (adjoint)
 2. Impact: sensitivity weighted by observation increment
 
-Mathematical formulation (Fast Approximation):
-    FSOI_i = -∇_{o_i} L · (o_i - o_background_i)
+Mathematical formulation (Two-State Adjoint):
+    FSOI_i = (o_i - o_background_i)^T · [M_b^T·∇L + M_a^T·∇L]
 
 Where:
-    o_i = input observation value
+    o_i = input observation value (analysis)
+    o_background_i = background state (model forecast)
     L = forecast verification loss (prediction error at target time)
-    ∇_{o_i} L = sensitivity (gradient of loss w.r.t. observation via backpropagation)
-    (o_i - o_background_i) = observation increment (innovation)
+    M_b^T = adjoint at background state
+    M_a^T = adjoint at analysis state
+    ∇L = gradient of loss with respect to predictions
 
 Note: Observations are already normalized by their climatological standard deviation
 during preprocessing, so no additional R_i normalization is needed here.
@@ -27,15 +28,14 @@ Sign Convention (following Langland & Baker 2004):
     Negative FSOI → observation reduces forecast error (beneficial)
     Positive FSOI → observation increases forecast error (detrimental)
 
-Note: This fast approximation computes gradients at the analysis state (with all 
-observations included). For exact impact, use operational mode with Leave-One-Out (LOO),
-which removes each observation and re-runs the forward pass. See fsoi_operational.py.
+Background State Options:
+    - Sequential mode: Use forecast from previous time window
+    - Same-window mode: Use model prediction at current time
+    - Climatological mode: Use zero background
 
-GraphDOP Alignment:
-    - Operates in observation space (not gridded fields)
-    - Uses automatic differentiation for adjoint (PyTorch backward)
-    - Conventional-only mode analogous to GraphDOP's C-matrix filtering
-    - Fast mode uses single-state adjoint; Exact LOO provides gold standard
+Target Filtering:
+    - Conventional-only mode: Measure impact on prognostic variables (u, v, T, q, p)
+    - All-targets mode: Measure impact on all observation types
 
 Author: Azadeh Gholoubi (NOAA/EMC)
 Date: November 2025
@@ -64,15 +64,11 @@ def compute_observation_sensitivity(
     Compute sensitivity of forecast loss to input observations via backpropagation.
 
     This implements the adjoint calculation ∇_{o_input} L using automatic differentiation,
-    analogous to the adjoint model in traditional 4D-Var systems. Following GraphDOP 
-    (Laloyaux et al. 2025), we use PyTorch's reverse-mode automatic differentiation
-    to compute the Vector-Jacobian Product (VJP), which gives us the sensitivity of
-    the forecast error to each input observation.
+    analogous to the adjoint model in traditional 4D-Var systems. We use PyTorch's 
+    reverse-mode automatic differentiation to compute the Vector-Jacobian Product (VJP), 
+    which gives us the sensitivity of the forecast error to each input observation.
     
-    WARNING: This is a FAST APPROXIMATION. The gradient is computed with all observations
-    included in the analysis, which can create contamination (the observation being assessed
-    influences its own sensitivity). For unbiased impact assessment, use exact Leave-One-Out
-    in fsoi_operational.py.
+    The gradient is computed at the analysis state (with all observations included).
 
     Args:
         model: The trained GNN model
@@ -84,16 +80,15 @@ def compute_observation_sensitivity(
         target_instrument: If specified, only compute loss for this target instrument
                           (e.g., "surface_obs" to see impact on surface predictions only)
         conventional_only: If True, only compute loss for conventional obs (surface_obs + radiosonde)
-                          representing prognostic variables (u, v, T, q, p). This is analogous
-                          to GraphDOP's C-matrix filtering (Figure 5 in Laloyaux et al. 2025).
+                          representing prognostic variables (u, v, T, q, p).
 
     Returns:
         Dictionary mapping node_type -> sensitivity tensor [N, C]
         where N is number of observations, C is number of channels
         
     References:
-        - Laloyaux et al. (2025): Using DA tools to dissect GraphDOP, arXiv:2510.27388
         - Baker & Daley (2000): Observation and background adjoint sensitivity
+        - Langland & Baker (2004): Estimation of observation impact using adjoint
     """
     from loss import weighted_huber_loss
 
@@ -182,7 +177,7 @@ def compute_observation_sensitivity(
     return sensitivities
 
 
-def compute_observation_sensitivity_graphdop(
+def compute_observation_sensitivity_two_state(
     model,
     batch: HeteroData,
     predictions: Dict[str, List[torch.Tensor]],
@@ -196,35 +191,33 @@ def compute_observation_sensitivity_graphdop(
     previous_predictions: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Dict[str, torch.Tensor]:
     """
-    Compute FSOI using GraphDOP's two-state adjoint formulation.
+    Compute FSOI using two-state adjoint formulation.
     
-    Following Laloyaux et al. (2025), Equation 3:
+    Mathematical formulation (Laloyaux et al. 2025, Equation 3):
         Δe = e(x_a) - e(x_b) = (x_a - x_b)^T · g
     
     Where:
         g = M_b^T·C·(M(x_b) - x_ref) + M_a^T·C·(M(x_a) - x_ref)
     
-    GraphDOP-specific implementation details:
-        x_b = background state = model's forecast/prediction for current observations
+    Background State Options:
         
-        GraphDOP's approach (with temporal continuity):
+        Sequential mode (with temporal continuity):
               - Time Window N-1 (e.g., 00Z-12Z): Process obs → produce 12h forecast
               - Time Window N (e.g., 12Z-24Z): 
                   x_b = the 12h forecast FROM Window N-1
                   x_a = actual observations in Window N
                   Innovation = x_a - x_b = "actual obs in Window N" - "what Window N-1 predicted"
         
-        Our GNN's current limitation:
+        Same-window approximation (current limitation):
               - Each batch is INDEPENDENT (no temporal connection between batches)
               - We don't have access to "previous batch's forecast"
               - APPROXIMATION: We use model's prediction AT CURRENT TIME as x_b
                 (what model predicts observations should be, given current state)
-              - This differs from GraphDOP's true "previous window forecast"
         
-        To match GraphDOP exactly, we would need:
+        Sequential mode requires:
               - Sequential processing of time windows (not independent batches)
               - Save each batch's 12h forecast → use as next batch's x_b
-              - Requires temporal continuity in training/inference pipeline
+              - Temporal continuity in training/inference pipeline
         
         x_a = analysis state = ACTUAL observations received
         
@@ -256,22 +249,22 @@ def compute_observation_sensitivity_graphdop(
         channel_weights: Weights for different channels
         target_instrument: If specified, only compute sensitivity for this target
         conventional_only: If True, only compute for conventional obs (C matrix filter)
-        use_model_background: If True (GraphDOP default), compute x_b as model's forecast.
+        use_model_background: If True (default), compute x_b as model's forecast.
                              If False, fall back to zeros.
-        previous_batch: Optional batch from previous sequential window (for TRUE GraphDOP)
+        previous_batch: Optional batch from previous sequential window
         previous_predictions: Optional model predictions from previous_batch
-                             If provided, uses TRUE GraphDOP background (12h forecast from previous window)
+                             If provided, uses sequential background (12h forecast from previous window)
                              If None, falls back to climatological/same-window approximation
     
     Returns:
         Dictionary mapping node_type -> FSOI values [N, C]
         
     References:
-        Laloyaux et al. (2025): Using data assimilation tools to dissect GraphDOP
+        Laloyaux et al. (2025): Using data assimilation tools to dissect AI models
         arXiv:2510.27388, Equation 3, Section 2
         
     Note:
-        Sign convention matches GraphDOP: Negative FSOI = beneficial observation
+        Sign convention: Negative FSOI = beneficial observation
     """
     from loss import weighted_huber_loss
     
@@ -360,7 +353,7 @@ def compute_observation_sensitivity_graphdop(
                 sensitivities_analysis[node_type] = torch.zeros_like(batch[node_type].x)
     
     # === STEP 2: Compute x_b (background state) and M_b^T (adjoint at background) ===
-    # TRUE GraphDOP: x_b = forecast from previous sequential window
+    # x_b = forecast from previous sequential window
     #
     # For radiosonde observations:
     #   - Filter to only compute FSOI for radiosonde (target_instrument or conventional_only)
@@ -369,9 +362,9 @@ def compute_observation_sensitivity_graphdop(
     
     background_observations = {}
     
-    # TRUE GraphDOP: Use forecast from previous sequential window if available
+    # Use forecast from previous sequential window if available
     if previous_predictions is not None:
-        print("[FSOI] TRUE GraphDOP: Using forecast from previous sequential batch as x_b")
+        print("[FSOI] Using forecast from previous sequential batch as x_b")
         with torch.no_grad():
             for node_type in batch.node_types:
                 if not node_type.endswith("_input"):
@@ -421,7 +414,7 @@ def compute_observation_sensitivity_graphdop(
                     print(f"[FSOI] {inst_name}: No previous prediction, using zero background")
     
     elif use_model_background:
-        # FALLBACK: Use model's prediction from same window (NOT TRUE GraphDOP)
+        # FALLBACK: Use model's prediction from same window
         print("[FSOI] Climatological approximation: Using same-window predictions as x_b")
         
         with torch.no_grad():
@@ -561,8 +554,8 @@ def compute_observation_sensitivity_graphdop(
                 else:
                     sensitivities_background[node_type] = torch.zeros_like(batch_background[node_type].x)
     
-    # === STEP 3: Combine using GraphDOP formula ===
-    # GraphDOP Equation: Δe = (x_a - x_b)^T · g
+    # === STEP 3: Combine using two-state adjoint formula ===
+    # Equation: Δe = (x_a - x_b)^T · g
     # where g = M_b^T·C·(M(x_b) - x_ref) + M_a^T·C·(M(x_a) - x_ref)
     #
     # Our gradients from backprop already contain M^T·(M(x) - x_ref)
@@ -580,7 +573,7 @@ def compute_observation_sensitivity_graphdop(
         obs_background = background_observations.get(node_type, torch.zeros_like(obs_analysis))
         
         # Innovation: x_a - x_b
-        # GraphDOP interpretation: "actual obs" - "what model predicted/expected"
+        # "actual obs" - "what model predicted/expected"
         # This measures how much observations CORRECT the model's forecast
         increment = obs_analysis - obs_background
         
@@ -588,10 +581,10 @@ def compute_observation_sensitivity_graphdop(
         # Our backprop gives us these automatically
         sens_b = sensitivities_background.get(node_type, torch.zeros_like(obs_analysis))
         sens_a = sensitivities_analysis.get(node_type, torch.zeros_like(obs_analysis))
-        sum_sensitivity = sens_b + sens_a  # GraphDOP: M_b^T·e_b + M_a^T·e_a
+        sum_sensitivity = sens_b + sens_a  # M_b^T·e_b + M_a^T·e_a
         
         # FSOI per observation i: FSOI_i = (x_a,i - x_b,i) * g_i
-        # GraphDOP sign convention: Negative = beneficial (reduces error)
+        # Sign convention: Negative = beneficial (reduces error)
         fsoi = -increment * sum_sensitivity
         
         fsoi_values[node_type] = fsoi
@@ -647,8 +640,7 @@ def compute_fsoi(
         
     Note:
         This fast approximation computes sensitivity at the analysis state (all obs included).
-        For operational gold-standard FSOI, use Leave-One-Out in fsoi_operational.py which
-        follows the exact formulation from Baker & Daley (2000).
+        For exact FSOI calculations, alternative methodologies may be explored.
     """
     fsoi_values = {}
 
@@ -673,7 +665,7 @@ def compute_fsoi(
         # This measures how much the observation deviates from the 3-year mean
         increment = obs_values - background
 
-        # FSOI = -gradient · increment (GraphDOP convention: negative = beneficial)
+        # FSOI = -gradient · increment (sign convention: negative = beneficial)
         fsoi = -sensitivity * increment  # Element-wise product [N, C]
 
         fsoi_values[node_type] = fsoi
@@ -781,9 +773,9 @@ def compute_batch_fsoi(
     previous_predictions: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Tuple[Dict[str, torch.Tensor], pd.DataFrame]:
     """
-    Complete FSOI computation pipeline for a single batch using GraphDOP methodology.
+    Complete FSOI computation pipeline for a single batch using two-state adjoint methodology.
 
-    This function implements GraphDOP's two-state adjoint FSOI approach (Laloyaux et al. 2025,
+    This function implements the two-state adjoint FSOI approach (Laloyaux et al. 2025,
     arXiv:2510.27388, Equation 3), which computes:
     
         e(x_a) - e(x_b) ≈ (x_a - x_b)^T · [M_b^T·C·e_b + M_a^T·C·e_a]
@@ -796,33 +788,27 @@ def compute_batch_fsoi(
         M_a^T = adjoint at analysis
         e_b, e_a = forecast errors at background and analysis
     
-    CRITICAL: Innovation Definition
-        GraphDOP: (x_a - x_b) where x_b is the 12h forecast from previous window
+    Innovation Definition:
+        (x_a - x_b) where x_b is the 12h forecast from previous window
         - Measures observation value relative to MODEL'S OWN FORECAST
         - In operational DA: x_b would be the previous 6h analysis + 12h forecast
         - In this GNN: x_b ≈ 0 (model predictions with zero observations = cold start)
         
         This differs from climatological FSOI:
         - Climatological: (obs - 3yr_mean) measures deviation from climate
-        - GraphDOP/Operational: (obs - first_guess) measures model correction
+        - Operational: (obs - first_guess) measures model correction
     
-    CRITICAL: Adjoint Summation (NOT Averaging)
-        GraphDOP Equation 3: FSOI = (x_a - x_b)^T · (M_b^T·e_b + M_a^T·e_a)
-        - We SUM the two adjoints, exactly as GraphDOP specifies
-        - No division by 2 (previous versions incorrectly averaged)
+    Adjoint Summation (NOT Averaging):
+        FSOI = (x_a - x_b)^T · (M_b^T·e_b + M_a^T·e_a)
+        - We SUM the two adjoints
+        - No division by 2
         - The two-state sum reduces contamination vs single-state
     
     This two-state formulation reduces contamination compared to single-state adjoint
     via the sum of sensitivities from both states. However, it's still an approximation 
     (3rd-order Taylor expansion).
     
-    WARNING: For operational gold-standard FSOI:
-    - Use fsoi_operational.py with exact Leave-One-Out (LOO)
-    - LOO removes each observation and re-runs the forward pass
-    - Provides unbiased impact assessment (no contamination)
-    - Required for EMC operational comparison
-    
-    GraphDOP Implementation Details (Exactly Equation 3):
+    Implementation Details (Equation 3):
     - Background state: Model first-guess in observation space, approximated by 
                         current-window predictions where available, otherwise 0
     - Analysis state: Current observations (x_a)
@@ -835,7 +821,7 @@ def compute_batch_fsoi(
     Use Cases:
     - Fast FSOI during training for monitoring
     - Exploratory analysis of observation importance
-    - Comparison with GraphDOP results (Laloyaux et al. 2025)
+    - Comparison with two-state adjoint results (Laloyaux et al. 2025)
     - Debugging and visualization
     
     Pipeline Steps:
@@ -858,10 +844,10 @@ def compute_batch_fsoi(
                       Used if background_estimate not provided (default: zero obs)
         conventional_only: If True, only compute FSOI for conventional obs (surface_obs + radiosonde)
                           representing prognostic variables (u, v, T, q, p).
-                          Analogous to GraphDOP's C-matrix filtering (Figure 5).
-        previous_batch: Optional batch from previous sequential window (for TRUE GraphDOP background)
-        previous_predictions: Optional model predictions from previous_batch (x_b in GraphDOP Eq. 3)
-                             If provided, uses TRUE GraphDOP background (forecast from previous window)
+                          Analogous to C-matrix filtering (Figure 5, Laloyaux et al. 2025).
+        previous_batch: Optional batch from previous sequential window
+        previous_predictions: Optional model predictions from previous_batch (x_b in Eq. 3, Laloyaux et al. 2025)
+                             If provided, uses forecast from previous window as background
                              If None, falls back to climatological background (x_b = 0 or same-window)
 
     Returns:
@@ -871,7 +857,7 @@ def compute_batch_fsoi(
                     fsoi_value, obs_value, target_variable (if conventional_only)]
                     
     References:
-        - Laloyaux et al. (2025): Using DA tools to dissect GraphDOP, arXiv:2510.27388, Equation 3
+        - Laloyaux et al. (2025): Using DA tools to dissect AI models, arXiv:2510.27388, Equation 3
         - Langland & Baker (2004): Estimation of observation impact using adjoint
     """
     os.makedirs(save_dir, exist_ok=True)
@@ -894,10 +880,10 @@ def compute_batch_fsoi(
         ground_truths[node_type] = gt_data["gts_list"]
 
     if compute_sensitivity:
-        # Use GraphDOP two-state adjoint formulation
+        # Use two-state adjoint formulation
         # Computes FSOI = (x_a - x_b)^T · (M_b^T·e_b + M_a^T·e_a)
         # where x_b = model's prediction (background approximation), x_a = actual observations
-        fsoi_values = compute_observation_sensitivity_graphdop(
+        fsoi_values = compute_observation_sensitivity_two_state(
             model=model,
             batch=batch,
             predictions=predictions,
@@ -905,9 +891,9 @@ def compute_batch_fsoi(
             instrument_weights=model.instrument_weights,
             channel_weights=model.channel_weights,
             conventional_only=conventional_only,
-            use_model_background=True,  # GraphDOP: use model's forecast as x_b
-            previous_batch=previous_batch,  # For TRUE GraphDOP: forecast from previous window
-            previous_predictions=previous_predictions,  # x_b in GraphDOP Eq. 3
+            use_model_background=True,  # Use model's forecast as x_b
+            previous_batch=previous_batch,  # For sequential: forecast from previous window
+            previous_predictions=previous_predictions,  # x_b in two-state formulation
         )
 
         # Aggregate statistics
@@ -1014,7 +1000,7 @@ def identify_high_impact_observations(
         DataFrame with top_n observations sorted by FSOI
         
     Note:
-        Sign convention: Negative FSOI = beneficial (GraphDOP convention)
+        Sign convention: Negative FSOI = beneficial observation
     """
     if impact_type == "beneficial":
         # Most beneficial = most negative FSOI

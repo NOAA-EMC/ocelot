@@ -6,6 +6,8 @@ This callback computes FSOI metrics at specified intervals and saves:
 - Summary plots showing spatial distribution and statistics
 - Time series of FSOI metrics across epochs
 
+Uses two-state adjoint method for fast computation.
+
 Author: Azadeh Gholoubi
 Date: November 2025
 """
@@ -30,8 +32,8 @@ class FSOICallback(pl.Callback):
     - Saves detailed FSOI statistics to CSV
     - Generates visualization plots
     - Tracks FSOI metrics over training
-    - Uses GraphDOP two-state adjoint (fast mode) or exact LOO (slow mode)
-    - Supports true GraphDOP background using sequential batches
+    - Uses two-state adjoint method for fast computation
+    - Supports sequential background using previous batches
 
     Args:
         compute_every_n_epochs: Compute FSOI every N epochs (default: 5)
@@ -40,10 +42,8 @@ class FSOICallback(pl.Callback):
         generate_plots: Whether to generate visualization plots
         start_epoch: Start computing FSOI from this epoch (default: 0, can set to 5-10 to skip early training)
         feature_stats: Climatological statistics (mean, std) from observation_config.yaml
-        use_loo: Use exact Leave-One-Out (True) or fast GraphDOP approximation (False)
-        max_obs_for_loo: Maximum observations for exact LOO (random sample if exceeded)
         conventional_only: Only compute for conventional obs (surface_obs + radiosonde)
-        use_sequential_background: Use forecast from previous batch as background (True GraphDOP)
+        use_sequential_background: Use forecast from previous batch as background
     """
 
     def __init__(
@@ -54,10 +54,8 @@ class FSOICallback(pl.Callback):
         generate_plots: bool = True,
         start_epoch: int = 0,
         feature_stats: Optional[dict] = None,
-        use_loo: bool = False,
-        max_obs_for_loo: Optional[int] = None,
         conventional_only: bool = False,
-        use_sequential_background: bool = True,  # NEW: Enable true GraphDOP background
+        use_sequential_background: bool = True,
     ):
         super().__init__()
         self.compute_every_n_epochs = compute_every_n_epochs
@@ -66,15 +64,13 @@ class FSOICallback(pl.Callback):
         self.generate_plots = generate_plots
         self.start_epoch = start_epoch
         self.feature_stats = feature_stats
-        self.use_loo = use_loo
-        self.max_obs_for_loo = max_obs_for_loo
         self.conventional_only = conventional_only
         self.use_sequential_background = use_sequential_background
 
         # Storage for time series tracking
         self.fsoi_history = []
 
-        # NEW: Cache for sequential background
+        # Cache for sequential background
         self._previous_batch = None
         self._previous_predictions = None
         self._previous_bin_name = None
@@ -102,7 +98,7 @@ class FSOICallback(pl.Callback):
         
         If use_sequential_background=True and previous batch exists:
         - Uses forecast from previous batch as background (x_b)
-        - Implements per-rank sequential GraphDOP FSOI
+        - Implements per-rank sequential FSOI with two-state adjoint
         Otherwise:
         - Uses zero/climatological background (approximate)
         """
@@ -153,8 +149,7 @@ class FSOICallback(pl.Callback):
             torch.cuda.empty_cache()
             
             # Use unified compute_batch_fsoi from fsoi.py
-            mode_str = "EXACT LOO (gold standard)" if self.use_loo else "FAST (GraphDOP two-state adjoint)"
-            print(f"[FSOI Callback] Using {mode_str}")
+            print(f"[FSOI Callback] Using two-state adjoint method")
             if self.conventional_only:
                 print(f"[FSOI Callback] Target: CONVENTIONAL obs only (surface_obs + radiosonde)")
             
@@ -223,7 +218,7 @@ class FSOICallback(pl.Callback):
         Check if two batches are temporally sequential (can be linked for background).
         
         Sequential batches have consecutive bin numbers (e.g., bin123 -> bin124),
-        indicating they are 12 hours apart and can be linked for GraphDOP background.
+        indicating they are 12 hours apart and can be linked for background.
         
         Args:
             batch_prev: Previous batch

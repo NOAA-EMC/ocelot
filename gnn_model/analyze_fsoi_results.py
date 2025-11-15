@@ -57,7 +57,7 @@ def load_fsoi_csvs(results_dir: str) -> pd.DataFrame:
     Load all FSOI CSV files from the detailed directory.
     
     Args:
-        results_dir: Base results directory (e.g., fsoi_results_operational)
+        results_dir: Base results directory (e.g., fsoi_results_conventional)
         
     Returns:
         Combined DataFrame with all epochs
@@ -65,17 +65,17 @@ def load_fsoi_csvs(results_dir: str) -> pd.DataFrame:
     detailed_dir = Path(results_dir) / "detailed"
     
     if not detailed_dir.exists():
-        print(f"❌ Directory not found: {detailed_dir}")
+        print(f"Directory not found: {detailed_dir}")
         return None
     
     # Find all CSV files
     csv_files = sorted(detailed_dir.glob("*.csv"))
     
     if not csv_files:
-        print(f"❌ No CSV files found in {detailed_dir}")
+        print(f"No CSV files found in {detailed_dir}")
         return None
     
-    print(f"\n📁 Found {len(csv_files)} CSV files:")
+    print(f"\n Found {len(csv_files)} CSV files:")
     for f in csv_files:
         print(f"   - {f.name}")
     
@@ -84,24 +84,29 @@ def load_fsoi_csvs(results_dir: str) -> pd.DataFrame:
     for csv_file in csv_files:
         try:
             df = pd.read_csv(csv_file)
-            # Extract epoch from filename (e.g., fsoi_operational_epoch5_batch0.csv)
+            
+            # Normalize column names (support both old and new formats)
+            if 'fsoi_value' in df.columns and 'fsoi' not in df.columns:
+                df['fsoi'] = df['fsoi_value']
+            
+            # Extract epoch from filename (e.g., fsoi_epoch5_batch0.csv)
             parts = csv_file.stem.split('_')
             epoch_part = [p for p in parts if p.startswith('epoch')]
             if epoch_part:
                 epoch = int(epoch_part[0].replace('epoch', ''))
                 df['epoch'] = epoch
             dfs.append(df)
-            print(f"   ✓ Loaded {csv_file.name}: {len(df)} observations")
+            print(f"  Loaded {csv_file.name}: {len(df)} observations")
         except Exception as e:
-            print(f"   ✗ Error loading {csv_file.name}: {e}")
+            print(f"  Error loading {csv_file.name}: {e}")
     
     if not dfs:
-        print("❌ No data loaded successfully")
+        print(" No data loaded successfully")
         return None
     
     # Combine all dataframes
     combined_df = pd.concat(dfs, ignore_index=True)
-    print(f"\n✓ Combined dataset: {len(combined_df)} total observations")
+    print(f"\n Combined dataset: {len(combined_df)} total observations")
     print(f"  Epochs: {sorted(combined_df['epoch'].unique())}")
     print(f"  Instruments: {sorted(combined_df['instrument'].unique())}")
     
@@ -120,7 +125,7 @@ def summarize_fsoi_statistics(df: pd.DataFrame) -> pd.DataFrame:
     print("="*80)
     
     # Overall statistics
-    print("\n📊 Overall Statistics:")
+    print("\nOverall Statistics:")
     print(f"   Total observations: {len(df)}")
     print(f"   Mean FSOI: {df['fsoi'].mean():.6f}")
     print(f"   Std FSOI: {df['fsoi'].std():.6f}")
@@ -128,7 +133,7 @@ def summarize_fsoi_statistics(df: pd.DataFrame) -> pd.DataFrame:
     print(f"   Max FSOI: {df['fsoi'].max():.6f}")
     
     # Statistics by instrument
-    print("\n📊 By Instrument:")
+    print("\n By Instrument:")
     instrument_stats = df.groupby('instrument')['fsoi'].agg([
         ('count', 'count'),
         ('mean', 'mean'),
@@ -141,7 +146,7 @@ def summarize_fsoi_statistics(df: pd.DataFrame) -> pd.DataFrame:
     
     # Statistics by epoch
     if 'epoch' in df.columns:
-        print("\n📊 By Epoch:")
+        print("\n By Epoch:")
         epoch_stats = df.groupby('epoch')['fsoi'].agg([
             ('count', 'count'),
             ('mean', 'mean'),
@@ -153,7 +158,7 @@ def summarize_fsoi_statistics(df: pd.DataFrame) -> pd.DataFrame:
     
     # Statistics by instrument and epoch
     if 'epoch' in df.columns:
-        print("\n📊 By Instrument and Epoch:")
+        print("\n By Instrument and Epoch:")
         inst_epoch_stats = df.groupby(['instrument', 'epoch'])['fsoi'].agg([
             ('count', 'count'),
             ('mean', 'mean')
@@ -171,64 +176,74 @@ def check_fsoi_components(df: pd.DataFrame):
     print("FSOI COMPONENTS CHECK")
     print("="*80)
     
-    required_cols = ['observation', 'background', 'innovation', 'sensitivity', 'fsoi']
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    
-    if missing_cols:
-        print(f"⚠️  Missing columns: {missing_cols}")
+    # Check for fsoi column (required)
+    if 'fsoi' not in df.columns:
+        print(f" Missing 'fsoi' column")
         print(f"   Available columns: {list(df.columns)}")
         return
     
-    # Check innovations (O-B)
-    print("\n📊 Innovations (Observation - Background):")
-    print(f"   Mean: {df['innovation'].mean():.6f}")
-    print(f"   Std: {df['innovation'].std():.6f}")
-    print(f"   Min: {df['innovation'].min():.6f}")
-    print(f"   Max: {df['innovation'].max():.6f}")
+    # Optional columns
+    optional_cols = ['observation', 'background', 'innovation', 'sensitivity', 'obs_value']
+    available_optional = [col for col in optional_cols if col in df.columns]
+    missing_optional = [col for col in optional_cols if col not in df.columns]
     
-    # Check if innovations are computed correctly
-    if 'observation' in df.columns and 'background' in df.columns:
-        computed_innov = df['observation'] - df['background']
-        innov_match = np.allclose(computed_innov, df['innovation'], rtol=1e-3)
-        if innov_match:
-            print("   ✓ Innovations match (O-B) formula")
-        else:
-            print("   ⚠️  Innovations don't match (O-B) formula")
+    if missing_optional:
+        print(f"\n Optional columns not found: {missing_optional}")
+        print(f"   Available: {available_optional}")
+        print(f"   Skipping detailed component checks...")
     
-    # Check sensitivities
-    print("\n📊 Sensitivities (Adjoint ∇J/∂obs):")
-    print(f"   Mean: {df['sensitivity'].mean():.6f}")
-    print(f"   Std: {df['sensitivity'].std():.6f}")
-    print(f"   Min: {df['sensitivity'].min():.6f}")
-    print(f"   Max: {df['sensitivity'].max():.6f}")
+    # Check innovations if available
+    if 'innovation' in df.columns:
+        print("\n Innovations (Observation - Background):")
+        print(f"   Mean: {df['innovation'].mean():.6f}")
+        print(f"   Std: {df['innovation'].std():.6f}")
+        print(f"   Min: {df['innovation'].min():.6f}")
+        print(f"   Max: {df['innovation'].max():.6f}")
+        
+        # Check if innovations are computed correctly
+        if 'observation' in df.columns and 'background' in df.columns:
+            computed_innov = df['observation'] - df['background']
+            innov_match = np.allclose(computed_innov, df['innovation'], rtol=1e-3)
+            if innov_match:
+                print("   ✓ Innovations match (O-B) formula")
+            else:
+                print("    Innovations don't match (O-B) formula")
     
-    # Check FSOI sign (GraphDOP convention: negative = beneficial)
-    print("\n📊 FSOI Sign Distribution:")
-    print("   (GraphDOP convention: Negative FSOI = beneficial, Positive FSOI = detrimental)")
+    # Check sensitivities if available
+    if 'sensitivity' in df.columns:
+        print("\n Sensitivities (Adjoint ∇J/∂obs):")
+        print(f"   Mean: {df['sensitivity'].mean():.6f}")
+        print(f"   Std: {df['sensitivity'].std():.6f}")
+        print(f"   Min: {df['sensitivity'].min():.6f}")
+        print(f"   Max: {df['sensitivity'].max():.6f}")
+    
+    # Check FSOI sign (convention: positive = beneficial)
+    print("\n FSOI Sign Distribution:")
+    print("   (convention: Positive FSOI = beneficial, Negative FSOI = detrimental)")
     positive_fsoi = (df['fsoi'] > 0).sum()
     negative_fsoi = (df['fsoi'] < 0).sum()
     zero_fsoi = (df['fsoi'] == 0).sum()
     
-    print(f"   Positive FSOI (detrimental): {positive_fsoi} ({100*positive_fsoi/len(df):.1f}%)")
-    print(f"   Negative FSOI (beneficial):  {negative_fsoi} ({100*negative_fsoi/len(df):.1f}%)")
+    print(f"   Positive FSOI (beneficial): {positive_fsoi} ({100*positive_fsoi/len(df):.1f}%)")
+    print(f"   Negative FSOI (detrimental):  {negative_fsoi} ({100*negative_fsoi/len(df):.1f}%)")
     print(f"   Zero FSOI:                   {zero_fsoi} ({100*zero_fsoi/len(df):.1f}%)")
     
-    if negative_fsoi > positive_fsoi:
-        print("   ✓ Most observations are beneficial (negative FSOI)")
+    if positive_fsoi > negative_fsoi:
+        print("   ✓ Most observations are beneficial (positive FSOI)")
     else:
-        print("   ⚠️  Most observations are detrimental (positive FSOI) - check if expected")
+        print("    Most observations are detrimental (negative FSOI) - check if expected")
 
 
-def plot_fsoi_per_channel_graphdop_style(df: pd.DataFrame, output_dir: str):
+def plot_fsoi_per_channel(df: pd.DataFrame, output_dir: str):
     """
-    Generate GraphDOP-style plot showing FSOI per channel with horizontal bars.
-    Similar to the ECMWF GraphDOP sensitivity analysis visualization.
+    Generate plot showing FSOI per channel with horizontal bars.
+    Shows FSOI estimates for how every observation contributes to reducing forecast error.
     """
-    print("\n📈 Creating GraphDOP-style per-channel FSOI plot...")
+    print("\n Creating per-channel FSOI plot...")
     
     # Check if channel information exists
     if 'channel' not in df.columns:
-        print("   ⚠️  No channel information found, skipping per-channel plot")
+        print("    No channel information found, skipping per-channel plot")
         return
     
     # Use 'fsoi_value' if it exists (new format), else 'fsoi' (old format)
@@ -254,8 +269,8 @@ def plot_fsoi_per_channel_graphdop_style(df: pd.DataFrame, output_dir: str):
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, max(8, len(channel_stats) * 0.25)))
     
-    # Color bars: green for beneficial (negative FSOI), red for detrimental (positive FSOI)
-    colors = ['green' if x < 0 else 'red' for x in channel_stats['fsoi_pct']]
+    # Color bars: green for beneficial (positive FSOI), red for detrimental (negative FSOI)
+    colors = ['green' if x > 0 else 'red' for x in channel_stats['fsoi_pct']]
     
     # Create horizontal bar chart
     y_positions = np.arange(len(channel_stats))
@@ -265,7 +280,7 @@ def plot_fsoi_per_channel_graphdop_style(df: pd.DataFrame, output_dir: str):
     ax.set_yticks(y_positions)
     ax.set_yticklabels(channel_stats['label'], fontsize=8)
     ax.set_xlabel('FSOI per observation (%)', fontsize=12, fontweight='bold')
-    ax.set_title('Sensitivity tools to study GraphDOP physical consistency\n' + 
+    ax.set_title('Observation Sensitivity Analysis\n' + 
                  'FSOI estimates how every observation contributes at reducing the forecast error',
                  fontsize=13, fontweight='bold', pad=20)
     
@@ -279,8 +294,8 @@ def plot_fsoi_per_channel_graphdop_style(df: pd.DataFrame, output_dir: str):
     # Add legend
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor='green', alpha=0.7, edgecolor='black', label='Beneficial (reduces error)'),
-        Patch(facecolor='red', alpha=0.7, edgecolor='black', label='Detrimental (increases error)')
+        Patch(facecolor='green', alpha=0.7, edgecolor='black', label='Beneficial (error reduction)'),
+        Patch(facecolor='red', alpha=0.7, edgecolor='black', label='Detrimental (error increase)')
     ]
     ax.legend(handles=legend_elements, loc='lower right', fontsize=10)
     
@@ -288,7 +303,7 @@ def plot_fsoi_per_channel_graphdop_style(df: pd.DataFrame, output_dir: str):
     plt.tight_layout()
     
     # Save figure
-    output_file = os.path.join(output_dir, 'fsoi_per_channel_graphdop_style.png')
+    output_file = os.path.join(output_dir, 'fsoi_per_channel.png')
     plt.savefig(output_file, dpi=200, bbox_inches='tight')
     print(f"   ✓ Saved: {output_file}")
     plt.close()
@@ -296,19 +311,19 @@ def plot_fsoi_per_channel_graphdop_style(df: pd.DataFrame, output_dir: str):
     # Print summary statistics
     print(f"\n   Channel Statistics:")
     print(f"   Total channels analyzed: {len(channel_stats)}")
-    beneficial = (channel_stats['fsoi_pct'] < 0).sum()
-    detrimental = (channel_stats['fsoi_pct'] > 0).sum()
+    beneficial = (channel_stats['fsoi_pct'] > 0).sum()
+    detrimental = (channel_stats['fsoi_pct'] < 0).sum()
     print(f"   Beneficial channels: {beneficial} ({100*beneficial/len(channel_stats):.1f}%)")
     print(f"   Detrimental channels: {detrimental} ({100*detrimental/len(channel_stats):.1f}%)")
     
     # Print top 5 most beneficial and detrimental channels
     print(f"\n   Top 5 Most Beneficial Channels:")
-    top_beneficial = channel_stats.nsmallest(5, 'fsoi_pct')[['label', 'fsoi_pct', 'count']]
+    top_beneficial = channel_stats.nlargest(5, 'fsoi_pct')[['label', 'fsoi_pct', 'count']]
     for idx, row in top_beneficial.iterrows():
         print(f"      {row['label']:25s}: {row['fsoi_pct']:8.4f}% (n={int(row['count'])})")
     
     print(f"\n   Top 5 Most Detrimental Channels:")
-    top_detrimental = channel_stats.nlargest(5, 'fsoi_pct')[['label', 'fsoi_pct', 'count']]
+    top_detrimental = channel_stats.nsmallest(5, 'fsoi_pct')[['label', 'fsoi_pct', 'count']]
     for idx, row in top_detrimental.iterrows():
         print(f"      {row['label']:25s}: {row['fsoi_pct']:8.4f}% (n={int(row['count'])})")
 
@@ -326,14 +341,14 @@ def plot_input_impact_on_target(df: pd.DataFrame, output_dir: str, target_instru
         output_dir: Where to save the plot
         target_instrument: Which target to analyze (ignored if target_variable exists)
     """
-    print(f"\n📈 Creating input impact analysis...")
+    print(f"\n Creating input impact analysis...")
     
     # Check if this is conventional obs analysis (has target_variable column)
     if 'target_variable' in df.columns:
         print("   ✓ Detected conventional obs analysis (u, v, T, q, p)")
         plot_conventional_obs_impact(df, output_dir)
     else:
-        print("   ⚠️  Showing overall FSOI (all targets combined)")
+        print("    Showing overall FSOI (all targets combined)")
         plot_overall_impact(df, output_dir)
 
 
@@ -415,7 +430,7 @@ def plot_conventional_obs_impact(df: pd.DataFrame, output_dir: str):
         
         output_file = os.path.join(output_dir, f'input_impact_on_{target}.png')
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
-        print(f"   ✓ Saved: {output_file}")
+        print(f"   Saved: {output_file}")
         plt.close()
 
 
@@ -460,11 +475,11 @@ def plot_fsoi_by_instrument(df: pd.DataFrame, output_dir: str):
     # 0. Input impact on targets (overall)
     plot_input_impact_on_target(df, output_dir)
     
-    # 1. GraphDOP-style per-channel plot (if channel data exists)
-    plot_fsoi_per_channel_graphdop_style(df, output_dir)
+    # 1. Per-channel plot (if channel data exists)
+    plot_fsoi_per_channel(df, output_dir)
     
     # 1. Box plot of FSOI by instrument
-    print("\n📈 Creating box plot by instrument...")
+    print("\n Creating box plot by instrument...")
     plt.figure(figsize=(12, 6))
     instruments = sorted(df['instrument'].unique())
     
@@ -485,7 +500,7 @@ def plot_fsoi_by_instrument(df: pd.DataFrame, output_dir: str):
     plt.close()
     
     # 2. Mean FSOI by instrument (bar plot)
-    print("\n📈 Creating mean FSOI bar plot...")
+    print("\n Creating mean FSOI bar plot...")
     plt.figure(figsize=(12, 6))
     
     inst_means = df.groupby('instrument')['fsoi'].mean().sort_values()
@@ -501,12 +516,12 @@ def plot_fsoi_by_instrument(df: pd.DataFrame, output_dir: str):
     
     output_file = os.path.join(output_dir, 'fsoi_by_instrument_mean.png')
     plt.savefig(output_file, dpi=150, bbox_inches='tight')
-    print(f"   ✓ Saved: {output_file}")
+    print(f"   Saved: {output_file}")
     plt.close()
     
     # 3. FSOI evolution by epoch (if multiple epochs)
     if 'epoch' in df.columns and len(df['epoch'].unique()) > 1:
-        print("\n📈 Creating FSOI evolution plot...")
+        print("\n Creating FSOI evolution plot...")
         plt.figure(figsize=(14, 8))
         
         for inst in instruments:
@@ -528,7 +543,7 @@ def plot_fsoi_by_instrument(df: pd.DataFrame, output_dir: str):
         plt.close()
     
     # 4. Innovation vs Sensitivity scatter plot
-    print("\n📈 Creating innovation vs sensitivity scatter...")
+    print("\n Creating innovation vs sensitivity scatter...")
     plt.figure(figsize=(10, 8))
     
     for inst in instruments:
@@ -551,7 +566,7 @@ def plot_fsoi_by_instrument(df: pd.DataFrame, output_dir: str):
     plt.close()
     
     # 5. FSOI histogram
-    print("\n📈 Creating FSOI histogram...")
+    print("\n Creating FSOI histogram...")
     plt.figure(figsize=(12, 6))
     
     plt.hist(df['fsoi'], bins=100, alpha=0.7, edgecolor='black')
@@ -576,7 +591,7 @@ def create_summary_report(df: pd.DataFrame, output_file: str):
     """
     Create a text summary report.
     """
-    print(f"\n📄 Creating summary report: {output_file}")
+    print(f"\n Creating summary report: {output_file}")
     
     with open(output_file, 'w') as f:
         f.write("="*80 + "\n")
@@ -621,7 +636,7 @@ def create_summary_report(df: pd.DataFrame, output_file: str):
         # Sign distribution
         f.write("\n\nFSOI SIGN DISTRIBUTION\n")
         f.write("-"*80 + "\n")
-        f.write("GraphDOP convention: Negative FSOI = beneficial, Positive FSOI = detrimental\n\n")
+        f.write("Sign convention: Negative FSOI = beneficial, Positive FSOI = detrimental\n\n")
         positive = (df['fsoi'] > 0).sum()
         negative = (df['fsoi'] < 0).sum()
         zero = (df['fsoi'] == 0).sum()
@@ -657,7 +672,7 @@ def main():
     df = load_fsoi_csvs(args.results_dir)
     
     if df is None or len(df) == 0:
-        print("\n❌ No data to analyze. Exiting.")
+        print("\n No data to analyze. Exiting.")
         return 1
     
     # Compute statistics
@@ -680,7 +695,7 @@ def main():
     print(f"\nResults saved to: {args.output_dir}/")
     print("\nGenerated files:")
     if 'channel' in df.columns:
-        print(f"  - fsoi_per_channel_graphdop_style.png  [GraphDOP-style visualization]")
+        print(f"  - fsoi_per_channel.png  [Per-channel sensitivity visualization]")
     print(f"  - fsoi_by_instrument_boxplot.png")
     print(f"  - fsoi_by_instrument_mean.png")
     if 'epoch' in df.columns and len(df['epoch'].unique()) > 1:
@@ -689,7 +704,7 @@ def main():
     print(f"  - fsoi_histogram.png")
     print(f"  - fsoi_analysis_summary.txt")
     
-    print("\n💡 Next steps:")
+    print("\n Next steps:")
     print("  1. Review the plots to understand observation impact")
     print("  2. Check fsoi_analysis_summary.txt for detailed statistics")
     print("  3. Instruments with negative mean FSOI have beneficial impact")

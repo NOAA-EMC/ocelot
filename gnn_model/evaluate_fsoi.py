@@ -43,12 +43,6 @@ def main():
         help='Directory to save FSOI results (default: fsoi_evaluation)'
     )
     parser.add_argument(
-        '--fsoi_mode',
-        choices=['fast', 'exact'],
-        default='fast',
-        help='FSOI computation mode: fast (GraphDOP) or exact (LOO) (default: fast)'
-    )
-    parser.add_argument(
         '--conventional_only',
         action='store_true',
         help='Only compute FSOI for conventional obs (radiosonde)'
@@ -71,7 +65,7 @@ def main():
     print("=" * 60)
     print(f"Checkpoint:      {args.checkpoint}")
     print(f"Output dir:      {args.output_dir}")
-    print(f"FSOI mode:       {args.fsoi_mode}")
+    print(f"FSOI mode:       GraphDOP (fast)")
     print(f"FSOI batches:    {args.fsoi_batches}")
     print(f"Conventional only: {args.conventional_only}")
     print(f"Val batches:     {args.limit_val_batches}")
@@ -85,7 +79,6 @@ def main():
         "--sampling_mode", "sequential",
         "--window_mode", "sequential",
         "--enable_fsoi",
-        "--fsoi_mode", args.fsoi_mode,
         "--fsoi_batches", str(args.fsoi_batches),
         "--fsoi_every_n_epochs", "1",
         "--fsoi_start_epoch", "0",
