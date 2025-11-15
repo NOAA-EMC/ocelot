@@ -45,6 +45,35 @@ class BalancedSequentialShard(Sampler[int]):
     def __len__(self):  return self.num_local
     def set_epoch(self, _:int): pass
 
+
+class GlobalSequentialSampler(Sampler[int]):
+    """
+    All ranks process the same batches in sequential order.
+    Each rank gets ALL indices, processes them one at a time globally.
+    Requires DDP barrier synchronization in validation_step.
+    
+    Use this for TRUE GraphDOP FSOI where batch N must complete on all ranks
+    before batch N+1 starts (to ensure sequential background).
+    """
+    def __init__(self, num_samples: int, num_replicas: int=None, rank: int=None):
+        if num_samples < 1:
+            raise ValueError("GlobalSequentialSampler: num_samples must be >= 1")
+        ws, rk = _ddp_world()
+        self.num_replicas = ws if num_replicas is None else num_replicas
+        self.rank         = rk if rank is None else rank
+        self.total        = num_samples
+        # All ranks get ALL indices
+        self._indices = list(range(self.total))
+
+    def __iter__(self): 
+        return iter(self._indices)
+    
+    def __len__(self):  
+        return self.total
+    
+    def set_epoch(self, _:int): 
+        pass
+
 class BalancedRandomShard(Sampler[int]):
     """Shuffled shards per epoch, uneven allowed, no padding, no drop_last."""
     def __init__(self, num_samples: int, seed: int=0, num_replicas: int=None, rank: int=None):
@@ -614,7 +643,9 @@ class GNNDataModule(pl.LightningDataModule):
         rank = dist.get_rank()       if dist.is_available() and dist.is_initialized() else 0
         n = len(self.val_bin_names)
 
-        sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
+        # Use GlobalSequentialSampler for TRUE GraphDOP (all ranks process same batches sequentially)
+        sampler = GlobalSequentialSampler(n, num_replicas=world_size, rank=rank)
+        sampler_name = "GlobalSequentialSampler"
 
         loader = PyGDataLoader(
             ds,
@@ -633,5 +664,6 @@ class GNNDataModule(pl.LightningDataModule):
 
         print(f"[DL] VAL   window={self.hparams.val_start.date()}..{self.hparams.val_end.date()} "
             f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
-            f"first={first_bin} last={last_bin} sampler=BalancedSequentialShard")
+            f"first={first_bin} last={last_bin} sampler={sampler_name}")
+        print(f"[DL] VAL   GLOBAL SEQUENTIAL MODE: All ranks process ALL bins in order (bin1→bin2→bin3...)")
         return loader

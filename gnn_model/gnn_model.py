@@ -925,6 +925,14 @@ class GNNLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         print(f"VALIDATION STEP batch: {batch.bin_name}")
 
+        # Synchronize all ranks at the start of each validation batch
+        # This ensures batch N completes on all ranks before batch N+1 starts
+        # Required for TRUE GraphDOP sequential background (x_b from previous batch)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+            if self.trainer.is_global_zero:
+                print(f"[SYNC] All ranks synchronized at batch {batch_idx} ({batch.bin_name})")
+
         # Build decoder names from config (all possible node_types with targets)
         decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
 
@@ -1163,6 +1171,14 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero:
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
+        
+        # Synchronize all ranks at the end of each validation batch
+        # Ensures batch N fully completes before batch N+1 starts on any rank
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+            if self.trainer.is_global_zero:
+                print(f"[SYNC] All ranks completed batch {batch_idx} ({batch.bin_name})")
+        
         return avg_loss
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
