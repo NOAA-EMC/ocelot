@@ -52,7 +52,7 @@ nvidia-smi
 # FSOI EVALUATION ON TRAINED CHECKPOINT
 # =====================================================================
 # This runs ONLY validation (no training) with FSOI enabled
-# Uses sequential sampling for validation to get TRUE GraphDOP background
+# Uses sequential sampling for validation to enable sequential background
 # =====================================================================
 
 CHECKPOINT_PATH="/scratch3/NCEPDEV/da/Azadeh.Gholoubi/add_fsoi/ocelot/gnn_model/checkpoints/last.ckpt"
@@ -63,8 +63,8 @@ echo "FSOI Evaluation Configuration"
 echo "=========================================="
 echo "Checkpoint: $CHECKPOINT_PATH"
 echo "Output dir: $OUTPUT_DIR"
-echo "FSOI batches: 5 (more statistics)"
-echo "Sequential sampling: YES (for TRUE GraphDOP)"
+echo "FSOI batches: 5"
+echo "Sequential sampling: YES (for two-state adjoint)"
 echo "=========================================="
 
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
@@ -83,9 +83,10 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 
 # Explanation of flags:
 # --resume_from_checkpoint: Load trained model weights
-# --sampling_mode sequential: Use sequential bin order for validation (required for TRUE GraphDOP)
+# --sampling_mode sequential: Use sequential bin order for validation
 # --window_mode sequential: Use sequential data windows
 # --enable_fsoi: Enable FSOI computation
+# --fsoi_conventional_only: Only compute for conventional obs (surface + radiosonde)
 # --fsoi_batches 5: Compute FSOI on first 5 validation batches per GPU
 # --max_epochs 1: Only run 1 epoch (just validation, no training)
 # --limit_train_batches 0: Skip training completely

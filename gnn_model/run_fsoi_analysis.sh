@@ -1,10 +1,6 @@
 #!/bin/bash
 #
-# Analyze FSOI results and generate GraphDOP-style plots
-#
-# Usage on HPC:
-#   cd /scratch3/NCEPDEV/da/Azadeh.Gholoubi/add_fsoi/ocelot/gnn_model
-#   bash run_fsoi_analysis.sh
+# Analyze FSOI results and generate visualization plots
 
 # Results directory (where your CSV files are)
 RESULTS_DIR="fsoi_results_conventional"
@@ -20,7 +16,7 @@ echo "✓ Analysis complete!"
 echo "Results saved to: ${RESULTS_DIR}/analysis/"
 echo ""
 echo "Generated plots:"
-echo "  - fsoi_per_channel_graphdop_style.png  ← This is the plot you want!"
+echo "  - fsoi_per_channel.png  ← Per-channel sensitivity visualization"
 echo "  - input_impact_on_conventional_obs.png ← Shows how inputs affect u,v,T,q,p"
 echo "  - fsoi_by_instrument_mean.png"
 echo "  - fsoi_analysis_summary.txt"
