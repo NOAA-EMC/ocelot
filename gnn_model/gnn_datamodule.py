@@ -46,34 +46,6 @@ class BalancedSequentialShard(Sampler[int]):
     def set_epoch(self, _:int): pass
 
 
-class GlobalSequentialSampler(Sampler[int]):
-    """
-    All ranks process the same batches in sequential order.
-    Each rank gets ALL indices, processes them one at a time globally.
-    Requires DDP barrier synchronization in validation_step.
-    
-    Use this for TRUE GraphDOP FSOI where batch N must complete on all ranks
-    before batch N+1 starts (to ensure sequential background).
-    """
-    def __init__(self, num_samples: int, num_replicas: int=None, rank: int=None):
-        if num_samples < 1:
-            raise ValueError("GlobalSequentialSampler: num_samples must be >= 1")
-        ws, rk = _ddp_world()
-        self.num_replicas = ws if num_replicas is None else num_replicas
-        self.rank         = rk if rank is None else rank
-        self.total        = num_samples
-        # All ranks get ALL indices
-        self._indices = list(range(self.total))
-
-    def __iter__(self): 
-        return iter(self._indices)
-    
-    def __len__(self):  
-        return self.total
-    
-    def set_epoch(self, _:int): 
-        pass
-
 class BalancedRandomShard(Sampler[int]):
     """Shuffled shards per epoch, uneven allowed, no padding, no drop_last."""
     def __init__(self, num_samples: int, seed: int=0, num_replicas: int=None, rank: int=None):
@@ -134,7 +106,6 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(f"[Rank {rank}] [{self.tag}] Fetching bin: {bin_name} (idx={idx})")  # DEBUG: Show exact order
         print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
             out = extract_features(
@@ -171,7 +142,7 @@ class GNNDataModule(pl.LightningDataModule):
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         sampling_mode="sequential",  # "sequential" or "random" - controls bin distribution within ranks
-        global_sequential_validation=True,  # Use GlobalSequentialSampler for TRUE GraphDOP FSOI
+        global_sequential_validation=False,  # Use BalancedSequentialShard (per-rank) for evaluation
         **kwargs,
     ):
         super().__init__()
@@ -345,14 +316,6 @@ class GNNDataModule(pl.LightningDataModule):
             f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
             f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
         )
-        # Print window time coverage for debug
-        print(
-            f"[Rank {rank}] [DM.train_window] start={self.hparams.train_start} "
-            f"end={self.hparams.train_end}  ({len(self.train_bin_names)} bins)"
-        )
-        if len(self.train_bin_names) > 0:
-            print(f"[Rank {rank}] [DM.train_window] sample bins: {self.train_bin_names[:3]} ... {self.train_bin_names[-3:]}")
-
 
     def _rebuild_val_summary(self):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
@@ -370,14 +333,6 @@ class GNNDataModule(pl.LightningDataModule):
             f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
             f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"
         )
-
-        # Print validation window coverage for debug
-        print(
-            f"[Rank {rank}] [DM.val_window] start={self.hparams.val_start} "
-            f"end={self.hparams.val_end}  ({len(self.val_bin_names)} bins)"
-        )
-        if len(self.val_bin_names) > 0:
-            print(f"[Rank {rank}] [DM.val_window] sample bins: {self.val_bin_names[:3]} ... {self.val_bin_names[-3:]}")
 
     # ------------- Window setters for callbacks -------------
     def set_train_window(self, start_dt, end_dt):

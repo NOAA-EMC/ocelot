@@ -75,6 +75,7 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None, help="Limit validation batches per epoch")
     parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
+    parser.add_argument("--default_root_dir", type=str, default=None, help="Root directory for logs and checkpoints")
     # FSOI arguments
     parser.add_argument("--enable_fsoi", action="store_true", help="Enable FSOI computation during training")
     parser.add_argument("--fsoi_every_n_epochs", type=int, default=10, help="Compute FSOI every N epochs")
@@ -233,11 +234,16 @@ def main():
     setup_end_time = time.time()
     print(f"Initial setup time (pre-trainer): {(setup_end_time - start_time) / 60:.2f} minutes")
 
-    logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
+    # Set up directories (use default_root_dir if provided)
+    root_dir = args.default_root_dir if args.default_root_dir else "."
+    log_dir = os.path.join(root_dir, "logs")
+    checkpoint_dir = os.path.join(root_dir, "checkpoints")
+
+    logger = CSVLogger(save_dir=log_dir, name=f"ocelot_gnn_{args.sampling_mode}")
 
     callbacks = [
         ModelCheckpoint(
-            dirpath="checkpoints",
+            dirpath=checkpoint_dir,
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
             save_top_k=1,
             monitor="val_loss",
@@ -335,7 +341,8 @@ def main():
             else:
                 print(f"  - Target observations: ALL (satellite + conventional)")
             
-            save_dir = "fsoi_results_conventional" if args.fsoi_conventional_only else "fsoi_results"
+            fsoi_dir_name = "fsoi_results_conventional" if args.fsoi_conventional_only else "fsoi_results"
+            save_dir = os.path.join(root_dir, fsoi_dir_name)
             
             callbacks.append(
                 FSOICallback(
@@ -374,7 +381,7 @@ def main():
     # === Checkpoint resume ===
     resume_path = None
     if args.resume_from_latest:
-        resume_path = find_latest_checkpoint("checkpoints")
+        resume_path = find_latest_checkpoint(checkpoint_dir)
         if resume_path:
             print(f"[INFO] Auto-resuming from: {resume_path}")
         else:

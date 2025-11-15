@@ -57,49 +57,14 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Launch training (env is propagated to ranks)
-# TRUE GraphDOP FSOI: Uses sequential batches with forecast from previous window as background
-# Sequential mode ensures temporal continuity for TRUE GraphDOP background (x_b = prev forecast)
-
-# NEW TRAINING (from scratch) - SEQUENTIAL MODE with TRUE GraphDOP FSOI
-# Start FSOI early (epoch 0) to see results quickly
+# NEW TRAINING (from scratch) - RANDOM MODE (RECOMMENDED)
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-    --sampling_mode sequential \
-    --window_mode sequential \
-    --enable_fsoi \
-    --fsoi_mode fast \
-    --fsoi_conventional_only \
-    --fsoi_every_n_epochs=1 \
-    --fsoi_start_epoch=0 \
-    --fsoi_batches=3 \
+    --sampling_mode random \
+    --window_mode resample \
     --max_epochs 100
 
-# NOTE: Using BalancedSequentialShard (per-rank sequential)
-# Each GPU processes its bins sequentially: GPU0 does bin1→bin2→bin3, GPU1 does bin4→bin5→bin6, etc.
-# Sequential background works within each GPU (bin2 uses bin1 forecast on same GPU)
-
-# RESUME from latest checkpoint (automatic) - SEQUENTIAL MODE
+# RESUME from latest checkpoint (automatic) - RANDOM MODE
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 #     --resume_from_latest \
-#     --sampling_mode sequential \
-#     --window_mode sequential \
-#     --enable_fsoi \
-#     --fsoi_conventional_only \
-#     --fsoi_mode fast \
-#     --fsoi_every_n_epochs=10 \
-#     --fsoi_start_epoch=10 \
-#     --fsoi_batches=5
-
-# RESUME from specific checkpoint - SEQUENTIAL MODE
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-#     --resume_from_checkpoint checkpoints/last.ckpt \
-#     --sampling_mode sequential \
-#     --window_mode sequential \
-#     --enable_fsoi \
-#     --fsoi_mode fast \
-#     --fsoi_every_n_epochs=10 \
-#     --fsoi_start_epoch=10 \
-#     --fsoi_batches=5
-
-# Resume training from the latest checkpoint (no FSOI)
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last.ckpt
+#     --sampling_mode random \
+#     --window_mode resample

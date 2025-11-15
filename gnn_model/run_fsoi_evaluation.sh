@@ -55,7 +55,7 @@ nvidia-smi
 # Uses sequential sampling for validation to get TRUE GraphDOP background
 # =====================================================================
 
-CHECKPOINT_PATH="/scratch3/NCEPDEV/da/Azadeh.Gholoubi/add_fsoi/ocelot/gnn_model/test1/last.ckpt"
+CHECKPOINT_PATH="/scratch3/NCEPDEV/da/Azadeh.Gholoubi/add_fsoi/ocelot/gnn_model/checkpoints/last.ckpt"
 OUTPUT_DIR="fsoi_evaluation_test1"
 
 echo "=========================================="
