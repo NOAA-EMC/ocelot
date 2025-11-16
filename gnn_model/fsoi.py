@@ -277,11 +277,15 @@ def compute_observation_sensitivity_two_state(
         sensitivities_analysis = {}
         model.zero_grad()
         
+        # CRITICAL: Recompute predictions inside gradient context
+        # The predictions passed in were computed outside, so we need fresh ones with gradients
+        predictions_with_grad = model(batch)
+        
         # Compute forecast loss at analysis
         loss_analysis = None  # Will be initialized when first loss is computed
         num_predictions = 0
         
-        for node_type, preds_list in predictions.items():
+        for node_type, preds_list in predictions_with_grad.items():
             if node_type not in ground_truths:
                 continue
             
