@@ -394,12 +394,18 @@ def main():
         print("[INFO] Validation-only mode: Loading model weights for FSOI evaluation")
         model = GNNLightning.load_from_checkpoint(resume_path)
         
-        # CRITICAL: Enable training mode for FSOI gradient computation
+        # CRITICAL: Enable training mode and gradients for FSOI computation
         # FSOI needs gradients even though we're in "validation"
         model.train()  
         
-        # Enable gradient computation
+        # Enable gradient computation for all parameters
+        for param in model.parameters():
+            param.requires_grad = True
+        
+        # Enable gradient computation globally
         torch.set_grad_enabled(True)
+        
+        print("[INFO] Enabled gradients for FSOI computation")
         
         trainer.validate(model, data_module)
     else:
