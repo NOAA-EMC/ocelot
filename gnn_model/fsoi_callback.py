@@ -177,8 +177,10 @@ class FSOICallback(pl.Callback):
             self._previous_batch = batch
             self._previous_bin_name = batch.bin_name
             
-            # Restore eval mode and disable gradients for normal validation
-            with torch.no_grad():
+            # CRITICAL: Store predictions WITH gradients enabled for next batch's FSOI
+            # The next batch will need these predictions as x_b (background) in two-state adjoint
+            # They must have computational graph attached for gradient computation
+            with torch.enable_grad():
                 pl_module.eval()
                 self._previous_predictions = pl_module(batch)
             
