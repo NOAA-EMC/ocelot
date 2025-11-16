@@ -148,6 +148,11 @@ class FSOICallback(pl.Callback):
             pl_module.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
             
+            # CRITICAL: Enable gradients for FSOI computation
+            # trainer.validate() puts model in eval mode, but FSOI needs gradients
+            pl_module.train()
+            torch.set_grad_enabled(True)
+            
             # Use unified compute_batch_fsoi from fsoi.py
             print(f"[FSOI Callback] Using two-state adjoint method")
             if self.conventional_only:
@@ -172,10 +177,13 @@ class FSOICallback(pl.Callback):
             self._previous_batch = batch
             self._previous_bin_name = batch.bin_name
             
-            # Generate predictions to cache (no_grad to save memory)
+            # Restore eval mode and disable gradients for normal validation
             with torch.no_grad():
                 pl_module.eval()
                 self._previous_predictions = pl_module(batch)
+            
+            # Ensure gradients are disabled after FSOI computation
+            torch.set_grad_enabled(False)
 
             if len(stats_df) > 0:
                 # Generate summary plots if requested
