@@ -379,7 +379,15 @@ def main():
     else:
         print("[INFO] No checkpoint, starting fresh training")
 
-    trainer.fit(model, data_module, ckpt_path=resume_path)
+    # Check if this is validation-only mode (FSOI evaluation)
+    if args.limit_train_batches == 0:
+        # Validation only - load weights but don't restore training state
+        print("[INFO] Validation-only mode: Loading model weights for FSOI evaluation")
+        model = GNNLightning.load_from_checkpoint(resume_path)
+        trainer.validate(model, data_module)
+    else:
+        # Normal training mode
+        trainer.fit(model, data_module, ckpt_path=resume_path)
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")
