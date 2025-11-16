@@ -80,7 +80,8 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
     --max_epochs 1 \
     --limit_train_batches 0 \
     --limit_val_batches 5 \
-    --devices 1
+    --devices 1 \
+    --num_nodes 1
 
 # Explanation of flags:
 # --resume_from_checkpoint: Load trained model weights

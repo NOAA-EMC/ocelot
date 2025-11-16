@@ -270,11 +270,20 @@ def main():
         timeout=timedelta(hours=1),    # Increase timeout to 1 hour for checkpoints
     )
 
+    # Use command-line args if provided, otherwise use defaults
+    num_devices = args.devices if args.devices is not None else 2
+    num_nodes = args.num_nodes if hasattr(args, 'num_nodes') and args.num_nodes is not None else 4
+    
+    # Override strategy for single device
+    if num_devices == 1 and num_nodes == 1:
+        strategy = "auto"  # No DDP for single GPU
+        print("[INFO] Single device mode: Using strategy='auto' (no DDP)")
+    
     trainer_kwargs = {
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
-        "devices": 2,
-        "num_nodes": 4,
+        "devices": num_devices,
+        "num_nodes": num_nodes,
         "strategy": strategy,
         "precision": "16-mixed",
         "log_every_n_steps": 1,
