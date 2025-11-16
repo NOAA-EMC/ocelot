@@ -3,13 +3,13 @@
 #SBATCH -A gpu-ai4wp
 #SBATCH -p u1-h100
 #SBATCH -q gpu
-#SBATCH --gres=gpu:h100:2
+#SBATCH --gres=gpu:h100:1
 #SBATCH -J fsoi_eval
-#SBATCH --nodes=4
-#SBATCH --ntasks-per-node=2
-#SBATCH --cpus-per-task=4
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH -t 02:00:00
 #SBATCH --output=fsoi_eval_%j.out
 #SBATCH --error=fsoi_eval_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -79,7 +79,8 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
     --default_root_dir "$OUTPUT_DIR" \
     --max_epochs 1 \
     --limit_train_batches 0 \
-    --limit_val_batches 5
+    --limit_val_batches 5 \
+    --devices 1
 
 # Explanation of flags:
 # --resume_from_checkpoint: Load trained model weights
