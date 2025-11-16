@@ -384,6 +384,14 @@ def main():
         # Validation only - load weights but don't restore training state
         print("[INFO] Validation-only mode: Loading model weights for FSOI evaluation")
         model = GNNLightning.load_from_checkpoint(resume_path)
+        
+        # CRITICAL: Enable training mode for FSOI gradient computation
+        # FSOI needs gradients even though we're in "validation"
+        model.train()  
+        
+        # Enable gradient computation
+        torch.set_grad_enabled(True)
+        
         trainer.validate(model, data_module)
     else:
         # Normal training mode
@@ -394,10 +402,14 @@ def main():
     print(f"Total time (setup + training): {(end_time - start_time) / 60:.2f} minutes")
 
     # === LOAD BEST MODEL AFTER TRAINING ===
-    if trainer.checkpoint_callback:
+    # Only do this in normal training mode, not validation-only
+    if args.limit_train_batches != 0 and trainer.checkpoint_callback:
         best_path = trainer.checkpoint_callback.best_model_path
-        print(f"[INFO] Best model path: {best_path}")
-        best_model = GNNLightning.load_from_checkpoint(best_path)
+        if best_path:
+            print(f"[INFO] Best model path: {best_path}")
+            best_model = GNNLightning.load_from_checkpoint(best_path)
+        else:
+            print("[INFO] No best model checkpoint found")
 
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
