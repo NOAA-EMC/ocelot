@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH -t 06:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -59,8 +59,8 @@ nvidia-smi
 # Launch training (env is propagated to ranks)
 # NEW TRAINING (from scratch) - RANDOM MODE (RECOMMENDED)
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-    --sampling_mode random \
-    --window_mode resample \
+    --sampling_mode sequential \
+    --window_mode sequential \
     --max_epochs 100
 
 # RESUME from latest checkpoint (automatic) - RANDOM MODE
