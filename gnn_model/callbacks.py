@@ -159,6 +159,11 @@ class ResampleDataCallback(pl.Callback):
             log_rank_header("TRAIN", pl_module.current_epoch)
             print(f"[Train pool] {self.train_start_date.date()} .. {self.train_end_date.date()} "
                 f"win={self.train_window} mode={self.mode}")
+            dm = trainer.datamodule
+            if self.mode == "sequential":
+                print(f"[Train] Sequential mode: Bins processed in chronological order (bin1→bin{len(dm.train_bin_names)})")
+            else:
+                print(f"[Train] Random mode: Bins shuffled randomly each epoch")
 
     def on_validation_epoch_start(self, trainer, pl_module):
         if trainer.is_global_zero:
@@ -309,8 +314,9 @@ class SequentialDataCallback(pl.Callback):
         dm = trainer.datamodule
         self._last_used_start = pd.to_datetime(dm.hparams.train_start)
         if trainer.is_global_zero:
-            print(f"\n[Sequential {self.mode.upper()}] CURRENT EPOCH -> "
+            print(f"\n[Sequential {self.mode.upper()}] CURRENT EPOCH {pl_module.current_epoch} -> "
                   f"{pd.to_datetime(dm.hparams.train_start).date()} .. {pd.to_datetime(dm.hparams.train_end).date()}")
+            print(f"[Sequential] Bins will be processed in chronological order (bin1→bin{len(dm.train_bin_names)})")
 
     def on_train_epoch_end(self, trainer, pl_module):
         # Rank-0 picks next window based on the window actually used, broadcast, then set on all ranks

@@ -552,16 +552,18 @@ class GNNDataModule(pl.LightningDataModule):
         if self.hparams.sampling_mode == "random":
             sampler = BalancedRandomShard(n, seed=0, num_replicas=world_size, rank=rank)
             sampler_type = "BalancedRandomShard"
+            num_workers = 4  # Multiple workers OK for random mode
         else:
             sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
             sampler_type = "BalancedSequentialShard"
+            num_workers = 1  # Single worker required to maintain sequential order
 
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
             sampler=sampler,
-            num_workers=4,
+            num_workers=num_workers,
             pin_memory=True,
             persistent_workers=False,
             worker_init_fn=self._worker_init,
@@ -579,6 +581,14 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[DL] TRAIN window={self.hparams.train_start.date()}..{self.hparams.train_end.date()} "
             f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
             f"first={first_bin} last={last_bin} sampler={sampler_type}")
+
+        if self.hparams.sampling_mode == "sequential":
+            print(f"[DL] TRAIN Sequential: Rank {rank} processing bins {first_bin}→{last_bin} in chronological order")
+            print(f"[DL] TRAIN Sequential: Using {num_workers} worker(s) to maintain bin order")
+        else:
+            print(f"[DL] TRAIN Random: Bins will be shuffled each epoch")
+            print(f"[DL] TRAIN Random: Using {num_workers} worker(s) for parallel loading")
+
         return loader
 
     def val_dataloader(self):
@@ -603,13 +613,15 @@ class GNNDataModule(pl.LightningDataModule):
         # This enables per-rank sequential background for FSOI
         sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
         sampler_name = "BalancedSequentialShard"
+        # Single worker required to maintain sequential order for validation (needed for FSOI)
+        num_workers = 1
 
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
             sampler=sampler,
-            num_workers=4,
+            num_workers=num_workers,
             pin_memory=True,
             persistent_workers=False,
             worker_init_fn=self._worker_init,
@@ -623,4 +635,5 @@ class GNNDataModule(pl.LightningDataModule):
             f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
             f"first={first_bin} last={last_bin} sampler={sampler_name}")
         print(f"[DL] VAL   Per-rank sequential: Each rank processes its bins in order (bin{idx_preview[0]+1}→bin{idx_preview[-1]+1})")
+        print(f"[DL] VAL   Using {num_workers} worker(s) to maintain sequential order for FSOI")
         return loader
