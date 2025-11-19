@@ -5,6 +5,9 @@ import torch
 from sklearn.preprocessing import StandardScaler
 from timing_utils import timing_resource_decorator
 
+# Maximum number of channels supported for per-channel variable mapping
+MAX_SUPPORTED_CHANNELS = 9
+
 
 def _subsample_by_mode(indices: np.ndarray, mode: str, stride: int, seed: int | None):
     """
@@ -85,7 +88,7 @@ def organize_bins_times(
     observation_config,
     pipeline_cfg=None,
     window_size="12h",
-    latent_step_hours=None,  # NEW PARAMETER
+    latent_step_hours=12,
     verbose=False,
 ):
     """
@@ -116,19 +119,11 @@ def organize_bins_times(
         "conventional": {"stride": 20, "mode": "random"},
     }
 
-    # START: LATENT ROLLOUT SETUP
-    use_latent_rollout = latent_step_hours is not None
-    if use_latent_rollout:
-        target_hours = int(window_size[:-1])
-        if target_hours % latent_step_hours != 0:
-            raise ValueError(f"target_hours ({target_hours}) must be divisible by latent_step_hours ({latent_step_hours})")
-        num_latent_steps = target_hours // latent_step_hours
-        sub_window_freq = f"{latent_step_hours}h"
-        if verbose:
-            print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
-    else:
-        num_latent_steps = 1
-    # END: LATENT ROLLOUT SETUP
+    # latent rollout setup
+    target_hours = int(window_size[:-1])
+    num_latent_steps = target_hours // latent_step_hours
+    sub_window_freq = f"{latent_step_hours}h"
+    print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
     t0 = int(start_date.timestamp())
     t1 = int(end_date.timestamp())
@@ -147,13 +142,15 @@ def organize_bins_times(
             idx_parts = []
             if obs_type == "satellite":
                 conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                # Handle different satellite ID field names
+                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
                 for i0 in range(0, n_total, chunk):
                     i1 = min(i0 + chunk, n_total)
                     t = time_arr[i0:i1]
                     m_time = (t >= t0) & (t < t1)
                     if not m_time.any():
                         continue
-                    sats = z["satelliteId"][i0:i1]
+                    sats = z[sat_id_field][i0:i1]
                     m = m_time & np.isin(sats, conf_sat_ids)
                     if m.any():
                         idx_parts.append(np.flatnonzero(m) + i0)
@@ -209,74 +206,50 @@ def organize_bins_times(
                 m_in = codes == bi
                 input_indices = idx_all[m_in]
 
-                if use_latent_rollout:
-                    # LATENT ROLLOUT: Split target window into sub-windows
-                    t_target_start = uniq_win[bi + 1]
+                # LATENT ROLLOUT: Split target window into sub-windows
+                t_target_start = uniq_win[bi + 1]
 
-                    # Get all indices in the main target window
-                    m_target_full = codes == (bi + 1)
-                    idx_target_full = idx_all[m_target_full]
-                    ts_target_full = time_ts[m_target_full]
+                # Get all indices in the main target window
+                m_target_full = codes == (bi + 1)
+                idx_target_full = idx_all[m_target_full]
+                ts_target_full = time_ts[m_target_full]
 
-                    # Generate the start/end times for each sub-window
-                    target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
+                # Generate the start/end times for each sub-window
+                target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
 
-                    target_indices_list = []
+                target_indices_list = []
 
-                    # Subsample input once
-                    seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
-                    input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
+                # Subsample input once
+                seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
+                input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
 
-                    # For each sub-window, filter and subsample
-                    for step in range(num_latent_steps):
-                        t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
+                # For each target sub-window, filter and subsample
+                for step in range(num_latent_steps):
+                    t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
 
+                    # Include end boundary for the last step
+                    if step == num_latent_steps - 1:
+                        m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
+                    else:
                         m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
-                        target_indices_step = idx_target_full[m_step]
 
-                        seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
-                        subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
-                        target_indices_list.append(subsampled_indices)
+                    target_indices_step = idx_target_full[m_step]
 
-                    if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
-                        continue
+                    seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
+                    subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
+                    target_indices_list.append(subsampled_indices)
 
-                    bin_name = f"bin{bi+1}"
-                    data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                        "input_time": t_in,
-                        "input_time_index": input_indices,
-                        "target_times": list(target_sub_window_times[:-1]),  # List of timestamps
-                        "target_time_indices": target_indices_list,         # List of index arrays
-                        "num_latent_steps": num_latent_steps,
-                        "is_latent_rollout": True,
-                    }
+                if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
+                    continue
 
-                else:
-                    # STANDARD ROLLOUT: Single target window (original behavior)
-                    t_out = uniq_win[bi + 1]
-                    m_out = codes == bi + 1
-                    target_indices = idx_all[m_out]
-
-                    # Per-bin stable seeds
-                    seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
-                    seed_out = _stable_seed(seed_base, t_out, obs_type, key, is_target=True)
-
-                    # Apply subsampling
-                    input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
-                    target_indices = _subsample_by_mode(target_indices, mode, stride, seed_out)
-
-                    # Skip empty bin if both sides empty after subsampling
-                    if input_indices.size == 0 and target_indices.size == 0:
-                        continue
-
-                    bin_name = f"bin{bi+1}"
-                    data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                        "input_time": t_in,
-                        "target_time": t_out,
-                        "input_time_index": input_indices,
-                        "target_time_index": target_indices,
-                        "is_latent_rollout": False,
-                    }
+                bin_name = f"bin{bi+1}"
+                data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
+                    "input_time": t_in,
+                    "input_time_index": input_indices,
+                    "target_times": list(target_sub_window_times[:-1]),  # List of timestamps
+                    "target_time_indices": target_indices_list,          # List of index arrays
+                    "num_latent_steps": num_latent_steps,
+                }
 
             if verbose:
                 total_bins = sum(
@@ -336,15 +309,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
             input_idx = np.asarray(data_summary_bin["input_time_index"])
 
-            # Detect if this is latent rollout or standard rollout
-            is_latent_rollout = data_summary_bin.get("is_latent_rollout", False)
-
-            if is_latent_rollout:
-                target_indices_list = [np.asarray(ti) for ti in data_summary_bin["target_time_indices"]]
-                num_latent_steps = data_summary_bin["num_latent_steps"]
-            else:
-                target_indices_list = [np.asarray(data_summary_bin["target_time_index"])]
-                num_latent_steps = 1
+            target_indices_list = [np.asarray(ti) for ti in data_summary_bin["target_time_indices"]]
+            num_latent_steps = data_summary_bin["num_latent_steps"]
 
             orig_in = input_idx.size
             orig_tg_sizes = [idx.size for idx in target_indices_list]
@@ -391,6 +357,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
                     reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
+                    # Map per-channel variables to channel indices (generic pattern for any instrument)
+                    if pos is None and "_ch_" in var:
+                        for ch in range(1, MAX_SUPPORTED_CHANNELS + 1):
+                            if var.endswith(f"_ch_{ch}"):
+                                pos = ch - 1  # channel N -> index N-1
+                                break
 
                     # --- range QC ---
                     if rng is not None and var in z:
@@ -425,10 +397,18 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
+                        # Use qc_strict_flags from config to determine if missing values should be rejected
+                        strict_flags = bool(obs_cfg.get("qc_strict_flags", False))
+
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
-                        keep_in = np.isin(in_flags, list(keep)) | (in_flags < 0) if ("keep" in cfg) else \
-                            ~np.isin(in_flags, list(reject)) | (in_flags < 0)
+                        if "reject" in cfg:
+                            keep_in = ~np.isin(in_flags, list(cfg["reject"]))          # reject listed flags
+                        else:
+                            keep_in = np.isin(in_flags, list(cfg["keep"]))             # keep listed flags
+                        if not strict_flags:
+                            keep_in = keep_in | (in_flags < 0)                         # accept missing when not strict
+
                         if pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
@@ -442,8 +422,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if target_idx.size == 0:
                                 continue
                             tg_flags = z[flag_col][target_idx]
-                            keep_tg = np.isin(tg_flags, list(keep)) | (tg_flags < 0) if ("keep" in cfg) else \
-                                ~np.isin(tg_flags, list(reject)) | (tg_flags < 0)
+                            if "reject" in cfg:
+                                keep_tg = ~np.isin(tg_flags, list(cfg["reject"]))
+                            else:
+                                keep_tg = np.isin(tg_flags, list(cfg["keep"]))
+                            if not strict_flags:
+                                keep_tg = keep_tg | (tg_flags < 0)
+
                             if pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
@@ -778,9 +763,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_data = target_data_cleaned[step]
 
                     if target_data['features'].shape[0] == 0:
+                        scan_cols = obs_cfg.get("scan_angle_channels", 1)
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
                         target_metadata_list.append(torch.empty(0, len(meta_keys) + 2, dtype=torch.float32))
-                        scan_angle_list.append(torch.empty(0, 1, dtype=torch.float32))
+                        scan_angle_list.append(torch.empty(0, scan_cols, dtype=torch.float32))
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
@@ -802,8 +788,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask = ~np.isnan(target_features_norm)
                     target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
 
-                    scan_angle = target_metadata_cos[:, 0:1] if target_metadata_cos.shape[1] > 0 else np.zeros(
-                        (target_features_final.shape[0], 1), dtype=np.float32)
+                    # Handle scan angle geometry (config-driven)
+                    scan_cols = obs_cfg.get("scan_angle_channels", 1)
+                    if target_metadata_cos.shape[1] >= scan_cols:
+                        scan_angle = target_metadata_cos[:, 0:scan_cols].astype(np.float32)
+                    else:
+                        scan_angle = np.zeros((target_features_final.shape[0], scan_cols), dtype=np.float32)
+
                     target_metadata_final = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_cos])
 
                     target_features_final_list.append(torch.tensor(target_features_final, dtype=torch.float32))
@@ -890,24 +881,14 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
 
-            if is_latent_rollout:
-                data_summary_bin.update({
-                    "target_features_final_list": target_features_final_list,
-                    "target_metadata_list": target_metadata_list,
-                    "scan_angle_list": scan_angle_list,
-                    "target_channel_mask_list": target_channel_mask_list,
-                    "target_lat_deg_list": target_lat_deg_list,
-                    "target_lon_deg_list": target_lon_deg_list
-                })
-            else:
-                data_summary_bin.update({
-                    "target_features_final": target_features_final_list[0],
-                    "target_metadata": target_metadata_list[0],
-                    "scan_angle": scan_angle_list[0],
-                    "target_channel_mask": target_channel_mask_list[0],
-                    "target_lat_deg": target_lat_deg_list[0],
-                    "target_lon_deg": target_lon_deg_list[0]
-                })
+            data_summary_bin.update({
+                "target_features_final_list": target_features_final_list,
+                "target_metadata_list": target_metadata_list,
+                "scan_angle_list": scan_angle_list,
+                "target_channel_mask_list": target_channel_mask_list,
+                "target_lat_deg_list": target_lat_deg_list,
+                "target_lon_deg_list": target_lon_deg_list
+            })
 
             NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]

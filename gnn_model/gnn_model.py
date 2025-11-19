@@ -133,6 +133,11 @@ class GNNLightning(pl.LightningModule):
         self.mlp_blueprint_end = [hidden_dim] * (hidden_layers + 1)
         self.mesh_embedder = make_mlp([mesh_feature_dim] + self.mlp_blueprint_end)
 
+        # Create scan-angle embedders once to avoid loop-order surprises
+        self.scan_angle_embed_dim = 8
+        self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
+        self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
+
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
@@ -214,13 +219,10 @@ class GNNLightning(pl.LightningModule):
                 # Initial MLP to project raw features to hidden_dim
                 self.observation_embedders[node_type_input] = make_mlp([input_dim] + self.mlp_blueprint_end)
 
-                # Final MLP: add scan-angle embedder for ATMS, AMSU-A, and AVHRR targets
-                targets_with_scan = {"atms_target", "amsua_target", "avhrr_target"}
+                # Final MLP: add scan-angle embedder for ATMS, AMSU-A, AVHRR, and ASCAT targets
+                targets_with_scan = {"atms_target", "amsua_target", "avhrr_target", "ascat_target"}
                 if node_type_target in targets_with_scan:
-                    # define once; harmless if re-assigned identically
-                    self.scan_angle_embed_dim = 8
-                    if not hasattr(self, "scan_angle_embedder"):
-                        self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
+                    # Embedders already created above; just use them
                     input_dim_for_mapper = hidden_dim + self.scan_angle_embed_dim
                 else:
                     input_dim_for_mapper = hidden_dim
@@ -321,7 +323,11 @@ class GNNLightning(pl.LightningModule):
 
     def _feature_names_for_node(self, node_type: str):
         """Return ordered feature names for this target node."""
-        inst_name = node_type.replace("_target", "")
+        # Latent mode: target_step0, target_step1, etc
+        if "_target_step" in node_type:
+            inst_name = node_type.split("_target_step")[0]
+        else:
+            inst_name = node_type.replace("_target", "")
         for obs_type, instruments in self.observation_config.items():
             if inst_name in instruments:
                 return instruments[inst_name].get("features", None)
@@ -361,13 +367,19 @@ class GNNLightning(pl.LightningModule):
         # reset first-batch flag for this epoch
         self._printed_first_train_batch = False
 
+        # learning rate tracking
+        opts = self.optimizers()
+        opt = opts[0] if isinstance(opts, (list, tuple)) else opts
+        current_lr = opt.param_groups[0]["lr"]
+        self.log("learning_rate", current_lr, prog_bar=False, on_epoch=True, on_step=False)
+
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()
         rank = int(os.environ.get("RANK", "0"))
         print(f"\n[Rank {rank}] === VAL EPOCH {self.current_epoch} START ===")
         dm = self.trainer.datamodule
         print(f"[ValWindow]   {getattr(dm.hparams, 'val_start', None)} .. {getattr(dm.hparams, 'val_end', None)} "
-              f"(sum_id={id(getattr(dm,'val_data_summary',None))})")
+              f"(sum_id={id(getattr(dm, 'val_data_summary', None))})")
         self._printed_first_val_batch = False
 
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
@@ -523,65 +535,7 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
         # --------------------------------------------------------------------
-
-        # Check if this is latent rollout mode
-        if self._is_latent_rollout_mode(data):
-            self.debug("[LATENT ROLLOUT] Mode detected")
-            return self._forward_latent_rollout(data, encoded_features)
-        else:
-            self.debug("[STANDARD] Mode detected")
-            return self._forward_standard(data, encoded_features)
-
-    def _forward_standard(self, data: HeteroData, encoded_features: dict) -> Dict[str, List[torch.Tensor]]:
-        """
-        Standard forward pass (existing behavior)
-        """
-        # --------------------------------------------------------------------
-        # STAGE 4: PROCESS (Deep message passing on the graph)
-        # --------------------------------------------------------------------
-        processed_features = self.processor(encoded_features, data.edge_index_dict)
-
-        self.debug(f"[PROCESSOR] mesh after {self.hparams.num_layers} layers -> {processed_features['mesh'].shape}")
-
-        # --------------------------------------------------------------------
-        # STAGE 5: DECODE
-        # --------------------------------------------------------------------
-        predictions = {}
-        mesh_features_processed = processed_features["mesh"]
-
-        for edge_type, edge_index in data.edge_index_dict.items():
-            print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
-            src_type, _, dst_type = edge_type
-            if src_type == "mesh" and dst_type.endswith("_target"):
-                # Use device from processed mesh features to avoid checkpoint loading issues
-                reference_device = mesh_features_processed.device
-                target_features_initial = torch.zeros(data[dst_type].num_nodes, self.hidden_dim, device=reference_device)
-
-                decoder = self.observation_decoders[self._edge_key(edge_type)]
-                decoder.edge_index = edge_index
-
-                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=reference_device)
-
-                decoded_target_features = decoder(
-                    send_rep=mesh_features_processed,
-                    rec_rep=target_features_initial,
-                    edge_rep=edge_attr,
-                )
-
-                if dst_type in ("atms_target", "amsua_target", "avhrr_target"):
-                    scan_angle = data[dst_type].x
-                    scan_angle_embedded = self.scan_angle_embedder(scan_angle)
-                    final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
-                    predictions[dst_type] = self.output_mappers[dst_type](final_features)
-                else:
-                    predictions[dst_type] = self.output_mappers[dst_type](decoded_target_features)
-
-        # Wrap predictions in a list to be compatible with rollout logic
-        for node_type, pred_tensor in predictions.items():
-            print(f"predict: [node_type] {node_type}: {pred_tensor.shape}")
-            predictions[node_type] = [pred_tensor]
-
-        return predictions
+        return self._forward_latent_rollout(data, encoded_features)
 
     def _forward_latent_rollout(self, data: HeteroData, encoded_features: dict) -> Dict[str, List[torch.Tensor]]:
         """
@@ -628,9 +582,9 @@ class GNNLightning(pl.LightningModule):
             if self.processor_type == "sliding_transformer":
                 current_mesh_features = self.swt(current_mesh_features)
             else:  # interaction processor
-                # pure latent: mesh->mesh only
+                # Remove decoder edges (mesh → target), but keep encoder edges (input → mesh)
                 processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
-                                   if et[0] == "mesh" and et[2] == "mesh"}
+                                   if "_target" not in et[2]}
 
                 # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
                 step_features = encoded_features.copy()
@@ -656,6 +610,7 @@ class GNNLightning(pl.LightningModule):
                         if src_type == "mesh" and dst_type == step_node_type:
                             step_edge_type = edge_type
                             step_edge_index = edge_index
+                            print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
                             break
 
                     if step_edge_type is None or step_edge_index is None:
@@ -684,8 +639,13 @@ class GNNLightning(pl.LightningModule):
                     )
 
                     # Apply scan angle embedding if needed
-                    if base_type in ("atms_target", "amsua_target", "avhrr_target"):
-                        scan_angle = data[step_node_type].x
+                    scan_angle = data[step_node_type].x
+
+                    if base_type == "ascat_target":
+                        scan_angle_embedded = self.ascat_scan_angle_embedder(scan_angle)
+                        final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
+                        step_prediction = self.output_mappers[base_type](final_features)
+                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
                         scan_angle_embedded = self.scan_angle_embedder(scan_angle)
                         final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
                         step_prediction = self.output_mappers[base_type](final_features)
@@ -694,6 +654,7 @@ class GNNLightning(pl.LightningModule):
 
                     # Store prediction for this step
                     predictions[base_type].append(step_prediction)
+                    print(f"predict: [node_type] {base_type}: {step_prediction.shape}")
 
                     self.debug(f"[LATENT] Step {step} - {base_type}: {step_prediction.shape}")
 
@@ -754,16 +715,6 @@ class GNNLightning(pl.LightningModule):
             # "fixed"
             return self.max_rollout_steps
 
-    def _is_latent_rollout_mode(self, data: HeteroData) -> bool:
-        """
-        Detect if this batch contains latent rollout data by checking for
-        step-specific target nodes (e.g., atms_target_step0, atms_target_step1, etc.)
-        """
-        for node_type in data.node_types:
-            if "_target_step" in node_type:
-                return True
-        return False
-
     def _get_latent_step_info(self, data: HeteroData) -> dict:
         """
         Extract information about latent steps from the batch.
@@ -820,47 +771,37 @@ class GNNLightning(pl.LightningModule):
         """
         results = {}
 
-        if self._is_latent_rollout_mode(batch):
-            # LATENT ROLLOUT: Extract from step-specific nodes
-            step_info = self._get_latent_step_info(batch)
-            step_mapping = step_info["step_mapping"]
+        # LATENT ROLLOUT: Extract from step-specific nodes
+        step_info = self._get_latent_step_info(batch)
+        step_mapping = step_info["step_mapping"]
 
-            for base_type, steps_dict in step_mapping.items():
-                if base_type not in all_predictions:
-                    continue
+        for base_type, steps_dict in step_mapping.items():
+            if base_type not in all_predictions:
+                continue
 
-                results[base_type] = {
-                    "gts_list": [],
-                    "instrument_ids_list": [],
-                    "valid_mask_list": []
-                }
+            results[base_type] = {
+                "gts_list": [],
+                "instrument_ids_list": [],
+                "valid_mask_list": []
+            }
 
-                # Extract ground truths for each step
-                for step in sorted(steps_dict.keys()):
-                    step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
+            # Extract ground truths for each step
+            for step in sorted(steps_dict.keys()):
+                step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
 
-                    if step_node_type in batch.node_types:
-                        y_true = batch[step_node_type].y
-                        instrument_ids = getattr(batch[step_node_type], "instrument_ids", None)
-                        valid_mask = getattr(batch[step_node_type], "target_channel_mask", None)
+                if step_node_type in batch.node_types:
+                    y_true = batch[step_node_type].y
+                    instrument_ids = getattr(batch[step_node_type], "instrument_ids", None)
+                    valid_mask = getattr(batch[step_node_type], "target_channel_mask", None)
 
-                        results[base_type]["gts_list"].append(y_true)
-                        results[base_type]["instrument_ids_list"].append(instrument_ids)
-                        results[base_type]["valid_mask_list"].append(valid_mask)
-                    else:
-                        # Handle missing step data
-                        results[base_type]["gts_list"].append(None)
-                        results[base_type]["instrument_ids_list"].append(None)
-                        results[base_type]["valid_mask_list"].append(None)
-        else:
-            # STANDARD ROLLOUT: Extract from regular target nodes
-            for node_type in all_predictions.keys():
-                if node_type.endswith("_target") and node_type in batch.node_types:
-                    results[node_type] = {
-                        "gts_list": [batch[node_type].y],  # Single prediction, wrap in list
-                        "instrument_ids_list": [getattr(batch[node_type], "instrument_ids", None)],
-                        "valid_mask_list": [getattr(batch[node_type], "target_channel_mask", None)]
-                    }
+                    results[base_type]["gts_list"].append(y_true)
+                    results[base_type]["instrument_ids_list"].append(instrument_ids)
+                    results[base_type]["valid_mask_list"].append(valid_mask)
+                else:
+                    # Handle missing step data
+                    results[base_type]["gts_list"].append(None)
+                    results[base_type]["instrument_ids_list"].append(None)
+                    results[base_type]["valid_mask_list"].append(None)
 
         return results
 
@@ -894,7 +835,11 @@ class GNNLightning(pl.LightningModule):
                 continue
 
             # Get the base instrument name (e.g., "atms" from "atms_target")
-            inst_name = node_type.replace("_target", "")
+            # Add handling for target_step in latent mode
+            if "_target_step" in node_type:
+                inst_name = node_type.split("_target_step")[0]
+            else:
+                inst_name = node_type.replace("_target", "")
             inst_id = self.instrument_name_to_id.get(inst_name, None)
             instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
 
@@ -906,7 +851,8 @@ class GNNLightning(pl.LightningModule):
             for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
-                if y_pred is None or y_true is None or y_pred.numel() == 0:
+                # Skip if either prediction or ground truth is None or empty
+                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
 
                 # Ensure finite tensors
@@ -917,6 +863,14 @@ class GNNLightning(pl.LightningModule):
 
                 # Skip if mask exists but nothing valid
                 if valid_mask is not None and valid_mask.sum() == 0:
+                    continue
+
+                # Shape validation before loss calculation
+                if y_pred.shape[0] != y_true.shape[0]:
+                    print(f"[ERROR] Shape mismatch for {node_type} step {step}:")
+                    print(f"  y_pred: {y_pred.shape} ({y_pred.shape[0]} obs)")
+                    print(f"  y_true: {y_true.shape} ({y_true.shape[0]} obs)")
+                    print(f"  Skipping this prediction to avoid crash")
                     continue
 
                 channel_loss = weighted_huber_loss(
@@ -949,13 +903,9 @@ class GNNLightning(pl.LightningModule):
         avg_loss = avg_loss + dummy_loss
 
         # Log rollout steps appropriately
-        if self._is_latent_rollout_mode(batch):
-            step_info = self._get_latent_step_info(batch)
-            actual_rollout_steps = step_info["num_steps"]
-            print(f"[DEBUG] latent rollout steps: {actual_rollout_steps}")
-        else:
-            actual_rollout_steps = 1  # Standard mode always 1 step
-            print(f"[DEBUG] standard rollout steps: {actual_rollout_steps}")
+        step_info = self._get_latent_step_info(batch)
+        latent_rollout_steps = step_info["num_steps"]
+        print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
 
         self.log(
             "train_loss",
@@ -966,7 +916,7 @@ class GNNLightning(pl.LightningModule):
             sync_dist=True,
             batch_size=1,
         )
-        self.log("rollout_steps", float(actual_rollout_steps), on_step=True, sync_dist=False)
+        self.log("rollout_steps", float(latent_rollout_steps), on_step=True, sync_dist=False)
         if self.trainer.is_global_zero and batch_idx == 0:
             print(f"[TRAIN] Epoch {self.current_epoch} - train_loss: {avg_loss.cpu().item():.6f}")
 
@@ -985,13 +935,9 @@ class GNNLightning(pl.LightningModule):
         all_losses = []
 
         # Determine rollout steps based on mode
-        if self._is_latent_rollout_mode(batch):
-            step_info = self._get_latent_step_info(batch)
-            actual_rollout_steps = step_info["num_steps"]
-            print(f"[validation_step] latent rollout steps: {actual_rollout_steps}")
-        else:
-            actual_rollout_steps = self.max_rollout_steps
-            print(f"[validation_step] standard rollout steps: {actual_rollout_steps}")
+        step_info = self._get_latent_step_info(batch)
+        latent_rollout_steps = step_info["num_steps"]
+        print(f"[validation_step] latent rollout steps: {latent_rollout_steps}")
 
         # Forward pass: Dict[node_type, List[Tensor]] per step
         all_predictions = self(batch)
@@ -1011,7 +957,11 @@ class GNNLightning(pl.LightningModule):
                 continue
 
             feats = None
-            inst_name = node_type.replace("_target", "")
+            # Latent mode: target_step0, target_step1, etc
+            if "_target_step" in node_type:
+                inst_name = node_type.split("_target_step")[0]
+            else:
+                inst_name = node_type.replace("_target", "")
             inst_id = self.instrument_name_to_id.get(inst_name, None)
             instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
 
@@ -1026,7 +976,8 @@ class GNNLightning(pl.LightningModule):
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
                 print(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
-                if y_pred is None or y_true is None or y_pred.numel() == 0:
+                # Skip if either prediction or ground truth is None or empty
+                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
                 if y_pred.shape != y_true.shape:
                     continue
@@ -1120,69 +1071,11 @@ class GNNLightning(pl.LightningModule):
                     out_dir = "val_csv"
                     os.makedirs(out_dir, exist_ok=True)
 
-                    if self._is_latent_rollout_mode(batch):
-                        # LATENT ROLLOUT: Concatenate all steps into standard format
-                        self._save_latent_concatenated_csv(
-                            batch, node_type, preds_list, gts_list,
-                            valid_mask_list, out_dir, batch_idx
-                        )
-                    else:
-                        n = y_pred_unnorm.shape[0]
-                        n_ch = y_pred_unnorm.shape[1]
-
-                        # For standard rollout, get metadata from regular target node
-                        if hasattr(batch[node_type], 'target_metadata'):
-                            target_metadata = batch[node_type].target_metadata
-                        else:
-                            target_metadata = None
-
-                        if target_metadata is not None:
-                            lat = target_metadata[:, 0].cpu().numpy()
-                            lon = target_metadata[:, 1].cpu().numpy()
-                            lat_deg = np.degrees(lat)
-                            lon_deg = np.degrees(lon)
-                        else:
-                            # Fallback if no metadata available
-                            lat_deg = np.zeros(n)
-                            lon_deg = np.zeros(n)
-                            print(f"[WARN] No target_metadata found for {node_type}, using zeros for lat/lon")
-
-                        # Get feature names and make sure length matches n_ch
-                        feats = self._feature_names_for_node(node_type)
-                        if not feats:
-                            feats = [f"ch{i+1}" for i in range(n_ch)]
-                        # guard against mismatch (slice or pad)
-                        if len(feats) > n_ch:
-                            feats = feats[:n_ch]
-                        elif len(feats) < n_ch:
-                            feats = feats + [f"ch{i+1}" for i in range(len(feats) + 1, n_ch + 1)]
-
-                        # sanitize any odd names for column safety (optional)
-                        def _safe_col_name(s: str) -> str:
-                            return str(s).replace(" ", "_")
-
-                        # Build DataFrame
-                        df = pd.DataFrame({"lat": lat_deg, "lon": lon_deg})
-
-                        for i, fname in enumerate(feats):
-                            col = _safe_col_name(fname)
-                            df[f"pred_{col}"] = y_pred_unnorm[:, i].detach().cpu().numpy()
-                            df[f"true_{col}"] = y_true_unnorm[:, i].detach().cpu().numpy()
-
-                        # include mask columns when available
-                        if valid_mask is not None:
-                            vm_cpu = valid_mask.detach().cpu().numpy().astype(bool)
-                            for i, fname in enumerate(feats):
-                                col = _safe_col_name(fname)
-                                df[f"mask_{col}"] = vm_cpu[:, i]
-
-                        filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step{step}.csv"
-                        try:
-                            df.to_csv(filename, index=False)
-                            print(f"Saved: {filename}")
-                        except Exception as e:
-                            if self.trainer.is_global_zero:
-                                print(f"[WARN] Could not save {filename}: {e}")
+                    # LATENT ROLLOUT: Concatenate all steps into standard format
+                    self._save_latent_concatenated_csv(
+                        batch, node_type, preds_list, gts_list,
+                        valid_mask_list, out_dir, batch_idx
+                    )
 
             # Placeholder logging for missing steps (to ensure stable CSV shape for loggers)
             num_channels = all_step_rmse[node_type][0].shape[0] if all_step_rmse[node_type] else 1
