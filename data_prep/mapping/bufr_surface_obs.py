@@ -14,8 +14,6 @@ from bufr.obs_builder import ObsBuilder, add_main_functions
 script_dir = os.path.dirname(os.path.abspath(__file__))
 MAP_PATH = os.path.join(script_dir, 'bufr_surface_obs.yaml')
 
-OBS_TYPES = np.array([180, 181, 183, 187, 120])
-
 
 class PressureObsBuilder(ObsBuilder):
     def __init__(self):
@@ -27,21 +25,28 @@ class PressureObsBuilder(ObsBuilder):
 
         # Apply Masks
 
-        # Filter according to thw obs type
-        obs_type = container.get('observationType')
-        container.apply_mask(np.isin(obs_type, OBS_TYPES))
-
         # Mask out missing time stamps
         # Note, in numpy masked arrays "mask == True" means to mask out. So we must invert the mask.
         container.apply_mask(~container.get('obsTimeMinusCycleTime').mask)
 
         self._apply_quality_flag(container, 'airTemperature', 'airTemperatureQuality')
+        self._apply_quality_flag(container, 'virtualTemperature', 'airTemperatureQuality')
         self._apply_quality_flag(container, 'specificHumidity', 'specificHumidityQuality')
         self._apply_quality_flag(container, 'northwardWind', 'windQuality')
         self._apply_quality_flag(container, 'eastwardWind',  'windQuality')
         self._apply_quality_flag(container, 'airPressure', 'airPressureQuality')
         self._apply_quality_flag(container, 'height', 'heightQuality')
         self._apply_quality_flag(container, 'seaTemperature', 'seaTemperatureQuality')
+
+        # Apply temperature event code
+        temperature_event_code = container.get('temperatureEventCode')
+        air_temp = container.get('airTemperature')
+        air_temp.mask = ((temperature_event_code < 1) | (temperature_event_code >= 8))  # True means mask out
+        container.replace('airTemperature', air_temp)
+
+        virt_temp = container.get('virtualTemperature')
+        virt_temp.mask = (temperature_event_code != 8)  # True means mask out
+        container.replace('virtualTemperature', virt_temp)
 
         # Add timestamps
         reference_time = self._get_reference_time(input_path)

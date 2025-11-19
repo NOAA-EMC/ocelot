@@ -1,0 +1,89 @@
+bufr:
+  subsets:
+    - ADPSFC
+    - SFCSHP
+  variables:
+    obsTimeMinusCycleTime:
+      query: "*/DHR"
+
+    latitude:
+      query: "*/YOB"
+
+    longitude:
+      query: "*/XOB"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    eastwardWind:
+      query: "*/W___INFO/W__EVENT/UOB"
+
+    northwardWind:
+      query: "*/W___INFO/W__EVENT/VOB"
+
+    specificHumidity:
+      query: "*/Q___INFO/Q__EVENT/QOB"
+
+    # Quality Markers
+    airTemperatureQuality:
+      query: "*/T___INFO/T__EVENT/TQM"
+
+    specificHumidityQuality:
+      query: "*/Q___INFO/Q__EVENT/QQM"
+
+    dewPointTemperatureQuality:
+      query: "*/Q___INFO/Q__EVENT/QQM"
+
+    airPressureQuality:
+      query: "*/P___INFO/P__EVENT{1-3}/PQM" # coarse dimension
+
+    heightQuality:
+      query: "*/Z___INFO/Z__EVENT/ZQM"
+
+    windQuality:
+      query: "*/W___INFO/W__EVENT/WQM"
+
+
+
+encoder:
+  variables:
+    # MetaData
+    - name: "latitude"
+      source: variables/latitude
+      longName: "Latitude"
+      units: "degree_north"
+      range: [-90, 90]
+
+    - name: "longitude"
+      source: variables/longitude
+      longName: "Longitude"
+      units: "degree_east"
+
+    - name: "airTemperatureQuality"
+      source: variables/airTemperatureQuality
+      longName: "Air Temperature Quality Marker"
+      units: "quality_marker"
+
+    - name: "specificHumidityQuality"
+      source: variables/specificHumidityQuality
+      longName: "Specific Humidity Quality Marker"
+      units: "quality_marker"
+
+    - name: "dewPointTemperatureQuality"
+      source: variables/dewPointTemperatureQuality
+      longName: "Dew Point Temperature Quality Marker"
+      units: "quality_marker"
+
+    - name: "windQuality"
+      source: variables/windQuality
+      longName: "Wind Quality Marker"
+      units: "quality_marker"
+
+    - name: "airPressureQuality"
+      source: variables/airPressureQuality
+      longName: "Air Pressure Quality Marker"
+      units: "quality_marker"
+
+    - name: "heightQuality"
+      source: variables/heightQuality
+      longName: "Height Quality Marker"
+      units: "quality_marker"

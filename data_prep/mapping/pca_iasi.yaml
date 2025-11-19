@@ -1,0 +1,152 @@
+bufr:
+  variables:
+    # MetaData
+    timestamp:
+      datetime:
+        year: "*/YEAR"
+        month: "*/MNTH"
+        day: "*/DAYS"
+        hour: "*/HOUR"
+        minute: "*/MINU"
+        second: "*/SECO"
+
+    latitude:
+      query: "*/CLATH"
+
+    longitude:
+      query: "*/CLONH"
+
+    #principalComponentScore:
+    #  query: "*/RPSEQ003/RPSEQ004/NNPCS"
+
+    pcs1:
+      query: "*/RPSEQ003{1}/RPSEQ004{1-90}/NNPCS"
+
+    pcs2:
+      query: "*/RPSEQ003{2}/RPSEQ004{1-120}/NNPCS"
+    
+    pcs3:
+      query: "*/RPSEQ003{3}/RPSEQ004{1-90}/NNPCS"
+
+
+    sensorZenithAngle:
+      query: "*/SAZA"
+
+    sensorAzimuthAngle:
+      query: "*/BEARAZ"
+
+    solarZenithAngle:
+      query: "*/SOZA"
+
+    solarAzimuthAngle:
+      query: "*/SOLAZI"
+
+    satelliteElevation:
+      query: "*/SELV"
+
+    #Quality Flags
+    globalQcFlag:
+      query: "*/QFFS"
+
+    residualRms1:
+      query: "*/RPSEQ003{1}/RRIB"
+
+    residualRms2:
+      query: "*/RPSEQ003{2}/RRIB"
+
+    residualRms3:
+      query: "*/RPSEQ003{3}/RRIB"
+
+encoder:
+  dimensions:
+    - name: "reps1" 
+      path: "*/RPSEQ003{1}/RPSEQ004{1-90}"
+      labels: "1-90"
+
+    - name: "reps2" 
+      path: "*/RPSEQ003{2}/RPSEQ004{1-120}"
+      labels: "1-120"
+
+    - name: "reps3" 
+      path: "*/RPSEQ003{3}/RPSEQ004{1-90}"
+      labels: "1-90"
+
+  variables:
+    # MetaData
+    - name: "MetaData/time"
+      source: variables/timestamp
+      longName: "Observation Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: "MetaData/latitude"
+      source: variables/latitude
+      longName: "Latitude"
+      units: "degrees_north"
+      range: [ -90, 90 ]
+
+    - name: "MetaData/longitude"
+      source: variables/longitude
+      longName: "Longitude"
+      units: "degrees_east"
+      range: [ -180, 180 ]
+
+    - name: "ObsValue/pcs1"
+      source: variables/pcs1
+      longName: "Principal Component Score 1"
+
+    - name: "ObsValue/pcs2"
+      source: variables/pcs2
+      longName: "Principal Component Score 2"
+
+    - name: "ObsValue/pcs3"
+      source: variables/pcs3
+      longName: "Principal Component Score 3"
+
+    - name: "MetaData/sensorZenithAngle"
+      source: variables/sensorZenithAngle
+      longName: "Sensor Zenith Angle"
+      units: "degrees"
+      range: [0, 90]
+
+    - name: "MetaData/sensorAzimuthAngle"
+      source: variables/sensorAzimuthAngle
+      longName: "Sensor Azimuth Angle"
+      units: "degrees"
+
+    - name: "MetaData/solarZenithAngle"
+      source: variables/solarZenithAngle
+      longName: "Solar Zenith Angle"
+      units: "degrees"
+      range: [0, 180]
+
+    - name: "MetaData/solarAzimuthAngle"
+      source: variables/solarAzimuthAngle
+      longName: "Solar Azimuth Angle"
+      units: "degrees"
+
+    - name: "MetaData/satelliteElevation"
+      source: variables/satelliteElevation
+      longName: "Satellite Elevation"
+      units: "meters"
+      range: [500000, 2e9]
+
+    - name: "MetaData/globalQcFlag"
+      source: variables/globalQcFlag
+      longName: "Global Quality Control Flag"
+      units: ""
+
+    - name: "MetaData/residualRms1"
+      source: variables/residualRms1
+      longName: "Residual RMS"
+      units: ""
+    
+    - name: "MetaData/residualRms2"
+      source: variables/residualRms2
+      longName: "Residual RMS"
+      units: ""
+
+    - name: "MetaData/residualRms3"
+      source: variables/residualRms3
+      longName: "Residual RMS"
+      units: ""
+

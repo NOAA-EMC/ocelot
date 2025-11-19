@@ -1,0 +1,152 @@
+data types:
+  - name: atms
+    type: tank
+    num_tasks: 24
+    batch_days: 15
+    mapping: bufr_atms.py
+    paths:
+      - 00/atmos/gdas.t00z.atms.tm00.bufr_d
+      - 06/atmos/gdas.t06z.atms.tm00.bufr_d
+      - 12/atmos/gdas.t12z.atms.tm00.bufr_d
+      - 18/atmos/gdas.t18z.atms.tm00.bufr_d
+
+  - name: surface_obs
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_surface_obs.py
+    paths:
+      - 00/atmos/gdas.t00z.prepbufr
+      - 06/atmos/gdas.t06z.prepbufr
+      - 12/atmos/gdas.t12z.prepbufr
+      - 18/atmos/gdas.t18z.prepbufr
+
+  - name: raw_surface_obs
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_surface_obs_raw.py
+    paths:
+      prepbufr:
+        - 00/atmos/gdas.t00z.prepbufr
+        - 06/atmos/gdas.t06z.prepbufr
+        - 12/atmos/gdas.t12z.prepbufr
+        - 18/atmos/gdas.t18z.prepbufr
+      adpsfc:
+        - 00/atmos/gdas.t00z.adpsfc.tm00.bufr_d
+        - 06/atmos/gdas.t06z.adpsfc.tm00.bufr_d
+        - 12/atmos/gdas.t12z.adpsfc.tm00.bufr_d
+        - 18/atmos/gdas.t18z.adpsfc.tm00.bufr_d
+      sfcshp:
+        - 00/atmos/gdas.t00z.sfcshp.tm00.bufr_d
+        - 06/atmos/gdas.t06z.sfcshp.tm00.bufr_d
+        - 12/atmos/gdas.t12z.sfcshp.tm00.bufr_d
+        - 18/atmos/gdas.t18z.sfcshp.tm00.bufr_d
+
+  - name: radiosonde
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_radiosonde.py
+    paths:
+      - 00/atmos/gdas.t00z.prepbufr
+      - 06/atmos/gdas.t06z.prepbufr
+      - 12/atmos/gdas.t12z.prepbufr
+      - 18/atmos/gdas.t18z.prepbufr
+
+  - name: raw_radiosonde
+    type: tank
+    num_tasks: 1
+    batch_days: 30
+    mapping: bufr_radiosonde_raw.py
+    paths:
+      prepbufr:
+        - 00/atmos/gdas.t00z.prepbufr
+        - 06/atmos/gdas.t06z.prepbufr
+        - 12/atmos/gdas.t12z.prepbufr
+        - 18/atmos/gdas.t18z.prepbufr
+      low_res_dump:
+        - 00/atmos/gdas.t00z.adpupa.tm00.bufr_d
+        - 06/atmos/gdas.t06z.adpupa.tm00.bufr_d
+        - 12/atmos/gdas.t12z.adpupa.tm00.bufr_d
+        - 18/atmos/gdas.t18z.adpupa.tm00.bufr_d
+      high_res_dump:
+        - 00/atmos/gdas.t00z.uprair.tm00.bufr_d
+        - 06/atmos/gdas.t06z.uprair.tm00.bufr_d
+        - 12/atmos/gdas.t12z.uprair.tm00.bufr_d
+        - 18/atmos/gdas.t18z.uprair.tm00.bufr_d
+
+  - name: ssmis
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_ssmis.py
+    paths:
+      - 00/atmos/gdas.t00z.ssmisu.tm00.bufr_d
+      - 06/atmos/gdas.t06z.ssmisu.tm00.bufr_d
+      - 12/atmos/gdas.t12z.ssmisu.tm00.bufr_d
+      - 18/atmos/gdas.t18z.ssmisu.tm00.bufr_d
+
+  - name: amsua
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_amsua.py
+    paths:
+      - 00/atmos/gdas.t00z.1bamua.tm00.bufr_d
+      - 06/atmos/gdas.t06z.1bamua.tm00.bufr_d
+      - 12/atmos/gdas.t12z.1bamua.tm00.bufr_d
+      - 18/atmos/gdas.t18z.1bamua.tm00.bufr_d
+
+  - name: viirs
+    type: tank
+    num_tasks: 24
+    batch_days: 15
+    mapping: bufr_amsua.py
+    paths:
+      - 00/atmos/gdas.t00z.sstvcw.tm00.bufr_d
+      - 06/atmos/gdas.t06z.sstvcw.tm00.bufr_d
+      - 12/atmos/gdas.t12z.sstvcw.tm00.bufr_d
+      - 18/atmos/gdas.t18z.sstvcw.tm00.bufr_d
+
+  - name: avhrr
+    type: tank
+    num_tasks: 24
+    batch_days: 15
+    mapping: bufr_avhrr.py
+    paths:
+      am:
+        - 00/atmos/gdas.t00z.avcsam.tm00.bufr_d
+        - 06/atmos/gdas.t06z.avcsam.tm00.bufr_d
+        - 12/atmos/gdas.t12z.avcsam.tm00.bufr_d
+        - 18/atmos/gdas.t18z.avcsam.tm00.bufr_d
+      pm:
+        - 00/atmos/gdas.t00z.avcspm.tm00.bufr_d
+        - 06/atmos/gdas.t06z.avcspm.tm00.bufr_d
+        - 12/atmos/gdas.t12z.avcspm.tm00.bufr_d
+        - 18/atmos/gdas.t18z.avcspm.tm00.bufr_d
+
+  - name: iasi_pca
+    type: pca
+    num_tasks: 12
+    batch_days: 15
+    mapping: pca_iasi.py
+    directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/IASI_PCA/bufr
+    filename_regex: M03-IASI-IASPCS1C-NA-1\.0-(?P<start_time>\d{14})\.000000000Z-(?P<end_time>\d{14})-4887062-\d{1}\.bfr 
+
+  - name: snow_cover
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_snowcover.py
+    paths:
+      sfcsno:
+        - 00/atmos/gdas.t00z.sfcsno.tm00.bufr_d
+        - 06/atmos/gdas.t06z.sfcsno.tm00.bufr_d
+        - 12/atmos/gdas.t12z.sfcsno.tm00.bufr_d
+        - 18/atmos/gdas.t18z.sfcsno.tm00.bufr_d
+      snocvr:
+        - 00/atmos/gdas.t00z.snocvr.tm00.bufr_d
+        - 06/atmos/gdas.t06z.snocvr.tm00.bufr_d
+        - 12/atmos/gdas.t12z.snocvr.tm00.bufr_d
+        - 18/atmos/gdas.t18z.snocvr.tm00.bufr_d
