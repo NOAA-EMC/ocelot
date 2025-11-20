@@ -134,6 +134,14 @@ data types:
     directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/IASI_PCA/bufr
     filename_regex: M03-IASI-IASPCS1C-NA-1\.0-(?P<start_time>\d{14})\.000000000Z-(?P<end_time>\d{14})-4887062-\d{1}\.bfr 
 
+  - name: cris_pca
+    type: netCDF
+    num_tasks: 24
+    batch_days: 15
+    mapping: cris_pca.py
+    directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/IASI_PCA/bufr
+    filename_regex: SNDR\.J1\.CRIS\.(?P<start_time>\d{8}T\d{4})\.m\d+\.[gG]\d+\.PCA_RED\.beta\.v\d+_\d+\.W\.\d+\.nc
+
   - name: snow_cover
     type: tank
     num_tasks: 4

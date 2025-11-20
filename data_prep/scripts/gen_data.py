@@ -249,6 +249,9 @@ if __name__ == "__main__":
                         suffix=args.suffix,
                         append=args.append)
 
+
+    print('ARGS_TYPE=',args.type)
+
     if args.type == 'all':
         for gen_type in data_types:
             call_generator(gen_type)
