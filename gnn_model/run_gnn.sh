@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH -t 08:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -68,13 +68,13 @@ nvidia-smi
 # These restore full trainer state (epoch, optimizer, windows).
 #
 # --- RANDOM SAMPLING CONTINUATION ---
-srun ... python train_gnn.py \
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
     --resume_from_latest \
     --sampling_mode random \
     --window_mode random
 
 # --- SEQUENTIAL SAMPLING CONTINUATION ---
-# srun ... python train_gnn.py \
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 #     --resume_from_latest \
 #     --sampling_mode sequential \
 #     --window_mode sequential
@@ -98,7 +98,7 @@ srun ... python train_gnn.py \
 #     --window_mode random
 #
 # --- SEQUENTIAL SAMPLING WARM START ---
-# srun ... python train_gnn.py \
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 #     --init_from_ckpt checkpoints/last.ckpt \
 #     --sampling_mode sequential \
 #     --window_mode sequential
