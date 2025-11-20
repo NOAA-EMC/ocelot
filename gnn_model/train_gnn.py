@@ -74,6 +74,13 @@ def main():
         action="store_true",
         help="Resume from the most recent checkpoint found",
     )
+    parser.add_argument(
+        "--init_from_ckpt",
+        type=str,
+        default=None,
+        help="Path to a checkpoint to initialize model weights from (no Trainer resume).",
+    )
+
     # Debug mode arguments
     parser.add_argument("--debug_mode", action="store_true", help="Enable debug mode with minimal training")
     parser.add_argument("--max_epochs", type=int, default=None, help="Override max epochs")
@@ -111,8 +118,8 @@ def main():
         data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
-    FULL_START_DATE = "2024-01-01"
-    FULL_END_DATE = "2024-12-31"
+    FULL_START_DATE = "2023-01-01"
+    FULL_END_DATE = "2023-12-31"
     TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
     VALID_WINDOW_DAYS = 8   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
@@ -152,7 +159,7 @@ def main():
     hidden_dim = 96
     num_layers = 10
     lr = 5e-4
-    max_epochs = 100
+    max_epochs = 200
     batch_size = 1
 
     # Rollout settings
@@ -201,6 +208,13 @@ def main():
         encoder_dropout=0.1,  # Add dropout for regularization
         decoder_dropout=0.1,  # Add dropout for regularization
     )
+
+    # ---- OPTION A: Warm-start weights only, do NOT resume Trainer state ----
+    if args.init_from_ckpt is not None:
+        ckpt = torch.load(args.init_from_ckpt, map_location="cpu")
+        # Lightning saves model weights under "state_dict"
+        model.load_state_dict(ckpt["state_dict"], strict=True)
+        print(f"[INFO] Initialized model weights from {args.init_from_ckpt} (no Trainer resume).")
 
     data_module = GNNDataModule(
         data_path=data_path,
@@ -337,17 +351,21 @@ def main():
 
     # === Checkpoint resume ===
     resume_path = None
-    if args.resume_from_latest:
-        resume_path = find_latest_checkpoint(checkpoint_dir)
-        if resume_path:
-            print(f"[INFO] Auto-resuming from: {resume_path}")
-        else:
-            print("[INFO] No checkpoint found, starting fresh")
-    elif args.resume_from_checkpoint:
-        resume_path = args.resume_from_checkpoint
-        print(f"[INFO] Resuming from: {resume_path}")
+    if args.init_from_ckpt is not None:
+        # When warm-starting weights, do NOT resume Trainer state
+        print("[INFO] init_from_ckpt is set -> ignoring any resume_from_* arguments.")
     else:
-        print("[INFO] No checkpoint, starting fresh training")
+        if args.resume_from_latest:
+            resume_path = find_latest_checkpoint(checkpoint_dir)
+            if resume_path:
+                print(f"[INFO] Auto-resuming from: {resume_path}")
+            else:
+                print("[INFO] No checkpoint found, starting fresh")
+        elif args.resume_from_checkpoint:
+            resume_path = args.resume_from_checkpoint
+            print(f"[INFO] Resuming from: {resume_path}")
+        else:
+            print("[INFO] No checkpoint, starting fresh training")
 
     trainer.fit(model, data_module, ckpt_path=resume_path)
 

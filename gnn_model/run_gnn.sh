@@ -56,22 +56,63 @@ echo "SLURM Node List: $SLURM_NODELIST"
 echo "Visible GPUs on this node:"
 nvidia-smi
 
-# Launch training (env is propagated to ranks)
-# NEW TRAINING (from scratch) - SEQUENTIAL MODE
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-#     --sampling_mode sequential \
-#     --window_mode sequential \
-#     --max_epochs 100
+# ==========================================================
+# HOW TO LAUNCH TRAINING (CHOOSE EXACTLY ONE OPTION BELOW)
+# ==========================================================
 
-# RESUME from latest checkpoint (automatic) - SEQUENTIAL MODE
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-#     --resume_from_latest \
-#     --sampling_mode sequential \
-#     --window_mode sequential \
-#     --max_epochs 100
-
-# RESUME from latest checkpoint (automatic) - RANDOM MODE
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+# ----------------------------------------------------------
+# (A) CONTINUE TRAINING ON THE SAME YEAR / SAME ZARR
+# ----------------------------------------------------------
+# Use these only when you are training on the SAME dataset
+# and want to continue training from the same checkpoint.
+# These restore full trainer state (epoch, optimizer, windows).
+#
+# --- RANDOM SAMPLING CONTINUATION ---
+srun ... python train_gnn.py \
     --resume_from_latest \
     --sampling_mode random \
     --window_mode random
+
+# --- SEQUENTIAL SAMPLING CONTINUATION ---
+# srun ... python train_gnn.py \
+#     --resume_from_latest \
+#     --sampling_mode sequential \
+#     --window_mode sequential
+#
+# NOTE:
+# Do NOT use these if you are switching to another year.
+# They will restore old windows (e.g., 2024 windows) and fail.
+
+
+# ----------------------------------------------------------
+# (B) START TRAINING ON A NEW YEAR / NEW ZARR (WARM START)
+# ----------------------------------------------------------
+# Use these when switching to a different dataset (e.g. 2024 → 2023).
+# Loads model weights ONLY; trainer state and windows are NOT restored.
+# This avoids the "restored window is outside dataset" crash.
+#
+# --- RANDOM SAMPLING WARM START (RECOMMENDED FOR MULTI-YEAR) ---
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+#     --init_from_ckpt checkpoints/last.ckpt \
+#     --sampling_mode random \
+#     --window_mode random
+#
+# --- SEQUENTIAL SAMPLING WARM START ---
+# srun ... python train_gnn.py \
+#     --init_from_ckpt checkpoints/last.ckpt \
+#     --sampling_mode sequential \
+#     --window_mode sequential
+
+
+# ----------------------------------------------------------
+# IMPORTANT RULES:
+# ----------------------------------------------------------
+# - You MUST choose exactly ONE of:
+#       --resume_from_latest   (continue same year)
+#       --init_from_ckpt       (start new year)
+#
+# - Never use both at the same time.
+# - For NEW YEAR training, always use --init_from_ckpt.
+# - For SAME YEAR continuation, always use --resume_from_latest.
+# ==========================================================
+
