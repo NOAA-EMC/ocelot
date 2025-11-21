@@ -66,7 +66,7 @@ encoder:
       units: "deg C"
       range: [ -100, 100 ]
 
-    - name: "ObsValue/ralativeHumidity"
+    - name: "ObsValue/relativeHumidity"
       source: relativeHumidity
       longName: "Specific Humidity"
       units: "mg/kg"
