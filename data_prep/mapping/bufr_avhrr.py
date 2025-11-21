@@ -73,7 +73,7 @@ class AvhrrObsBuilder(ObsBuilder):
 
         self.finalize_container(container)
 
-        self.log.info(f'Encoding')
+        self.log.info('Encoding')
         data = next(iter(iodaEncoder(self.description).encode(container).values()))
 
         return data
