@@ -71,5 +71,6 @@ class AircraftBuilder(ObsBuilder):
         time = (reference_time + cycle_times).astype('datetime64[s]').astype('int64')
         container.add(output_name, time, ['*'])
 
+
 # Add main functions create_obs_file and create_obs_group
 add_main_functions(AircraftBuilder)
