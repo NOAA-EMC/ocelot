@@ -20,7 +20,6 @@ import zarr
 
 
 def main():
-
     parser = argparse.ArgumentParser(description="Summarize variables in a Zarr file")
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
     args = parser.parse_args()

@@ -39,6 +39,12 @@ class DataTypeConfig:
         return self.config['batch_days']
 
     @property
+    def memory(self):
+        if 'memory' not in self.config:
+            return None
+        return self.config['memory']
+
+    @property
     def operations(self):
         if 'operations' not in self.config:
             return []

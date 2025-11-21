@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
 MAPPING_PATH = map_path('bufr_satwnd_amv_seviri.yaml')
