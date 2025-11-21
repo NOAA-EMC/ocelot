@@ -48,11 +48,11 @@ class RawRadiosondeBuilder(ObsBuilder):
                             prep_container,
                             reference_time)
 
-        print ("Processing low resolution dump")
+        print("Processing low resolution dump")
         container = self._process_dump(comm, input_dict, prep_container, LowResDumpKey)
 
         if 'high_res_dump' in input_dict:
-            print ("Processing high resolution dump")
+            print("Processing high resolution dump")
             container.append(self._process_dump(comm, input_dict, prep_container, HighResDumpKey))
 
         return container

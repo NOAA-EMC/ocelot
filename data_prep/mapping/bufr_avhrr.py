@@ -43,7 +43,7 @@ class AvhrrObsBuilder(ObsBuilder):
         comm = bufr.mpi.Comm("world")
         self.log.comm = comm
 
-        container = self.make_obs(comm, {AM_KEY:am_input, PM_KEY:pm_input})
+        container = self.make_obs(comm, {AM_KEY: am_input, PM_KEY: pm_input})
         container.gather(comm)
 
         # Encode the data
@@ -68,7 +68,7 @@ class AvhrrObsBuilder(ObsBuilder):
         comm = bufr.mpi.Comm(env["comm_name"])
         self.log.comm = comm
 
-        container = self.make_obs(comm, {AM_KEY:am_input, PM_KEY:pm_input})
+        container = self.make_obs(comm, {AM_KEY: am_input, PM_KEY: pm_input})
         container.all_gather(comm)
 
         self.finalize_container(container)

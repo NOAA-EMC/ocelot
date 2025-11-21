@@ -77,9 +77,8 @@ class TankRunner(Runner):
                         continue
 
                     container = self._make_obs(comm, input_path)
-
                     container.gather(comm)
-                    
+
                     if comm.rank() == 0:
                         combined_container.append(container)
 
@@ -99,7 +98,7 @@ class TankRunner(Runner):
 
                     container = self._make_obs(comm, input_dict)
                     container.gather(comm)
-                    
+
                     if comm.rank() == 0:
                         combined_container.append(container)
 
@@ -159,4 +158,4 @@ def run(comm, data_type, parameters: Parameters, cfg=config.Config()) -> (bufr.e
         raise ValueError(f"Unknown data type {type_cfg.type}")
 
     return (runner.get_encoder_description(), runner.run(comm, parameters))
-j
+

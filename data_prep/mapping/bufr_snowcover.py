@@ -26,7 +26,7 @@ class SnowCoverObsBuilder(ObsBuilder):
         if SFCSNO_KEY in input_dict:
             container.append(bufr.Parser(input_dict[SFCSNO_KEY], self.map_dict[SFCSNO_KEY]).parse(comm))
 
-        #mask out rows with no valid snow depth
+        # Mask out rows with no valid snow depth
         snow_depth = container.get('snowDepth')
         container.apply_mask(~snow_depth.mask)
 
