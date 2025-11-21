@@ -35,7 +35,7 @@ def main():
 
     print(temp.max(), temp.min(), temp.mean())
 
-    scatter = MapScatter(lats, lons, data = temp)
+    scatter = MapScatter(lats, lons, data=temp)
     scatter.markersize = .25
 
     # Create plot object and add features
