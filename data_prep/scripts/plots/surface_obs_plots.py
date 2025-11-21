@@ -25,6 +25,7 @@ def main():
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
     args = parser.parse_args()
     z = zarr.open(args.zarr_path)
+
     MaxRange = 1000000
     pres = z['airPressure'][0:MaxRange]
     lats = z['latitude'][0:MaxRange]
@@ -46,7 +47,6 @@ def main():
     scatter = MapScatter(lats, lons, data=pres_qc)
     scatter.markersize = .25
 
-
     # Create plot object and add features
     plot1 = CreatePlot()
     plot1.plot_layers = [scatter]
@@ -66,3 +66,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

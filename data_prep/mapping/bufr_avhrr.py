@@ -11,10 +11,11 @@ MAPPING_PATH = map_path('bufr_avhrr.yaml')
 AM_KEY = 'am'
 PM_KEY = 'pm'
 
+
 class AvhrrObsBuilder(ObsBuilder):
     def __init__(self):
-        super().__init__({AM_KEY:MAPPING_PATH,
-                          PM_KEY:MAPPING_PATH}, log_name=os.path.basename(__file__))
+        super().__init__({AM_KEY: MAPPING_PATH,
+                          PM_KEY: MAPPING_PATH}, log_name=os.path.basename(__file__))
 
     def make_obs(self, comm, input_dict):
         container = bufr.DataContainer()

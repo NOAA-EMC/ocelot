@@ -46,6 +46,7 @@ bufr:
 
     windSpeed:
       query: "[*/UARLV/UAWND/WSPD, */WSPD]"
+      type: float
 
 encoder:
   variables:

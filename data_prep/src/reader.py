@@ -18,7 +18,23 @@ def create_data(start_date: datetime,
                 output_type: str,
                 suffix: str = None,
                 append: bool = True) -> None:
-    """Create zarr files from BUFR data in week long chunks."""
+    """
+    Create data files from BUFR data for each day in the specified date range.
+
+    Parameters
+    ----------
+    start_date : datetime
+        Start date (inclusive).
+    end_date : datetime
+        End date (inclusive).
+    data_type : str
+        Data type to process (must be defined in config).
+    output_type : str
+        Output file type ('zarr' or 'parquet').
+    suffix : str, optional
+        Suffix to append to the output file name.
+    append : bool, optional
+    """
 
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
@@ -48,13 +64,31 @@ def create_data(start_date: datetime,
         _create_data_for_day(comm, date, data_type, output_type, output_path)
         date += day
 
+
 def create_weekly_data(start_date: datetime,
                        end_date: datetime,
                        data_type: str,
-                       output_type: str = 'zarr',
+                       output_type: str = 'parquet',
                        suffix: str = None,
                        append: bool = True) -> None:
-    """Create zarr files from BUFR data in week long chunks."""
+
+    """
+    Create data files from BUFR data for each week in the specified date range.
+
+    Parameters
+    ----------
+    start_date : datetime
+        Start date (inclusive).
+    end_date : datetime
+        End date (inclusive).
+    data_type : str
+        Data type to process (must be defined in config).
+    output_type : str
+        Output file type ('zarr' or 'parquet').
+    suffix : str, optional
+        Suffix to append to the output file name.
+    append : bool, optional
+    """
 
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
@@ -86,6 +120,7 @@ def create_weekly_data(start_date: datetime,
                     import shutil
                     shutil.rmtree(path)
                 os.makedirs(path, exist_ok=True)
+
         comm.barrier()
 
     # Process each day and append to the appropriate weekly file
@@ -98,6 +133,7 @@ def create_weekly_data(start_date: datetime,
 
         _create_data_for_day(comm, date, data_type, output_type, out_path)
         date += day
+
 
 def create_monthly_data(start_date: datetime,
                         end_date: datetime,
@@ -210,6 +246,7 @@ def _create_data_for_day(comm,
                         output_type: str,
                         output_path: str,
                         append: bool = True) -> None:
+
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
 
@@ -240,7 +277,6 @@ def _create_data_for_day(comm,
 
             container.apply_mask(mask)
 
-    
         if output_type == 'zarr':
             ZarrEncoder(description).encode(container, f'{output_path}', append=append)
         elif output_type == 'parquet':

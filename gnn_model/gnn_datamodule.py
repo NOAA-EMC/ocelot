@@ -1,94 +1,128 @@
-import os
+"""
+PyTorch Lightning DataModule for GNN-based weather observation processing.
 
+Provides:
+- Custom samplers (BalancedSequentialShard, BalancedRandomShard) for DDP training
+- Time-windowed data loading with train/val splitting
+- Graph construction from heterogeneous observation data (satellite, conventional)
+- Dynamic DataLoader configuration based on sampling mode (sequential vs random)
+- Support for sequential bin ordering (1 worker) and parallel loading (4 workers)
+
+Author: Azadeh Gholoubi (NOAA/EMC)
+Date: November 2025
+"""
+
+import os
+import importlib
 import lightning.pytorch as pl
 import pandas as pd
 import torch
 import torch.distributed as dist
 import zarr
-from lightning.pytorch.utilities.rank_zero import rank_zero_info, rank_zero_only
-from torch.utils.data import Dataset
-from torch.utils.data.distributed import DistributedSampler
-from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
 from zarr.storage import LRUStoreCache
+from torch.utils.data import Dataset, Sampler
+from torch_geometric.data import HeteroData
+from torch_geometric.loader import DataLoader as PyGDataLoader
 
-from mesh_creation import create_icosahedral_mesh
-from mesh_to_mesh import MeshSelfConnectivity
-from mesh_to_target import MeshTargetKNNConnector
-from obs_to_mesh import ObsMeshCutoffConnector
-from process_timeseries import extract_features, organize_bins_times, flatten_data
+from nnja_adapter import build_zlike_from_df
+from process_timeseries import extract_features, organize_bins_times
+from create_mesh_graph_global import obs_mesh_conn
 
-
-def tensor_conversion(data, dtype=torch.float32, device=None):
-    """
-    Convert data to tensor efficiently without unnecessary copies.
-
-    Args:
-        data: Input data (tensor, numpy array, list, etc.)
-        dtype: Target data type
-        device: Target device (optional)
-
-    Returns:
-        torch.Tensor: Efficiently converted tensor
-    """
-    if isinstance(data, torch.Tensor):
-        # Already a tensor - minimize operations
-        result = data
-
-        # Change dtype if needed
-        if result.dtype != dtype:
-            result = result.to(dtype)
-
-        # Change device if needed
-        if device is not None and result.device != device:
-            result = result.to(device)
-
-        # Always detach to avoid gradient issues
-        return result.detach()
-    else:
-        # Not a tensor - create new one efficiently
-        if device is not None:
-            return torch.tensor(data, dtype=dtype, device=device)
-        else:
-            return torch.tensor(data, dtype=dtype)
+# Number of columns for latitude and longitude in metadata
+LAT_LON_COLUMNS = 2
 
 
-@rank_zero_only
-def log_system_info():
-    """
-    Logs CPU and SLURM environment info on rank 0.
-
-    Helps verify the computational environment across distributed jobs.
-    """
-    import multiprocessing
-
-    print(f"[Rank 0] SLURM_CPUS_PER_TASK: {os.environ.get('SLURM_CPUS_PER_TASK')}")
-    print(f"[Rank 0] SLURM_NTASKS: {os.environ.get('SLURM_NTASKS')}")
-    print(f"[Rank 0] Detected CPU count: {multiprocessing.cpu_count()}")
+def _ddp_world():
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_world_size(), dist.get_rank()
+    return 1, 0
 
 
+class BalancedSequentialShard(Sampler[int]):
+    """Contiguous shards, uneven allowed, no padding, no drop_last."""
+    def __init__(self, num_samples: int, num_replicas: int = None, rank: int = None):
+        if num_samples < 1:
+            raise ValueError("BalancedSequentialShard: num_samples must be >= 1")
+        ws, rk = _ddp_world()
+        self.num_replicas = ws if num_replicas is None else num_replicas
+        self.rank = rk if rank is None else rank
+        self.total = num_samples
+
+        base = self.total // self.num_replicas
+        rem = self.total % self.num_replicas
+        self.num_local = base + (1 if self.rank < rem else 0)
+
+        start = self.rank * base + min(self.rank, rem)
+        end = start + self.num_local
+        self._indices = list(range(self.total))[start:end]
+
+    def __iter__(self):
+        return iter(self._indices)
+
+    def __len__(self):
+        return self.num_local
+
+    def set_epoch(self, _: int):
+        pass
+
+
+class BalancedRandomShard(Sampler[int]):
+    """Shuffled shards per epoch, uneven allowed, no padding, no drop_last."""
+    def __init__(self, num_samples: int, seed: int = 0, num_replicas: int = None, rank: int = None):
+        if num_samples < 1:
+            raise ValueError("BalancedRandomShard: num_samples must be >= 1")
+        ws, rk = _ddp_world()
+        self.num_replicas = ws if num_replicas is None else num_replicas
+        self.rank = rk if rank is None else rank
+        self.total = num_samples
+        self.seed = seed
+        self.epoch = 0
+
+        base = self.total // self.num_replicas
+        rem = self.total % self.num_replicas
+        self.num_local = base + (1 if self.rank < rem else 0)
+
+        self._start = self.rank * base + min(self.rank, rem)
+        self._end = self._start + self.num_local
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        order = torch.randperm(self.total, generator=g).tolist()
+        return iter(order[self._start:self._end])
+
+    def __len__(self):
+        return self.num_local
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch
+
+
+def _t32(x):
+    return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
+
+
+# -------------------------
+# Dataset per bin
+# -------------------------
 class BinDataset(Dataset):
-    """
-    A PyTorch Dataset that lazily loads and processes individual bins from a Zarr dataset.
-
-    For each bin:
-    - Extracts necessary features on demand.
-    - Constructs graph structure using obs-mesh-target connectors.
-    - Converts to PyG Data object for GNN processing.
-
-    Args:
-        bin_names (list): List of bin identifiers (e.g., ["bin1", "bin2"]).
-        data_summary (dict): Metadata containing input/target time indices per bin.
-        zarr_store (zarr.Group): The loaded Zarr dataset object.
-        create_graph_fn (function): Function that creates the graph structure per bin.
-    """
-
-    def __init__(self, bin_names, data_summary, zarr_store, create_graph_fn, observation_config):
-        self.bin_names = bin_names
+    def __init__(
+        self,
+        bin_names,
+        data_summary,
+        zarr_store,
+        create_graph_fn,
+        observation_config,
+        feature_stats=None,
+        tag="TRAIN",
+    ):
+        self.bin_names = list(bin_names) if bin_names is not None else []
         self.data_summary = data_summary
         self.z = zarr_store
         self.create_graph_fn = create_graph_fn
         self.observation_config = observation_config
+        self.feature_stats = feature_stats
+        self.tag = tag
 
     def __len__(self):
         return len(self.bin_names)
@@ -96,50 +130,27 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(f"[Rank {rank}] Fetching {bin_name}...")
-
+        print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
-            # bin = self.data_summary[bin_name]
-            # read from z file only for this bin...to follow previous, save in self.data_summary format, but only for required bin
-            # Extract features for each bin and observation type
-            bin = extract_features(
+            out = extract_features(
                 self.z,
                 self.data_summary,
                 bin_name,
                 self.observation_config,
-            )[bin_name]
-
-            bin, _ = flatten_data(bin)
-            data_dict = self.create_graph_fn(bin)
-            data_dict['bin_name'] = bin_name  # Add bin_name to data_dict
-            print(
-                f"[{bin_name}] Input features shape: {bin['input_features_final'].shape}, Target features shape: {bin['target_features_final'].shape}"
+                feature_stats=self.feature_stats,
             )
+            bin_data = out[bin_name]
+            graph_data = self.create_graph_fn(bin_data)
+            graph_data.bin_name = bin_name
+            return graph_data
         except Exception as e:
-            print(f"[Rank {rank}] Error in bin {bin_name}: {e}")
+            print(f"[Rank {rank}] [{self.tag}] ERROR processing {bin_name}: {e}")
             raise
 
-        return self._to_data(data_dict)
 
-    def _to_data(self, data_dict):
-        return Data(
-            x=data_dict["x"],
-            edge_index_encoder=data_dict["edge_index_encoder"],
-            edge_attr_encoder=data_dict["edge_attr_encoder"],
-            edge_index_processor=data_dict["edge_index_processor"],
-            edge_index_decoder=data_dict["edge_index_decoder"],
-            edge_attr_decoder=data_dict["edge_attr_decoder"],
-            y=data_dict["y"],
-            target_scaler_min=data_dict["target_scaler_min"],
-            target_scaler_max=data_dict["target_scaler_max"],
-            instrument_ids=data_dict["target_instrument_ids"],
-            bin_name=data_dict["bin_name"],
-            target_lat_deg=tensor_conversion(data_dict["target_lat_deg"], dtype=torch.float32),
-            target_lon_deg=tensor_conversion(data_dict["target_lon_deg"], dtype=torch.float32),
-            target_metadata=data_dict["target_metadata"],
-        )
-
-
+# -------------------------
+# DataModule
+# -------------------------
 class GNNDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -147,290 +158,504 @@ class GNNDataModule(pl.LightningDataModule):
         start_date,
         end_date,
         observation_config,
+        mesh_structure,
         batch_size=1,
-        mesh_resolution=2,
-        cutoff_factor=0.6,
         num_neighbors=3,
+        feature_stats=None,
+        latent_step_hours=12,       # latent rollout support
+        window_size="12h",          # binning window
+        train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
+        sampling_mode="sequential",  # "sequential" or "random" - controls bin distribution within ranks
+        **kwargs,
     ):
         super().__init__()
-        # Store parameters
-        self.data_path = data_path
-        # These now represent the CURRENT window, which will be updated by the callback
-        self.start_date = pd.to_datetime(start_date)
-        self.end_date = pd.to_datetime(end_date)
-        self.observation_config = observation_config
-        self.obs_types = list(observation_config.keys())
-        self.target_types = ['temperature', 'salinity']  # Fixed target types
+        self.save_hyperparameters()
 
-        # Graph parameters
-        self.batch_size = batch_size
+        self.mesh_structure = mesh_structure
+        self.feature_stats = feature_stats
 
-        # Mesh and graph parameters
-        self.mesh_resolution = mesh_resolution
-        self.cutoff_factor = cutoff_factor
-        self.num_neighbors = num_neighbors
+        # Zarr handles (stable across window changes)
+        self.z = None
 
-        # Create mesh structure (shared across all types)
-        self.hetero_data, self.mesh_graph, self.mesh_latlon_rad, self.mesh_stats = create_icosahedral_mesh(
-            resolution=self.mesh_resolution
+        # Separate train/val summaries + bin name lists
+        self.train_data_summary = None
+        self.val_data_summary = None
+        self.train_bin_names = []
+        self.val_bin_names = []
+
+        # Version counters (for debugging staleness)
+        self._train_version = 0
+        self._val_version = 0
+
+        # If callbacks want separate windows, they will set these:
+        # Default: create non-overlapping train/val split to prevent data leakage
+        # Use split ratio passed from training script for consistency
+        total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        train_days = int(total_days * train_val_split_ratio)
+
+        default_train_start = pd.to_datetime(start_date)
+        default_train_end = default_train_start + pd.Timedelta(days=train_days)
+        default_val_start = default_train_end + pd.Timedelta(days=1)
+        default_val_end = pd.to_datetime(end_date)
+
+        self.hparams.train_start = pd.to_datetime(kwargs.get("train_start", default_train_start))
+        self.hparams.train_end = pd.to_datetime(kwargs.get("train_end", default_train_end))
+        self.hparams.val_start = pd.to_datetime(kwargs.get("val_start", default_val_start))
+        self.hparams.val_end = pd.to_datetime(kwargs.get("val_end", default_val_end))
+
+        # Validate no overlap between train and validation windows to prevent data leakage
+        if self.hparams.train_end > self.hparams.val_start:
+            raise ValueError(
+                f"Data leakage detected! Training window ({self.hparams.train_start} to {self.hparams.train_end}) "
+                f"overlaps with validation window ({self.hparams.val_start} to {self.hparams.val_end}). "
+                f"Ensure train_end <= val_start for proper temporal split."
+            )
+
+        # Log the train/val split for transparency
+        pool_total_days = (self.hparams.val_end - self.hparams.train_start).days
+        train_days = (self.hparams.train_end - self.hparams.train_start).days
+        val_days = (self.hparams.val_end - self.hparams.val_start).days
+        total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        print(
+            "[DataModule] Train/Val Split - "
+            f"Train: {train_days} days ({(train_days / max(1, pool_total_days)) * 100:.1f}%), "
+            f"Val: {val_days} days ({(val_days / max(1, pool_total_days)) * 100:.1f}%)"
         )
 
-        # Placeholders for data
-        self.z = None
-        self.data_summary = None
-        self.train_bin_names = None
-        self.val_bin_names = None
-        self.test_bin_names = None
-        self.predict_bin_names = None
-        self.instrument_mapping = None
+        # Ensure latent_step_hours has a valid value
+        if self.hparams.latent_step_hours is None:
+            window_hours = int(self.hparams.window_size.replace('h', ''))
+            self.hparams.latent_step_hours = window_hours
 
-        self._printed_mesh_stats = False
-        self._printed_processor_edges = False
-
-    @staticmethod
-    def get_num_workers():
-        return min(int(os.environ.get("SLURM_CPUS_PER_TASK", 4)), 4)
+    # ------------- Setup / Zarr open -------------
 
     def setup(self, stage=None):
-        """
-        Prepares a data window for training or validation.
-        This method is now designed to be called multiple times by the ResampleDataCallback.
-        The setup process:
-        1. Opens Zarr stores for each observation type
-        2. Organizes data into time bins
-        3. Splits data into train/val/test sets
-        """
-        # --- One-time setup: Open Zarr stores if they haven't been opened yet ---
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+
+        # Open Zarrs once
         if self.z is None:
             self.z = {}
-            for obs_type in self.obs_types:
+            for obs_type, instruments in self.hparams.observation_config.items():
                 self.z[obs_type] = {}
-                for key in self.observation_config[obs_type].keys():
-                    data_path = os.path.join(self.data_path, key) + ".zarr"
-                    print(f'path: {data_path}')
-                    self.z[obs_type][key] = zarr.open(LRUStoreCache(zarr.DirectoryStore(data_path), max_size=2_000_000_000), mode="r")
-            rank_zero_info("Zarr stores opened successfully.")
+                for inst_name, inst_cfg in instruments.items():
+                    src = inst_cfg.get("source", "zarr")
+
+                    if src == "zarr":
+                        zarr_dir = inst_cfg.get("zarr_dir")
+                        if zarr_dir:
+                            zarr_path = zarr_dir
+                        else:
+                            zname = inst_cfg.get("zarr_name", inst_name)
+                            if not zname.endswith(".zarr"):
+                                # Try without year tag first (for v5 data or when the zarr_name field already includes the year)
+                                zarr_path_test = os.path.join(self.hparams.data_path, f"{zname}.zarr")
+
+                                if os.path.isdir(zarr_path_test):
+                                    zname += ".zarr"
+                                else:
+                                    # Add year tag for v6 data (extracted from start_date)
+                                    year = self.hparams.start_date.split('-')[0]
+                                    zname += f"_{year}.zarr"
+
+                            zarr_path = os.path.join(self.hparams.data_path, zname)
+
+                        if not os.path.isdir(zarr_path):
+                            raise FileNotFoundError(f"Zarr not found: {zarr_path}")
+
+                        # Use LRU cache; ensure int for max_size
+                        store = LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=int(2e9))
+                        self.z[obs_type][inst_name] = zarr.open(store, mode="r")
+
+                        if rank == 0:
+                            print(f"[ZARR] {obs_type}/{inst_name} -> {zarr_path}")
+                            try:
+                                print("       keys:", list(self.z[obs_type][inst_name].keys())[:12])
+                            except Exception:
+                                pass
+
+                        if obs_type == "conventional" and inst_name == "surface_obs":
+                            if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
+                                print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
+
+                    elif src == "nnja":
+                        loader_path = inst_cfg["dataframe_loader"]
+                        mod_name, fn_name = loader_path.rsplit(".", 1)
+                        load_fn = getattr(importlib.import_module(mod_name), fn_name)
+
+                        need = list(inst_cfg["var_map"].values())
+                        need += [
+                            inst_cfg.get("lat_col", "LAT"),
+                            inst_cfg.get("lon_col", "LON"),
+                            inst_cfg.get("time_col", "OBS_TIMESTAMP"),
+                        ]
+
+                        df = load_fn(
+                            start_date=self.hparams.start_date,  # initial window used for first setup
+                            end_date=self.hparams.end_date,
+                            columns=need,
+                        )
+                        self.z[obs_type][inst_name] = build_zlike_from_df(
+                            df,
+                            var_map=inst_cfg["var_map"],
+                            lat_col=inst_cfg.get("lat_col", "LAT"),
+                            lon_col=inst_cfg.get("lon_col", "LON"),
+                            time_col=inst_cfg.get("time_col", "OBS_TIMESTAMP"),
+                        )
+                    else:
+                        raise ValueError(f"Unknown source '{src}' for {inst_name}")
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
 
-        # --- Per-epoch setup: Process the current data window ---
-        # This part will be re-run every time the callback calls setup()
-        rank_zero_info(f"Preparing data for window: {self.start_date.date()} to {self.end_date.date()}")
-
-        self.data_summary = organize_bins_times(
-            self.z,
-            self.start_date,
-            self.end_date,
-            self.observation_config,
+        # Build TRAIN and VAL summaries for current windows
+        print(
+            f"[Rank {rank}] [DM.setup stage={stage}] "
+            f"train_window={self.hparams.train_start}..{self.hparams.train_end} | "
+            f"val_window={self.hparams.val_start}..{self.hparams.val_end}"
         )
 
-        # Use a natural sort key to sort bin names numerically ---
-        all_bin_names = sorted(list(self.data_summary.keys()), key=lambda x: int(x.replace("bin", "")))
+        self._rebuild_train_summary()
+        self._rebuild_val_summary()
 
-        if stage == "fit" or stage is None:
-            # For validation, we use a fixed, small slice of the available data
-            # to keep validation consistent and fast.
-            # Here we take the last 3 bins of the current window for validation.
-            val_size = min(3, len(all_bin_names) - 1)
-            self.train_bin_names = all_bin_names[:-val_size] if val_size > 0 else all_bin_names
-            self.val_bin_names = all_bin_names[-val_size:] if val_size > 0 else []
-            self._log_dataset_split()
+        if stage in (None, "fit"):
+            # For now we use the full lists produced by organize_bins_times;
+            # callbacks can narrow them by changing windows and triggering reload.
+            pass
 
-        if stage == "test":
-            self.test_bin_names = all_bin_names
+    # ------------- Summary (re)builders -------------
+    def _rebuild_train_summary(self):
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        self.train_data_summary = organize_bins_times(
+            self.z,
+            self.hparams.train_start,
+            self.hparams.train_end,
+            self.hparams.observation_config,
+            pipeline_cfg=self.hparams.pipeline,
+            window_size=self.hparams.window_size,
+            latent_step_hours=self.hparams.latent_step_hours,
+        )
+        self.train_bin_names = sorted(self.train_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+        print(
+            f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
+            f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
+        )
 
-        if stage == "predict":
-            self.predict_bin_names = all_bin_names
+    def _rebuild_val_summary(self):
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        self.val_data_summary = organize_bins_times(
+            self.z,
+            self.hparams.val_start,
+            self.hparams.val_end,
+            self.hparams.observation_config,
+            pipeline_cfg=self.hparams.pipeline,
+            window_size=self.hparams.window_size,
+            latent_step_hours=self.hparams.latent_step_hours,
+        )
+        self.val_bin_names = sorted(self.val_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+        print(
+            f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
+            f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"
+        )
 
-    @rank_zero_only
-    def _log_dataset_split(self):
-        print(f"Split data into {len(self.train_bin_names)} training bins and {len(self.val_bin_names)} validation bins")
-        print(f"Training bins: {self.train_bin_names}")
-        print(f"Validation bins: {self.val_bin_names}")
+    # ------------- Window setters for callbacks -------------
+    def set_train_window(self, start_dt, end_dt):
+        self.hparams.train_start = pd.to_datetime(start_dt)
+        self.hparams.train_end = pd.to_datetime(end_dt)
+        self._train_version += 1
+        print(f"[DM.set_train_window] v{self._train_version} -> {self.hparams.train_start} .. {self.hparams.train_end}")
+        # Rebuild summary/bin names immediately so the *next* dataloader reload sees fresh objects
+        self._rebuild_train_summary()
+
+    def set_val_window(self, start_dt, end_dt):
+        self.hparams.val_start = pd.to_datetime(start_dt)
+        self.hparams.val_end = pd.to_datetime(end_dt)
+        self._val_version += 1
+        print(f"[DM.set_val_window]   v{self._val_version} -> {self.hparams.val_start} .. {self.hparams.val_end}")
+        self._rebuild_val_summary()
+
+    # ------------- Graph builder -------------
 
     def _create_graph_structure(self, bin_data):
-        """
-        Builds the PyG-compatible graph structure for a single time bin.
+        data = HeteroData()
 
-        - Encoder edges connect observation points to nearby mesh nodes.
-        - Processor edges connect mesh nodes using pre-built connectivity.
-        - Decoder edges connect mesh nodes to target prediction locations.
-        - Global indexing is applied to combine observation and mesh nodes.
-        - Node features are padded to maintain consistent dimensionality.
+        # 1) Mesh nodes and edges
+        data["mesh"].x = _t32(self.mesh_structure["mesh_features_torch"][0])
+        data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
-        Returns:
-            dict: A dictionary of all graph components including edges, node features,
-                targets, and min/max scalers for unnormalization.
-        """
-        # Get flattened features and metadata
-        input_features = bin_data["input_features_final"]  # Already includes instrument IDs
-        target_features = bin_data["target_features_final"]
-        input_metadata = bin_data["input_metadata"]
-        target_metadata = bin_data["target_metadata"]
+        m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
+        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
+        reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
+        data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
+        data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
 
-        # Extract lat/lon from metadata (first two columns)
-        obs_latlon_rad = input_metadata[:, :2]  # latitude (rad), longitude (rad)
-        target_latlon_rad = target_metadata[:, :2]  # latitude (rad), longitude (rad)
+        window_hours = int(self.hparams.window_size.replace('h', ''))
 
-        # Print mesh statistics once
-        if not self._printed_mesh_stats:
-            print("\n Mesh Statistics:")
-            print(f"  - Mesh Resolution: {self.mesh_stats['resolution']}")
-            print(f"  - Number of Nodes: {self.mesh_stats['finest_nodes']}")
-            print(f"  - Number of Faces: {self.mesh_stats['finest_faces']}")
-            print(f"  - Multilevel Edges: {self.mesh_stats['multilevel_edges']}")
-            print("  - Edge Counts per Level:")
-            for reso_level, count in self.mesh_stats["edge_counts_per_level"].items():
-                print(f"    {reso_level}: {count}")
-            print("")
-            self._printed_mesh_stats = True
+        # Sanity check: ensure window_hours is divisible by latent_step_hours
+        if window_hours % self.hparams.latent_step_hours != 0:
+            raise ValueError(f"window_size ({window_hours}h) must be divisible by latent_step_hours ({self.hparams.latent_step_hours}h)")
 
-        # === ENCODER EDGES ===
-        # Create edges from flattened observation points to mesh nodes
-        cutoff_encoder = ObsMeshCutoffConnector(cutoff_factor=self.cutoff_factor)
-        edge_index_encoder, edge_attr_encoder = cutoff_encoder.add_edges(
-            obs_latlon_rad,
-            self.mesh_latlon_rad,
-            return_edge_attr=True,
-            max_neighbors=1
+        num_latent_steps = window_hours // self.hparams.latent_step_hours
+
+        # 3) Observation data and mesh connections
+        # ALL instruments get the same node structure based on detected batch mode
+        for obs_type, instruments in self.hparams.observation_config.items():
+            for inst_name, inst_cfg in instruments.items():
+
+                # Check if this instrument has data for this time bin
+                if obs_type in bin_data and inst_name in bin_data[obs_type]:
+                    inst_dict = bin_data[obs_type][inst_name]
+                    self._create_latent_nodes(data, inst_name, inst_dict, num_latent_steps)
+                else:
+                    # MISSING INSTRUMENT: Create empty nodes with same structure as present instruments
+                    self._create_empty_latent_nodes(data, inst_name, inst_cfg, num_latent_steps)
+
+        return data
+
+    def _create_latent_nodes(self, data, inst_name, inst_dict, num_latent_steps):
+        """Create nodes for instrument with data in latent mode."""
+        # Input features (same for all steps)
+        node_type_input = f"{inst_name}_input"
+        if "input_features_final" in inst_dict:
+            data[node_type_input].x = _t32(inst_dict["input_features_final"])
+
+            # Create encoder edges (observation to mesh)
+            if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
+                grid_lat_deg = inst_dict["input_lat_deg"]
+                grid_lon_deg = inst_dict["input_lon_deg"]
+                edge_index_encoder, edge_attr_encoder = obs_mesh_conn(
+                    grid_lat_deg,
+                    grid_lon_deg,
+                    self.mesh_structure["m2m_graphs"],
+                    self.mesh_structure["mesh_lat_lon_list"],
+                    self.mesh_structure["mesh_list"],
+                    o2m=True,
+                )
+                data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
+                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder
+
+        # Handle target features for each latent step
+        if "target_features_final_list" not in inst_dict:
+            return
+
+        for step in range(num_latent_steps):
+            if step >= len(inst_dict["target_features_final_list"]):
+                continue
+
+            node_type_target = f"{inst_name}_target_step{step}"
+            target_features = inst_dict["target_features_final_list"][step]
+
+            # Get channel mask and check validity
+            target_channel_mask_list = inst_dict.get("target_channel_mask_list", [])
+            if step < len(target_channel_mask_list):
+                target_channel_mask = target_channel_mask_list[step]
+            else:
+                target_channel_mask = None
+
+            if target_channel_mask is not None:
+                target_channel_mask = target_channel_mask.to(torch.bool)
+                keep_t = target_channel_mask.any(dim=1)  # Keep rows with ANY valid channel
+            else:
+                keep_t = torch.ones((target_features.shape[0],), dtype=torch.bool)
+
+            # Handle empty case
+            if keep_t.sum() == 0:
+                data[node_type_target].y = torch.empty((0, target_features.shape[1]), dtype=torch.float32)
+                data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
+                data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
+                data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
+                data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
+                continue
+
+            keep_np = keep_t.cpu().numpy()
+
+            # Filter all data
+            y_t = target_features[keep_t]
+            mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
+
+            data[node_type_target].y = _t32(y_t)
+            data[node_type_target].target_channel_mask = _t32(mask_t)
+
+            # Metadata
+            if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
+                tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
+                data[node_type_target].target_metadata = _t32(tgt_meta)
+
+            # Scan angle handling per-instrument (config-driven)
+            # Determine observation type to look up config
+            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+            scan_angle_cols = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+
+            if "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
+                x_aux = inst_dict["scan_angle_list"][step][keep_t]
+
+                # Validate and pad/truncate to expected dimensions
+                if x_aux.shape[-1] != scan_angle_cols:
+                    if x_aux.shape[-1] > scan_angle_cols:
+                        x_aux = x_aux[:, :scan_angle_cols]
+                    else:
+                        pad_cols = scan_angle_cols - x_aux.shape[-1]
+                        padding = torch.zeros((x_aux.shape[0], pad_cols), dtype=x_aux.dtype, device=x_aux.device)
+                        x_aux = torch.cat([x_aux, padding], dim=-1)
+            else:
+                x_aux = torch.zeros((y_t.shape[0], scan_angle_cols), dtype=torch.float32)
+            data[node_type_target].x = _t32(x_aux)
+
+            # Instrument ID
+            if "instrument_id" in inst_dict:
+                data[node_type_target].instrument_ids = torch.full(
+                    (y_t.shape[0],),
+                    inst_dict["instrument_id"],
+                    dtype=torch.long
+                )
+
+            # Edges - filter lat/lon too
+            if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
+                target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
+                target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
+
+                if len(target_lat_deg) > 0:
+                    edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                        target_lat_deg,
+                        target_lon_deg,
+                        self.mesh_structure["m2m_graphs"],
+                        self.mesh_structure["mesh_lat_lon_list"],
+                        self.mesh_structure["mesh_list"],
+                        o2m=False,
+                    )
+                    data["mesh", "to", node_type_target].edge_index = edge_index_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+
+    def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
+        """Create empty nodes for missing instrument in latent mode."""
+        # Create empty input node
+        node_type_input = f"{inst_name}_input"
+        data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+
+        # Create empty target nodes for all latent steps
+        for step in range(num_latent_steps):
+            node_type_target = f"{inst_name}_target_step{step}"
+            data[node_type_target].y = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.float32)
+            # Get scan angle dimension from config
+            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+            scan_angle_dim = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+            data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
+            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS  # lat/lon + metadata columns
+            data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
+            data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
+            data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
+            data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+            data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
+            data[node_type_target].num_nodes = 0  # from standard mode, seems unused
+
+    # ------------- DataLoaders -------------
+    def _worker_init(self, worker_id):
+        import numpy as np
+        base_seed = int(torch.initial_seed()) % 2**31
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        print(
+            f"[WorkerInit] rank={rank} worker={worker_id} pid={os.getpid()} seed={base_seed} "
+            f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
         )
-
-        if edge_index_encoder.numel() == 0:
-            raise ValueError("No encoder edges were created. Try increasing cutoff_factor.")
-
-        # === PROCESSOR EDGES ===
-        # Create mesh-to-mesh connectivity (shared across all types)
-        multi_scale_processor = MeshSelfConnectivity("hidden", "hidden")
-        print_processor_edges = not self._printed_processor_edges
-        hetero_data, mesh_graph = multi_scale_processor.update_graph(
-            self.hetero_data,
-            self.mesh_graph,
-            print_once=print_processor_edges
-        )
-        self._printed_processor_edges = True
-
-        mesh_graph = mesh_graph.to_undirected()
-        # Get edge index for processor edges
-        edge_index_processor = hetero_data["hidden", "to", "hidden"].edge_index
-
-        # === DECODER EDGES ===
-        knn_decoder = MeshTargetKNNConnector(num_nearest_neighbours=self.num_neighbors)
-        edge_index_knn, edge_attr_knn = knn_decoder.add_edges(mesh_graph, target_latlon_rad, self.mesh_latlon_rad)
-
-        # === GLOBAL INDEXING ===
-        # Calculate dimensions for combined features
-        num_obs_nodes = input_features.shape[0]
-        num_mesh_nodes = hetero_data["hidden"].x.shape[0]
-        mesh_offset = num_obs_nodes
-
-        # Move mesh features to CPU and pad to match input dimension
-        mesh_feats = hetero_data["hidden"].x.cpu()
-        input_dim = input_features.shape[1]
-        pad_feats = torch.zeros((num_mesh_nodes, input_dim - mesh_feats.shape[1]))
-        mesh_feats_padded = torch.cat([mesh_feats, pad_feats], dim=1)
-
-        # Stack flattened input features with padded mesh features
-        stacked_x = torch.cat([input_features, mesh_feats_padded], dim=0)
-
-        # Update edge indices with global offsets
-        edge_index_encoder_global = edge_index_encoder.clone()
-        edge_index_encoder_global[1] += mesh_offset
-        edge_index_processor_global = edge_index_processor + mesh_offset
-        edge_index_decoder_global = edge_index_knn.clone()
-        edge_index_decoder_global[0] += mesh_offset
-
-        # Return flattened graph structure
-        return {
-            "x": stacked_x,  # Combined features including instrument IDs
-            "edge_index_encoder": edge_index_encoder_global.to(torch.long),
-            "edge_attr_encoder": edge_attr_encoder,
-            "edge_index_processor": edge_index_processor_global.to(torch.long),
-            "edge_index_decoder": edge_index_decoder_global.to(torch.long),
-            "edge_attr_decoder": edge_attr_knn,
-            "y": target_features,  # Flattened target features
-            "target_lat_deg": bin_data["target_lat_deg"],
-            "target_lon_deg": bin_data["target_lon_deg"],
-            "target_scaler_min": tensor_conversion(bin_data["target_scaler_min"], dtype=torch.float32),
-            "target_scaler_max": tensor_conversion(bin_data["target_scaler_max"], dtype=torch.float32),
-            "input_instrument_ids": tensor_conversion(bin_data["input_instrument_ids"], dtype=torch.long),
-            "target_instrument_ids": tensor_conversion(bin_data["target_instrument_ids"], dtype=torch.long),
-            "target_metadata": tensor_conversion(bin_data["target_metadata"], dtype=torch.float32),
-        }
 
     def train_dataloader(self):
-        """
-        Returns the training DataLoader with a DistributedSampler.
-        - One bin per batch (batch_size=1).
-        - Enables parallel processing across GPUs using DDP.
-        - Uses persistent workers for better performance.
-        """
-        dataset = BinDataset(self.train_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
-        # NOTE: shuffle=True is generally recommended for better training.
-        # To enforce strict sequential order within an epoch, set shuffle=False.
-        sampler = DistributedSampler(dataset, shuffle=True)
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            sampler=sampler,
-            num_workers=self.get_num_workers(),
-            pin_memory=True,
-            persistent_workers=True,
+        ds = BinDataset(
+            self.train_bin_names,
+            self.train_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            tag="TRAIN",
         )
+
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        n = len(self.train_bin_names)
+
+        if self.hparams.sampling_mode == "random":
+            sampler = BalancedRandomShard(n, seed=0, num_replicas=world_size, rank=rank)
+            sampler_type = "BalancedRandomShard"
+            num_workers = 4  # Multiple workers OK for random mode
+        else:
+            sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
+            sampler_type = "BalancedSequentialShard"
+            num_workers = 1  # Single worker required to maintain sequential order
+
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
+            sampler=sampler,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
+
+        # Safe preview of a couple indices for logging (works for both samplers)
+        idx_preview = list(iter(sampler))
+        first_bin = self.train_bin_names[idx_preview[0]] if idx_preview else None
+        last_bin = self.train_bin_names[idx_preview[-1]] if idx_preview else None
+
+        print(f"[DL] TRAIN window={self.hparams.train_start.date()}..{self.hparams.train_end.date()} "
+              f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
+              f"first={first_bin} last={last_bin} sampler={sampler_type}")
+
+        if self.hparams.sampling_mode == "sequential":
+            print(f"[DL] TRAIN Sequential: Rank {rank} processing bins {first_bin}→{last_bin} in chronological order")
+            print(f"[DL] TRAIN Sequential: Using {num_workers} worker(s) to maintain bin order")
+        else:
+            print(f"[DL] TRAIN Random: Bins will be shuffled each epoch")
+            print(f"[DL] TRAIN Random: Using {num_workers} worker(s) for parallel loading")
+
+        return loader
 
     def val_dataloader(self):
-        """
-        Returns the validation DataLoader.
+        if not self.val_bin_names:
+            return None
 
-        - If validation set is empty on a given rank (e.g., non-zero rank under DDP),
-        an empty dataset is returned to prevent sync errors.
-        """
-        if self.val_bin_names is None or len(self.val_bin_names) == 0:
-            if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
-
-                class EmptyDataset(Dataset):
-                    def __len__(self):
-                        return 0
-
-                    def __getitem__(self, idx):
-                        return {}
-
-                return DataLoader(EmptyDataset(), batch_size=4)
-        dataset = BinDataset(self.val_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            num_workers=self.get_num_workers(),
-            pin_memory=True,
-            persistent_workers=True,
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            tag="VAL",
         )
 
-    def test_dataloader(self):
-        """
-        Returns the test DataLoader.
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        n = len(self.val_bin_names)
 
-        Loads and evaluates all test bins, one per batch.
-        """
-        dataset = BinDataset(self.test_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            num_workers=self.get_num_workers(),
+        # Use BalancedSequentialShard: Each rank gets contiguous bins, processes sequentially
+        # This enables per-rank sequential background for FSOI
+        sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
+        sampler_name = "BalancedSequentialShard"
+        # Single worker required to maintain sequential order for validation (needed for FSOI)
+        num_workers = 1
+
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
+            sampler=sampler,
+            num_workers=num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
         )
 
-    def predict_dataloader(self):
-        """
-        Returns the prediction DataLoader.
+        idx_preview = list(iter(sampler))
+        first_bin = self.val_bin_names[idx_preview[0]] if idx_preview else None
+        last_bin = self.val_bin_names[idx_preview[-1]] if idx_preview else None
 
-        Reuses the train+val bins for inference unless otherwise specified.
-        """
-        dataset = BinDataset(self.predict_bin_names, self.data_summary, self.z, self._create_graph_structure, self.observation_config)
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            num_workers=self.get_num_workers(),
-            pin_memory=True,
-            persistent_workers=True,
-        )
+        print(f"[DL] VAL   window={self.hparams.val_start.date()}..{self.hparams.val_end.date()} "
+              f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
+              f"first={first_bin} last={last_bin} sampler={sampler_name}")
+        print(f"[DL] VAL   Per-rank sequential: Each rank processes its bins in order (bin{idx_preview[0]+1}→bin{idx_preview[-1]+1})")
+        print(f"[DL] VAL   Using {num_workers} worker(s) to maintain sequential order for FSOI")
+        return loader

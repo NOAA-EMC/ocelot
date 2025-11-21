@@ -11,6 +11,7 @@ SFCSNO_KEY = 'sfcsno'
 SFCSNO_MAPPING = map_path('bufr_snowcover_sfcsno.yaml')
 SNOCVR_MAPPING = map_path('bufr_snowcover_snocvr.yaml')
 
+
 class SnowCoverObsBuilder(ObsBuilder):
     def __init__(self):
         super().__init__({SNOCVR_KEY: SNOCVR_MAPPING,
