@@ -24,6 +24,9 @@ class Encoder(bufr.encoders.EncoderBase):
                output_template_path: str,
                append: bool = False) -> dict:
 
+        if container.size() == 0:
+            return {}
+
         result: dict = {}
         for category in container.all_sub_categories():
             cat_idx = 0

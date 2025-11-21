@@ -18,7 +18,7 @@ def _format_table(rows: List[List[str]]) -> str:
     return "\n".join(formatted_rows)
 
 
-def summarize_zarr(path: str) -> str:
+def summarize_zarr(path: str, max_obs: int) -> str:
     root = zarr.open(path, mode="r")
     rows: List[List[str]] = [[
         "Variable",
@@ -31,7 +31,11 @@ def summarize_zarr(path: str) -> str:
     ]]
 
     for var_name in root.array_keys():
-        arr = root[var_name][:]
+        if max_obs == 0:
+            arr = root[var_name][:]
+        else:
+            arr = root[var_name][:max_obs]
+
         total = arr.size
         missing = bufr.get_missing_value(arr.dtype)
         good_mask = arr != missing
@@ -64,8 +68,9 @@ def summarize_zarr(path: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarize variables in a Zarr file")
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
+    parser.add_argument("--max_obs", default=0, help="Limit the number of data obs for large files.")
     args = parser.parse_args()
-    summarize_zarr(args.zarr_path)
+    summarize_zarr(args.zarr_path, int(args.max_obs))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,17 @@
+"""
+GNN training script for weather observation assimilation with DDP support.
+
+Main training script that:
+- Configures GNN model and PyTorch Lightning trainer
+- Supports both random and sequential sampling modes with synchronized windows
+- Handles multi-GPU/multi-node distributed training via DDP
+- Implements time-windowed data loading with train/val splitting
+- Provides checkpoint resumption and early stopping
+
+Author: Azadeh Gholoubi (NOAA/EMC)
+Date: April 2025
+"""
+
 import argparse
 import faulthandler
 import os
@@ -13,7 +27,7 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from callbacks import ResampleDataCallback, SequentialDataCallback
+from callbacks import ResampleDataCallback, SequentialDataCallback, AdvanceSamplerEpoch
 from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
 from timing_utils import timing_resource_decorator
@@ -43,6 +57,13 @@ def main():
         help="The data sampling strategy ('random' or 'sequential').",
     )
     parser.add_argument(
+        "--window_mode",
+        type=str,
+        default="sequential",
+        choices=["random", "sequential"],
+        help="For sequential sampling: window selection mode ('random' for random windows, 'sequential' for sliding windows).",
+    )
+    parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
@@ -53,6 +74,13 @@ def main():
         action="store_true",
         help="Resume from the most recent checkpoint found",
     )
+    parser.add_argument(
+        "--init_from_ckpt",
+        type=str,
+        default=None,
+        help="Path to a checkpoint to initialize model weights from (no Trainer resume).",
+    )
+
     # Debug mode arguments
     parser.add_argument("--debug_mode", action="store_true", help="Enable debug mode with minimal training")
     parser.add_argument("--max_epochs", type=int, default=None, help="Override max epochs")
@@ -60,6 +88,7 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None, help="Limit validation batches per epoch")
     parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
+    parser.add_argument("--default_root_dir", type=str, default=None, help="Root directory for logs and checkpoints")
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -89,10 +118,10 @@ def main():
         data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
-    FULL_START_DATE = "2024-04-01"
-    FULL_END_DATE = "2024-07-01"  # e.g., 3 months of data
+    FULL_START_DATE = "2023-01-01"
+    FULL_END_DATE = "2023-12-31"
     TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
-    VALID_WINDOW_DAYS = 3   # The size of the validation window for each epoch
+    VALID_WINDOW_DAYS = 8   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
 
     # --- Compute train/val split BEFORE using VAL_START_DATE ---
@@ -127,10 +156,10 @@ def main():
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
-    hidden_dim = 64
-    num_layers = 8
-    lr = 0.001
-    max_epochs = 100
+    hidden_dim = 96
+    num_layers = 10
+    lr = 5e-4
+    max_epochs = 200
     batch_size = 1
 
     # Rollout settings
@@ -162,7 +191,7 @@ def main():
         rollout_schedule=rollout_schedule,
         feature_stats=feature_stats,
         # Model options
-        processor_type="interaction",   # sliding_transformer or "interaction"
+        processor_type="sliding_transformer",   # sliding_transformer or "interaction"
         processor_window=4,     # default: 12h / 3h = 4
         processor_depth=4,
         processor_heads=4,
@@ -170,8 +199,8 @@ def main():
         # Dropout settings
         node_dropout=0.03,      # Slight node dropout for Phase 2 regularization
         # Encoder/decoder choices
-        encoder_type="interaction",    # gat or "interaction"
-        decoder_type="interaction",    # or "interaction"
+        encoder_type="gat",    # gat or "interaction"
+        decoder_type="gat",    # or "interaction"
         encoder_layers=2,
         decoder_layers=2,
         encoder_heads=4,
@@ -179,6 +208,13 @@ def main():
         encoder_dropout=0.1,  # Add dropout for regularization
         decoder_dropout=0.1,  # Add dropout for regularization
     )
+
+    # ---- OPTION A: Warm-start weights only, do NOT resume Trainer state ----
+    if args.init_from_ckpt is not None:
+        ckpt = torch.load(args.init_from_ckpt, map_location="cpu")
+        # Lightning saves model weights under "state_dict"
+        model.load_state_dict(ckpt["state_dict"], strict=True)
+        print(f"[INFO] Initialized model weights from {args.init_from_ckpt} (no Trainer resume).")
 
     data_module = GNNDataModule(
         data_path=data_path,
@@ -193,6 +229,7 @@ def main():
         window_size=f"{data_window_hours}h",
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=TRAIN_VAL_SPLIT_RATIO,  # Pass the split ratio from training script
+        sampling_mode=args.sampling_mode,  # Pass sampling mode to control bin distribution
         # ensure epoch 0 validation uses the val split, not the train slice
         train_start=initial_start_date,
         train_end=initial_end_date,
@@ -204,11 +241,16 @@ def main():
     setup_end_time = time.time()
     print(f"Initial setup time (pre-trainer): {(setup_end_time - start_time) / 60:.2f} minutes")
 
-    logger = CSVLogger(save_dir="logs", name=f"ocelot_gnn_{args.sampling_mode}")
+    # Set up directories (use default_root_dir if provided)
+    root_dir = args.default_root_dir if args.default_root_dir else "."
+    log_dir = os.path.join(root_dir, "logs")
+    checkpoint_dir = os.path.join(root_dir, "checkpoints")
+
+    logger = CSVLogger(save_dir=log_dir, name=f"ocelot_gnn_{args.sampling_mode}")
 
     callbacks = [
         ModelCheckpoint(
-            dirpath="checkpoints",
+            dirpath=checkpoint_dir,
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
             save_top_k=1,
             monitor="val_loss",
@@ -219,11 +261,17 @@ def main():
         ),
         EarlyStopping(
             monitor="val_loss",
-            patience=25,             # Increase patience for full year training
+            patience=25,                # Increase patience for full year training
             mode="min",
-            min_delta=1e-5,          # Smaller threshold for year-long convergence
+            min_delta=1e-5,             # Smaller threshold for year-long convergence
             verbose=True,
+            check_finite=True,          # Check for finite values
+            stopping_threshold=None,    # No absolute threshold
+            divergence_threshold=None,  # No divergence threshold
+            check_on_train_epoch_end=False,  # Only check after validation
+            strict=False,
         ),
+        AdvanceSamplerEpoch(),  # Ensure random samplers reshuffle each epoch
     ]
 
     strategy = DDPStrategy(
@@ -234,16 +282,25 @@ def main():
         timeout=timedelta(hours=1),    # Increase timeout to 1 hour for checkpoints
     )
 
+    # Use command-line args if provided, otherwise use defaults
+    num_devices = args.devices if args.devices is not None else 2
+    num_nodes = args.num_nodes if hasattr(args, 'num_nodes') and args.num_nodes is not None else 4
+
+    # Override strategy for single device
+    if num_devices == 1 and num_nodes == 1:
+        strategy = "auto"  # No DDP for single GPU
+        print("[INFO] Single device mode: Using strategy='auto' (no DDP)")
+
     trainer_kwargs = {
         "max_epochs": max_epochs,
         "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
-        "devices": 2,
-        "num_nodes": 4,
+        "devices": num_devices,
+        "num_nodes": num_nodes,
         "strategy": strategy,
         "precision": "16-mixed",
         "log_every_n_steps": 1,
         "logger": logger,
-        "num_sanity_val_steps": 0,
+        "num_sanity_val_steps": 2,  # Changed from 0 to run validation checks
         "gradient_clip_val": 0.5,
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,   # IMPORTANT for resampling
@@ -251,7 +308,7 @@ def main():
     }
 
     if args.sampling_mode == "random":
-        print("Using RANDOM sampling mode.")
+        print("Using RANDOM sampling mode (SYNCHRONIZED across ranks).")
         callbacks.append(
             ResampleDataCallback(
                 train_start_date=TRAIN_START_DATE,
@@ -260,18 +317,20 @@ def main():
                 val_end_date=VAL_END_DATE,
                 train_window_days=TRAIN_WINDOW_DAYS,
                 val_window_days=VALID_WINDOW_DAYS,
-                mode="random",        # or "sequential"
-                resample_val=False,  # Validation for reliable ES/checkpointing
-                seq_stride_days=1,    # only used if mode="sequential"
+                mode="random",        # train windows chosen randomly (on rank-0), then broadcast
+                resample_val=False,   # keep validation fixed for stable ES/CKPT
             )
         )
     else:
-        print("Using SEQUENTIAL sampling mode.")
+        print(f"Using SEQUENTIAL sampling mode with {args.window_mode} windows (synchronized across ranks).")
         callbacks.append(
             SequentialDataCallback(
-                full_start_date=FULL_START_DATE,
-                full_end_date=FULL_END_DATE,
-                window_days=WINDOW_DAYS,
+                full_start_date=TRAIN_START_DATE,  # Use training pool, not full range
+                full_end_date=TRAIN_END_DATE,
+                window_days=TRAIN_WINDOW_DAYS,
+                stride_days=TRAIN_WINDOW_DAYS,  # Non-overlapping windows
+                mode=args.window_mode,  # "sequential" or "random"
+                wrap_sequential=True,  # Wrap to start when reaching end
             )
         )
 
@@ -292,17 +351,21 @@ def main():
 
     # === Checkpoint resume ===
     resume_path = None
-    if args.resume_from_latest:
-        resume_path = find_latest_checkpoint("checkpoints")
-        if resume_path:
-            print(f"[INFO] Auto-resuming from: {resume_path}")
-        else:
-            print("[INFO] No checkpoint found, starting fresh")
-    elif args.resume_from_checkpoint:
-        resume_path = args.resume_from_checkpoint
-        print(f"[INFO] Resuming from: {resume_path}")
+    if args.init_from_ckpt is not None:
+        # When warm-starting weights, do NOT resume Trainer state
+        print("[INFO] init_from_ckpt is set -> ignoring any resume_from_* arguments.")
     else:
-        print("[INFO] No checkpoint, starting fresh training")
+        if args.resume_from_latest:
+            resume_path = find_latest_checkpoint(checkpoint_dir)
+            if resume_path:
+                print(f"[INFO] Auto-resuming from: {resume_path}")
+            else:
+                print("[INFO] No checkpoint found, starting fresh")
+        elif args.resume_from_checkpoint:
+            resume_path = args.resume_from_checkpoint
+            print(f"[INFO] Resuming from: {resume_path}")
+        else:
+            print("[INFO] No checkpoint, starting fresh training")
 
     trainer.fit(model, data_module, ckpt_path=resume_path)
 
