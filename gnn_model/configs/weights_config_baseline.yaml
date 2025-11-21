@@ -1,9 +1,0 @@
-instrument_weights:
-  atms: 1.0
-# surface_pressure: 1.0
-# radiosonde: 1.0
-
-channel_weights:
-  atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]       # length 22
-# surface_pressure: [1.0]
-# radiosonde: [...]

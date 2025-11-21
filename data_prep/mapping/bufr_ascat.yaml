@@ -96,5 +96,3 @@ encoder:
     - name: ascatSigma0Usability
       source: ascatSigma0Usability
       longName: "ASCAT Sigma0 Usability"
-
-    

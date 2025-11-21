@@ -54,7 +54,6 @@ bufr:
 encoder:
   variables:
     # MetaData
-
     - name: "ObsValue/airTemperature"
       source: airTemperature
       longName: "Air Temperature"
