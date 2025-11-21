@@ -36,6 +36,5 @@ class SeviriBuilder(ObsBuilder):
         return container
 
 
-
 # Add main functions create_obs_file and create_obs_group
 add_main_functions(SeviriBuilder)

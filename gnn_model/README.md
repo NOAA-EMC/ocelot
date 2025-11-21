@@ -2,29 +2,33 @@
 ### Azadeh Gholoubi
 # End to End Graph Neural Network for Direct Observation Prediction
 ## Overview
-This project implements a Graph Neural Network (GNN) pipeline to predict observations directly from raw input features. It uses an icosahedral mesh to structure spatial information, and builds edge connections via:
+This project implements a Graph Neural Network (GNN) for weather prediction, inspired by DeepMind's Graphcast model. It uses a heterogeneous graph structure to seamlessly integrate and process multiple, diverse observation types (e.g., satellite, surface, and radiosonde data) on a global icosahedral mesh.
 
-- Distance-based cutoff for obs → mesh
+The pipeline is built with PyTorch Lightning and PyTorch Geometric and features a modular architecture that separates data processing, model definition, and training into clean, maintainable components.
 
-- Multi-scale mesh ↔ mesh
+## Key Features
+**Heterogeneous Graph Structure**: The model uses torch_geometric.HeteroData to represent the Earth's atmosphere, with distinct node and edge types for the mesh grid and each observational instrument. This allows for flexible and powerful multi-instrument data fusion.
 
-- KNN-based mesh → target
+**Encoder-Processor-Decoder Architecture**:
+- An Encoder projects raw features from each observation type onto the shared mesh.
+- A deep Processor uses multiple layers of InteractionNetwork blocks for complex message-passing across the mesh graph.
+- A Decoder maps the processed mesh state back to the observation locations to make predictions.
 
-The pipeline uses PyTorch Lightning and PyTorch Geometric, with modular components for preprocessing, mesh generation, edge creation, model definition, and training.
+**Scalable & Efficient Training**:
 
-## Modular Structure (Flat Files)
-- `gnn_model.py`             GNNLightning model (encoder → processor → decoder)
-- `gnn_datamodule.py`        Graph construction and PyTorch Lightning DataModule
-- `train_gnn.py`             Main training script
-- `obs_to_mesh.py`           Cutoff-based encoder edges
-- `mesh_to_mesh.py`          Multi-scale mesh processor edges
-- `mesh_to_target.py`        KNN-based decoder edges
-- `mesh_creation.py`         Mesh and graph construction
-- `process_timeseries.py`    Zarr binning + feature extraction
-- `timing_utils.py`          Resource-logging decorator
+- Supports multi-node, multi-GPU distributed training using PyTorch Lightning's DDPStrategy.
+- Implements gradient checkpointing to reduce memory usage, allowing for deeper models and larger batch sizes.
+- Features a flexible data pipeline with random window resampling for robust, generalized training on massive time-series datasets.
 
+## Core Scripts
+- `train_gnn.py`: The main script for launching training and evaluation.
+- `gnn_model.py`: Defines the GNNLightning module, which contains the complete model architecture (embedding, encoders, processor, decoders).
+- `gnn_datamodule.py`: Handles all data loading, processing, and graph construction, preparing HeteroData batches for the model.
+- `process_timeseries.py`: Performs the initial data extraction, time-binning, Quality Control (QC) filtering, and feature engineering.
+- `callbacks.py`: Contains custom PyTorch Lightning callbacks for data resampling (ResampleDataCallback).
+- `configs/`: Directory for managing observation configurations, such as instrument and channel weights.
 ## Installation
-Recommended (exact versions used in the paper / experiments):
+Create a Conda environment and install the necessary packages.
 ```bash
 pip install -r requirements.txt
 
@@ -35,60 +39,32 @@ pip install numpy pandas scipy torch trimesh networkx torch-geometric scikit-lea
 
 ```
 ## Usage 
-### 1. Load Data
-Edit `train_gnn.py` to modify the start_date, end_date, and selected_satelliteId parameters to specify the required time range and satellite ID.
-```python
-start_date = "2024-04-01"
-end_date = "2024-04-07"
-z = zarr.open("/path/to/.zarr", mode="r")
-```
+### Configure Your Experiment
+Modify `train_gnn.py` to set the hyperparameters for your run:
+- Set the full date range for the experiment (FULL_START_DATE, FULL_END_DATE).
+- Configure the observation_config dictionary to define which instruments and features to use.
+- Adjust model hyperparameters like mesh_resolution, hidden_dim, and num_layers.
 
-### 3. Launch training
+### Launch training
+Use the provided SLURM script (run_gnn.sh) to launch a multi-node training job, or run directly for a single-machine test:
+- To start a new run use this from `sbatch run_gnn.sh`:
+```bash
+srun --cpu-bind=map_cpu:0,1,2,3 python train_gnn.py
+```
+- To Resume a run from the last saved checkpoint form `sbatch run_gnn.sh`:
+ ```bash
+python train_gnn.py --resume_from_checkpoint checkpoints/last.ckpt
+```
+- Then run the script:
 ```bash
 sbatch run_gnn.sh
 ```
-
-### 4. Debug & plots (optional)
+### Debug & plots (optional)
 Pass the `--verbose` flag to `train_gnn.py`:
 ```bash
 sbatch run_gnn.sh --verbose
 ```
-
 ### Model Architecture
-The Graph Neural Network (GNN) consists of:
+The GNN uses a multi-stage process that flows from the observations to the mesh, through the processor, and back to the observations.
 
-1. Encoder: MLP to project observation features (with distance edge_attr) → mesh nodes
-2. Processor: Multiple GATConv layers on the icosahedral mesh
-3. Decoder: MLP decoder that maps mesh → target nodes using inverse-distance weighted
-
-         ┌───────────┐   obs→mesh (cutoff)
-         │ Observations │────┐
-         └───────────┘    │
-                          ▼
-               ┌───────────────────┐
-               │  Encoder  (MLP)   │
-               └───────────────────┘
-                          │
-                 scatter **add**
-                          ▼
-               ┌───────────────────┐
-               │  Mesh  Features   │
-               └───────────────────┘
-                          │
-              multi-layer GATConv (processor)
-                          ▼
-               ┌───────────────────┐
-               │  Hidden  Mesh     │
-               └───────────────────┘
-                          │
-          mesh→target edges (KNN) │
-                          ▼
-               ┌───────────────────┐
-               │  Decoder  (MLP)   │
-               └───────────────────┘
-                          │
-                 scatter **mean**
-                          ▼
-               ┌───────────────────┐
-               │  Target Outputs   │
-               └───────────────────┘
+<img width="410" height="603" alt="image" src="https://github.com/user-attachments/assets/e3028735-1a97-4076-a61f-e9035d1f2d7d" />

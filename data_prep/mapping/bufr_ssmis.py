@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import numpy as np
+
 import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
@@ -35,6 +36,7 @@ class BufrSsmisObsBuilder(ObsBuilder):
         ])
 
         return description
+
 
 # Add main functions create_obs_file or create_obs_group
 add_main_functions(BufrSsmisObsBuilder)
