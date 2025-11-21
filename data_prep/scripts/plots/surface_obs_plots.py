@@ -36,7 +36,7 @@ def main():
     lons = lons[pres < 10000]
     pres = pres[pres < 10000]
 
-    print (pres)
+    print(pres)
 
     # lats = lats[temp < 4]
     # lons = lons[temp < 4]
@@ -66,4 +66,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

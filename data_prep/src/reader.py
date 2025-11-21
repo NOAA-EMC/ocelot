@@ -188,14 +188,17 @@ def create_monthly_data(start_date: datetime,
         _create_data_for_day(comm, date, data_type, output_type, out_path)
         date += day
 
+
 def create_yearly_data(start_date: datetime,
                        end_date: datetime,
                        data_type: str,
                        output_type: str = 'zarr',
                        suffix: str = None,
                        append: bool = True) -> None:
-    """Create zarr files from BUFR data in year long chunks."""
-    
+    """
+    Create zarr files from BUFR data in year long chunks.
+    """
+
     bufr.mpi.App(sys.argv)
     comm = bufr.mpi.Comm("world")
 
@@ -227,7 +230,7 @@ def create_yearly_data(start_date: datetime,
                     shutil.rmtree(path)
                 os.makedirs(path, exist_ok=True)
         comm.barrier()
-    
+
     # Process each day and append to the appropriate yearly file
     day = timedelta(days=1)
     date = start_date

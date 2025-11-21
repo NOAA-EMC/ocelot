@@ -11,7 +11,7 @@ from emcpy.plots.map_tools import Domain, MapProjection
 from emcpy.plots.map_plots import MapScatter
 
 
-def plot(domain: str="conus"):
+def plot(domain: str = "conus"):
     parser = argparse.ArgumentParser(description="Plot Raw Radiosonde Data")
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
     args = parser.parse_args()
