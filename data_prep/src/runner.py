@@ -142,7 +142,7 @@ class PcaRunner(Runner):
             container = self._make_obs(comm, input_path)
             container.gather(comm)
 
-            if comm.rank == 0:
+            if comm.rank() == 0:
                 combined_container.append(container)
 
         return combined_container
