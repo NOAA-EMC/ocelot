@@ -161,9 +161,9 @@ def create_monthly_data(start_date: datetime,
     output_paths = {}
     for mstart, mend in month_ranges:
         if suffix:
-            file_name = f"{data_type}_{suffix}_{mstart:%Y%m}_{mend:%Y%m}.{extension}"
+            file_name = f"{data_type}_{suffix}_{mstart:%Y%m}.{extension}"
         else:
-            file_name = f"{data_type}_{mstart:%Y%m}_{mend:%Y%m}.{extension}"
+            file_name = f"{data_type}_{mstart:%Y%m}.{extension}"
         output_paths[(mstart, mend)] = os.path.join(settings.OUTPUT_PATH, file_name)
 
     if output_type == 'zarr':
