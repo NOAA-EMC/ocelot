@@ -2,7 +2,6 @@
 
 import os
 
-import bufr
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
 
