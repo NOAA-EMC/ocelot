@@ -61,7 +61,7 @@ def create_data(start_date: datetime,
     day = timedelta(days=1)
 
     while date <= end_date:
-        _create_data_for_day(comm, date, data_type, output_type, output_path)
+        _append_data_for_day(comm, date, data_type, output_type, output_path)
         date += day
 
 
@@ -131,7 +131,7 @@ def create_weekly_data(start_date: datetime,
         week_end = week_start + timedelta(days=6)
         out_path = output_paths[(week_start, week_end)]
 
-        _create_data_for_day(comm, date, data_type, output_type, out_path)
+        _append_data_for_day(comm, date, data_type, output_type, out_path)
         date += day
 
 
@@ -185,7 +185,7 @@ def create_monthly_data(start_date: datetime,
         month_end = next_month - timedelta(days=1)
         out_path = output_paths[(month_start, month_end)]
 
-        _create_data_for_day(comm, date, data_type, output_type, out_path)
+        _append_data_for_day(comm, date, data_type, output_type, out_path)
         date += day
 
 
@@ -239,16 +239,15 @@ def create_yearly_data(start_date: datetime,
         year_end = date.replace(month=12, day=31)
         out_path = output_paths[(year_start, year_end)]
 
-        _create_data_for_day(comm, date, data_type, output_type, out_path)
+        _append_data_for_day(comm, date, data_type, output_type, out_path)
         date += day
 
 
-def _create_data_for_day(comm,
+def _append_data_for_day(comm,
                          date: datetime,
                          data_type: str,
                          output_type: str,
-                         output_path: str,
-                         append: bool = True) -> None:
+                         output_path: str) -> None:
 
     start_datetime = date
     end_datetime = date + timedelta(hours=23, minutes=59, seconds=59)
@@ -281,9 +280,9 @@ def _create_data_for_day(comm,
             container.apply_mask(mask)
 
         if output_type == 'zarr':
-            ZarrEncoder(description).encode(container, f'{output_path}', append=append)
+            ZarrEncoder(description).encode(container, f'{output_path}', append=True)
         elif output_type == 'parquet':
-            ParquetEncoder(description).encode(container, f'{output_path}', append=append)
+            ParquetEncoder(description).encode(container, f'{output_path}', append=True)
         else:
             raise ValueError(f"Unsupported output type: {output_type}")
 
