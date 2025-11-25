@@ -11,10 +11,11 @@ MAPPING_PATH = map_path('bufr_avhrr.yaml')
 AM_KEY = 'am'
 PM_KEY = 'pm'
 
+
 class AvhrrObsBuilder(ObsBuilder):
     def __init__(self):
-        super().__init__({AM_KEY:MAPPING_PATH,
-                          PM_KEY:MAPPING_PATH}, log_name=os.path.basename(__file__))
+        super().__init__({AM_KEY: MAPPING_PATH,
+                          PM_KEY: MAPPING_PATH}, log_name=os.path.basename(__file__))
 
     def make_obs(self, comm, input_dict):
         container = bufr.DataContainer()
@@ -42,7 +43,7 @@ class AvhrrObsBuilder(ObsBuilder):
         comm = bufr.mpi.Comm("world")
         self.log.comm = comm
 
-        container = self.make_obs(comm, {AM_KEY:am_input, PM_KEY:pm_input})
+        container = self.make_obs(comm, {AM_KEY: am_input, PM_KEY: pm_input})
         container.gather(comm)
 
         # Encode the data
@@ -67,12 +68,12 @@ class AvhrrObsBuilder(ObsBuilder):
         comm = bufr.mpi.Comm(env["comm_name"])
         self.log.comm = comm
 
-        container = self.make_obs(comm, {AM_KEY:am_input, PM_KEY:pm_input})
+        container = self.make_obs(comm, {AM_KEY: am_input, PM_KEY: pm_input})
         container.all_gather(comm)
 
         self.finalize_container(container)
 
-        self.log.info(f'Encoding')
+        self.log.info('Encoding')
         data = next(iter(iodaEncoder(self.description).encode(container).values()))
 
         return data

@@ -1,0 +1,265 @@
+pipeline:
+  subsample:
+    seed: 12345
+    satellite:         
+      _default: 30    # default for any unspecified instrument
+      atms: 6         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
+      avhrr: 100
+      amsua: 3   
+      ascat: 2
+    conventional:
+      _default: 1
+      surface_obs: 1
+    # snow_cover: 1        # keep all (stride 1)
+      radiosonde: 1
+    mode:
+      satellite:
+        _default: random  # "stride" | "random" | "none"
+        atms: random
+        amsua: random
+        avhrr: random
+        ascat: random   # ASCAT sampling mode
+      conventional:
+        _default: random
+    #   snow_cover: none    # ignore subsampling for snow_cover
+
+
+instrument_weights:
+  atms: 1.0
+  amsua: 1.0
+  avhrr: 1.0
+  surface_obs: 2.0
+  radiosonde: 2.0
+  ascat: 1.0
+  # snow_cover: 1.0
+
+channel_weights:
+  atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
+  amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  avhrr: [1.0, 1.0, 1.0]
+  surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
+  radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
+  ascat: [1.0, 1.0, 1.0]
+
+observation_config:
+  satellite:
+    atms:
+      sat_ids: [224, 225]
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
+                 bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
+                 bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15,
+                 bt_channel_16, bt_channel_17, bt_channel_18, bt_channel_19, bt_channel_20,
+                 bt_channel_21, bt_channel_22]
+      metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+      input_dim: 32
+      target_dim: 22
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    amsua:
+      sat_ids: [3, 5, 206, 209, 223]
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
+                bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
+                bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15]
+      metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+      input_dim: 25
+      target_dim: 15
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    avhrr:
+      sat_ids: [3, 5, 209, 223]
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [brightnessTemperature_ch_50, brightnessTemperature_ch_51, brightnessTemperature_ch_52]
+      metadata: [satelliteZenithAngle, solarZenithAngle]
+      input_dim: 12
+      target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    ascat:
+      sat_ids: [3]  # MetOp satellite IDs
+      scan_angle_channels: 3  # ASCAT has 3 beams, each with its own scan angle
+      features: [backscatter_ch_1, backscatter_ch_2, backscatter_ch_3]  # fore, mid, aft beams
+      metadata: [radarIncidenceAngle_ch_1, radarIncidenceAngle_ch_2, radarIncidenceAngle_ch_3,
+                 antennaBeamAzimuthAngle_ch_1, antennaBeamAzimuthAngle_ch_2, antennaBeamAzimuthAngle_ch_3]  # angles for each channel (beam IDs are implicit in channel order)
+      input_dim: 16   # 7 (geo/time) + 6 (metadata) + 3 (features)
+      target_dim: 3   # 3 backscatter channels
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_strict_flags: true     # ensure missing flags are rejected
+      qc_filters:
+        # QC filters: Based on empirical data analysis (1M samples)
+        # ascatSigma0Usability: 0=usable (96-99% of data), 1=good (1-4%), 2147483647=missing
+        # Both 0 and 1 contain valid backscatter data matching feature_stats means
+        backscatter_ch_1:
+          range: [-55.0, 3.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.8, -2.3]; allow +0.7 dB buffer
+          qm_flag_col: ascatSigma0Usability_ch_1
+          keep: [0]
+        backscatter_ch_2:
+          range: [-55.0, 5.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-35.6, -0.6]; retain wet-snow spikes
+          qm_flag_col: ascatSigma0Usability_ch_2
+          keep: [0]
+        backscatter_ch_3:
+          range: [-55.0, 3.2]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.6, -2.4]
+          qm_flag_col: ascatSigma0Usability_ch_3
+          keep: [0]
+
+  conventional:
+    surface_obs:
+      source: zarr
+      zarr_name: raw_surface_obs
+      # NOTE: wind_u and wind_v are computed from windSpeed and windDirection
+      # height maps to height_pb_event_1 in the Zarr file
+      # Using airPressure_pb_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
+      # because pressureMeanSeaLevel_pb appears to be all missing values (3.4e38)
+      features: [airPressure_pb_event_1, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
+      metadata: [height_pb_event_1]
+      input_dim: 14                      # 7 (geo/time enc) + 1 meta + 6 feats
+      target_dim: 6
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        airPressure_pb_event_1:
+          range: [300, 1200]
+          qm_flag_col: airPressureQuality_event_1
+          keep: [1,2,4,9]
+        airTemperature:
+          range: [-80, 60]
+          qm_flag_col: airTemperatureQuality_event_1
+          keep: [1,2,4,9]
+        dewPointTemperature:
+          range: [-100, 40]
+          qm_flag_col: dewPointTemperatureQuality_event_1
+          keep: [1,2,4,9]
+        relativeHumidity:
+          range: [0, 100]
+        windSpeed:
+          range: [0, 75]
+        windDirection:
+          range: [0, 360]   # degrees
+
+      qc_relations:                   # cross-variable checks
+        dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)
+        max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
+        rh_from_td_consistency_pct: 25  # %pts; invalidate RH if |RH - RH*| > 25
+        pressure_vs_height:
+          enable: true
+          tolerance_hpa: 100          # |p - p_exp(height)| ≤ 100 hPa
+          scale_height_m: 8000
+
+    radiosonde:
+      source: zarr
+      zarr_name: raw_radiosonde
+      features: [airPressure, airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: []
+      input_dim: 12                     # 7 (geo/time enc) + 1 meta + 6 feats
+      target_dim: 5
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      level_selection:
+        filter_col: airPressure
+        levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+      qc_filters:
+        airPressure:
+          range: [1, 1200]
+          qm_flag_col: airPressureQuality
+          keep: [1, 2]
+        airTemperature:
+          range: [173, 370]
+          qm_flag_col: airTemperatureQuality
+          reject: [13, 14, 15,]
+        dewPointTemperature:
+          range: [135, 350]
+          qm_flag_col: dewPointTemperatureQuality
+          reject: [13, 14, 15,]
+        windSpeed:
+          range: [0, 75]
+          qm_flag_col: windQuality
+          keep: [2,]
+        windDirection:
+          range: [0, 6.28]  # radians
+          qm_flag_col: windQuality
+          keep: [2,]
+
+#   snow_cover:
+#     source: zarr
+#     zarr_name: snow_cover
+#     features: [snowDepth]
+#     metadata: [height, airTemperature]
+#     qc_filters:
+#       snowDepth:
+#         range: [0, 6.5]
+#     input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
+#     target_dim: 1
+#     encoder_hidden_layers: 2
+#     decoder_hidden_layers: 2
+
+feature_stats:  # Statistics for the features used in the model
+  surface_obs:
+    airPressure_pb_event_1: [978.24, 57.32]  # Station pressure (was pressureMeanSeaLevel_pb)
+    airTemperature: [14.12, 12.15]
+    dewPointTemperature: [8.07, 11.52]
+    relativeHumidity: [74.38, 19.18]
+    wind_u: [0.16, 3.64]
+    wind_v: [0.10, 3.37]
+
+  radiosonde:  
+    airPressure: [319, 308]
+    airTemperature: [242, 30]
+    dewPointTemperature: [227, 35]
+    wind_u: [2, 8.25]
+    wind_v: [0.50, 5.5]
+    latitude: [31.6, 25.90]
+    longitude: [6, 95]
+      #  snow_cover:
+      #    snowDepth: [0.38, 0.68]
+  atms:
+    bt_channel_1: [211.00, 40.60]
+    bt_channel_2: [201.65, 42.08]
+    bt_channel_3: [239.09, 22.24]
+    bt_channel_4: [248.58, 17.55]
+    bt_channel_5: [252.58, 14.32]
+    bt_channel_6: [245.75, 11.47]
+    bt_channel_7: [231.98, 8.21]
+    bt_channel_8: [222.52, 6.76]
+    bt_channel_9: [216.10, 7.30]
+    bt_channel_10: [211.99, 9.49]
+    bt_channel_11: [215.01, 9.37]
+    bt_channel_12: [221.00, 10.17]
+    bt_channel_13: [229.26, 11.30]
+    bt_channel_14: [240.06, 11.97]
+    bt_channel_15: [250.28, 11.52]
+    bt_channel_16: [237.76, 28.61]
+    bt_channel_17: [258.29, 29.35]
+    bt_channel_18: [260.31, 22.15]
+    bt_channel_19: [258.26, 18.46]
+    bt_channel_20: [255.12, 15.34]
+    bt_channel_21: [250.24, 12.39]
+    bt_channel_22: [245.38, 10.41]
+  amsua:
+    bt_channel_1: [209.92, 40.44]
+    bt_channel_2: [201.16, 42.14]
+    bt_channel_3: [239.63, 20.68]
+    bt_channel_4: [252.44, 14.20]
+    bt_channel_5: [245.45, 11.31]
+    bt_channel_6: [231.10, 7.86]
+    bt_channel_7: [222.16, 6.51]
+    bt_channel_8: [216.24, 7.12]
+    bt_channel_9: [211.48, 9.39]
+    bt_channel_10: [214.51, 9.34]
+    bt_channel_11: [220.23, 10.18]
+    bt_channel_12: [228.57, 11.32]
+    bt_channel_13: [239.08, 11.94]
+    bt_channel_14: [249.39, 11.47]
+    bt_channel_15: [237.78, 28.23]
+  avhrr:
+    brightnessTemperature_ch_50: [284.58, 17.52]
+    brightnessTemperature_ch_51: [283.07, 15.83]
+    brightnessTemperature_ch_52: [281.21, 15.2]
+  ascat:
+    backscatter_ch_1: [-17.84, 5.77]   # 2022-2024 dB mean/std (filtered to [-80, 40] dB)
+    backscatter_ch_2: [-14.84, 5.12]
+    backscatter_ch_3: [-17.81, 5.73]

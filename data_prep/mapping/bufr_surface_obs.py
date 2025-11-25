@@ -14,6 +14,7 @@ from bufr.obs_builder import ObsBuilder, add_main_functions
 script_dir = os.path.dirname(os.path.abspath(__file__))
 MAP_PATH = os.path.join(script_dir, 'bufr_surface_obs.yaml')
 
+
 class PressureObsBuilder(ObsBuilder):
     def __init__(self):
         super().__init__(MAP_PATH, log_name=os.path.basename(__file__))

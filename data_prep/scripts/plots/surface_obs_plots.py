@@ -25,21 +25,20 @@ def main():
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
     args = parser.parse_args()
     z = zarr.open(args.zarr_path)
+
     MaxRange = 1000000
     #pres = z['airPressure'][0:MaxRange]
     pres = z['stationElevation'][0:MaxRange]
     lats = z['latitude'][0:MaxRange]
-    time = z['dateTime'][0:MaxRange]
-    #pres_qc = z['airPressureQuality_event_2'][0:MaxRange]
-    #pres_qc = pres_qc[pres < 10000]
-    lats = lats[pres < 10000]
+    pres_qc = z['airPressureQuality_event_1'][0:MaxRange]
     lons = z['longitude'][0:MaxRange]
-    lons = lons[pres < 10000]
-    pres = pres[pres < 10000]
-    
-    
+    mask = pres < 10000
+    pres = pres[mask]
+    pres_qc = pres_qc[mask]
+    lats = lats[mask]
+    lons = lons[mask]
 
-    #print (pres)
+    print(pres)
 
     # lats = lats[temp < 4]
     # lons = lons[temp < 4]
@@ -50,7 +49,6 @@ def main():
     #scatter = MapScatter(lats, lons, data=pres_qc)  # orig plots QC
     scatter = MapScatter(lats, lons, data=pres)   # plots values
     scatter.markersize = .25
-
 
     # Create plot object and add features
     plot1 = CreatePlot()

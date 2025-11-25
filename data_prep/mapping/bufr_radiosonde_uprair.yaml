@@ -58,7 +58,6 @@ bufr:
 encoder:
   variables:
     # MetaData
-
     - name: "ObsValue/height_bufr"
       source: height_bufr
       longName: "height of Station (SELV)"
