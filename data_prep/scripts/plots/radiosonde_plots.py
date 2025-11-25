@@ -38,7 +38,8 @@ def plot(domain:str="conus"):
     plot1.add_ylabel(ylabel='latitude')
     plot1.add_title(label='Radiosonde', loc='center', fontsize=20)
 
-    fig = CreateFigure(figsize=(12, 10))
+    #fig = CreateFigure(figsize=(12, 10))
+    fig = CreateFigure()
     fig.plot_list = [plot1]
     fig.create_figure()
 

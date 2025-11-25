@@ -16,18 +16,11 @@ bufr:
       query: "[*/CLONH, */CLON]"
 
     # Observation Values
-    airPressure_bufr:
+    airPressure:
       query: "*/PRES"  # Air pressure at station level
       type: float
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
-
-    pressureMeanSeaLevel_bufr:
-      query: "*/PMSL"
-      type: float
-      transforms:
-        - scale: 0.01  # Convert from Pa to hPa
-
 
     airTemperature:
       query: "*/TMDB"  # Dry bulb temperature
@@ -54,8 +47,8 @@ bufr:
       query: "[*/WDIR, */WNDSQ4/WDIR]"
       type: float
 
-    height_bufr:
-      query: "[*/SELV, */HSMSL]" #, */HSAWS, */HSAWS[1]]"  # Height above ground level
+    height:
+      query: "[*/SELV, */HSMSL, */HSAWS, */HSAWS[1]]"  # Height above ground level
 
   encoder:
     variables:
@@ -78,14 +71,9 @@ bufr:
         range: [-180, 180]
 
       # Observation Values
-      - name: "airPressure_bufr"
-        source: variables/airPressure_bufr
+      - name: "airPressure"
+        source: variables/airPressure
         longName: "Air Pressure at Station Level"
-        units: "hPa"
-
-      - name: "pressureMeanSeaLevel_bufr"
-        source: variables/pressureMeanSeaLevel_bufr
-        longName: "Air Pressure Reduced to Mean Sea Level"
         units: "hPa"
 
       - name: "airTemperature"
@@ -96,11 +84,6 @@ bufr:
       - name: "dewPointTemperature"
         source: variables/dewPointTemperature
         longName: "Dew Point Temperature at Station Level"
-        units: "Celsius"
-
-      - name: "airTemperature"
-        source: variables/airTemperature
-        longName: "Air Temperature at Station Level"
         units: "Celsius"
 
       - name: "relativeHumidity"
@@ -118,7 +101,7 @@ bufr:
         longName: "Wind Direction at Station Level"
         units: "radians"
 
-      - name: "height_bufr"
-        source: variables/height_bufr
+      - name: "height"
+        source: variables/height
         longName: "Height Above Ground Level"
         units: "meters"

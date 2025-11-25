@@ -26,20 +26,16 @@ def main():
     args = parser.parse_args()
     z = zarr.open(args.zarr_path)
     MaxRange = 1000000
-    #pres = z['airPressure'][0:MaxRange]
-    pres = z['stationElevation'][0:MaxRange]
+    pres = z['airPressure'][0:MaxRange]
     lats = z['latitude'][0:MaxRange]
-    time = z['dateTime'][0:MaxRange]
-    #pres_qc = z['airPressureQuality_event_2'][0:MaxRange]
-    #pres_qc = pres_qc[pres < 10000]
+    pres_qc = z['airPressureQuality_event_1'][0:MaxRange]
+    pres_qc = pres_qc[pres < 10000]
     lats = lats[pres < 10000]
     lons = z['longitude'][0:MaxRange]
     lons = lons[pres < 10000]
     pres = pres[pres < 10000]
-    
-    
 
-    #print (pres)
+    print (pres)
 
     # lats = lats[temp < 4]
     # lons = lons[temp < 4]
@@ -47,8 +43,7 @@ def main():
 
     # print(temp.max(), temp.min(), temp.mean())
 
-    #scatter = MapScatter(lats, lons, data=pres_qc)  # orig plots QC
-    scatter = MapScatter(lats, lons, data=pres)   # plots values
+    scatter = MapScatter(lats, lons, data=pres_qc)
     scatter.markersize = .25
 
 
@@ -60,15 +55,13 @@ def main():
     plot1.add_map_features(['coastline'])
     plot1.add_xlabel(xlabel='longitude')
     plot1.add_ylabel(ylabel='latitude')
-    #plot1.add_colorbar(label='Air Pressure Quality', orientation='horizontal', aspect=50)  # orig plots quality 
-    plot1.add_colorbar(label='stationElevation', orientation='horizontal', aspect=50)  # plots values
+    plot1.add_colorbar(label='Air Pressure Quality', orientation='horizontal', aspect=50)
 
-    #fig = CreateFigure(figsize=(12, 10))
-    fig = CreateFigure()
+    fig = CreateFigure(figsize=(12, 10))
     fig.plot_list = [plot1]
     fig.create_figure()
 
-    plt.savefig('stationElevation.png')
+    plt.savefig('test.png')
 
 
 if __name__ == '__main__':
