@@ -16,12 +16,6 @@ bufr:
     longitude:
       query: "*/CLON"
 
-    latitude1:
-      query: "*/SATEPHEM{1}/CLATH"
-
-    latitude2:
-      query: "*/SATEPHEM{2}/CLATH"
-
     satelliteId:
       query: "*/SAID"
 
@@ -67,18 +61,6 @@ encoder:
       longName: "Longitude"
       units: "degree_east"
 
-    - name: "latitude1"
-      source: variables/latitude1
-      longName: "Latitude"
-      units: "degree_north"
-      range: [ -90, 90 ]
-
-    - name: "latitude2"
-      source: variables/latitude2
-      longName: "Latitude"
-      units: "degree_north"
-      range: [ -90, 90 ]
-
     - name: "satelliteIdentifier"
       source: variables/satelliteId
       longName: "Satellite Identifier"
@@ -109,7 +91,6 @@ encoder:
       longName: "Scan Line Number"
 
     # ObsValue
-    # Remapped Brightness Temperature
     - name: "bt"
       source: variables/brightnessTemperature
       longName: "Brightness Temperature"

@@ -2,9 +2,9 @@
 
 import os
 
+
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 import settings
-
 MAPPING_PATH = map_path('pca_iasi.yaml')
 
 

@@ -24,16 +24,11 @@ class Runner(object):
     def __init__(self, data_type, cfg):
         self.config = cfg
 
-
         if data_type not in self.config.get_data_type_names():
             raise ValueError(f"Data type {data_type} not found in config")
 
         self.type_config = self.config.get_data_type(data_type)
         self.map_path = os.path.join(settings.MAPPING_FILE_DIR, self.type_config.mapping)
-
-        print('self.type_config',self.type_config)
-        print('self.map_path',self.map_path)
-
 
         # Determine if we're using a python script or yaml mapping
         if os.path.splitext(self.map_path)[1] == ".py":
@@ -59,7 +54,6 @@ class Runner(object):
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
-        print('SELF_MAP_PATH=',self.map_path)
 
         if not hasattr(module, 'make_obs_builder'):
             raise ValueError(f"Script {self.map_path} must define make_obs_builder.")
@@ -83,9 +77,11 @@ class TankRunner(Runner):
                         continue
 
                     container = self._make_obs(comm, input_path)
-
                     container.gather(comm)
-                    combined_container.append(container)
+
+                    if comm.rank() == 0:
+                        combined_container.append(container)
+
         elif isinstance(self.type_config.paths, dict):
             for day_str in self._day_strs(parameters.start_time, parameters.stop_time):
                 for path_idx in range(len(list(self.type_config.paths.values())[0])):
@@ -102,7 +98,9 @@ class TankRunner(Runner):
 
                     container = self._make_obs(comm, input_dict)
                     container.gather(comm)
-                    combined_container.append(container)
+
+                    if comm.rank() == 0:
+                        combined_container.append(container)
 
         return combined_container
 
@@ -143,7 +141,9 @@ class PcaRunner(Runner):
             input_path = os.path.join(directory, fname)
             container = self._make_obs(comm, input_path)
             container.gather(comm)
-            combined_container.append(container)
+
+            if comm.rank() == 0:
+                combined_container.append(container)
 
         return combined_container
 
@@ -194,7 +194,6 @@ class NcdfRunner(Runner):
 
 def run(comm, data_type, parameters: Parameters, cfg=config.Config()) -> (bufr.encoders.Description, bufr.DataContainer):
     type_cfg = cfg.get_data_type(data_type)
-    print('type_cfg.type=',type_cfg.type)
     if type_cfg.type == 'tank':
         runner = TankRunner(data_type, cfg)
     elif type_cfg.type == 'pca':

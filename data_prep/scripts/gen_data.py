@@ -34,6 +34,7 @@ def _make_sbatch_cmd(reader_path: str,
                      output_type: str,
                      suffix: str = None,
                      append: bool = True,
+                     memory: str = None,
                      slurm_account: str = None) -> str:
 
     if not _is_slurm_available():
@@ -46,6 +47,9 @@ def _make_sbatch_cmd(reader_path: str,
 
     if slurm_account:
         cmd += f'--account={slurm_account} '
+
+    if memory:
+        cmd += f'--mem={memory} '
 
     cmd += f'--ntasks={ntasks} '
     cmd += '--time=02:00:00 '
@@ -115,13 +119,12 @@ def _split_datetime_range(start: datetime, end: datetime, num_days: int) -> list
     Split the datetime range into chunks of num_days days.
     """
     delta = end - start
-    num_chunks = delta.days // num_days + (1 if delta.days % num_days > 0 else 0)
-    num_chunks = max(1, num_chunks)
+    num_chunks = delta.days // num_days + 1
 
     ranges = []
     for i in range(num_chunks):
         chunk_start = start + i * timedelta(days=num_days)
-        chunk_end = min(end, chunk_start + timedelta(days=num_days))
+        chunk_end = min(end, chunk_start + timedelta(days=num_days - 1))
         ranges.append((chunk_start, chunk_end))
 
     return ranges
@@ -136,6 +139,7 @@ def _batch_gen(reader_path: str,
                output_type: str,
                suffix: str = None,
                append: bool = True,
+               memory: str = None,
                slurm_account: str = None) -> None:
     ranges = _split_datetime_range(start, end, max_days)
     cmds = []
@@ -151,6 +155,7 @@ def _batch_gen(reader_path: str,
                                  output_type,
                                  suffix=suffix,
                                  append=append,
+                                 memory=memory,
                                  slurm_account=slurm_account))
         else:
             cmds.append(
@@ -162,6 +167,7 @@ def _batch_gen(reader_path: str,
                                  gen_type,
                                  output_type,
                                  suffix=suffix,
+                                 memory=memory,
                                  slurm_account=slurm_account))
 
     cmd = '\n'.join(cmds)
@@ -230,6 +236,7 @@ if __name__ == "__main__":
                        args.output_type,
                        suffix=args.suffix,
                        append=args.append,
+                       memory=type_config.memory,
                        slurm_account=args.slurm_account)
         elif args.parallel:
             _parallel_gen(reader_path,
@@ -248,9 +255,6 @@ if __name__ == "__main__":
                         args.output_type,
                         suffix=args.suffix,
                         append=args.append)
-
-
-    print('ARGS_TYPE=',args.type)
 
     if args.type == 'all':
         for gen_type in data_types:

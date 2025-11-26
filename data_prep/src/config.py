@@ -39,6 +39,12 @@ class DataTypeConfig:
         return self.config['batch_days']
 
     @property
+    def memory(self):
+        if 'memory' not in self.config:
+            return None
+        return self.config['memory']
+
+    @property
     def operations(self):
         if 'operations' not in self.config:
             return []
@@ -79,6 +85,7 @@ class NcdfConfig(DataTypeConfig):
     @property
     def filename_regex(self):
         return self.config['filename_regex']
+
 
 class Config:
     def __init__(self, yaml_path=''):

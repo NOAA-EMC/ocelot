@@ -108,9 +108,9 @@ def make_gif(domain: str = 'conus'):
 
 
 if __name__ == '__main__':
-    plot(domain='conus')
+    # plot(domain='conus')
     # plot(domain='global')
     make_gif(domain='conus')
-    make_gif(domain='global')
+    # make_gif(domain='global')
     # make_gif(domain='europe')
     # make_gif(domain='northeast')

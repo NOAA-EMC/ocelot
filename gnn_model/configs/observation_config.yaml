@@ -111,14 +111,18 @@ observation_config:
     surface_obs:
       source: zarr
       zarr_name: raw_surface_obs
-      features: [airPressure, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
-      metadata: [height]
+      # NOTE: wind_u and wind_v are computed from windSpeed and windDirection
+      # height maps to height_pb_event_1 in the Zarr file
+      # Using airPressure_pb_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
+      # because pressureMeanSeaLevel_pb appears to be all missing values (3.4e38)
+      features: [airPressure_pb_event_1, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
+      metadata: [height_pb_event_1]
       input_dim: 14                      # 7 (geo/time enc) + 1 meta + 6 feats
       target_dim: 6
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_filters:
-        airPressure:
+        airPressure_pb_event_1:
           range: [300, 1200]
           qm_flag_col: airPressureQuality_event_1
           keep: [1,2,4,9]
@@ -195,7 +199,7 @@ observation_config:
 
 feature_stats:  # Statistics for the features used in the model
   surface_obs:
-    airPressure: [978.24, 57.32]
+    airPressure_pb_event_1: [978.24, 57.32]  # Station pressure (was pressureMeanSeaLevel_pb)
     airTemperature: [14.12, 12.15]
     dewPointTemperature: [8.07, 11.52]
     relativeHumidity: [74.38, 19.18]
