@@ -4,9 +4,11 @@ import numpy as np
 import xarray as xr
 import bufr
 import yaml
+import faulthandler
 
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
+faulthandler.enable()
 # Encoder YAML (BUFR schema) – separate from any mapping YAML
 ENCODER_YAML = map_path("cris_pca.yaml")
 
