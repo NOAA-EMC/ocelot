@@ -1,43 +1,49 @@
-cris_pca:
-
-  source: netcdf
+encoder:
+  categories:
+    - name: cris_pca
 
   dimensions:
-    location: location
-    npc_global: npc_global
+    - name: location
+      source: "location"
+      path: "*"
+  
+    - name: npc_global
+      source: npc_global
+      path: "*/npc_global"
 
-  meta:
-    latitude:
-      variable: lat
-      dims: [location]
-
-    longitude:
-      variable: lon
-      dims: [location]
-
-    obs_time:
-      variable: obs_time_tai93    # actually UNIX seconds after preprocess
-      dims: [location]
-
-    obs_id:
-      variable: fov_obs_id
-      dims: [location]
-
-    scan_position:
-      variable: scan_position
-      dims: [location]
+  globals:
+    - name: source
+      type: string
+      value: "CrIS PCA netCDF (test)"
 
   variables:
-    global_pc_score:
-      variable: global_pc_score
-      dims: [location, npc_global]
-      units: "1"
-      scale_factor: true
-      add_offset: true
-      fill_value: 65535
+    - name: latitude
+      source: latitude
+      longName: "Latitude"
+      units: "degree_north"
 
-  groups:
-    - name: cris_global_pc
-      coordinates: [latitude, longitude, obs_time]
-      variables: [global_pc_score]
+    - name: longitude
+      source: longitude
+      longName: "Longitude"
+      units: "degree_east"
+
+    - name: time
+      source: time
+      longName: "Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: timestamp
+      source: time
+      longName: "Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: scan_position
+      source: scan_position
+      longName: "Scan position"
+      units: "1"
+
+    - name: global_pc_score
+      source: global_pc_score
+      longName: "Global PC score"
+      units: "1"
 
