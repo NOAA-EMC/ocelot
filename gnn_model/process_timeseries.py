@@ -737,6 +737,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if input_metadata_raw_clean.size:
                     input_metadata_rad = np.deg2rad(input_metadata_raw_clean)
                     input_metadata_cos = np.cos(input_metadata_rad)
+                    if inst_name in ('ssmis', ):
+                        # TODO might need improve here for more general cases!
+                        print("SSMIS: using raw metadata without cosine transform.")
+                        input_metadata_cos[:, 1] = input_metadata_raw_clean[:, 1]
                     col_means = np.nanmean(input_metadata_cos, axis=0)
                     col_means = np.where(np.isfinite(col_means), col_means, 0.0)
                     input_metadata = np.where(np.isnan(input_metadata_cos), col_means, input_metadata_cos).astype(np.float32)
