@@ -1,15 +1,15 @@
+dimensions:
+  - name: location
+    source: "location"
+    path: "*"
+
+  - name: npc_global
+    source: npc_global
+    path: "*/npc_global"
+
 encoder:
   categories:
     - name: cris_pca
-
-  dimensions:
-    - name: location
-      source: "location"
-      path: "*"
-  
-    - name: npc_global
-      source: npc_global
-      path: "*/npc_global"
 
   globals:
     - name: source

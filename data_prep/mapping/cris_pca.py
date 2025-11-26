@@ -32,6 +32,7 @@ class CrisPcaObsBuilder(ObsBuilder):
         self._encoder_yaml = full_yaml
 
         # Build dimension map
+        #enc = full_yaml.get("encoder", {})
         dim_path_map = {}
         for dim in full_yaml.get("dimensions", []):
             n = dim["name"]
