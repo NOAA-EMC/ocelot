@@ -24,27 +24,27 @@ class CrisPcaObsBuilder(ObsBuilder):
     def __init__(self):
         print("\n*** CrisPcaObsBuilder CONSTRUCTOR ***")
         print("    ENCODER_YAML =", ENCODER_YAML)
-    
+
         # --- Load YAML FIRST (before calling super) ---
         with open(ENCODER_YAML, "r") as f:
             full_yaml = yaml.safe_load(f)
-    
+
         self._encoder_yaml = full_yaml
-    
+
         # Build dimension map
         dim_path_map = {}
         for dim in full_yaml.get("dimensions", []):
             n = dim["name"]
             p = dim["path"]
             dim_path_map[n] = p
-    
+
         self._dim_path_map = dim_path_map
-    
+
         print("    DIM PATH MAP:", self._dim_path_map)
-    
+
         # NOW call parent (which calls _make_description)
         super().__init__(None, log_name=os.path.basename(__file__))
-    
+
     # -----------------------------------------------------
     # 1) Return a Description using the encoder YAML file
     # -----------------------------------------------------
@@ -109,7 +109,7 @@ class CrisPcaObsBuilder(ObsBuilder):
             time_tai93 = time3d.values.reshape(nlocs)
 
             TAI93_EPOCH = np.datetime64("1993-01-01T00:00:00")
-            UNIX_EPOCH  = np.datetime64("1970-01-01T00:00:00")
+            UNIX_EPOCH = np.datetime64("1970-01-01T00:00:00")
 
             offset = (TAI93_EPOCH - UNIX_EPOCH) / np.timedelta64(1, "s")
             time_unix = time_tai93 + offset
@@ -145,7 +145,8 @@ class CrisPcaObsBuilder(ObsBuilder):
             if d not in self._dim_path_map:
                 raise RuntimeError(
                     f"_dims_for_var: no mapping for dimension '{d}' "
-                    f"in encoder YAML; known: {list(self._dim_path_map.keys())}"
+                    f"in encoder YAML; known: "
+                    f"{list(self._dim_path_map.keys())}"
                 )
             dim_paths.append(self._dim_path_map[d])
 
@@ -164,14 +165,14 @@ class CrisPcaObsBuilder(ObsBuilder):
         variables = enc["variables"]
 
         for v in variables:
-            name   = v["name"]
+            name = v["name"]
             source = v["source"]
 
             if source not in ds:
                 print(f"WARNING: source '{source}' not in dataset, skipping")
                 continue
 
-            xr_dims = ds[source].dims  # e.g. ('location',) or ('location','npc_global')
+            xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
 
             print(f"Adding {name} from {source} with dim_paths {dim_paths}")
@@ -185,5 +186,5 @@ class CrisPcaObsBuilder(ObsBuilder):
 
         return container
 
-add_main_functions(CrisPcaObsBuilder)
 
+add_main_functions(CrisPcaObsBuilder)
