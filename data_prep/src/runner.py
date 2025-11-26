@@ -147,6 +147,7 @@ class PcaRunner(Runner):
 
         return combined_container
 
+
 class NcdfRunner(Runner):
 
     def __init__(self, data_type, cfg):
@@ -161,36 +162,34 @@ class NcdfRunner(Runner):
 
     def run(self, comm, parameters):
         print("\n=== NcdfRunner starting ===")
-    
+
         combined_container = bufr.DataContainer()
         directory = self.type_config.directory
-    
-        print("DEBUG: directory =", directory)
-        print("DEBUG: regex =", self.regex.pattern)
-    
+
         if not os.path.isdir(directory):
             raise RuntimeError(f"Input directory not found: {directory}")
-    
+
         files = sorted(os.listdir(directory))
         print("FILES FOUND:", len(files))
-    
+
         for fname in files:
             print("CHECKING:", fname)
-    
+
             if not self.regex.match(fname):
                 print("NO REGEX MATCH")
                 continue
-    
+
             print("MATCH:", fname)
-    
+
             input_path = os.path.join(directory, fname)
             container = self._make_obs(comm, input_path)
-    
+
             container.gather(comm)
             combined_container.append(container)
-    
+
         print("DEBUG: NcdfRunner finished")
         return combined_container
+
 
 def run(comm, data_type, parameters: Parameters, cfg=config.Config()) -> (bufr.encoders.Description, bufr.DataContainer):
     type_cfg = cfg.get_data_type(data_type)
