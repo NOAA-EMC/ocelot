@@ -1,0 +1,49 @@
+dimensions:
+  - name: location
+    source: "location"
+    path: "*"
+
+  - name: npc_global
+    source: npc_global
+    path: "*/npc_global"
+
+encoder:
+  categories:
+    - name: cris_pca
+
+  globals:
+    - name: source
+      type: string
+      value: "CrIS PCA netCDF (test)"
+
+  variables:
+    - name: latitude
+      source: latitude
+      longName: "Latitude"
+      units: "degree_north"
+
+    - name: longitude
+      source: longitude
+      longName: "Longitude"
+      units: "degree_east"
+
+    - name: time
+      source: time
+      longName: "Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: timestamp
+      source: time
+      longName: "Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: scan_position
+      source: scan_position
+      longName: "Scan position"
+      units: "1"
+
+    - name: global_pc_score
+      source: global_pc_score
+      longName: "Global PC score"
+      units: "1"
+
