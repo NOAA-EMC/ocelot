@@ -554,7 +554,7 @@ if __name__ == "__main__":
         error_metric="percent",
         drop_small_truth=False,
     )
- 
+
     plot_instrument_maps(
         "seviri",
         EPOCH_TO_PLOT,
@@ -564,5 +564,4 @@ if __name__ == "__main__":
         fig_dir=plot_dir,
         error_metric="percent",
         drop_small_truth=False,
-    )
-
+    }
