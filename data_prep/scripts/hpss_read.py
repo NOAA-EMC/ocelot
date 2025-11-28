@@ -33,10 +33,9 @@ class HpssFilePath:
         self.map  = [
             (datetime(2015, 1, 1), datetime(2016, 5, 9),
                       "com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
-            (datetime(2016, 5, 10), datetime(2017, 1, 1),
+            (datetime(2016, 5, 10), datetime(2017, 7, 19),
                       "com2_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
-
-            (datetime(2017, 1, 2), datetime(2019, 6, 11),
+            (datetime(2017, 7, 20), datetime(2019, 6, 11),
                       "gpfs_hps_nco_ops_com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
             (datetime(2019, 6, 12), datetime(2020, 2, 25),
                       "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.tar"),
@@ -52,7 +51,7 @@ class HpssFilePath:
         return template.format(year=f"{for_date.year:04d}",
                                month=f"{for_date.month:02d}",
                                day=f"{for_date.day:02d}",
-                               hour="{hour}")
+                               hour=f"{for_date.hour:02d}")
 
 hpss_file_path = HpssFilePath()
 
