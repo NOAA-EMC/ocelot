@@ -54,7 +54,7 @@ class HpssFilePath:
                                day=f"{for_date.day:02d}",
                                hour="{hour}")
 
-hpssFilePath = HpssFilePath()
+hpss_file_path = HpssFilePath()
 
 
 def make_file_list(year: int) -> list[str]:
@@ -65,7 +65,7 @@ def make_file_list(year: int) -> list[str]:
     delta = timedelta(days=1)
     current_date = start_date
     while current_date <= end_date:
-        template = hpssFilePath.get(current_date)
+        template = hpss_file_path.get(current_date)
 
         year_str = f"{current_date.year:04d}"
         month_str = f"{current_date.month:02d}"
