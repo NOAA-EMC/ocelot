@@ -4,6 +4,7 @@ import subprocess
 from datetime import datetime, timedelta
 import argparse
 
+HpssPathTemplate = "/NCEPPROD/hpssprod/runhistory/rh{year}/{year}{month}/{year}{month}{day}"
 
 def print_archive_files(year: int, output_path: str) -> None:
     # use hsi ls command to list all the files in the template path that have "gdas" in the filename
@@ -27,28 +28,33 @@ def print_archive_files(year: int, output_path: str) -> None:
             output_file.write(result.stderr)
             current_date += delta
 
-
-HpssPathTemplate = "/NCEPPROD/hpssprod/runhistory/rh{year}/{year}{month}/{year}{month}{day}"
-
-class HpssFilenameMap:
+class HpssFilePath:
     def __init__(self):
         self.map  = [
-            (datetime(2000, 1, 1), datetime(2006, 6, 30),
-                         "gpfs_hps_nco_ops_com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
-            (datetime(2019, 5, 1), datetime(2021, 4, 22),
-                         "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.tar"),
-            (datetime(2019, 5, 1), datetime(2021, 4, 22),
-                         "com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
+            (datetime(2015, 1, 1), datetime(2016, 5, 9),
+                      "com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
+            (datetime(2016, 5, 10), datetime(2017, 1, 1),
+                      "com2_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
+
+            (datetime(2017, 1, 2), datetime(2019, 6, 11),
+                      "gpfs_hps_nco_ops_com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
+            (datetime(2019, 6, 12), datetime(2020, 2, 25),
+                      "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.tar"),
+            (datetime(2020, 2, 26), datetime.now(),
+                      "com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
         ]
 
-    def get(self, for_time: datetime) -> str:
+    def get(self, for_date: datetime) -> str:
         for start, end, filename in self.map:
-            if start <= for_time <= end:
-                return filename
-        raise ValueError(f"No filename mapping found for time {for_time}")
+            if start <= for_date <= end:
+                template = os.path.join(HpssPathTemplate, filename)
 
+        return template.format(year=f"{for_date.year:04d}",
+                               month=f"{for_date.month:02d}",
+                               day=f"{for_date.day:02d}",
+                               hour="{hour}")
 
-
+hpssFilePath = HpssFilePath()
 
 
 def make_file_list(year: int) -> list[str]:
@@ -59,7 +65,7 @@ def make_file_list(year: int) -> list[str]:
     delta = timedelta(days=1)
     current_date = start_date
     while current_date <= end_date:
-        template = os.path.join(HpssPathTemplate, FileName2)
+        template = hpssFilePath.get(current_date)
 
         year_str = f"{current_date.year:04d}"
         month_str = f"{current_date.month:02d}"
