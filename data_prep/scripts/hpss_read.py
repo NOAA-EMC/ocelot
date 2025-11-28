@@ -5,24 +5,27 @@ from datetime import datetime, timedelta
 import argparse
 
 
-def print_archive_files(year: int) -> None:
+def print_archive_files(year: int, output_path: str) -> None:
     # use hsi ls command to list all the files in the template path that have "gdas" in the filename
     start = datetime(year=year, month=1, day=1)
     end = datetime(year=year, month=12, day=31)
     current_date = start
     delta = timedelta(days=1)
-    while current_date <= end:
-        year_str = f"{current_date.year:04d}"
-        month_str = f"{current_date.month:02d}"
-        day_str = f"{current_date.day:02d}"
-        path = os.path.join(HpssPathTemplate.format(
-            year=year_str,
-            month=month_str,
-            day=day_str
-        ), "*gdas*")
-        cmd = ["hsi", "ls", path]
-        subprocess.run(cmd)
-        current_date += delta
+
+    with open(os.path.join(output_path, f"hpss_archives_{year}.txt"), "w") as output_file:
+        while current_date <= end:
+            year_str = f"{current_date.year:04d}"
+            month_str = f"{current_date.month:02d}"
+            day_str = f"{current_date.day:02d}"
+            path = os.path.join(HpssPathTemplate.format(
+                year=year_str,
+                month=month_str,
+                day=day_str
+            ), "*gdas*")
+            cmd = ["hsi", "ls", path]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            output_file.write(result.stdout)
+            current_date += delta
 
 
 HpssPathTemplate = "/NCEPPROD/hpssprod/runhistory/rh{year}/{year}{month}/{year}{month}{day}"
@@ -139,16 +142,16 @@ python hpss_read.py {year} {output_dir}
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Read files from HPSS")
     parser.add_argument("year", help="Year ex: 2025", type=int)
-    parser.add_argument("output_dir", help="Output directory to save files")
+    parser.add_argument("output_path", help="Output directory to save files")
     parser.add_argument("--batch", "-b", action="store_true", help="Run using SLURM sbatch script")
     parser.add_argument("--print_archives", action="store_true", help="Slurm batch script")
     args = parser.parse_args()
 
     if args.print_archives:
-        print_archive_files(args.year)
+        print_archive_files(args.year, args.output_path)
     elif args.batch:
-        sbatch_script = _make_sbatch_script(args.year, args.output_dir)
+        sbatch_script = _make_sbatch_script(args.year, args.output_path)
         subprocess.run(["sbatch", sbatch_script], check=True)
     else:
-        main(args.year, args.output_dir)
+        main(args.year, args.output_path)
 
