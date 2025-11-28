@@ -66,7 +66,7 @@ def make_file_list(year: int) -> list[str]:
     current_date = start_date
     while current_date <= end_date:
         for hour in hours:
-            current_date.hour = hour
+            current_date = current_date.replace(hour=hour)
             file_path = hpss_file_path.get(current_date)
             file_list.append(file_path)
         current_date += delta
