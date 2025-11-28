@@ -4,10 +4,51 @@ import subprocess
 from datetime import datetime, timedelta
 import argparse
 
-HpssPathTemplate = "/NCEPPROD/hpssprod/runhistory/rh{year}/{year}{month}/{year}{month}{day}"\
-                   "/com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"
 
-def make_file_list(template: str, year: int) -> list[str]:
+def print_archive_files(year: int) -> None:
+    # use hsi ls command to list all the files in the template path that have "gdas" in the filename
+    start = datetime(year=year, month=1, day=1)
+    end = datetime(year=year, month=12, day=31)
+    current_date = start
+    delta = timedelta(days=1)
+    while current_date <= end:
+        year_str = f"{current_date.year:04d}"
+        month_str = f"{current_date.month:02d}"
+        day_str = f"{current_date.day:02d}"
+        path = os.path.join(HpssPathTemplate.format(
+            year=year_str,
+            month=month_str,
+            day=day_str
+        ), "*gdas*")
+        cmd = ["hsi", "ls", path]
+        subprocess.run(cmd)
+        current_date += delta
+
+
+HpssPathTemplate = "/NCEPPROD/hpssprod/runhistory/rh{year}/{year}{month}/{year}{month}{day}"
+
+class HpssFilenameMap:
+    def __init__(self):
+        self.map  = [
+            (datetime(2000, 1, 1), datetime(2006, 6, 30),
+                         "gpfs_hps_nco_ops_com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
+            (datetime(2019, 5, 1), datetime(2021, 4, 22),
+                         "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.tar"),
+            (datetime(2019, 5, 1), datetime(2021, 4, 22),
+                         "com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
+        ]
+
+    def get(self, for_time: datetime) -> str:
+        for start, end, filename in self.map:
+            if start <= for_time <= end:
+                return filename
+        raise ValueError(f"No filename mapping found for time {for_time}")
+
+
+
+
+
+def make_file_list(year: int) -> list[str]:
     file_list = []
     hours = ["00", "06", "12", "18"]
     start_date = datetime(year, 1, 1)
@@ -15,6 +56,8 @@ def make_file_list(template: str, year: int) -> list[str]:
     delta = timedelta(days=1)
     current_date = start_date
     while current_date <= end_date:
+        template = os.path.join(HpssPathTemplate, FileName2)
+
         year_str = f"{current_date.year:04d}"
         month_str = f"{current_date.month:02d}"
         day_str = f"{current_date.day:02d}"
@@ -36,7 +79,7 @@ def file_list_name(year: int) -> str:
 def main(year: int, output_dir: str) -> None:
 
     if not os.path.exists(file_list_name(year)):
-        file_list = make_file_list(HpssPathTemplate, year)
+        file_list = make_file_list(year)
         with open(file_list_name(year), "w") as f:
             for file_path in file_list:
                 f.write(f"{file_path}\n")
@@ -98,9 +141,12 @@ if __name__ == "__main__":
     parser.add_argument("year", help="Year ex: 2025", type=int)
     parser.add_argument("output_dir", help="Output directory to save files")
     parser.add_argument("--batch", "-b", action="store_true", help="Run using SLURM sbatch script")
+    parser.add_argument("--print_archives", action="store_true", help="Slurm batch script")
     args = parser.parse_args()
 
-    if args.batch:
+    if args.print_archives:
+        print_archive_files(args.year)
+    elif args.batch:
         sbatch_script = _make_sbatch_script(args.year, args.output_dir)
         subprocess.run(["sbatch", sbatch_script], check=True)
     else:
