@@ -65,18 +65,9 @@ def make_file_list(year: int) -> list[str]:
     delta = timedelta(days=1)
     current_date = start_date
     while current_date <= end_date:
-        template = hpss_file_path.get(current_date)
-
-        year_str = f"{current_date.year:04d}"
-        month_str = f"{current_date.month:02d}"
-        day_str = f"{current_date.day:02d}"
         for hour in hours:
-            file_path = template.format(
-                year=year_str,
-                month=month_str,
-                day=day_str,
-                hour=hour
-            )
+            current_date.hour = hour
+            file_path = hpss_file_path.get(current_date)
             file_list.append(file_path)
         current_date += delta
 
