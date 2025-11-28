@@ -24,7 +24,7 @@ def print_archive_files(year: int, output_path: str) -> None:
             ), "*gdas*")
             cmd = ["hsi", "ls", path]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            output_file.write(result.stdout)
+            output_file.write(result.stderr)
             current_date += delta
 
 
