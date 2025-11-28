@@ -95,7 +95,7 @@ python hpss_read.py {year} {output_dir}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Read files from HPSS")
-    parser.add_argument("year", help="Year ex: 2025")
+    parser.add_argument("year", help="Year ex: 2025", type=int)
     parser.add_argument("output_dir", help="Output directory to save files")
     parser.add_argument("--batch", "-b", action="store_true", help="Run using SLURM sbatch script")
     args = parser.parse_args()
