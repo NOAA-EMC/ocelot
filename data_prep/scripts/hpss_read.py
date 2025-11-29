@@ -55,8 +55,11 @@ class HpssFilePath:
 
 hpss_file_path = HpssFilePath()
 
+# List of files we are going to read
+def file_list_name(year: int) -> str:
+    return f'htar_list_{year}.txt'
 
-def make_file_list(year: int) -> list[str]:
+def make_list_file(year: int) -> None:
     file_list = []
     hours = ["00", "06", "12", "18"]
     start_date = datetime(year, 1, 1)
@@ -70,19 +73,35 @@ def make_file_list(year: int) -> list[str]:
             file_list.append(file_path)
         current_date += delta
 
-    return file_list
+    with open(file_list_name(year), "w") as output_file:
+        for file_path in file_list:
+            output_file.write(f"{file_path}\n")
 
-def file_list_name(year: int) -> str:
-    return f'htar_list_{year}.txt'
+    return file_list_name(year)
 
-def main(year: int, output_dir: str) -> None:
+# Staging the files we want
+def stage_file_name(year: int) -> str:
+    return f'hsi_staging_{year}.txt'
 
-    if not os.path.exists(file_list_name(year)):
-        file_list = make_file_list(year)
-        with open(file_list_name(year), "w") as f:
-            for file_path in file_list:
-                f.write(f"{file_path}\n")
+def make_stage_file(year:int) -> None:
+    if os.path.exists(stage_file_name(year)):
+        os.remove(stage_file_name(year))
 
+    with open(file_list_name(year), "r") as f:
+        file_list = [line.strip() for line in f.readlines()]
+
+    with open(stage_file_name(year), "w") as f:
+        for file_path in file_list:
+            f.write(f"stage {file_path}\n")
+
+def stage_the_files(year: int) -> None:
+    make_stage_file(year)
+    cmd = ["hsi in ", stage_file_name(year)]
+    subprocess.run(cmd, check=True)
+
+
+# Read the files from HPSS using htar
+def download_the_files(year: int, output_dir: str) -> None:
     # open the file list then for each line read the file with htar and then delete the line from the file
     with open(file_list_name(year), "r") as f:
         lines = f.readlines()
@@ -98,13 +117,16 @@ def main(year: int, output_dir: str) -> None:
 
         # Create a temporary file to hold the filtered file list
         target_files_path = f"target_files_{year}.txt"
+        if os.path.exists(target_files_path):
+            os.remove(target_files_path)
+
         with open(target_files_path, "w") as temp_f:
             for f in filtered_files:
                 temp_f.write(f"{f}\n")
 
         # Download the target files using htar
-        cmd_extract = ["htar", "-xvf", file_path, "-L", target_files_path]
-        subprocess.run(cmd_extract, cwd=os.path.abspath(output_dir), check=True)
+        cmd = ["htar", "-xvf", file_path, "-L", target_files_path]
+        subprocess.run(cmd, cwd=os.path.abspath(output_dir), check=True)
 
         # Remove the archive we just processed from the file list
         with open(file_list_name(year), "r") as f:
@@ -112,8 +134,13 @@ def main(year: int, output_dir: str) -> None:
         with open(file_list_name(year), "w") as f:
             f.writelines(remaining_lines)
 
-        # Remove the temporary file list
-        os.remove(target_files_path)
+
+def main(year: int, output_dir: str) -> None:
+    if not os.path.exists(file_list_name(year)):
+        make_list_file(year)
+
+    stage_the_files(year)
+    download_the_files(year, output_dir)
 
 def _make_sbatch_script(year: int, output_dir: str) -> str:
     script_content = \
