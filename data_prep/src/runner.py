@@ -77,9 +77,11 @@ class TankRunner(Runner):
                         continue
 
                     container = self._make_obs(comm, input_path)
-
                     container.gather(comm)
-                    combined_container.append(container)
+
+                    if comm.rank() == 0:
+                        combined_container.append(container)
+
         elif isinstance(self.type_config.paths, dict):
             for day_str in self._day_strs(parameters.start_time, parameters.stop_time):
                 for path_idx in range(len(list(self.type_config.paths.values())[0])):
@@ -96,7 +98,9 @@ class TankRunner(Runner):
 
                     container = self._make_obs(comm, input_dict)
                     container.gather(comm)
-                    combined_container.append(container)
+
+                    if comm.rank() == 0:
+                        combined_container.append(container)
 
         return combined_container
 
@@ -137,7 +141,9 @@ class PcaRunner(Runner):
             input_path = os.path.join(directory, fname)
             container = self._make_obs(comm, input_path)
             container.gather(comm)
-            combined_container.append(container)
+
+            if comm.rank() == 0:
+                combined_container.append(container)
 
         return combined_container
 

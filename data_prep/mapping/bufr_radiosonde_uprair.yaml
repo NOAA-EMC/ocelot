@@ -44,47 +44,45 @@ bufr:
 
     windDirection:
       query: "*/UARLVB/UAWND/WDIR"
-      type: double
+      type: float
       transforms:
         - scale: 0.0174533  # Convert degrees to radians
 
     windSpeed:
       query: "*/UARLVB/UAWND/WSPD"
-      type: float
 
 encoder:
   variables:
     # MetaData
-
-    - name: "airTemperature"
+    - name: "ObsValue/airTemperature"
       source: airTemperature
       longName: "Air Temperature"
       units: "deg C"
       range: [-100, 100]
 
-    - name: "dewPointTemperature"
+    - name: "ObsValue/dewPointTemperature"
       source: dewPointTemperature
       longName: "Dew Point Temperature"
       units: "deg C"
       range: [ -100, 100 ]
 
-    - name: "ralativeHumidity"
+    - name: "ObsValue/relativeHumidity"
       source: relativeHumidity
       longName: "Specific Humidity"
       units: "mg/kg"
       range: [0, 50000]
 
-    - name: "windDirection"
+    - name: "ObsValue/windDirection"
       source: windDirection
       longName: "Wind Direction"
       units: "radians"
 
-    - name: "windSpeed"
+    - name: "ObsValue/windSpeed"
       source: windSpeed
       longName: "Wind Speed"
       units: "m/s"
 
-    - name: "airPressure"
+    - name: "ObsValue/airPressure"
       source: airPressure
       longName: "Air Pressure"
       units: "hPa"
