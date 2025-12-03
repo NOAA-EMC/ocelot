@@ -34,7 +34,7 @@ class CrisPcaObsBuilder(ObsBuilder):
         self._encoder_yaml = full_yaml
 
         # Build dimension map
-        #enc = full_yaml.get("encoder", {})
+        # enc = full_yaml.get("encoder", {})
         dim_path_map = {}
         for dim in full_yaml.get("dimensions", []):
             n = dim["name"]
@@ -167,8 +167,7 @@ class CrisPcaObsBuilder(ObsBuilder):
         enc = self._encoder_yaml["encoder"]
         variables = enc["variables"]
 
-
-        print('VARIABLES=',variables)
+        print('VARIABLES=', variables)
 
         for v in variables:
             name = v["name"]
@@ -183,7 +182,7 @@ class CrisPcaObsBuilder(ObsBuilder):
 
             print(f"Adding {name} from {source} with dim_paths {dim_paths}")
             print("  shape =", ds[source].values.shape)
-            
+
             container.add(
                 name,
                 ds[source].values,
