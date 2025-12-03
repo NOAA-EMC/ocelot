@@ -5,7 +5,7 @@ dimensions:
 
   - name: npc_global
     source: npc_global
-    path: "*/npc_global"
+    path: "*/NPCGLOBAL"
 
 encoder:
   categories:

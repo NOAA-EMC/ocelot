@@ -167,6 +167,9 @@ class CrisPcaObsBuilder(ObsBuilder):
         enc = self._encoder_yaml["encoder"]
         variables = enc["variables"]
 
+
+        print('VARIABLES=',variables)
+
         for v in variables:
             name = v["name"]
             source = v["source"]
@@ -180,7 +183,7 @@ class CrisPcaObsBuilder(ObsBuilder):
 
             print(f"Adding {name} from {source} with dim_paths {dim_paths}")
             print("  shape =", ds[source].values.shape)
-
+            
             container.add(
                 name,
                 ds[source].values,

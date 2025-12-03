@@ -149,10 +149,10 @@ data types:
 
   - name: cris_pca
     type: netCDF
-    num_tasks: 24
+    num_tasks: 48
     batch_days: 15
     mapping: cris_pca.py
-    directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/CrIS_PCA/data1
+    directory: /scratch3/NCEPDEV/stmp/Andrew.Collard/CrIS_PCA/data
     filename_regex: SNDR\.J1\.CRIS\.(?P<start_time>\d{8}T\d{4})\.m\d+\.[gG]\d+\.PCA_RED\.beta\.v\d+_\d+\.W\.\d+\.nc
 
   - name: snow_cover
