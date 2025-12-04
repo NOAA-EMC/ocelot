@@ -57,7 +57,7 @@ hpss_file_path = HpssFilePath()
 
 # List of files we are going to read
 def file_list_name(year: int) -> str:
-    return f'htar_list_{year}.txt'
+    return f'htar_{year}.txt'
 
 def make_list_file(year: int) -> None:
     file_list = []
@@ -81,7 +81,7 @@ def make_list_file(year: int) -> None:
 
 # Staging the files we want
 def stage_file_name(year: int) -> str:
-    return f'hsi_staging_{year}.txt'
+    return f'stage_{year}.txt'
 
 def make_stage_file(year:int) -> None:
     if os.path.exists(stage_file_name(year)):
@@ -96,8 +96,8 @@ def make_stage_file(year:int) -> None:
 
 def stage_the_files(year: int) -> None:
     make_stage_file(year)
-    cmd = ["hsi in ", stage_file_name(year)]
-    subprocess.run(cmd, check=True)
+    # cmd = ["hsi in ", stage_file_name(year)]
+    # subprocess.run(cmd, check=True)
 
 
 # Read the files from HPSS using htar
@@ -138,9 +138,8 @@ def download_the_files(year: int, output_dir: str) -> None:
 def main(year: int, output_dir: str) -> None:
     if not os.path.exists(file_list_name(year)):
         make_list_file(year)
-
-    stage_the_files(year)
-    download_the_files(year, output_dir)
+    if not os.path.exists(stage_file_name(year)):
+        make_stage_file(year)
 
 def _make_sbatch_script(year: int, output_dir: str) -> str:
     script_content = \
