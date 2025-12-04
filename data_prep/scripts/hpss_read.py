@@ -44,9 +44,13 @@ class HpssFilePath:
         ]
 
     def get(self, for_date: datetime) -> str:
+        template = None
         for start, end, filename in self.map:
-            if start <= for_date <= end:
+            if start <= for_date <= end + timedelta(hours=18):
                 template = os.path.join(HpssPathTemplate, filename)
+
+        if not template:
+            raise ValueError(f"No template found for date {for_date}")
 
         return template.format(year=f"{for_date.year:04d}",
                                month=f"{for_date.month:02d}",
