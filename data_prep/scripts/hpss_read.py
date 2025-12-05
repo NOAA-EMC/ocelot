@@ -1,15 +1,19 @@
 """
 Utility to retrieve files from a High Performance Storage System (HPSS).
 
-This script handles three main operations for downloading GDAS data from NOAA RDHPCS HPSS:
-1. Generate lists of files to retrieve (accounting for filename changes across time periods)
-2. Stage files on HPSS using 'hsi' command
-3. Download staged files using 'htar' command
+This script handles operations for downloading GDAS data from NOAA RDHPCS HPSS:
+1. List archives - discover available files and filename patterns
+2. Generate lists of files to retrieve (accounting for filename changes across time periods)
+3. Stage files on HPSS using 'hsi' command
+4. Download staged files using 'htar' command
 
 Usage:
     python hpss_read.py <year> <output_dir> [options]
 
 Examples:
+    # List all archives to discover filename patterns
+    python hpss_read.py 2020 /path/to/output --list-archives
+
     # Generate file lists only
     python hpss_read.py 2020 /path/to/output --generate
 
@@ -71,6 +75,55 @@ class HpssFilePath:
 
 
 hpss_file_path = HpssFilePath()
+
+
+def print_archive_files(year: int, output_path: str) -> None:
+    """
+    List all GDAS archive files in HPSS for a given year.
+    This is useful for discovering when filename patterns change.
+
+    Creates a file named 'hpss_archives_<year>.txt' containing the listing
+    of all GDAS files found in HPSS for the specified year.
+
+    Args:
+        year: Year to list archives for
+        output_path: Directory where the listing file will be created
+    """
+    start = datetime(year=year, month=1, day=1)
+    end = datetime(year=year, month=12, day=31)
+    current_date = start
+    delta = timedelta(days=1)
+
+    output_file_path = os.path.join(output_path, f"hpss_archives_{year}.txt")
+    print(f"Listing HPSS archives for year {year}...")
+    print(f"This may take a while as it queries HPSS for each day...")
+
+    with open(output_file_path, "w") as output_file:
+        while current_date <= end:
+            year_str = f"{current_date.year:04d}"
+            month_str = f"{current_date.month:02d}"
+            day_str = f"{current_date.day:02d}"
+            path = HpssPathTemplate.format(
+                year=year_str,
+                month=month_str,
+                day=day_str
+            )
+            path_with_pattern = os.path.join(path, "*gdas*")
+
+            print(f"  Querying {year_str}-{month_str}-{day_str}...", end='\r')
+
+            cmd = ["hsi", "ls", path_with_pattern]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                # hsi ls outputs to stderr
+                output_file.write(result.stderr)
+            except subprocess.CalledProcessError as e:
+                # Some days might not have data, continue
+                output_file.write(f"# Error listing {path_with_pattern}: {e}\n")
+
+            current_date += delta
+
+    print(f"\nArchive listing saved to: {output_file_path}")
 
 
 def file_list_name(year: int) -> str:
@@ -254,6 +307,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # List all archives to discover filename patterns
+  %(prog)s 2020 /data/output --list-archives
+
   # Generate file lists for 2020
   %(prog)s 2020 /data/output --generate
 
@@ -267,9 +323,10 @@ Examples:
   %(prog)s 2020 /data/output --all
 
 Workflow:
-  1. Generate: Creates htar_<year>.txt and stage_<year>.txt files
-  2. Stage: Runs 'hsi' to stage files on HPSS for faster retrieval
-  3. Download: Uses 'htar' to extract files from archives
+  1. (Optional) List Archives: Discover available files and filename patterns
+  2. Generate: Creates htar_<year>.txt and stage_<year>.txt files
+  3. Stage: Runs 'hsi' to stage files on HPSS for faster retrieval
+  4. Download: Uses 'htar' to extract files from archives
         """
     )
 
@@ -285,6 +342,8 @@ Workflow:
                               help="Download files from HPSS (requires --generate and --stage first)")
     action_group.add_argument("--all", "-a", action="store_true",
                               help="Do everything: generate, stage, and download")
+    action_group.add_argument("--list-archives", "-l", action="store_true",
+                              help="List all GDAS archives in HPSS (useful for discovering filename changes)")
 
     args = parser.parse_args()
 
@@ -296,7 +355,10 @@ Workflow:
 
     # Execute requested actions
     try:
-        if args.all:
+        if args.list_archives:
+            print_archive_files(args.year, args.output_dir)
+
+        elif args.all:
             print("=" * 60)
             print(f"HPSS Retrieval - Year {args.year}")
             print("=" * 60)

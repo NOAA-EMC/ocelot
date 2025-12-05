@@ -71,15 +71,19 @@ around as you will replace the existing data. Please note that the output direct
 ## HPSS Data Retrieval
 
 The `scripts/hpss_read.py` script is used to download GDAS observation data from the NOAA RDHPCS HPSS archive system.
-The script handles three main operations:
+The script handles the following operations:
 
-1. **Generate** file lists (accounting for filename changes across different time periods)
-2. **Stage** files on HPSS for faster retrieval
-3. **Download** files using htar
+1. **List Archives** - discover available files and filename patterns (useful for identifying when patterns change)
+2. **Generate** file lists (accounting for filename changes across different time periods)
+3. **Stage** files on HPSS for faster retrieval
+4. **Download** files using htar
 
 ### Usage
 
 ```bash
+# List all archives to discover filename patterns (useful for debugging)
+python hpss_read.py <year> <output_dir> --list-archives
+
 # Generate file lists for a specific year
 python hpss_read.py <year> <output_dir> --generate
 
@@ -101,10 +105,14 @@ cd /scratch1/NCEPDEV/da/$USER/hpss_data
 python /path/to/ocelot/data_prep/scripts/hpss_read.py 2020 ./output_2020 --generate
 python /path/to/ocelot/data_prep/scripts/hpss_read.py 2020 ./output_2020 --stage
 python /path/to/ocelot/data_prep/scripts/hpss_read.py 2020 ./output_2020 --download
+
+# Or discover filename patterns for a specific year
+python /path/to/ocelot/data_prep/scripts/hpss_read.py 2020 ./output_2020 --list-archives
 ```
 
 ### Generated Files
 
+- `hpss_archives_<year>.txt`: Raw listing of all GDAS files in HPSS (created by --list-archives)
 - `htar_<year>.txt`: List of archive files to download (used by htar)
 - `stage_<year>.txt`: Staging commands for HPSS (used by hsi)
 
@@ -113,6 +121,7 @@ from the archives.
 
 ### Notes
 
+- The `--list-archives` option is useful for discovering when filename patterns change in HPSS
 - The script automatically handles filename pattern changes across different time periods (2015-present)
 - Staging files on HPSS before downloading significantly speeds up retrieval
 - The download process can be interrupted and resumed (it processes archives sequentially)
