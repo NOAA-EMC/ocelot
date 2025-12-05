@@ -67,7 +67,7 @@ def make_list_file(year: int) -> None:
     file_list = []
     hours = ["00", "06", "12", "18"]
     start_date = datetime(year, 1, 1)
-    end_date = datetime(year, 12, 31)
+    end_date = datetime(year, 12, 31, 23, 59, 59)
     delta = timedelta(days=1)
     current_date = start_date
     while current_date <= end_date:
