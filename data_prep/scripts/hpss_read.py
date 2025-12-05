@@ -25,6 +25,7 @@ Examples:
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta
 import argparse
 
@@ -38,6 +39,8 @@ class HpssFilePath:
     """
     def __init__(self):
         # Time periods with different filename patterns
+        # Using a far future date (2100) for the last period instead of datetime.now()
+        # to avoid creating a fixed timestamp at module import time
         self.map = [
             (datetime(2015, 1, 1), datetime(2016, 5, 9),
              "com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
@@ -47,7 +50,7 @@ class HpssFilePath:
              "gpfs_hps_nco_ops_com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
             (datetime(2019, 6, 12), datetime(2020, 2, 25),
              "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
-            (datetime(2020, 2, 26), datetime.now(),
+            (datetime(2020, 2, 26), datetime(2100, 12, 31),
              "com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
         ]
 
@@ -156,10 +159,10 @@ def stage_files(year: int) -> None:
     print(f"Staging files from {stage_file}...")
     print("This may take a while. Files will be queued for staging on HPSS.")
 
-    # Run hsi with the staging commands
-    cmd = ["hsi", f"in < {stage_file}"]
+    # Run hsi with the staging commands via stdin (safer than shell=True)
     try:
-        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+        with open(stage_file, 'r') as f:
+            result = subprocess.run(["hsi"], stdin=f, check=True, capture_output=True, text=True)
         print("Staging complete!")
         if result.stdout:
             print(result.stdout)
@@ -211,9 +214,9 @@ def download_files(year: int, output_dir: str) -> None:
 
             print(f"  Found {len(filtered_files)} matching files to extract")
 
-            # Create a temporary file list for extraction
-            target_files_path = f"/tmp/target_files_{year}_{idx}.txt"
-            with open(target_files_path, "w") as temp_f:
+            # Create a temporary file list for extraction using tempfile for portability
+            with tempfile.NamedTemporaryFile(mode='w', prefix=f'target_files_{year}_{idx}_', suffix='.txt', delete=False) as temp_f:
+                target_files_path = temp_f.name
                 for f in filtered_files:
                     temp_f.write(f"{f}\n")
 
