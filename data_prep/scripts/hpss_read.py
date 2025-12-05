@@ -215,19 +215,23 @@ def download_files(year: int, output_dir: str) -> None:
             print(f"  Found {len(filtered_files)} matching files to extract")
 
             # Create a temporary file list for extraction using tempfile for portability
-            with tempfile.NamedTemporaryFile(mode='w', prefix=f'target_files_{year}_{idx}_', suffix='.txt', delete=False) as temp_f:
-                target_files_path = temp_f.name
-                for f in filtered_files:
-                    temp_f.write(f"{f}\n")
+            # Use try-finally to ensure cleanup even if extraction fails
+            target_files_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', prefix=f'target_files_{year}_{idx}_', suffix='.txt', delete=False) as temp_f:
+                    target_files_path = temp_f.name
+                    for f in filtered_files:
+                        temp_f.write(f"{f}\n")
 
-            # Extract the files
-            print("  Extracting files...")
-            cmd = ["htar", "-xvf", archive_path, "-L", target_files_path]
-            subprocess.run(cmd, cwd=os.path.abspath(output_dir), check=True, capture_output=True)
-
-            # Clean up temporary file list
-            os.remove(target_files_path)
-            print("  Extraction complete")
+                # Extract the files
+                print("  Extracting files...")
+                cmd = ["htar", "-xvf", archive_path, "-L", target_files_path]
+                subprocess.run(cmd, cwd=os.path.abspath(output_dir), check=True, capture_output=False)
+                print("  Extraction complete")
+            finally:
+                # Clean up temporary file list
+                if target_files_path and os.path.exists(target_files_path):
+                    os.remove(target_files_path)
 
         except subprocess.CalledProcessError as e:
             print(f"  Error processing archive: {e}", file=sys.stderr)
