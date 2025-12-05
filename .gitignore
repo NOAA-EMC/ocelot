@@ -17,3 +17,8 @@ __pycache__/
 .venv/
 venv/
 
+# HPSS script generated files
+htar_*.txt
+stage_*.txt
+target_files_*.txt
+
