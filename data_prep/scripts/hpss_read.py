@@ -30,6 +30,7 @@ import argparse
 
 HpssPathTemplate = "/NCEPPROD/hpssprod/runhistory/rh{year}/{year}{month}/{year}{month}{day}"
 
+
 class HpssFilePath:
     """
     Maps dates to HPSS archive filename templates.
@@ -83,7 +84,7 @@ def make_list_file(year: int) -> str:
     """
     Generate a list of HPSS archive files to retrieve for the given year.
     Creates a file named 'htar_<year>.txt' with one file path per line.
-    
+
     Returns:
         The name of the created file list.
     """
@@ -93,7 +94,7 @@ def make_list_file(year: int) -> str:
     end_date = datetime(year, 12, 31, 23, 59, 59)
     delta = timedelta(days=1)
     current_date = start_date
-    
+
     print(f"Generating file list for year {year}...")
     while current_date <= end_date:
         for hour in hours:
@@ -118,9 +119,9 @@ def make_stage_file(year: int) -> str:
     """
     Generate a staging command file for HPSS.
     Creates a file named 'stage_<year>.txt' with 'stage <path>' commands.
-    
+
     This file can be used with: hsi "in < stage_<year>.txt"
-    
+
     Returns:
         The name of the created staging file.
     """
@@ -154,7 +155,7 @@ def stage_files(year: int) -> None:
 
     print(f"Staging files from {stage_file}...")
     print("This may take a while. Files will be queued for staging on HPSS.")
-    
+
     # Run hsi with the staging commands
     cmd = ["hsi", f"in < {stage_file}"]
     try:
@@ -169,12 +170,11 @@ def stage_files(year: int) -> None:
         sys.exit(1)
 
 
-
 def download_files(year: int, output_dir: str) -> None:
     """
     Download files from HPSS using htar.
     Extracts only specific file types (.bufr_d, .prepbufr, .prepbufr.acft_profiles).
-    
+
     Args:
         year: Year of data to download
         output_dir: Directory where files will be extracted
@@ -191,41 +191,41 @@ def download_files(year: int, output_dir: str) -> None:
         archive_files = [line.strip() for line in f.readlines() if line.strip()]
 
     print(f"Processing {len(archive_files)} archive files...")
-    
+
     for idx, archive_path in enumerate(archive_files, 1):
         print(f"\n[{idx}/{len(archive_files)}] Processing: {archive_path}")
-        
+
         try:
             # Get the list of files in the archive
             print("  Listing archive contents...")
             cmd = ["htar", "-tf", archive_path]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             all_files = result.stdout.splitlines()
-            
+
             # Filter for desired file types
             filtered_files = [f for f in all_files if f.endswith(('.bufr_d', '.prepbufr', '.prepbufr.acft_profiles'))]
-            
+
             if not filtered_files:
                 print(f"  No matching files found in archive, skipping.")
                 continue
-            
+
             print(f"  Found {len(filtered_files)} matching files to extract")
-            
+
             # Create a temporary file list for extraction
             target_files_path = f"/tmp/target_files_{year}_{idx}.txt"
             with open(target_files_path, "w") as temp_f:
                 for f in filtered_files:
                     temp_f.write(f"{f}\n")
-            
+
             # Extract the files
             print("  Extracting files...")
             cmd = ["htar", "-xvf", archive_path, "-L", target_files_path]
             subprocess.run(cmd, cwd=os.path.abspath(output_dir), check=True, capture_output=True)
-            
+
             # Clean up temporary file list
             os.remove(target_files_path)
             print("  Extraction complete")
-            
+
         except subprocess.CalledProcessError as e:
             print(f"  Error processing archive: {e}", file=sys.stderr)
             if e.stderr:
@@ -238,7 +238,6 @@ def download_files(year: int, output_dir: str) -> None:
             continue
 
     print(f"\nDownload complete! Files extracted to: {output_dir}")
-
 
 
 def main():
@@ -266,10 +265,10 @@ Workflow:
   3. Download: Uses 'htar' to extract files from archives
         """
     )
-    
+
     parser.add_argument("year", type=int, help="Year of data to retrieve (e.g., 2020)")
     parser.add_argument("output_dir", help="Directory where files will be extracted")
-    
+
     action_group = parser.add_mutually_exclusive_group(required=True)
     action_group.add_argument("--generate", "-g", action="store_true",
                               help="Generate file lists (htar_<year>.txt and stage_<year>.txt)")
@@ -279,15 +278,15 @@ Workflow:
                               help="Download files from HPSS (requires --generate and --stage first)")
     action_group.add_argument("--all", "-a", action="store_true",
                               help="Do everything: generate, stage, and download")
-    
+
     args = parser.parse_args()
-    
+
     # Validate year
     current_year = datetime.now().year
     if args.year < 2015 or args.year > current_year:
         print(f"Error: Year must be between 2015 and {current_year}", file=sys.stderr)
         sys.exit(1)
-    
+
     # Execute requested actions
     try:
         if args.all:
@@ -297,27 +296,27 @@ Workflow:
             print("\nStep 1: Generating file lists...")
             make_list_file(args.year)
             make_stage_file(args.year)
-            
+
             print("\nStep 2: Staging files on HPSS...")
             stage_files(args.year)
-            
+
             print("\nStep 3: Downloading files...")
             download_files(args.year, args.output_dir)
-            
+
             print("\n" + "=" * 60)
             print("All operations complete!")
             print("=" * 60)
-            
+
         elif args.generate:
             make_list_file(args.year)
             make_stage_file(args.year)
-            
+
         elif args.stage:
             stage_files(args.year)
-            
+
         elif args.download:
             download_files(args.year, args.output_dir)
-            
+
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user.", file=sys.stderr)
         sys.exit(1)
@@ -328,5 +327,3 @@ Workflow:
 
 if __name__ == "__main__":
     main()
-
-
