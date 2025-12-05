@@ -38,7 +38,7 @@ class HpssFilePath:
             (datetime(2017, 7, 20), datetime(2019, 6, 11),
                       "gpfs_hps_nco_ops_com_gfs_prod_gdas.{year}{month}{day}{hour}.tar"),
             (datetime(2019, 6, 12), datetime(2020, 2, 25),
-                      "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.tar"),
+                      "gpfs_dell1_nco_ops_com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
             (datetime(2020, 2, 26), datetime.now(),
                       "com_gfs_prod_gdas.{year}{month}{day}_{hour}.gdas.tar"),
         ]
