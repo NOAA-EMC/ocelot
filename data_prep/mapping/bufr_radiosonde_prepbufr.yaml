@@ -1,0 +1,64 @@
+bufr:
+  group_by_variable: driftCycleTime
+  subsets:
+    - ADPUPA
+  variables:
+    # MetaData Variables
+    launchCycleTime:
+      query: "*/DHR"
+
+    launchLatitude:
+      query: "*/YOB"
+
+    launchLongitude:
+      query: "*/XOB"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    sequenceId:
+      query: "*/SID"
+
+    driftCycleTime:
+      query: "*/PRSLEVEL/DRFTINFO/HRDR"
+
+    driftLatitude:
+      query: "*/PRSLEVEL/DRFTINFO/YDR"
+
+    driftLongitude:
+      query: "*/PRSLEVEL/DRFTINFO/XDR"
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
+
+    airPressure:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
+
+    airPressure2:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
+
+    airPressureReasonCode:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PRC"
+
+    airPressureProgramCode:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PPC"
+
+    height:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
+
+    # Quality Markers
+    airTemperatureQuality:
+      query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
+
+    specificHumidityQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
+
+    dewPointTemperatureQuality:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QQM"
+
+    windQuality:
+      query: "*/PRSLEVEL/W___INFO/W__EVENT{1}/WQM"
+
+    airPressureQuality:
+      query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PQM"
+
+    heightQuality:
+      query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZQM"

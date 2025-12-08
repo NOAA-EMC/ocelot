@@ -151,7 +151,7 @@ class Encoder(bufr.encoders.EncoderBase):
 
             _, var_name = self._split_source_str(var['name'])
 
-            if var_name.lower() == 'dateTime' or var_name.lower() == 'time':
+            if var_name.lower() == 'datetime' or var_name.lower() == 'time':
                 continue  # Skip the time variable as it is a dimension
 
             if var["source"].split('/')[-1] not in container.list():
@@ -164,7 +164,8 @@ class Encoder(bufr.encoders.EncoderBase):
             elif len(var_data.shape) == 2:
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
-                    add_variable(var, f'{var_name}_{dim_names[1]}_{dim_vals[i]}', var_data[:, i])
+                    dim_val = dim_vals[i] if dim_vals[i] != 0 else i + 1
+                    add_variable(var, f'{var_name}_{dim_names[1]}_{dim_val}', var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
@@ -190,7 +191,8 @@ class Encoder(bufr.encoders.EncoderBase):
             elif len(var_data.shape) == 2:
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
-                    root[f'{var_name}_{dim_names[1]}_{dim_vals[i]}'].append(var_data[:, i])
+                    dim_val = dim_vals[i] if dim_vals[i] != 0 else i + 1
+                    root[f'{var_name}_{dim_names[1]}_{dim_val}'].append(var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
