@@ -30,11 +30,12 @@ def main():
     pres = z['airPressure'][0:MaxRange]
     lats = z['latitude'][0:MaxRange]
     pres_qc = z['airPressureQuality_event_1'][0:MaxRange]
-    pres_qc = pres_qc[pres < 10000]
-    lats = lats[pres < 10000]
     lons = z['longitude'][0:MaxRange]
-    lons = lons[pres < 10000]
-    pres = pres[pres < 10000]
+    mask = pres < 10000
+    pres = pres[mask]
+    pres_qc = pres_qc[mask]
+    lats = lats[mask]
+    lons = lons[mask]
 
     print(pres)
 
