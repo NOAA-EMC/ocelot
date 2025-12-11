@@ -78,6 +78,7 @@ data types:
         - 18/atmos/gdas.t18z.uprair.tm00.bufr_d
 
   - name: ssmis
+    memory: 128G
     type: tank
     num_tasks: 4
     batch_days: 30
@@ -87,6 +88,24 @@ data types:
       - 06/atmos/gdas.t06z.ssmisu.tm00.bufr_d
       - 12/atmos/gdas.t12z.ssmisu.tm00.bufr_d
       - 18/atmos/gdas.t18z.ssmisu.tm00.bufr_d
+
+  - name: seviri
+    memory: 128G
+    type: tank
+    num_tasks: 4
+    batch_days: 30
+    mapping: bufr_seviri.py
+    paths:
+      sevcsr:
+        - 00/atmos/gdas.t00z.sevcsr.tm00.bufr_d
+        - 06/atmos/gdas.t06z.sevcsr.tm00.bufr_d
+        - 12/atmos/gdas.t12z.sevcsr.tm00.bufr_d
+        - 18/atmos/gdas.t18z.sevcsr.tm00.bufr_d
+      sevasr:
+        - 00/atmos/gdas.t00z.sevasr.tm00.bufr_d
+        - 06/atmos/gdas.t06z.sevasr.tm00.bufr_d
+        - 12/atmos/gdas.t12z.sevasr.tm00.bufr_d
+        - 18/atmos/gdas.t18z.sevasr.tm00.bufr_d
 
   - name: amsua
     type: tank
