@@ -25,6 +25,7 @@ bufr:
 
     height_bufr:
       query: "*/SELV"
+      type: float
 
     airPressure:
       query: "[*/UARLV/PRLC, */PRLC]"  # Air pressure at station level
