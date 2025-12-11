@@ -488,8 +488,28 @@ class SequentialDataCallback(pl.Callback):
             start = self.current_start
             end = min(start + self.window, self.full_end_date)
 
+            # ============================================================
+            # SAFETY: Check if restored window is valid
+            # ============================================================
+            window_days = (end - start).days
+            world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+            if window_days < world_size:
+                if trainer.is_global_zero:
+                    print(f"\n{'='*70}")
+                    print(f"[SAFETY on_fit_start] Restored window is too small!")
+                    print(f"  Window: {start.date()} to {end.date()} ({window_days} days)")
+                    print(f"  GPUs: {world_size}")
+                    print(f"  Looping back to start instead!")
+                    print(f"{'='*70}\n")
+                # Reset to start
+                start = self.full_start_date
+                end = min(start + self.window, self.full_end_date)
+                self.current_start = start
+                self._last_used_start = start
+
             # Align DM to the restored window
             dm.set_train_window(start, end)
+            dm.setup(stage='fit')
 
             if trainer.is_global_zero:
                 print(
@@ -535,6 +555,15 @@ class SequentialDataCallback(pl.Callback):
                 pd.to_datetime(trainer.datamodule.hparams.train_start)
             )
             start, end = self._choose_next_window_rank0(used_start)
+
+            # MK: SAFETY CHECK HERE
+            window_days = (end - start).days
+            world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+            if window_days < world_size:
+                print("[SAFETY] Next window insufficient - looping back!")
+                start = self.full_start_date
+                end = min(start + self.window, self.full_end_date)
+
             print(
                 f"[Rank 0] [Sequential {self.mode.upper()}] "
                 f"NEXT -> {start.date()} .. {end.date()}"
@@ -549,3 +578,4 @@ class SequentialDataCallback(pl.Callback):
             f"NEXT (sync) -> {start.date()} .. {end.date()}"
         )
         trainer.datamodule.set_train_window(start, end)
+

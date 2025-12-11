@@ -1,0 +1,16 @@
+# configs/target_config.yaml
+enabled: true  # Master switch
+variables:
+  surface_obs:
+    - airPressure_pb_event_1  # p
+    - airTemperature    # temp
+    - wind_u            # u
+    - wind_v            # v
+    - relativeHumidity  # q
+
+  radiosonde:
+    - airPressure       # p
+    - airTemperature    # temp
+    - wind_u            # u
+    - wind_v            # v
+
