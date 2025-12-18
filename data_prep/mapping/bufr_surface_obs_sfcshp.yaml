@@ -35,7 +35,7 @@ bufr:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
     seaTemperature:
-      query: "[*/SST1, */SEATEMPM/SST1, */IDMSMDBS/BBYSTSL{1}/SST1]"
+      query: "[*/SST1, */SEATEMPM/SST1]" # #*/IDMSMDBS/BBYSTSL{1}/SST1]"
       transforms:
         - offset: -273.15  # Convert from Kelvin to Celsius
 

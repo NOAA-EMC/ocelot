@@ -27,6 +27,10 @@ class RawAdpsfcBuilder(ObsBuilder):
 
     # Override
     def make_obs(self, comm, input_dict) -> bufr.DataContainer:
+        print("NICKE makeobs")
+        if PrepbufrKey not in input_dict:
+            print("NICKE PREPBUFRKEY")
+            return bufr.DataContainer()
         prepbufr_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
         adpsfc_container = bufr.Parser(input_dict[AdpsfcKey], self.map_dict[AdpsfcKey]).parse(comm)
         sfcshp_container = bufr.Parser(input_dict[SfcshpKey], self.map_dict[SfcshpKey]).parse(comm)
