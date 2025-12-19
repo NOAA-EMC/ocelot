@@ -55,6 +55,7 @@ bufr:
 
     height_bufr:
       query: "[*/SELV, */HSMSL]"  # Height above ground level
+      type: float
 
 encoder:
   variables:
