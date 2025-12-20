@@ -189,7 +189,7 @@ def batch_plot_directory(
     if instrument:
         csv_files = [f for f in csv_files if instrument in os.path.basename(f)]
     if epoch is not None:
-        csv_files = [f for f in csv_files if f'epoch{epoch}' in os.path.basename(f)]
+        csv_files = [f for f in csv_files if f'epoch{epoch}_' in os.path.basename(f)]
     if batch is not None:
         csv_files = [f for f in csv_files if f'batch{batch}' in os.path.basename(f)]
     
