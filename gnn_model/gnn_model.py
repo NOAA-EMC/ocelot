@@ -51,6 +51,7 @@ class GNNLightning(pl.LightningModule):
     def __init__(
         self,
         observation_config,
+        target_config,
         hidden_dim,
         mesh_resolution=6,
         mesh_type="fixed",  # "fixed" or "hierarchical"
@@ -100,6 +101,16 @@ class GNNLightning(pl.LightningModule):
         self.rollout_schedule = rollout_schedule
 
         self.observation_config = observation_config
+
+        # MK: Load target variable config
+        self.target_variables_enabled = target_config.get('enabled', False)
+        self.target_variable_config = target_config
+        self.target_instruments = list(target_config.get('variables', {}).keys())
+        print(f"[DEBUG CONFIG] target_variables_enabled: {self.target_variables_enabled}")
+        print(f"[DEBUG CONFIG] target_variable_config: {self.target_variable_config}")
+        print(f"[DEBUG CONFIG] variables in config: {self.target_variable_config.get('variables', {})}")
+        print(f"[DEBUG CONFIG] Target instruments for mesh prediction: {self.target_instruments}")
+
         # Mirror process_timeseries._name2id()
         self.instrument_name_to_id = _build_instrument_map(self.observation_config)
         self.instrument_id_to_name = {v: k for k, v in self.instrument_name_to_id.items()}
@@ -389,6 +400,56 @@ class GNNLightning(pl.LightningModule):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
+    def _setup_mesh_prediction_edges(self):
+        """Precompute edges for mesh prediction - called once on first validation."""
+
+        from create_mesh_graph_global import obs_mesh_conn
+
+        print("[MESH PRED] Setting up mesh prediction edges (one-time)...")
+        # Get mesh coordinates (ALREADY IN DEGREES despite variable name)
+        mesh_latlon = self.mesh_structure["mesh_lat_lon_list"][-1]
+        target_lats = mesh_latlon[:, 0]
+        target_lons = mesh_latlon[:, 1]
+        print(f"[MESH PRED] Lat range: [{target_lats.min():.2f}, {target_lats.max():.2f}]")
+        print(f"[MESH PRED] Lon range: [{target_lons.min():.2f}, {target_lons.max():.2f}]")
+
+        mesh_pred_edges = {}
+
+        for inst_name in self.target_instruments:
+            if not self._is_target_variable(inst_name):
+                continue
+
+            edge_index, edge_attr = obs_mesh_conn(
+                target_lats,
+                target_lons,
+                self.mesh_structure["m2m_graphs"],
+                self.mesh_structure["mesh_lat_lon_list"],
+                self.mesh_structure["mesh_list"],
+                o2m=False
+            )
+
+            print(f"[DEBUG] edge_attr shape: {edge_attr.shape}")
+            print(f"[DEBUG] edge_attr sample:\n{edge_attr[:5]}")  # First 5 edges
+            print(f"[DEBUG] edge_attr range: [{edge_attr.min():.3f}, {edge_attr.max():.3f}]")
+
+            mesh_pred_edges[inst_name] = {
+                'edge_index': edge_index.to(self.device),
+                # 'edge_attr': edge_attr.to(self.device),
+                'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim), device=self.device),
+                'lats': target_lats,
+                'lons': target_lons,
+                'num_nodes': len(target_lats)
+            }
+
+        print(f"[MESH PRED] Setup complete for {list(mesh_pred_edges.keys())}")
+        return mesh_pred_edges
+
+    def _is_target_variable(self, inst_name: str) -> bool:
+        """Check if instrument has target variables configured."""
+        if not self.target_variables_enabled:
+            return False
+        return inst_name in self.target_instruments
+
     def _normalize_inst_weights(self, weights_in):
         out = {}
         if not weights_in:
@@ -574,7 +635,7 @@ class GNNLightning(pl.LightningModule):
 
         return tensor * std_vec + mean_vec
 
-    def forward(self, data: HeteroData, step_data_list=None) -> Dict[str, torch.Tensor]:
+    def forward(self, data: HeteroData, step_data_list=None): #  -> Dict[str, torch.Tensor]:
 
         num_graphs = data.num_graphs
         num_mesh_nodes = self.mesh_x.shape[0]
@@ -668,7 +729,12 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
         # --------------------------------------------------------------------
-        return self._forward_latent_rollout(data, encoded_features)
+        predictions, mesh_features_per_step = self._forward_latent_rollout(data, encoded_features)
+
+        if not self.training:
+            return predictions, mesh_features_per_step
+
+        return predictions
 
     def _forward_latent_rollout(self, data: HeteroData, encoded_features: dict) -> Dict[str, List[torch.Tensor]]:
         """
@@ -708,6 +774,9 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         if self.processor_type == "sliding_transformer":
             self.swt.reset()
+
+        # MK: New local list for mesh features
+        mesh_features_per_step = []
 
         for step in range(num_latent_steps):
             self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
@@ -936,6 +1005,9 @@ class GNNLightning(pl.LightningModule):
                 processed = self.processor(step_features, processor_edges)
                 current_mesh_features = processed["mesh"]
 
+            # MK: Save mesh features if needed (independent of self.training check here)
+            mesh_features_per_step.append(current_mesh_features.detach()) # Always detach for output
+
             self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
 
             # STAGE 4B: DECODE - Generate predictions for this latent step
@@ -1058,7 +1130,7 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"[LATENT] Warning: {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
 
         self.debug(f"[LATENT] Completed {num_latent_steps} sequential processor steps")
-        return predictions
+        return predictions, mesh_features_per_step
 
     def get_current_rollout_steps(self):
         """
@@ -1333,9 +1405,21 @@ class GNNLightning(pl.LightningModule):
         print(f"[validation_step] latent rollout steps: {latent_rollout_steps}")
 
         # Forward pass: Dict[node_type, List[Tensor]] per step
-        all_predictions = self(batch)
-        if isinstance(all_predictions, tuple):
-            all_predictions, _ = all_predictions
+        # all_predictions = self(batch)
+        # if isinstance(all_predictions, tuple):
+        #     all_predictions, _ = all_predictions
+
+        # MK
+        # Forward pass: Dict[node_type, List[Tensor]] per step
+        result = self(batch)
+
+        # Check if the result is a tuple (only happens in validation mode now)
+        if isinstance(result, tuple):
+            all_predictions, mesh_features_per_step = result
+        else:
+            # This path shouldn't be hit in validation_step, but is a good safeguard.
+            all_predictions = result
+            mesh_features_per_step = [] # Initialize empty list if somehow missed
 
         # Extract ground truths based on rollout mode
         ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
@@ -1556,6 +1640,17 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero:
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
+
+        # MK: Generate mesh predictions for first batch only
+        if batch_idx == 0 and self.target_variables_enabled:
+            try:
+                temp_mesh_pred_edges = self._setup_mesh_prediction_edges()
+                mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
+                if mesh_predictions:
+                    self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx, self.current_epoch)
+            except Exception as e:
+                print(f"[MESH PRED] Failed (non-critical): {e}")
+
         return avg_loss
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
@@ -1724,6 +1819,102 @@ class GNNLightning(pl.LightningModule):
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
+
+    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch):
+        """Save predictions on mesh grid - one file per forecast hour."""
+
+        os.makedirs('mesh_predictions', exist_ok=True)
+
+        # Calculate forecast hours dynamically based on latent_step_hours
+        num_steps = len(next(iter(predictions.values())))  # Get number of steps from first instrument
+        latent_step_hours = self.hparams.get('latent_step_hours', 3)  # Default to 3h if not found
+        forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
+        print(f"[MESH PRED] Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
+
+        for inst_name, pred_list in predictions.items():
+            edges = mesh_pred_edges[inst_name]
+            mesh_lats = edges['lats']
+            mesh_lons = edges['lons']
+
+            # Get target variables (only the ones we want to predict on mesh)
+            target_vars = self.target_variable_config.get('variables', {}).get(inst_name, [])
+
+            # Get ALL features and find indices of target variables
+            obs_type = "satellite" if inst_name in self.observation_config.get("satellite", {}) else "conventional"
+            all_features = self.observation_config[obs_type][inst_name]['features']
+
+            # Find indices of target variables
+            target_indices = [i for i, feat in enumerate(all_features) if feat in target_vars]
+
+            for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
+                # Unnormalize using existing method
+                node_type = f"{inst_name}_target"
+                pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
+                pred_np = pred_unnorm.cpu().numpy()
+
+                df = pd.DataFrame({
+                    'lat': mesh_lats,
+                    'lon': mesh_lons,
+                })
+
+                # Add only target variable predictions
+                for feat_idx in target_indices:
+                    feat_name = all_features[feat_idx]
+                    df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
+
+                filepath = f'mesh_predictions/{inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                df.to_csv(filepath, index=False)
+                print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
+
+    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges):
+        """Decode all forecast steps to mesh grid."""
+
+        if not mesh_features_per_step: # Check if the list is empty
+            print("[MESH PRED] No mesh features available")
+            return {}
+
+        predictions = {}
+
+        with torch.no_grad():
+            for inst_name in self.target_instruments:
+                if not self._is_target_variable(inst_name):
+                    continue
+
+                if inst_name not in mesh_pred_edges:
+                    continue
+
+                predictions[inst_name] = []
+
+                # Decode each step
+                for step_idx, mesh_feat in enumerate(mesh_features_per_step):
+                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name])
+                    predictions[inst_name].append(pred)
+
+        return predictions
+
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges):
+        """Decode one step's mesh features to mesh grid."""
+        # Get decoder
+        decoder_key = f"mesh__to__{inst_name}_target"
+        decoder = self.observation_decoders[decoder_key]
+
+        original_edge_index = decoder.edge_index
+        decoder.edge_index = edges['edge_index']
+
+        # Decode
+        decoded = decoder(
+            send_rep=mesh_features,
+            rec_rep=torch.zeros(edges['num_nodes'], self.hidden_dim, device=mesh_features.device),
+            edge_rep=edges['edge_attr']
+        )
+
+        decoder.edge_index = original_edge_index
+
+        # Apply output mapper
+        output_key = f"{inst_name}_target"
+        predictions = self.output_mappers[output_key](decoded)
+
+        return predictions
 
     def on_after_backward(self):
         # Check if encoded gradient is available
