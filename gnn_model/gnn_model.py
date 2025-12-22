@@ -24,6 +24,7 @@ from loss import weighted_huber_loss
 from processor_transformer import SlidingWindowTransformerProcessor
 from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
+from create_mesh_graph_global import obs_mesh_conn
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -400,48 +401,72 @@ class GNNLightning(pl.LightningModule):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
-    def _setup_mesh_prediction_edges(self):
-        """Precompute edges for mesh prediction - called once on first validation."""
+    def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
+        """
+        Load pre-computed mesh prediction edges from file.
 
-        from create_mesh_graph_global import obs_mesh_conn
+        This avoids calling obs_mesh_conn at runtime, which causes rtree 
+        multiprocessing issues when workers fork.
 
-        print("[MESH PRED] Setting up mesh prediction edges (one-time)...")
-        # Get mesh coordinates (ALREADY IN DEGREES despite variable name)
-        mesh_latlon = self.mesh_structure["mesh_lat_lon_list"][-1]
-        target_lats = mesh_latlon[:, 0]
-        target_lons = mesh_latlon[:, 1]
-        print(f"[MESH PRED] Lat range: [{target_lats.min():.2f}, {target_lats.max():.2f}]")
-        print(f"[MESH PRED] Lon range: [{target_lons.min():.2f}, {target_lons.max():.2f}]")
+        Args:
+            edges_file: Path to .npz file with pre-computed edges
+        """
+        import numpy as np
 
+        print(f"[MESH PRED] Loading pre-computed edges from {edges_file}...")
+
+        if not os.path.exists(edges_file):
+            raise FileNotFoundError(
+                f"Mesh prediction edges file not found: {edges_file}\n"
+                f"Please run: python precompute_mesh_edges.py --config target_config.yaml"
+            )
+
+        # Load pre-computed data
+        data = np.load(edges_file)
+
+        # Get coordinates (same for all instruments)
+        target_lats = data['lats']
+        target_lons = data['lons']
+        num_nodes = int(data['num_nodes'])
+
+        print(f"[MESH PRED] Loaded grid:")
+        print(f"  Lat range: [{target_lats.min():.2f}, {target_lats.max():.2f}]")
+        print(f"  Lon range: [{target_lons.min():.2f}, {target_lons.max():.2f}]")
+        print(f"  Grid points: {num_nodes}")
+
+        # Build edges dict for each target instrument
         mesh_pred_edges = {}
 
         for inst_name in self.target_instruments:
             if not self._is_target_variable(inst_name):
                 continue
 
-            edge_index, edge_attr = obs_mesh_conn(
-                target_lats,
-                target_lons,
-                self.mesh_structure["m2m_graphs"],
-                self.mesh_structure["mesh_lat_lon_list"],
-                self.mesh_structure["mesh_list"],
-                o2m=False
-            )
+            edge_index_key = f'{inst_name}_edge_index'
+            if edge_index_key not in data:
+                print(f"[MESH PRED] WARNING: No edges found for {inst_name}, skipping...")
+                continue
 
-            print(f"[DEBUG] edge_attr shape: {edge_attr.shape}")
-            print(f"[DEBUG] edge_attr sample:\n{edge_attr[:5]}")  # First 5 edges
-            print(f"[DEBUG] edge_attr range: [{edge_attr.min():.3f}, {edge_attr.max():.3f}]")
+            # Load edge_index (keep on CPU for now)
+            edge_index = torch.from_numpy(data[edge_index_key]).long()
 
+            print(f"[MESH PRED] {inst_name}: {edge_index.shape[1]} edges")
+
+            # Store on CPU - will move to device when used
             mesh_pred_edges[inst_name] = {
-                'edge_index': edge_index.to(self.device),
-                # 'edge_attr': edge_attr.to(self.device),
-                'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim), device=self.device),
-                'lats': target_lats,
-                'lons': target_lons,
-                'num_nodes': len(target_lats)
+                'edge_index': edge_index,  # CPU tensor (no .to(device))
+                'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim)),  # CPU
+                'lats': torch.from_numpy(target_lats).float(),  # CPU
+                'lons': torch.from_numpy(target_lons).float(),  # CPU
+                'num_nodes': num_nodes
             }
 
-        print(f"[MESH PRED] Setup complete for {list(mesh_pred_edges.keys())}")
+        if not mesh_pred_edges:
+            raise ValueError(
+                f"No valid edges loaded for target instruments: {self.target_instruments}\n"
+                f"Available in file: {[k for k in data.files if k.endswith('_edge_index')]}"
+            )
+
+        print(f"[MESH PRED] Loaded edges for {list(mesh_pred_edges.keys())}")
         return mesh_pred_edges
 
     def _is_target_variable(self, inst_name: str) -> bool:
@@ -635,7 +660,7 @@ class GNNLightning(pl.LightningModule):
 
         return tensor * std_vec + mean_vec
 
-    def forward(self, data: HeteroData, step_data_list=None): #  -> Dict[str, torch.Tensor]:
+    def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
 
         num_graphs = data.num_graphs
         num_mesh_nodes = self.mesh_x.shape[0]
@@ -1006,7 +1031,7 @@ class GNNLightning(pl.LightningModule):
                 current_mesh_features = processed["mesh"]
 
             # MK: Save mesh features if needed (independent of self.training check here)
-            mesh_features_per_step.append(current_mesh_features.detach()) # Always detach for output
+            mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
 
             self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
 
@@ -1419,7 +1444,7 @@ class GNNLightning(pl.LightningModule):
         else:
             # This path shouldn't be hit in validation_step, but is a good safeguard.
             all_predictions = result
-            mesh_features_per_step = [] # Initialize empty list if somehow missed
+            mesh_features_per_step = []  # Initialize empty list if somehow missed
 
         # Extract ground truths based on rollout mode
         ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
@@ -1644,12 +1669,15 @@ class GNNLightning(pl.LightningModule):
         # MK: Generate mesh predictions for first batch only
         if batch_idx == 0 and self.target_variables_enabled:
             try:
-                temp_mesh_pred_edges = self._setup_mesh_prediction_edges()
-                mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
-                if mesh_predictions:
-                    self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx, self.current_epoch)
+                with torch.no_grad():  # Disable gradients for mesh prediction
+                    temp_mesh_pred_edges = self._load_mesh_prediction_edges()
+                    mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
+                    if mesh_predictions:
+                        self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx, self.current_epoch)
             except Exception as e:
                 print(f"[MESH PRED] Failed (non-critical): {e}")
+                import traceback
+                traceback.print_exc()
 
         return avg_loss
 
@@ -1869,7 +1897,7 @@ class GNNLightning(pl.LightningModule):
     def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges):
         """Decode all forecast steps to mesh grid."""
 
-        if not mesh_features_per_step: # Check if the list is empty
+        if not mesh_features_per_step:  # Check if the list is empty
             print("[MESH PRED] No mesh features available")
             return {}
 
@@ -1898,14 +1926,19 @@ class GNNLightning(pl.LightningModule):
         decoder_key = f"mesh__to__{inst_name}_target"
         decoder = self.observation_decoders[decoder_key]
 
+        # Move edges to correct device (they're stored on CPU)
+        device = mesh_features.device
+        edge_index = edges['edge_index'].to(device)
+        edge_attr = edges['edge_attr'].to(device)
+
         original_edge_index = decoder.edge_index
-        decoder.edge_index = edges['edge_index']
+        decoder.edge_index = edge_index
 
         # Decode
         decoded = decoder(
             send_rep=mesh_features,
-            rec_rep=torch.zeros(edges['num_nodes'], self.hidden_dim, device=mesh_features.device),
-            edge_rep=edges['edge_attr']
+            rec_rep=torch.zeros(edges['num_nodes'], self.hidden_dim, device=device),
+            edge_rep=edge_attr
         )
 
         decoder.edge_index = original_edge_index
