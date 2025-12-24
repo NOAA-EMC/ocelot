@@ -36,6 +36,10 @@ def summarize_zarr(path: str, max_obs: int) -> str:
         else:
             arr = root[var_name][:max_obs]
 
+        if arr.dtype.kind in {"U", "S", "O"}:
+            missing_strings = {"", None}
+            arr = (~np.isin(arr, list(missing_strings))).astype(int)
+
         total = arr.size
         missing = bufr.get_missing_value(arr.dtype)
         good_mask = arr != missing
