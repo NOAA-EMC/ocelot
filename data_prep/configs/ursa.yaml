@@ -166,6 +166,7 @@ data types:
 
   - name: aircraft
     type: tank
+    memory: 48G
     num_tasks: 1
     batch_days: 15
     mapping: bufr_aircraft.py
