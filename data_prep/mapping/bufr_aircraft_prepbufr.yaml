@@ -8,6 +8,12 @@ bufr:
   variables:
     # MetaData
 
+    stationIdentification:
+      query: "*/SID"
+
+    aircraftFlightNumber:
+      query: "[*/ACID_SEQ/ACID, */ACID]"
+
     driftCycleTime:
       query: "*/PRSLEVLA/DRFTINFO/HRDR"
 
@@ -18,6 +24,9 @@ bufr:
       query: "*/PRSLEVLA/DRFTINFO/XDR"
       transform:
         wrap: [-180, 180]
+
+    instantaneousAltitudeRate:
+      query: "*/PRSLEVLA/IALR"
 
     # Observation Values
 
@@ -47,7 +56,7 @@ bufr:
     airTemperatureQuality:
       query: "*/PRSLEVLA/T___INFO/T__EVENT{1}/TQM"
 
-    heigthQuality:
+    heightQuality:
       query: "*/PRSLEVLA/Z___INFO/Z__EVENT{1}/ZQM"
     
     windQuality:
@@ -60,6 +69,18 @@ encoder:
 
   variables:
     # MetaData
+    - name: "stationIdentification"
+      source: variables/stationIdentification
+      longName: "Station Identification"
+
+    - name: "aircraftFlightNumber"
+      source: variables/aircraftFlightNumber
+      longName: "Aircraft Flight Number"
+
+    - name: "instantaneousAltitudeRate"
+      source: variables/instantaneousAltitudeRate
+      longName: "Instantaneous Altitude Rate"
+      units: "m s-1"
 
     - name: "latitude"
       source: variables/driftLatitude
@@ -113,8 +134,8 @@ encoder:
       source: variables/airTemperatureQuality
       longName: "Air Temperature Quality Indicator" 
 
-    - name: "heigthQuality"
-      source: variables/heigthQuality
+    - name: "heightQuality"
+      source: variables/heightQuality
       longName: "Height Quality Indicator"  
 
     - name: "windQuality"
