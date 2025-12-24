@@ -49,7 +49,6 @@ class AircraftBuilder(ObsBuilder):
 
         return description
 
-
     def _get_reference_time(self, input_path) -> np.datetime64:
         path_components = Path(input_path).parts
         m = re.match(r'\w+\.(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})', path_components[-4])
