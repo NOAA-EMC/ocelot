@@ -79,3 +79,10 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --me
 
 # Resume from specific checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt
+
+# Prediction mode:
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
+#     --checkpoint checkpoints/gnn-epoch-epoch=64-val_loss-val_loss=0.03.ckpt \
+#     --start_date 2023-01-01 \
+#     --end_date 2023-01-08 \
+#     --output_dir predictions

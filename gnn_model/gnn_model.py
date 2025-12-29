@@ -24,7 +24,6 @@ from loss import weighted_huber_loss
 from processor_transformer import SlidingWindowTransformerProcessor
 from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
-from create_mesh_graph_global import obs_mesh_conn
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -405,7 +404,7 @@ class GNNLightning(pl.LightningModule):
         """
         Load pre-computed mesh prediction edges from file.
 
-        This avoids calling obs_mesh_conn at runtime, which causes rtree 
+        This avoids calling obs_mesh_conn at runtime, which causes rtree
         multiprocessing issues when workers fork.
 
         Args:
@@ -1667,13 +1666,13 @@ class GNNLightning(pl.LightningModule):
             print(f"val_loss: {avg_loss.item():.6f}")
 
         # MK: Generate mesh predictions for first batch only
-        if batch_idx == 0 and self.target_variables_enabled:
+        if batch_idx == 0 and self.target_variables_enabled and self.trainer.is_global_zero:
             try:
                 with torch.no_grad():  # Disable gradients for mesh prediction
                     temp_mesh_pred_edges = self._load_mesh_prediction_edges()
                     mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
                     if mesh_predictions:
-                        self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx, self.current_epoch)
+                        self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx=batch_idx, epoch=self.current_epoch, mode='val', batch=batch, output_dir='val_target_csv')
             except Exception as e:
                 print(f"[MESH PRED] Failed (non-critical): {e}")
                 import traceback
@@ -1681,9 +1680,78 @@ class GNNLightning(pl.LightningModule):
 
         return avg_loss
 
+    def _extract_init_time_str(self, batch):
+        """
+        Extract initialization time string from batch in YYYYMMDDHH format.
+        Handles multiple formats: pandas Timestamp, list/tuple, Unix timestamp, tensor.
+        
+        Args:
+            batch: Batch data containing input_time or time attribute
+            
+        Returns:
+            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
+        """
+        from datetime import datetime
+        import pandas as pd
+        
+        if batch is None:
+            return 'unknown'
+        
+        # Try input_time first
+        ts = None
+        if hasattr(batch, 'input_time') and batch.input_time is not None:
+            # Handle if input_time is a list/tuple - take the first element
+            if isinstance(batch.input_time, (list, tuple)):
+                ts = batch.input_time[0] if len(batch.input_time) > 0 else None
+            else:
+                ts = batch.input_time
+        
+        # Fallback to batch.time if input_time not available
+        elif hasattr(batch, 'time') and batch.time is not None:
+            if isinstance(batch.time, (list, tuple)):
+                ts = batch.time[0] if len(batch.time) > 0 else None
+            else:
+                ts = batch.time
+        
+        # Now convert ts to string based on its type
+        if ts is None:
+            return 'unknown'
+        
+        try:
+            # Handle pandas Timestamp
+            if isinstance(ts, pd.Timestamp):
+                return ts.strftime('%Y%m%d%H')
+            
+            # Handle Unix timestamp (float/int)
+            elif isinstance(ts, (int, float)):
+                dt = datetime.fromtimestamp(ts)
+                return dt.strftime('%Y%m%d%H')
+            
+            # Handle tensor (PyTorch/numpy with .item() method)
+            elif hasattr(ts, 'item'):
+                dt = datetime.fromtimestamp(ts.item())
+                return dt.strftime('%Y%m%d%H')
+            
+            # Handle datetime object directly
+            elif isinstance(ts, datetime):
+                return ts.strftime('%Y%m%d%H')
+            
+            else:
+                print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
+                return 'unknown'
+                
+        except Exception as e:
+            print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
+            return 'unknown'
+
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
-                                      valid_mask_list, out_dir, batch_idx):
-        """Save latent rollout as concatenated observations (same format as standard)."""
+                                      valid_mask_list, out_dir, batch_idx, mode='val'):
+        """
+        Save latent rollout as concatenated observations.
+        
+        Args:
+            mode: 'val' or 'predict' - determines output filename format
+        """
 
         step_info = self._get_latent_step_info(batch)
         step_mapping = step_info["step_mapping"]
@@ -1762,10 +1830,13 @@ class GNNLightning(pl.LightningModule):
             return
 
         # Concatenate all steps
-        all_pred_concat = np.vstack(all_pred)  # Shape: (total_obs, n_ch)
-        all_true_concat = np.vstack(all_true)  # Shape: (total_obs, n_ch)
-        all_mask_concat = np.vstack(all_mask)  # Shape: (total_obs, n_ch)
-
+        all_pred_concat = np.vstack(all_pred)
+        all_true_concat = np.vstack(all_true)
+        all_mask_concat = np.vstack(all_mask)
+        # Skip saving if no real ground truth data (inference mode)
+        if all_true_concat.size == 0 or np.sum(np.abs(all_true_concat)) == 0:
+            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
+            return
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
 
@@ -1790,6 +1861,7 @@ class GNNLightning(pl.LightningModule):
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
 
+<<<<<<< HEAD
         # Add pressure columns for radiosonde and aircraft evaluation
         all_pressure_arr = np.array(all_pressure)
         all_pressure_level_arr = np.array(all_pressure_level)
@@ -1841,28 +1913,55 @@ class GNNLightning(pl.LightningModule):
             if len(valid_levels) > 0:
                 print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
 
-        # Save with same filename format as standard rollout
-        filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
+        # Extract init time for filename
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Save with appropriate filename based on mode
+        if mode == 'predict':
+            if init_time_str != 'unknown':
+                filename = f"{out_dir}/pred_{node_type}_init_{init_time_str}.csv"
+            else:
+                filename = f"{out_dir}/pred_{node_type}_batch{batch_idx}.csv"
+        else:  # validation mode
+            if init_time_str != 'unknown':
+                filename = f"{out_dir}/val_{node_type}_init_{init_time_str}_epoch{self.current_epoch}_batch{batch_idx}.csv"
+            else:
+                filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
         df.to_csv(filename, index=False)
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
 
-    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch):
-        """Save predictions on mesh grid - one file per forecast hour."""
+    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_target_csv'):
+        """
+        Save predictions on mesh grid - one file per forecast hour.
+        
+        Args:
+            predictions: Dict of predictions per instrument
+            batch_idx: Batch index
+            epoch: Epoch number
+            mode: 'val' or 'predict'
+            batch: Batch data (for extracting input_time)
+            output_dir: Directory to save files
+        """
 
-        os.makedirs('mesh_predictions', exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
-        # Calculate forecast hours dynamically based on latent_step_hours
-        num_steps = len(next(iter(predictions.values())))  # Get number of steps from first instrument
-        latent_step_hours = self.hparams.get('latent_step_hours', 3)  # Default to 3h if not found
+        # Extract init time for logging
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Calculate forecast hours
+        num_steps = len(next(iter(predictions.values())))
+        latent_step_hours = self.hparams.get('latent_step_hours', 3)
         forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
-        print(f"[MESH PRED] Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
+
+        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
 
         for inst_name, pred_list in predictions.items():
             edges = mesh_pred_edges[inst_name]
             mesh_lats = edges['lats']
             mesh_lons = edges['lons']
+            base_inst_name = inst_name.replace('_target', '')
 
             # Get target variables (only the ones we want to predict on mesh)
             target_vars = self.target_variable_config.get('variables', {}).get(inst_name, [])
@@ -1890,7 +1989,14 @@ class GNNLightning(pl.LightningModule):
                     feat_name = all_features[feat_idx]
                     df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
 
-                filepath = f'mesh_predictions/{inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                # Use init_time if available, otherwise fall back to batch_idx
+                if init_time_str != 'unknown':
+                    if mode == 'predict':
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}.csv'
+                    else:
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                else:
+                    filepath = f'{output_dir}/{base_inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
                 df.to_csv(filepath, index=False)
                 print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
 
@@ -1979,6 +2085,145 @@ class GNNLightning(pl.LightningModule):
                     self.debug(f"[DEBUG] Grad for {name}: None")
             total_grad_norm = total_grad_norm**0.5
             self.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
+
+    def predict_step(self, batch, batch_idx):
+        """
+        Prediction step for inference mode.
+
+        This method:
+        1. Runs forward pass to generate predictions
+        2. Saves predictions to CSV files
+        3. Does NOT compute loss or gradients
+
+        Args:
+            batch: Input batch data
+            batch_idx: Batch index
+
+        Returns:
+            dict: Predictions for all node types
+        """
+        print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
+
+        # Forward pass
+        forward_output = self(batch)
+        if isinstance(forward_output, tuple):
+            all_predictions, mesh_features_per_step = forward_output
+        else:
+            all_predictions = forward_output
+            mesh_features_per_step = []
+
+        # Extract ground truths and metadata
+        ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
+        print(f"[MK] ground_truth: {ground_truth_data}")
+
+        # Determine rollout steps
+        step_info = self._get_latent_step_info(batch)
+        latent_rollout_steps = step_info["num_steps"]
+        print(f"[PREDICT] Latent rollout steps: {latent_rollout_steps}")
+
+        # Save predictions for each instrument
+        for node_type, preds_list in all_predictions.items():
+            print(f"[PREDICT] Processing node_type: {node_type}")
+
+            if node_type not in ground_truth_data:
+                continue
+
+            gt_data = ground_truth_data[node_type]
+            gts_list = gt_data["gts_list"]
+            valid_mask_list = gt_data["valid_mask_list"]
+
+            # Check if any real ground truth data exists
+            has_real_targets = any(
+                gt is not None and gt.numel() > 0 
+                for gt in gts_list
+            )
+            
+            if not has_real_targets:
+                print(f"[PREDICT] Pred step: Skipping {node_type} - no ground truth data (inference mode)")
+                continue
+
+            # Save to CSV
+            # if batch_idx < 10:
+            out_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'non-target')
+            self._save_latent_concatenated_csv(
+                batch=batch,
+                node_type=node_type,
+                preds_list=preds_list,
+                gts_list=gts_list,
+                valid_mask_list=valid_mask_list,
+                out_dir=out_dir,
+                batch_idx=batch_idx,
+                mode='predict'
+            )
+
+        # Save mesh predictions (target variables on grid)
+        if self.target_variables_enabled:
+            try:
+                with torch.no_grad():
+                    temp_mesh_pred_edges = self._load_mesh_prediction_edges()
+                    # Use mesh features from forward pass
+                    if not mesh_features_per_step:
+                        print("[PREDICT] No mesh features available for mesh predictions")
+                    else:
+                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
+                        if mesh_predictions:
+                            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'target')
+                            self._save_mesh_predictions(
+                                mesh_predictions,
+                                temp_mesh_pred_edges,
+                                batch_idx=batch_idx,
+                                epoch=0,
+                                mode='predict',
+                                batch=batch,
+                                output_dir=mesh_dir
+                            )
+            except Exception as e:
+                print(f"[PREDICT] Mesh prediction failed (non-critical): {e}")
+                import traceback
+                traceback.print_exc()
+
+        return all_predictions
+
+
+    def on_predict_epoch_start(self):
+        """Setup before prediction epoch starts."""
+        print("[PREDICT] Starting prediction epoch")
+        self._save_mesh_predictions_enabled = True
+        self._mesh_predictions_buffer = {}
+        self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
+        os.makedirs(self._prediction_output_dir, exist_ok=True)
+        # Create pred_csv subdirectories
+        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'non-target'), exist_ok=True)
+        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'target'), exist_ok=True)
+        print(f"[PREDICT] Output directory: {self._prediction_output_dir}")
+
+
+    def on_predict_batch_end(self, outputs, batch, batch_idx):
+        """Cleanup after each prediction batch."""
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+    def on_predict_epoch_end(self):
+        """Cleanup and summary after prediction epoch ends."""
+        print("[PREDICT] Prediction epoch completed")
+
+        if hasattr(self, '_save_mesh_predictions_enabled'):
+            self._save_mesh_predictions_enabled = False
+
+        # Generate summary statistics
+        if hasattr(self, '_prediction_output_dir'):
+            obs_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'non-target')
+            if os.path.exists(obs_dir):
+                csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]
+                print(f"[PREDICT] Generated {len(csv_files)} observation CSV files (non-target)")
+
+            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'target')
+            if os.path.exists(mesh_dir):
+                mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
+                print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (target)")
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-5)
