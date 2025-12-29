@@ -79,6 +79,11 @@ def main():
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
     with open(cfg_path, "r") as f:
         _raw_cfg = yaml.safe_load(f)
+
+    # Load target variable configuration
+    with open('configs/target_config.yaml', 'r') as f:
+        target_config = yaml.safe_load(f)
+
     pipeline_cfg = _raw_cfg.get("pipeline", {})
 
     # Data/region path
@@ -130,7 +135,7 @@ def main():
     hidden_dim = 96
     num_layers = 10
     lr = 5e-4
-    max_epochs = 100
+    max_epochs = 200
     batch_size = 1
 
     # Rollout settings
@@ -151,6 +156,7 @@ def main():
     # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
         observation_config=observation_config,
+        target_config=target_config,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         lr=lr,
@@ -178,6 +184,11 @@ def main():
         decoder_heads=4,
         encoder_dropout=0.1,  # Add dropout for regularization
         decoder_dropout=0.1,  # Add dropout for regularization
+        # MK: Target decoder
+        target_decoder_type="gat",    # gat or "interaction"
+        target_decoder_layers=2,
+        target_decoder_heads=4,
+        target_decoder_dropout=0.1,
     )
 
     data_module = GNNDataModule(

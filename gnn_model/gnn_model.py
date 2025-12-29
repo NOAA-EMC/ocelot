@@ -11,6 +11,7 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
 import pandas as pd
+from datetime import datetime
 import numpy as np
 from processor import Processor
 from utils import make_mlp
@@ -49,6 +50,7 @@ class GNNLightning(pl.LightningModule):
     def __init__(
         self,
         observation_config,
+        target_config,
         hidden_dim,
         mesh_resolution=6,
         num_layers=4,
@@ -73,6 +75,11 @@ class GNNLightning(pl.LightningModule):
         decoder_layers: int = 2,
         encoder_dropout: float = 0.0,
         decoder_dropout: float = 0.0,
+        # MK: Target decoder parameters
+        target_decoder_type: str = "interaction",  # "interaction" | "gat"
+        target_decoder_layers: int = 2,
+        target_decoder_heads: int = 4,
+        target_decoder_dropout: float = 0.0,
         **kwargs,
     ):
         """
@@ -96,6 +103,16 @@ class GNNLightning(pl.LightningModule):
         self.rollout_schedule = rollout_schedule
 
         self.observation_config = observation_config
+
+        # MK: Load target variable config
+        self.target_variables_enabled = target_config.get('enabled', False)
+        self.target_variable_config = target_config
+        self.target_instruments = list(target_config.get('variables', {}).keys())
+        print(f"[DEBUG CONFIG] target_variables_enabled: {self.target_variables_enabled}")
+        print(f"[DEBUG CONFIG] target_variable_config: {self.target_variable_config}")
+        print(f"[DEBUG CONFIG] variables in config: {self.target_variable_config.get('variables', {})}")
+        print(f"[DEBUG CONFIG] Target instruments for mesh prediction: {self.target_instruments}")
+
         # Mirror process_timeseries._name2id()
         self.instrument_name_to_id = _build_instrument_map(self.observation_config)
         self.instrument_id_to_name = {v: k for k, v in self.instrument_name_to_id.items()}
@@ -115,6 +132,13 @@ class GNNLightning(pl.LightningModule):
 
         # --- Create and store the mesh structure as part of the model ---
         self.mesh_structure = create_mesh(splits=mesh_resolution, levels=4, hierarchical=False, plot=False)
+
+        # MK: Store mesh coordinates for saving mesh predictions
+        mesh_lat_lon = self.mesh_structure["mesh_lat_lon_torch"][0]  # Mesh coordinates
+        self.register_buffer("mesh_lats", mesh_lat_lon[:, 0])  # Latitude in radians
+        self.register_buffer("mesh_lons", mesh_lat_lon[:, 1])  # Longitude in radians
+        print(f"[MESH] Registered {len(mesh_lat_lon)} mesh coordinates (radians)")
+
         mesh_feature_dim = self.mesh_structure["mesh_features_torch"][0].shape[1]
         # --- Register the static mesh data as model buffers ---
         mesh_x = self.mesh_structure["mesh_features_torch"][0]
@@ -126,6 +150,9 @@ class GNNLightning(pl.LightningModule):
         self.observation_encoders = nn.ModuleDict()  # For obs -> mesh GNNs
         self.observation_decoders = nn.ModuleDict()
         self.output_mappers = nn.ModuleDict()  # For final prediction MLPs
+        # MK
+        self.target_decoders = nn.ModuleDict()      # For target variable transformers
+        self.target_projections = nn.ModuleDict()   # For target variable projections
 
         first_instrument_config = next(iter(next(iter(observation_config.values())).values()))
         hidden_layers = first_instrument_config.get("encoder_hidden_layers", 2)
@@ -137,6 +164,12 @@ class GNNLightning(pl.LightningModule):
         self.scan_angle_embed_dim = 8
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
+
+        # MK: ADD: Mesh edge embedder for target decoders
+        # Mesh edges have 4 features (distance, dx, dy, dz or similar)
+        # mesh_edge_input_dim = self.mesh_structure["m2m_features_torch"][0].shape[1]
+        # self.mesh_edge_embedder = make_mlp([mesh_edge_input_dim, hidden_dim])
+        # print(f"[TARGET DECODER] Created mesh edge embedder: {mesh_edge_input_dim} -> {hidden_dim}")
 
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
@@ -254,6 +287,89 @@ class GNNLightning(pl.LightningModule):
         else:
             raise ValueError(f"Unknown processor_type: {processor_type!r}")
 
+        # MK
+        # --- Build target decoders for target variables ---
+        if self.target_variables_enabled:
+            print(f"[TARGET CONFIG] Validating target variables configuration...")
+
+            for inst_name, var_list in self.target_variable_config.get('variables', {}).items():
+                # Verify instrument exists in observation config
+                inst_config = self._get_instrument_config(inst_name)
+                if inst_config is None:
+                    raise ValueError(
+                        f"[TARGET CONFIG ERROR] Instrument '{inst_name}' specified in target_config.yaml "
+                        f"not found in observation_config.yaml"
+                    )
+
+                # Verify each variable exists in the instrument's features
+                all_features = inst_config.get('features', [])
+                for var_name in var_list:
+                    if var_name not in all_features:
+                        raise ValueError(
+                            f"[TARGET CONFIG ERROR] Variable '{var_name}' specified in target_config.yaml "
+                            f"not found in features for '{inst_name}'. Available: {all_features}"
+                        )
+                
+                print(f"[TARGET CONFIG] Validated {inst_name}: {len(var_list)} variables")
+
+            # NOW BUILD DECODERS: ONE PER INSTRUMENT (not per variable!)
+            for inst_name, var_list in self.target_variable_config.get('variables', {}).items():
+                # Get number of target variables for this instrument
+                num_target_vars = len(var_list)
+
+                # Build ONE decoder per instrument (like regular decoders)
+                if target_decoder_type == "gat":
+                    self.target_decoders[inst_name] = BipartiteGAT(
+                        send_dim=hidden_dim,
+                        rec_dim=hidden_dim,
+                        hidden_dim=hidden_dim,
+                        layers=target_decoder_layers,
+                        heads=target_decoder_heads,
+                        dropout=target_decoder_dropout,
+                        edge_dim=hidden_dim,
+                    )
+                else:  # interaction
+                    self.target_decoders[inst_name] = InteractionNet(
+                        edge_index=None,
+                        send_dim=hidden_dim,
+                        rec_dim=hidden_dim,
+                        hidden_layers=target_decoder_layers,
+                        update_edges=False,
+                    )
+
+                # Build ONE projection per instrument: hidden_dim → num_target_vars
+                projection_layers = [hidden_dim] + [hidden_dim] * target_decoder_layers + [num_target_vars]
+                self.target_projections[inst_name] = make_mlp(projection_layers, layer_norm=False)
+
+                if self.verbose:
+                    print(f"[TARGET DECODER] Built {inst_name}: 1 decoder + 1 projection ({hidden_dim} → {num_target_vars})")
+
+            print(f"[TARGET CONFIG] Successfully built {len(self.target_decoders)} target decoders")
+
+            ## comprehensive debug output after building all decoders
+            print("\n" + "="*80)
+            print("[TARGET DECODER SUMMARY]")
+            print("="*80)
+            print(f"Target variables enabled: {self.target_variables_enabled}")
+            print(f"Target instruments: {self.target_instruments}")
+            print(f"\nDecoders built: {len(self.target_decoders)}")
+
+            for inst_name in self.target_instruments:
+                var_list = self.target_variable_config['variables'][inst_name]
+                print(f"\n{inst_name}:")
+                print(f"  Variables: {var_list}")
+
+                # ✅ NEW: Use per-instrument key
+                decoder_type = type(self.target_decoders[inst_name]).__name__
+                projection_output_dim = len(var_list)
+
+                print(f"  Decoder: {inst_name} ({decoder_type})")
+                print(f"  Projection: {inst_name} (MLP: {self.hidden_dim} → {projection_output_dim})")
+                print(f"  Processes {len(var_list)} variables in one forward pass")
+
+            print("="*80)
+
+
         def _as_f32(x):
             import torch
 
@@ -273,6 +389,217 @@ class GNNLightning(pl.LightningModule):
         if hasattr(batch, "to"):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
+    def _is_target_variable(self, inst_name: str) -> bool:
+        """Check if instrument has target variables configured."""
+        if not self.target_variables_enabled:
+            return False
+
+        base_inst_name = inst_name.replace('_target', '')
+
+        return base_inst_name in self.target_instruments
+
+    def _simple_3nn_interpolation(self, variable_mesh_values, edge_index,
+                                  edge_attr, num_target_nodes):
+        """
+        Simple 3NN interpolation using distances from existing edge_attr.
+        NO learnable parameters - just inverse-distance weighted averaging.
+
+        Args:
+            variable_mesh_values: Physical values on mesh [N_mesh, 1]
+            edge_index: 3NN connectivity [2, N_edges] (from existing connector)
+            edge_attr: Distances [N_edges, 1 or more] (from existing connector)
+            num_target_nodes: Number of observation locations
+
+        Returns:
+            Interpolated values [N_obs, 1]
+        """
+        # Get source mesh values for each edge
+        source_values = variable_mesh_values[edge_index[0]]  # [N_edges, 1]
+
+        # Extract distances from edge_attr (reuse existing!)
+        if edge_attr.dim() > 1:
+            distances = edge_attr[:, 0:1]  # [N_edges, 1]
+        else:
+            distances = edge_attr.unsqueeze(-1)  # [N_edges, 1]
+
+        # Convert distances to weights (closer = higher weight)
+        weights = 1.0 / (distances + 1e-8)
+
+        # Weight source values
+        weighted_values = source_values * weights  # [N_edges, 1]
+
+        # Aggregate to target nodes (sum weighted values)
+        target_values = scatter(
+            weighted_values,
+            edge_index[1],  # target node indices
+            dim=0,
+            dim_size=num_target_nodes,
+            reduce='sum'
+        )
+
+        # Normalize by sum of weights
+        weight_sums = scatter(
+            weights,
+            edge_index[1],
+            dim=0,
+            dim_size=num_target_nodes,
+            reduce='sum'
+        )
+
+        target_values = target_values / (weight_sums + 1e-8)
+
+        return target_values  # [N_obs, 1]
+
+    def _get_instrument_config(self, inst_name: str):
+        """
+        Get configuration for an instrument.
+        Follows same pattern as _feature_names_for_node().
+        
+        Args:
+            inst_name: e.g., 'surface_obs', 'radiosonde'
+        
+        Returns:
+            Config dict for the instrument
+        """
+        for obs_type, instruments in self.observation_config.items():
+            if inst_name in instruments:
+                return instruments[inst_name]
+        return None
+
+    def _decode_target_variables(self, base_type, mesh_features, step_node_type,
+                                 step_edge_index, data, return_mesh_predictions=False):
+        """
+        Decode target variables using: decoder → projection → 3NN interpolation.
+        Uses ONE decoder per instrument (like regular decoders).
+        
+        Args:
+            base_type: e.g., 'surface_obs_target', 'radiosonde_target'
+            mesh_features: Processed mesh features [N_mesh, hidden_dim]
+            step_node_type: e.g., 'surface_obs_target_step0'
+            step_edge_index: 3NN edges from mesh to observation locations
+            data: HeteroData batch
+            return_mesh_predictions: If True, return (predictions, mesh_dict)
+        
+        Returns:
+            If return_mesh_predictions=False: predictions [N_obs, num_features]
+            If return_mesh_predictions=True: (predictions, mesh_predictions_dict)
+        """
+        # Extract instrument name (remove '_target' suffix)
+        inst_name = base_type.replace('_target', '')
+
+        # Get config
+        inst_config = self._get_instrument_config(inst_name)
+        if inst_config is None:
+            raise ValueError(f"Instrument {inst_name} not found in config")
+
+        all_features = inst_config['features']
+        target_vars = self.target_variable_config['variables'].get(inst_name, [])
+        regular_vars = [f for f in all_features if f not in target_vars]
+
+        # Get mesh-to-mesh edges for decoder
+        mesh_edge_index = data[("mesh", "to", "mesh")].edge_index
+        
+        # Create zeros ONCE
+        num_mesh_edges = mesh_edge_index.size(1)
+        mesh_edge_attr_zeros = torch.zeros(
+            (num_mesh_edges, self.hidden_dim), 
+            device=mesh_features.device
+        )
+
+        # Get decoder edge attributes (distances from existing 3NN)
+        decoder_edge_attr = data[("mesh", "to", step_node_type)].edge_attr
+        num_target_nodes = data[step_node_type].num_nodes
+        reference_device = mesh_features.device
+
+        # Storage for outputs by feature name
+        feature_outputs_dict = {}
+
+        # === Process Target Variables ===
+        if target_vars:
+            # ONE decoder call for ALL target variables
+            decoder = self.target_decoders[inst_name]
+            decoder.edge_index = mesh_edge_index
+            
+            # Part 1: Decoder (mesh → mesh)
+            transformed = decoder(
+                send_rep=mesh_features,
+                rec_rep=mesh_features,
+                edge_rep=mesh_edge_attr_zeros,
+            )  # [N_mesh, hidden_dim]
+
+            # Part 2: Projection (hidden_dim → num_target_vars)
+            physical_values_all = self.target_projections[inst_name](transformed)  # [N_mesh, num_target_vars]
+
+            # Part 3: Split by variable and interpolate
+            mesh_predictions_dict = {} if return_mesh_predictions else None
+            
+            for i, var_name in enumerate(target_vars):
+                # Extract this variable's values
+                physical_values = physical_values_all[:, i:i+1]  # [N_mesh, 1]
+                
+                # Store mesh predictions (DETACHED to prevent memory leak)
+                if return_mesh_predictions:
+                    mesh_predictions_dict[var_name] = physical_values.detach().clone()
+                
+                # 3NN interpolation (mesh → obs)
+                interpolated = self._simple_3nn_interpolation(
+                    physical_values,
+                    step_edge_index,
+                    decoder_edge_attr,
+                    num_target_nodes,
+                )  # [N_obs, 1]
+
+                feature_outputs_dict[var_name] = interpolated
+
+        # === Process Regular Variables (if any) ===
+        if regular_vars:
+            # Use existing decoder path for non-target variables
+            target_features_initial = torch.zeros(num_target_nodes, self.hidden_dim, device=reference_device)
+            edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
+
+            # FIX: Use correct decoder key
+            decoder_key = self._edge_key(("mesh", "to", base_type))
+            decoder = self.observation_decoders[decoder_key]
+            decoder.edge_index = step_edge_index
+
+            decoded_features = decoder(
+                send_rep=mesh_features,
+                rec_rep=target_features_initial,
+                edge_rep=edge_attr,
+            )
+
+            # Apply scan angle embedding if needed
+            scan_angle = data[step_node_type].x
+
+            if base_type == "ascat_target":
+                scan_angle_embedded = self.ascat_scan_angle_embedder(scan_angle)
+                final_features = torch.cat([decoded_features, scan_angle_embedded], dim=-1)
+                all_predictions = self.output_mappers[base_type](final_features)
+            elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
+                scan_angle_embedded = self.scan_angle_embedder(scan_angle)
+                final_features = torch.cat([decoded_features, scan_angle_embedded], dim=-1)
+                all_predictions = self.output_mappers[base_type](final_features)
+            else:
+                all_predictions = self.output_mappers[base_type](decoded_features)
+
+            # Extract only the non-target feature columns
+            for i, feature_name in enumerate(all_features):
+                if feature_name in regular_vars:
+                    feature_outputs_dict[feature_name] = all_predictions[:, i:i+1]
+
+        # === Combine in correct feature order ===
+        output_list = []
+        for feature_name in all_features:
+            output_list.append(feature_outputs_dict[feature_name])
+
+        output = torch.cat(output_list, dim=1)  # [N_obs, num_features]
+
+        # Return with or without mesh predictions
+        if return_mesh_predictions:
+            return output, mesh_predictions_dict
+        else:
+            return output
 
     def _normalize_inst_weights(self, weights_in):
         out = {}
@@ -617,40 +944,72 @@ class GNNLightning(pl.LightningModule):
                         self.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
                         continue
 
-                    # Get the decoder (mapped to base instrument)
-                    decoder_key = edge_mapping.get(step_edge_type)
-                    if decoder_key not in self.observation_decoders:
-                        self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
-                        continue
+                    # === BRANCHING: Check if this is a target variable instrument ===
+                    if self._is_target_variable(base_type):
+                        # NEW PATH: Target Variable Decoder
+                        save_mesh = not self.training and hasattr(self, '_save_mesh_predictions_enabled')
 
-                    decoder = self.observation_decoders[decoder_key]
-                    decoder.edge_index = step_edge_index
+                        if save_mesh:
+                            step_prediction, mesh_preds = self._decode_target_variables(
+                                base_type=base_type,
+                                mesh_features=mesh_features_processed,
+                                step_node_type=step_node_type,
+                                step_edge_index=step_edge_index,
+                                data=data,
+                                return_mesh_predictions=True,  # Request mesh predictions
+                            )
+                    
+                            # Store mesh predictions for later saving
+                            if not hasattr(self, '_mesh_predictions_buffer'):
+                                self._mesh_predictions_buffer = {}
+                            if base_type not in self._mesh_predictions_buffer:
+                                self._mesh_predictions_buffer[base_type] = []
+                            self._mesh_predictions_buffer[base_type].append(mesh_preds)
+                        else:
+                            step_prediction = self._decode_target_variables(
+                                base_type=base_type,
+                                mesh_features=mesh_features_processed,
+                                step_node_type=step_node_type,
+                                step_edge_index=step_edge_index,
+                                data=data,
+                                return_mesh_predictions=False,
+                            )
 
-                    # Decode mesh features to target predictions
-                    # Use device from mesh features to avoid checkpoint loading issues
-                    reference_device = mesh_features_processed.device
-                    target_features_initial = torch.zeros(data[step_node_type].num_nodes, self.hidden_dim, device=reference_device)
-                    edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
-
-                    decoded_target_features = decoder(
-                        send_rep=mesh_features_processed,
-                        rec_rep=target_features_initial,
-                        edge_rep=edge_attr,
-                    )
-
-                    # Apply scan angle embedding if needed
-                    scan_angle = data[step_node_type].x
-
-                    if base_type == "ascat_target":
-                        scan_angle_embedded = self.ascat_scan_angle_embedder(scan_angle)
-                        final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
-                        step_prediction = self.output_mappers[base_type](final_features)
-                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
-                        scan_angle_embedded = self.scan_angle_embedder(scan_angle)
-                        final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
-                        step_prediction = self.output_mappers[base_type](final_features)
                     else:
-                        step_prediction = self.output_mappers[base_type](decoded_target_features)
+                        # Get the decoder (mapped to base instrument)
+                        decoder_key = edge_mapping.get(step_edge_type)
+                        if decoder_key not in self.observation_decoders:
+                            self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
+                            continue
+
+                        decoder = self.observation_decoders[decoder_key]
+                        decoder.edge_index = step_edge_index
+
+                        # Decode mesh features to target predictions
+                        # Use device from mesh features to avoid checkpoint loading issues
+                        reference_device = mesh_features_processed.device
+                        target_features_initial = torch.zeros(data[step_node_type].num_nodes, self.hidden_dim, device=reference_device)
+                        edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
+
+                        decoded_target_features = decoder(
+                            send_rep=mesh_features_processed,
+                            rec_rep=target_features_initial,
+                            edge_rep=edge_attr,
+                        )
+
+                        # Apply scan angle embedding if needed
+                        scan_angle = data[step_node_type].x
+
+                        if base_type == "ascat_target":
+                            scan_angle_embedded = self.ascat_scan_angle_embedder(scan_angle)
+                            final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
+                            step_prediction = self.output_mappers[base_type](final_features)
+                        elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
+                            scan_angle_embedded = self.scan_angle_embedder(scan_angle)
+                            final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
+                            step_prediction = self.output_mappers[base_type](final_features)
+                        else:
+                            step_prediction = self.output_mappers[base_type](decoded_target_features)
 
                     # Store prediction for this step
                     predictions[base_type].append(step_prediction)
@@ -925,6 +1284,13 @@ class GNNLightning(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         print(f"VALIDATION STEP batch: {batch.bin_name}")
 
+        if batch_idx == 0:
+            self._save_mesh_predictions_enabled = True
+            self._mesh_predictions_buffer = {}
+            print(f"[MESH PRED] Enabled for epoch {self.current_epoch}, batch {batch_idx}")
+        else:
+            self._save_mesh_predictions_enabled = False
+
         # Build decoder names from config (all possible node_types with targets)
         decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
 
@@ -1163,14 +1529,224 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero:
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
+
+        # Save mesh predictions if collected
+        if hasattr(self, '_mesh_predictions_buffer') and self._mesh_predictions_buffer:
+            if batch_idx == 0 and self.trainer.is_global_zero:
+                self._save_mesh_predictions(
+                    self._mesh_predictions_buffer,
+                    batch_idx,
+                    self.current_epoch
+                )
+            
+            # Clear buffer
+            self._mesh_predictions_buffer = {}
+
+        # Always disable and cleanup
+        if hasattr(self, '_save_mesh_predictions_enabled'):
+            self._save_mesh_predictions_enabled = False
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return avg_loss
 
-    def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
-                                      valid_mask_list, out_dir, batch_idx):
-        """Save latent rollout as concatenated observations (same format as standard)."""
+    def predict_step(self, batch, batch_idx):
+        """
+        Prediction step for inference mode.
 
+        This method:
+        1. Runs forward pass to generate predictions
+        2. Saves predictions to CSV files
+        3. Does NOT compute loss or gradients
+
+        Args:
+            batch: Input batch data
+            batch_idx: Batch index
+
+        Returns:
+            dict: Predictions for all node types
+        """
+        print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
+
+        # Forward pass
+        all_predictions = self(batch)
+        if isinstance(all_predictions, tuple):
+            all_predictions, _ = all_predictions
+
+        # Extract ground truths and metadata
+        ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
+
+        # Determine rollout steps
+        step_info = self._get_latent_step_info(batch)
+        latent_rollout_steps = step_info["num_steps"]
+        print(f"[PREDICT] Latent rollout steps: {latent_rollout_steps}")
+
+        # Save predictions for each instrument
+        for node_type, preds_list in all_predictions.items():
+            print(f"[PREDICT] Processing node_type: {node_type}")
+
+            if node_type not in ground_truth_data:
+                continue
+
+            gt_data = ground_truth_data[node_type]
+            gts_list = gt_data["gts_list"]
+            valid_mask_list = gt_data["valid_mask_list"]
+
+            # Save to CSV (first 10 batches)
+            # if batch_idx < 10:
+            self._save_prediction_csv(
+                batch=batch,
+                node_type=node_type,
+                preds_list=preds_list,
+                gts_list=gts_list,
+                valid_mask_list=valid_mask_list,
+                batch_idx=batch_idx,
+                mode='predict'
+            )
+
+        # Save mesh predictions (target variables on grid)
+        if hasattr(self, '_mesh_predictions_buffer') and self._mesh_predictions_buffer:
+            self._save_mesh_predictions(
+                self._mesh_predictions_buffer,
+                batch_idx,
+                epoch=0,
+                mode='predict',
+                batch=batch,
+            )
+            self._mesh_predictions_buffer = {}
+
+        return all_predictions
+
+
+    def on_predict_epoch_start(self):
+        """Setup before prediction epoch starts."""
+        print("[PREDICT] Starting prediction epoch")
+        self._save_mesh_predictions_enabled = True
+        self._mesh_predictions_buffer = {}
+        self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
+        os.makedirs(self._prediction_output_dir, exist_ok=True)
+        os.makedirs(os.path.join(self._prediction_output_dir, 'non-target'), exist_ok=True)
+        os.makedirs(os.path.join(self._prediction_output_dir, 'target'), exist_ok=True)
+        print(f"[PREDICT] Output directory: {self._prediction_output_dir}")
+
+
+    def on_predict_batch_end(self, outputs, batch, batch_idx):
+        """Cleanup after each prediction batch."""
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+    def on_predict_epoch_end(self):
+        """Cleanup and summary after prediction epoch ends."""
+        print("[PREDICT] Prediction epoch completed")
+
+        if hasattr(self, '_save_mesh_predictions_enabled'):
+            self._save_mesh_predictions_enabled = False
+
+        # Generate summary statistics
+        if hasattr(self, '_prediction_output_dir'):
+            obs_dir = os.path.join(self._prediction_output_dir, 'non-target')
+            csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]
+            print(f"[PREDICT] Generated {len(csv_files)} observation CSV files")
+
+            mesh_dir = os.path.join(self._prediction_output_dir, 'target')
+            mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
+            print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files")
+
+    def _extract_init_time_str(self, batch):
+        """
+        Extract initialization time string from batch in YYYYMMDDHH format.
+        Handles multiple formats: pandas Timestamp, list/tuple, Unix timestamp, tensor.
+        
+        Args:
+            batch: Batch data containing input_time or time attribute
+            
+        Returns:
+            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
+        """
+        from datetime import datetime
+        import pandas as pd
+
+        if batch is None:
+            return 'unknown'
+
+        # Try input_time first
+        ts = None
+        if hasattr(batch, 'input_time') and batch.input_time is not None:
+            # Handle if input_time is a list/tuple - take the first element
+            if isinstance(batch.input_time, (list, tuple)):
+                ts = batch.input_time[0] if len(batch.input_time) > 0 else None
+            else:
+                ts = batch.input_time
+
+        # Fallback to batch.time if input_time not available
+        elif hasattr(batch, 'time') and batch.time is not None:
+            if isinstance(batch.time, (list, tuple)):
+                ts = batch.time[0] if len(batch.time) > 0 else None
+            else:
+                ts = batch.time
+
+        # Now convert ts to string based on its type
+        if ts is None:
+            return 'unknown'
+
+        try:
+            # Handle pandas Timestamp
+            if isinstance(ts, pd.Timestamp):
+                return ts.strftime('%Y%m%d%H')
+
+            # Handle Unix timestamp (float/int)
+            elif isinstance(ts, (int, float)):
+                dt = datetime.fromtimestamp(ts)
+                return dt.strftime('%Y%m%d%H')
+
+            # Handle tensor (PyTorch/numpy with .item() method)
+            elif hasattr(ts, 'item'):
+                dt = datetime.fromtimestamp(ts.item())
+                return dt.strftime('%Y%m%d%H')
+
+            # Handle datetime object directly
+            elif isinstance(ts, datetime):
+                return ts.strftime('%Y%m%d%H')
+
+            else:
+                print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
+                return 'unknown'
+
+        except Exception as e:
+            print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
+            return 'unknown'
+
+    def _save_prediction_csv(self, batch, node_type, preds_list, gts_list,
+                             valid_mask_list, batch_idx, mode='predict'):
+        """
+        Save predictions to CSV file.
+
+        Args:
+            batch: Input batch
+            node_type: Type of node (e.g., 'atms_target')
+            preds_list: List of prediction tensors for each step
+            gts_list: List of ground truth tensors (may be None)
+            valid_mask_list: List of validity masks
+            batch_idx: Batch index
+            mode: 'predict' or 'val'
+        """
         step_info = self._get_latent_step_info(batch)
         step_mapping = step_info["step_mapping"]
+
+        # Set output directory
+        if mode == 'predict':
+            out_dir = os.path.join(self._prediction_output_dir, 'non-target')
+        else:
+            out_dir = "val_csv"
+
+        os.makedirs(out_dir, exist_ok=True)
 
         # Collect all observations from all steps
         all_lat = []
@@ -1182,18 +1758,18 @@ class GNNLightning(pl.LightningModule):
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
                 continue
-
+            
             y_pred = preds_list[step]
             y_true = gts_list[step]
             valid_mask = valid_mask_list[step] if step < len(valid_mask_list) else None
-
+            
             if y_pred is None or y_true is None:
                 continue
-
+            
             # Unnormalize
             y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
             y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
-
+            
             # Get metadata for this step
             if node_type in step_mapping and step in step_mapping[node_type]:
                 step_node_type = step_mapping[node_type][step]
@@ -1211,13 +1787,13 @@ class GNNLightning(pl.LightningModule):
                 n = y_pred_unnorm.shape[0]
                 lat_deg = np.zeros(n)
                 lon_deg = np.zeros(n)
-
+            
             # Collect data from this step
             all_lat.extend(lat_deg)
             all_lon.extend(lon_deg)
             all_pred.append(y_pred_unnorm.detach().cpu().numpy())
             all_true.append(y_true_unnorm.detach().cpu().numpy())
-
+            
             if valid_mask is not None:
                 all_mask.append(valid_mask.detach().cpu().numpy().astype(bool))
             else:
@@ -1228,9 +1804,14 @@ class GNNLightning(pl.LightningModule):
             return
 
         # Concatenate all steps
-        all_pred_concat = np.vstack(all_pred)  # Shape: (total_obs, n_ch)
-        all_true_concat = np.vstack(all_true)  # Shape: (total_obs, n_ch)
-        all_mask_concat = np.vstack(all_mask)  # Shape: (total_obs, n_ch)
+        all_pred_concat = np.vstack(all_pred)
+        all_true_concat = np.vstack(all_true)
+        all_mask_concat = np.vstack(all_mask)
+
+        # Skip saving if no real ground truth data (inference mode)
+        if all_true_concat.size == 0 or np.sum(np.abs(all_true_concat)) == 0:
+            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
+            return
 
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
@@ -1256,12 +1837,116 @@ class GNNLightning(pl.LightningModule):
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
 
-        # Save with same filename format as standard rollout
-        filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
+        # Extract init time for filename
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Save with appropriate filename based on mode
+        if mode == 'predict':
+            if init_time_str != 'unknown':
+                filename = f"{out_dir}/pred_{node_type}_init_{init_time_str}.csv"
+            else:
+                filename = f"{out_dir}/pred_{node_type}_batch{batch_idx}.csv"
+        else:  # validation mode
+            if init_time_str != 'unknown':
+                filename = f"{out_dir}/val_{node_type}_init_{init_time_str}_epoch{self.current_epoch}_batch{batch_idx}.csv"
+            else:
+                filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
         df.to_csv(filename, index=False)
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
+
+    def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
+                                      valid_mask_list, out_dir, batch_idx):
+        """Save latent rollout as concatenated observations (validation mode)."""
+        self._save_prediction_csv(
+            batch=batch,
+            node_type=node_type,
+            preds_list=preds_list,
+            gts_list=gts_list,
+            valid_mask_list=valid_mask_list,
+            batch_idx=batch_idx,
+            mode='val'
+        )
+
+    def _save_mesh_predictions(self, predictions_buffer, batch_idx, epoch, mode='val', batch=None):
+        """Save predictions on mesh grid - one file per forecast hour."""
+        
+        # os.makedirs('mesh_predictions', exist_ok=True)
+        if mode == 'predict':
+            output_dir = os.path.join(self._prediction_output_dir, 'target')
+        else:
+            output_dir = 'val_pred_csv'
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Get mesh coordinates
+        mesh_lats = self.mesh_lats.cpu().numpy()
+        mesh_lons = self.mesh_lons.cpu().numpy()
+
+        # Get Input Time
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Convert radians to degrees if needed
+        if mesh_lats.max() <= np.pi:  # Likely in radians
+            mesh_lats = np.degrees(mesh_lats)
+            mesh_lons = np.degrees(mesh_lons)
+
+        for inst_name, step_predictions in predictions_buffer.items():
+            # Remove '_target' suffix to get base instrument name
+            base_inst_name = inst_name.replace('_target', '')
+            
+            # Get target variables
+            target_vars = self.target_variable_config.get('variables', {}).get(base_inst_name, [])
+            
+            if not target_vars:
+                print(f"[MESH PRED] No target variables for {base_inst_name}, skipping")
+                continue
+
+            # Calculate forecast hours
+            num_steps = len(step_predictions)
+            latent_step_hours = self.hparams.get('latent_step_hours', 3)
+            forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
+            
+            print(f"[MESH PRED] Saving {base_inst_name}: {forecast_hours}h forecast")
+
+            for step_idx, (mesh_preds_dict, fhr) in enumerate(zip(step_predictions, forecast_hours)):
+                # Create DataFrame with coordinates
+                df = pd.DataFrame({
+                    'lat': mesh_lats,
+                    'lon': mesh_lons,
+                })
+
+                # Add each target variable's mesh prediction
+                for var_name, pred_tensor in mesh_preds_dict.items():
+                    # Unnormalize if needed
+                    pred_np = pred_tensor.detach().cpu().numpy().squeeze()  # [N_mesh]
+
+                    # ADD UNNORMALIZATION
+                    # Get stats for this variable
+                    if base_inst_name in self.feature_stats:
+                        stats_block = self.feature_stats[base_inst_name]
+                        if var_name in stats_block:
+                            mean, std = stats_block[var_name]
+                            # Unnormalize: value = normalized * std + mean
+                            pred_np = pred_np * std + mean
+                            print(f"[MESH PRED] Unnormalized {var_name}: range [{pred_np.min():.2f}, {pred_np.max():.2f}]")
+                        else:
+                            print(f"[MESH PRED] WARNING: No stats found for {base_inst_name}.{var_name}, saving normalized")
+                    else:
+                        print(f"[MESH PRED] WARNING: No feature_stats for {base_inst_name}, saving normalized")
+
+                    df[f'pred_{var_name}'] = pred_np
+
+                # Use init_time if available, otherwise fall back to batch_idx
+                if init_time_str != 'unknown':
+                    if mode == 'predict':
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}.csv'
+                    else:
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                else:
+                    filepath = f'{output_dir}/{base_inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                df.to_csv(filepath, index=False)
+                print(f"[MESH PRED] Saved {filepath}: {len(df)} mesh points, {len(target_vars)} variables")
 
     def on_after_backward(self):
         # Check if encoded gradient is available

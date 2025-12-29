@@ -89,6 +89,7 @@ def organize_bins_times(
     pipeline_cfg=None,
     window_size="12h",
     latent_step_hours=12,
+    require_targets=True,    # MK PRED MODE
     verbose=False,
 ):
     """
@@ -185,7 +186,11 @@ def organize_bins_times(
             uniq_win = pd.Index(win).unique().sort_values()
             codes = pd.Categorical(win, categories=uniq_win, ordered=True).codes
 
-            n_bins = len(uniq_win) - 1
+            if require_targets:
+                n_bins = len(uniq_win) - 1
+            else:
+                n_bins = len(uniq_win)  # MK PRED MODE: include last window
+
             if n_bins <= 0:
                 if verbose:
                     print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
@@ -202,51 +207,72 @@ def organize_bins_times(
             # --- Build bins; reproducible per-bin subsampling ---
             for bi in range(n_bins):  # exclude last window as target-only
                 t_in = uniq_win[bi]
-
                 m_in = codes == bi
                 input_indices = idx_all[m_in]
-
-                # LATENT ROLLOUT: Split target window into sub-windows
-                t_target_start = uniq_win[bi + 1]
-
-                # Get all indices in the main target window
-                m_target_full = codes == (bi + 1)
-                idx_target_full = idx_all[m_target_full]
-                ts_target_full = time_ts[m_target_full]
-
-                # Generate the start/end times for each sub-window
-                target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
-
-                target_indices_list = []
 
                 # Subsample input once
                 seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
                 input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
 
-                # For each target sub-window, filter and subsample
-                for step in range(num_latent_steps):
-                    t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
+                # MK PRED MODE:
+                if require_targets:
+                    # LATENT ROLLOUT: Split target window into sub-windows
+                    t_target_start = uniq_win[bi + 1]
 
-                    # Include end boundary for the last step
-                    if step == num_latent_steps - 1:
-                        m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
-                    else:
-                        m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
+                    # Get all indices in the main target window
+                    m_target_full = codes == (bi + 1)
+                    idx_target_full = idx_all[m_target_full]
+                    ts_target_full = time_ts[m_target_full]
 
-                    target_indices_step = idx_target_full[m_step]
+                    # Generate the start/end times for each sub-window
+                    target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
 
-                    seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
-                    subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
-                    target_indices_list.append(subsampled_indices)
+                    target_indices_list = []
 
-                if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
+
+                    # For each target sub-window, filter and subsample
+                    for step in range(num_latent_steps):
+                        t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
+
+                        # Include end boundary for the last step
+                        if step == num_latent_steps - 1:
+                            m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
+                        else:
+                            m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
+
+                        target_indices_step = idx_target_full[m_step]
+
+                        seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
+                        subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
+                        target_indices_list.append(subsampled_indices)
+                else:
+                    # Inference mode: No targets
+                    target_indices_list = [np.array([], dtype=int) for _ in range(num_latent_steps)]
+
+                # MK PRED MODE
+                # if input_indices.size == 0 and all(t.size == 0 for t in target_indices_list):
+                #     continue
+                if input_indices.size == 0:
+                    continue
+                # In inference mode, keep bins even without targets
+                # In testing mode, skip bins without targets
+                if require_targets and any(t.size == 0 for t in target_indices_list):
                     continue
 
                 bin_name = f"bin{bi+1}"
+
+                # MK PRED MODE
+                # In inference mode, we don't have actual target times
+                if require_targets:
+                    target_times = list(target_sub_window_times[:-1])
+                else:
+                    # Create placeholder times for inference mode (not used, just for structure)
+                    target_times = []
+
                 data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
                     "input_time": t_in,
                     "input_time_index": input_indices,
-                    "target_times": list(target_sub_window_times[:-1]),  # List of timestamps
+                    "target_times": target_times,  # MK PRED MODE: list(target_sub_window_times[:-1]),  # List of timestamps
                     "target_time_indices": target_indices_list,          # List of index arrays
                     "num_latent_steps": num_latent_steps,
                 }
@@ -292,7 +318,9 @@ def _stats_from_cfg(feature_stats, inst_name, feat_keys):
 
 
 @timing_resource_decorator
-def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None):
+# MK PRED MODE def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None):
+def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None, require_targets=True):
+
     """
     Loads and normalizes features for each time bin.
     Adds per-channel masks for inputs and targets so features can be missing independently.
@@ -630,7 +658,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     valid_targets_exist = True
                     break
 
-            if not valid_targets_exist:
+            # MK PRED MODE:
+            # In testing mode: skip instruments without valid targets
+            # In inference mode: keep all instruments (targets are empty by design)
+            # if not valid_targets_exist:
+            if require_targets and not valid_targets_exist:
                 del data_summary[bin_name][obs_type][inst_name]
                 continue
 

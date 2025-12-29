@@ -1,4 +1,5 @@
 import os
+import glob
 import numpy as np
 import pandas as pd
 import cartopy.crs as ccrs
@@ -51,10 +52,32 @@ def plot_ocelot_target_diff(
     Make a 3-panel figure: OCELOT (prediction), Target (truth), Difference (pred - true),
     and annotate RMSE on the Difference panel.
     """
-    filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+
+    pattern = os.path.join(data_dir, '*.csv')
+    csv_files = glob.glob(pattern)
+
+    # Filter files
+    if instrument_name:
+        csv_files = [f for f in csv_files if instrument_name in os.path.basename(f)]
+    if epoch is not None:
+        csv_files = [f for f in csv_files if f'epoch{epoch}_' in os.path.basename(f)]
+    if batch_idx is not None:
+        csv_files = [f for f in csv_files if f'batch{batch_idx}' in os.path.basename(f)]
+    if not csv_files:
+        print(f"No CSV files found matching criteria in {data_dir}")
+        return
+    print(csv_files)
+
+    if len(csv_files) != 1:
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
+        return
+
+    [filepath] = csv_files
+    print(filepath)
+    # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
     try:
         df = pd.read_csv(filepath)
-        print(f"\n--- OCELOT/Target/Difference for {instrument_name} from {filepath} ---")
+        print(f"\n--- Processing {instrument_name} from {filepath} ---")
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
@@ -243,7 +266,25 @@ def plot_instrument_maps(
     """
     Load prediction CSV and generate maps for each feature with robust errors.
     """
-    filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+
+    pattern = os.path.join(data_dir, '*.csv')
+    csv_files = glob.glob(pattern)
+
+    # Filter files
+    if instrument_name:
+        csv_files = [f for f in csv_files if instrument_name in os.path.basename(f)]
+    if epoch is not None:
+        csv_files = [f for f in csv_files if f'epoch{epoch}_' in os.path.basename(f)]
+    if batch_idx is not None:
+        csv_files = [f for f in csv_files if f'batch{batch_idx}' in os.path.basename(f)]
+    if not csv_files:
+        print(f"No CSV files found matching criteria in {data_dir}")
+        return
+    if len(csv_files) != 1:
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
+        return
+    [filepath] = csv_files
+    # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
@@ -442,7 +483,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 30
+    EPOCH_TO_PLOT = 60
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
@@ -564,4 +605,4 @@ if __name__ == "__main__":
         fig_dir=plot_dir,
         error_metric="percent",
         drop_small_truth=False,
-    }
+    )
