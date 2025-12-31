@@ -27,6 +27,10 @@ bufr:
     # driftLongitude:
     #   query: "*/UARLVB/LONDH"
 
+    height_bufr:
+      query: "*/HEIT"
+      type: float
+
     airPressure:
       query: "*/UARLVB/PRLC"  # Air pressure at station level
       type: float
@@ -54,6 +58,11 @@ bufr:
 encoder:
   variables:
     # MetaData
+    - name: "ObsValue/height_bufr"
+      source: height_bufr
+      longName: "height of Station (SELV)"
+      units: "m"
+
     - name: "ObsValue/airTemperature"
       source: airTemperature
       longName: "Air Temperature"

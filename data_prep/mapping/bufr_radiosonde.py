@@ -32,7 +32,7 @@ class RadiosondeObsBuilder(ObsBuilder):
         self._apply_quality_flag(container, 'northwardWind', 'windQuality')
         self._apply_quality_flag(container, 'eastwardWind',  'windQuality')
         self._apply_quality_flag(container, 'airPressure', 'airPressureQuality')
-        self._apply_quality_flag(container, 'height', 'heightQuality')
+        self._apply_quality_flag(container, 'height_prepbufr', 'heightQuality')
 
         # Add timestamps
         reference_time = self._get_reference_time(input_path)

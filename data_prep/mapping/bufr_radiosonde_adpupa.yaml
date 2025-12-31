@@ -23,6 +23,10 @@ bufr:
     reportId:
       query: "*/RPID"
 
+    height_bufr:
+      query: "*/SELV"
+      type: float
+
     airPressure:
       query: "[*/UARLV/PRLC, */PRLC]"  # Air pressure at station level
       type: float
@@ -52,6 +56,11 @@ encoder:
   variables:
     # MetaData
 
+    - name: "height_bufr"
+      source: height_bufr
+      longName: "height"
+      units: "m"
+
     - name: "airTemperature"
       source: airTemperature
       longName: "Air Temperature"
@@ -64,7 +73,7 @@ encoder:
       units: "deg C"
       range: [ -100, 100 ]
 
-    - name: "ralativeHumidity"
+    - name: "relativeHumidity"
       source: relativeHumidity
       longName: "Specific Humidity"
       units: "mg/kg"

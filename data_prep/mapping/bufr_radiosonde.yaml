@@ -1,5 +1,5 @@
 bufr:
-  group_by_variable: height
+  group_by_variable: height_prepbufr
   subsets:
     - ADPUPA
   variables:
@@ -43,7 +43,7 @@ bufr:
     airPressure:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
 
-    height:
+    height_prepbufr:
       query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
 
     # Quality Markers
@@ -83,8 +83,8 @@ encoder:
       source: stationIdentification
       longName: "Station Identification"
 
-    - name: "stationElevation"
-      source: stationElevation
+    - name: "stationElevation_prepbufr"
+      source: stationElevation_prepbufr
       longName: "Station Elevation"
       units: "meters"
       range: [-100, 5000]
@@ -130,8 +130,8 @@ encoder:
       units: "hPa"
       range: [0, 1200]
 
-    - name: "height"
-      source: height
+    - name: "height_prepbufr"
+      source: height_prepbufr
       longName: "Height"
       units: "meters"
       range: [0, 60000]

@@ -131,7 +131,8 @@ class RawRadiosondeBuilder(ObsBuilder):
         for var in ['driftTime',
                     'driftLatitude',
                     'driftLongitude',
-                    'height',
+                    'height_prepbufr',
+                    'stationElevation',
                     'airTemperatureQuality',
                     'specificHumidityQuality',
                     'dewPointTemperatureQuality',
@@ -180,9 +181,15 @@ class RawRadiosondeBuilder(ObsBuilder):
                 'units': "degree_east"
             },
             {
-                'name': "height",
-                'source': 'height',
+                'name': "height_prepbufr",
+                'source': 'height_prepbufr',
                 'longName': "Height",
+                'units': "meters"
+            },
+            {
+                'name': "stationElevation",
+                'source': 'stationElevation',
+                'longName': "Station Elevation",
                 'units': "meters"
             },
             {

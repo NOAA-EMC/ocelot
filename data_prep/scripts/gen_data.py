@@ -119,7 +119,7 @@ def _split_datetime_range(start: datetime, end: datetime, num_days: int) -> list
     Split the datetime range into chunks of num_days days.
     """
     delta = end - start
-    num_chunks = delta.days // num_days + 1
+    num_chunks = (delta.days + num_days - 1) // num_days
 
     ranges = []
     for i in range(num_chunks):
