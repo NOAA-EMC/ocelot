@@ -143,7 +143,7 @@ data types:
   - name: avhrr
     type: tank
     num_tasks: 64
-    batch_days: 15
+    batch_days: 7
     memory: 128G
     mapping: bufr_avhrr.py
     paths:

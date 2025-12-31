@@ -3,10 +3,10 @@ pipeline:
     seed: 12345
     satellite:         
       _default: 30    # default for any unspecified instrument
-      atms: 6         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
+      # atms: 6         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
       avhrr: 100
-      amsua: 3   
-      ascat: 2
+      # amsua: 3   
+      # ascat: 2
     conventional:
       _default: 1
       surface_obs: 1
@@ -28,10 +28,13 @@ instrument_weights:
   atms: 1.0
   amsua: 1.0
   avhrr: 1.0
-  surface_obs: 2.0
-  radiosonde: 2.0
+  surface_obs: 1.0
+  radiosonde: 1.0
   ascat: 1.0
   # snow_cover: 1.0
+  ssmis: 1.0
+  seviri: 1.0
+
 
 channel_weights:
   atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
@@ -40,6 +43,16 @@ channel_weights:
   surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
   radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
   ascat: [1.0, 1.0, 1.0]
+  ssmis: [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0
+    ]
+  seviri: [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+    ]
+
 
 observation_config:
   satellite:
@@ -66,6 +79,34 @@ observation_config:
       metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
       input_dim: 25
       target_dim: 15
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    ssmis:
+      sat_ids: [285,]
+      scan_angle_channels: 2  # Number of scan angle dimensions
+      features: [bt_ch_1, bt_ch_2, bt_ch_3, bt_ch_4, bt_ch_5,
+                 bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10,
+                 bt_ch_11, bt_ch_12, bt_ch_13, bt_ch_14, bt_ch_15,
+                 bt_ch_16, bt_ch_17, bt_ch_18, bt_ch_19, bt_ch_20,
+                 bt_ch_21, bt_ch_22, bt_ch_23, bt_ch_24]
+      metadata: [sensorScanPosition, satelliteAscendingFlag]
+      input_dim: 33
+      target_dim: 24
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    seviri:
+      sat_ids: [56, 57]  # Meteosat-11
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [bt_all_ch_4, bt_all_ch_5, bt_all_ch_6, bt_all_ch_7, 
+                 bt_all_ch_8, bt_all_ch_9, bt_all_ch_10, bt_all_ch_11,
+                 bt_clear_ch_4, bt_clear_ch_5, bt_clear_ch_6, bt_clear_ch_7,
+                 bt_clear_ch_8, bt_clear_ch_9, bt_clear_ch_10, bt_clear_ch_11
+                ]
+      metadata: [satelliteZenithAngle, solarZenithAngle]
+      input_dim: 25
+      target_dim: 16
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
@@ -263,3 +304,45 @@ feature_stats:  # Statistics for the features used in the model
     backscatter_ch_1: [-17.84, 5.77]   # 2022-2024 dB mean/std (filtered to [-80, 40] dB)
     backscatter_ch_2: [-14.84, 5.12]
     backscatter_ch_3: [-17.81, 5.73]
+  ssmis:
+    bt_ch_1 : [238.43,  20.42]
+    bt_ch_10: [252.93,  11.01]
+    bt_ch_11: [241.98,   9.31]
+    bt_ch_12: [182.48,  53.52]
+    bt_ch_13: [224.26,  34.52]
+    bt_ch_14: [237.05,  29.52]
+    bt_ch_15: [194.48,  44.93]
+    bt_ch_16: [231.97,  26.43]
+    bt_ch_17: [250.07,  26.02]
+    bt_ch_18: [231.07,  32.5 ]
+    bt_ch_19: [229.95,  7.91]
+    bt_ch_2 : [250.4 ,  16.73]
+    bt_ch_20: [212.22,  9.38]
+    bt_ch_21: [247.08,  6.36]
+    bt_ch_22: [247.2 ,  9.42]
+    bt_ch_23: [237.59,  8.08]
+    bt_ch_24: [225.99,  5.44]
+    bt_ch_3 : [241.66,  13.37]
+    bt_ch_4 : [228.59,   5.36]
+    bt_ch_5 : [216.18,   8.4 ]
+    bt_ch_6 : [213.07,   8.51]
+    bt_ch_7 : [217.33,   6.51]
+    bt_ch_8 : [250.04,   35.18]
+    bt_ch_9 : [257.22,  22.09]
+  seviri:
+    bt_all_ch_10  : [99.96, 277.3 ]
+    bt_all_ch_11  : [99.96, 258.43]
+    bt_all_ch_4   : [99.95, 282.76]
+    bt_all_ch_5   : [99.96, 237.52]
+    bt_all_ch_6   : [99.96, 254.45]
+    bt_all_ch_7   : [99.96, 276.94]
+    bt_all_ch_8   : [99.96, 257.69]
+    bt_all_ch_9   : [99.96, 278.99]
+    bt_clear_ch_10: [73.44, 288.78]
+    bt_clear_ch_11: [73.44, 265.8 ]
+    bt_clear_ch_4 : [73.44, 290.5 ]
+    bt_clear_ch_5 : [73.44, 240.42]
+    bt_clear_ch_6 : [73.44, 259.62]
+    bt_clear_ch_7 : [73.44, 287.69]
+    bt_clear_ch_8 : [73.44, 264.72]
+    bt_clear_ch_9 : [73.44, 290.49]
