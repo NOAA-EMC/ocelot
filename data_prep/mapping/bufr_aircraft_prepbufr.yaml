@@ -47,6 +47,9 @@ bufr:
 
     specificHumidity:
       query: "*/PRSLEVLA/Q___INFO/Q__EVENT{1}/QOB"
+      type: float
+      transforms:
+        - scale: 0.000001  # Convert from mg/kg to kg/kg 
 
     #Quality Indicators
 
