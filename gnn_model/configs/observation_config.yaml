@@ -12,6 +12,7 @@ pipeline:
       surface_obs: 1
     # snow_cover: 1        # keep all (stride 1)
       radiosonde: 1
+      aircraft: 1
     mode:
       satellite:
         _default: random  # "stride" | "random" | "none"
@@ -34,6 +35,7 @@ instrument_weights:
   # snow_cover: 1.0
   ssmis: 1.0
   seviri: 1.0
+  aircraft: 1.0
 
 
 channel_weights:
@@ -52,6 +54,7 @@ channel_weights:
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0
     ]
+  aircraft: [1.0, 1.0, 1.0, 1.0,]
 
 
 observation_config:
@@ -224,6 +227,32 @@ observation_config:
           range: [0, 6.28]  # radians
           qm_flag_col: windQuality
           keep: [2,]
+    aircraft:
+      source: zarr
+      zarr_name: aircraft
+      features: [airPressure, airTemperature, windU, windV]
+      metadata: [height]
+      input_dim: 12                     # 7 (geo/time enc) + 1 meta + 6 feats
+      target_dim: 4
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        airPressure:
+          range: [1, 1200]
+          qm_flag_col: airPressureQuality
+          keep: [1, 2]
+        airTemperature:
+          range: [-90, 60]
+          qm_flag_col: airTemperatureQuality
+          keep: [1, 8,]
+        windU:
+          range: [-100, 100]
+          qm_flag_col: windQuality
+          keep: [1,]
+        windV:
+          range: [-100, 100]
+          qm_flag_col: windQuality
+          keep: [1,]
 
 #   snow_cover:
 #     source: zarr
@@ -253,6 +282,13 @@ feature_stats:  # Statistics for the features used in the model
     dewPointTemperature: [227, 35]
     wind_u: [2, 8.25]
     wind_v: [0.50, 5.5]
+    latitude: [31.6, 25.90]
+    longitude: [6, 95]
+  aircraft:  
+    airPressure: [505, 274]
+    airTemperature: [-19, 27]
+    windU: [12.27, 15.68]
+    windV: [0.4, 11.68]
     latitude: [31.6, 25.90]
     longitude: [6, 95]
       #  snow_cover:

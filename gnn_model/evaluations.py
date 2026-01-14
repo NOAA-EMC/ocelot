@@ -442,7 +442,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 30
+    EPOCH_TO_PLOT = 40
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
@@ -464,6 +464,8 @@ if __name__ == "__main__":
     # Surface obs and snow cover: omit units or add as needed
     plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
     plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR, fig_dir=plot_dir)
+
+    plot_ocelot_target_diff("aircraft", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=4, data_dir=DATA_DIR, fig_dir=plot_dir)
 
     # ASCAT backscatter: use absolute error for sigma0 measurements
     plot_instrument_maps(
@@ -494,6 +496,18 @@ if __name__ == "__main__":
         EPOCH_TO_PLOT,
         BATCH_IDX_TO_PLOT,
         num_channels=5,
+        data_dir=DATA_DIR,
+        fig_dir=plot_dir,
+        error_metric="auto",  # ABS for most, sMAPE for pressure
+        drop_small_truth=True,
+    )
+
+
+    plot_instrument_maps(
+        "aircraft",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=4,
         data_dir=DATA_DIR,
         fig_dir=plot_dir,
         error_metric="auto",  # ABS for most, sMAPE for pressure
@@ -564,4 +578,4 @@ if __name__ == "__main__":
         fig_dir=plot_dir,
         error_metric="percent",
         drop_small_truth=False,
-    }
+    )
