@@ -194,16 +194,19 @@ observation_config:
     radiosonde:
       source: zarr
       zarr_name: raw_radiosonde
-      features: [airPressure, airTemperature, dewPointTemperature, wind_u, wind_v]
-      metadata: []
-      input_dim: 12                     # 7 (geo/time enc) + 1 meta + 6 feats
-      target_dim: 5
+      # NOTE: airPressure removed from features - now used as vertical coordinate in metadata
+      # Predicting: Temperature, Dewpoint, Wind components (4 variables)
+      features: [airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
+      input_dim: 12                    # 7 (geo/time enc) + 1 meta + 4 feats
+      target_dim: 4                    # Only predict T, Td, u, v (not pressure)
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       level_selection:
         filter_col: airPressure
-        levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+        matching_mode: all  # Use ALL pressure levels (no filtering)
       qc_filters:
+        # Keep airPressure QC to filter bad pressure values (needed for log_pressure_height)
         airPressure:
           range: [1, 1200]
           qm_flag_col: airPressureQuality
@@ -248,13 +251,13 @@ feature_stats:  # Statistics for the features used in the model
     wind_v: [0.10, 3.37]
 
   radiosonde:  
-    airPressure: [319, 308]
-    airTemperature: [242, 30]
-    dewPointTemperature: [227, 35]
-    wind_u: [2, 8.25]
-    wind_v: [0.50, 5.5]
-    latitude: [31.6, 25.90]
-    longitude: [6, 95]
+    airPressure: [319.24, 296.08]
+    airTemperature: [238.30, 27.93]
+    dewPointTemperature: [221.01, 33.97]
+    wind_u: [7.53, 15.19]
+    wind_v: [-0.02, 8.86]
+    latitude: [32.05, 27.07]
+    longitude: [1.96, 100.91]
       #  snow_cover:
       #    snowDepth: [0.38, 0.68]
   atms:
