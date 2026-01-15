@@ -502,7 +502,6 @@ if __name__ == "__main__":
         drop_small_truth=True,
     )
 
-
     plot_instrument_maps(
         "aircraft",
         EPOCH_TO_PLOT,
