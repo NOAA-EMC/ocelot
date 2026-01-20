@@ -83,7 +83,7 @@ encoder:
     - name: "instantaneousAltitudeRate"
       source: variables/instantaneousAltitudeRate
       longName: "Instantaneous Altitude Rate"
-      units: "m s-1"
+      units: "m/s"
 
     - name: "latitude"
       source: variables/driftLatitude
