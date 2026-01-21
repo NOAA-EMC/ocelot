@@ -22,8 +22,8 @@ bufr:
 
     driftLongitude:
       query: "*/PRSLEVLA/DRFTINFO/XDR"
-      transform:
-        wrap: [-180, 180]
+      transforms:
+        - wrap: [ -180.0, 180.0 ]
 
     instantaneousAltitudeRate:
       query: "*/PRSLEVLA/IALR"
