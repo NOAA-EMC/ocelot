@@ -106,12 +106,12 @@ encoder:
     - name: "airTemperature"
       source: variables/airTemperature
       longName: "Air Temperature at Station Level"
-      units: "Celsius"
+      units: "C"
 
     - name: "height"
       source: variables/height
       longName: "Height at Station Level"
-      units: "meters"
+      units: "m"
 
     - name: "windU"
       source: variables/windU
