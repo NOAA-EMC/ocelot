@@ -881,7 +881,7 @@ class GNNLightning(pl.LightningModule):
         ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
 
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
-        loss_weight_sum = 0.0  # Weighted denominator (prevents dilution when adding instruments)
+        num_predictions = 0
 
         # Calculate loss for each observation type and add it to the total
         for node_type, preds_list in all_predictions.items():
@@ -942,40 +942,24 @@ class GNNLightning(pl.LightningModule):
                         print(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
                     continue
 
-                # Count valid observations for proper weighting
-                # This ensures satellites (many obs) dominate proportionally over conventional (few obs)
-                if valid_mask is not None:
-                    num_valid_obs = valid_mask.sum().item()
-                else:
-                    num_valid_obs = y_pred.shape[0]  # All observations valid
-
-                # Weight by: instrument_weight × number of valid observations
-                # This prevents dilution: ATMS (12k obs) contributes ~12k× more than radiosonde (1 obs)
-                effective_weight = instrument_weight * num_valid_obs
-                weighted_loss = channel_loss * effective_weight
+                # Apply the overall instrument weight
+                weighted_loss = channel_loss * instrument_weight
 
                 # Add the loss for this instrument to the total
                 total_loss = total_loss + weighted_loss
-                loss_weight_sum += effective_weight
+                num_predictions += 1
 
         dummy_loss = 0.0
         for param in self.parameters():
             dummy_loss += param.sum() * 0.0
-
-        # Normalize by weighted denominator (prevents dilution when adding instruments)
-        # This ensures each observation contributes equally, not each (instrument,step) pair
-        avg_loss = total_loss / max(loss_weight_sum, 1e-12)
+        # Average the loss over all observation types that had predictions
+        avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
         avg_loss = avg_loss + dummy_loss
 
         # Log rollout steps appropriately
         step_info = self._get_latent_step_info(batch)
         latent_rollout_steps = step_info["num_steps"]
         print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
-
-        # Diagnostic: show loss weight distribution every 200 steps
-        if self.global_step % 200 == 0 and self.trainer.is_global_zero:
-            print(f"[LOSS WEIGHTS] total_loss={total_loss.item():.6f}, weight_sum={loss_weight_sum:.1f}, "
-                  f"avg_loss={avg_loss.item():.6f}")
 
         self.log(
             "train_loss",
