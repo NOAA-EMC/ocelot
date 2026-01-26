@@ -505,7 +505,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             # -------------------- Feature extraction (following original pattern) --------------------
             def _get_feature(arrs, name, idx):
                 if name in arrs:
-                    return arrs[name][idx]
+                    data = arrs[name][idx]
+                    # FIX: Negate windV for aircraft (zarr file has wrong sign convention)
+                    if name == "windV" and inst_name == "aircraft":
+                        return -data
+                    return data
                 if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
                     ws = arrs["windSpeed"][idx].astype(np.float32)
                     wd = arrs["windDirection"][idx].astype(np.float32)
@@ -554,9 +558,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             input_lon_raw = z["longitude"][input_idx]
             input_times_raw = z["time"][input_idx]
 
-            # Extract pressure level indices for radiosonde (categorical embedding)
+            # Extract pressure level indices for radiosonde and aircraft (categorical embedding)
             input_pressure_level = None
-            if inst_name == 'radiosonde' and 'airPressure' in z:
+            if inst_name in ['radiosonde', 'aircraft'] and 'airPressure' in z:
                 pressure = z['airPressure'][input_idx].astype(np.float32)
                 input_pressure_level = get_pressure_level_index(pressure)
 
@@ -575,7 +579,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_lat_raw_list.append(np.array([], dtype=np.float32))
                     target_lon_raw_list.append(np.array([], dtype=np.float32))
                     target_times_raw_list.append(np.array([], dtype=np.float32))
-                    if inst_name == 'radiosonde':
+                    if inst_name in ['radiosonde', 'aircraft']:
                         target_pressure_level_list.append(np.array([], dtype=np.int32))
                 else:
                     target_features_raw_list.append(np.column_stack([_get_feature(z, k, target_idx) for k in feat_keys]).astype(np.float32))
@@ -583,7 +587,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_lat_raw_list.append(z["latitude"][target_idx])
                     target_lon_raw_list.append(z["longitude"][target_idx])
                     target_times_raw_list.append(z["time"][target_idx])
-                    if inst_name == 'radiosonde' and 'airPressure' in z:
+                    if inst_name in ['radiosonde', 'aircraft'] and 'airPressure' in z:
                         pressure = z['airPressure'][target_idx].astype(np.float32)
                         target_pressure_level_list.append(get_pressure_level_index(pressure))
 
@@ -985,15 +989,15 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
 
-            # Store pressure level indices for radiosonde
-            if inst_name == 'radiosonde' and input_pressure_level is not None:
+            # Store pressure level indices for radiosonde and aircraft
+            if inst_name in ['radiosonde', 'aircraft'] and input_pressure_level is not None:
                 # Filter to kept rows
                 input_pressure_level_clean = input_pressure_level[keep_inputs]
                 data_summary_bin["input_pressure_level"] = torch.tensor(input_pressure_level_clean, dtype=torch.long)
 
             # Store target pressure level indices
             target_pressure_level_list_filtered = []
-            if inst_name == 'radiosonde' and target_pressure_level_list:
+            if inst_name in ['radiosonde', 'aircraft'] and target_pressure_level_list:
                 for step, target_data in enumerate(target_data_cleaned):
                     if len(target_pressure_level_list) > step and target_pressure_level_list[step].size > 0:
                         # Get the valid_target_meta mask for this step
@@ -1022,7 +1026,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             })
 
             # Add pressure level lists if we have them
-            if inst_name == 'radiosonde' and target_pressure_level_list_filtered:
+            if inst_name in ['radiosonde', 'aircraft'] and target_pressure_level_list_filtered:
                 data_summary_bin["target_pressure_level_list"] = target_pressure_level_list_filtered
 
             NAME2ID = _name2id(observation_config)

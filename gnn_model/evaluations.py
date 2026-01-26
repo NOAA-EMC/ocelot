@@ -16,7 +16,7 @@ TINY_THRESH = {
 }
 
 # features that should default to ABS error when error_metric="auto"
-AUTO_ABS = {"airTemperature", "dewPointTemperature", "relativeHumidity", "wind_u", "wind_v"}
+AUTO_ABS = {"airTemperature", "dewPointTemperature", "relativeHumidity", "wind_u", "wind_v", "windU", "windV", "specificHumidity"}
 
 CALM_WIND_THRESHOLD = 2.0  # m/s
 
@@ -422,11 +422,18 @@ def plot_radiosonde_profiles_by_pressure_level(
     data_dir: str = "val_csv",
     fig_dir: str = PLOT_DIR,
     agg="mean",  # or "median"
+    min_samples: int = 500,  # Minimum samples required per level for reliable statistics
 ):
     """
-    Plot radiosonde profiles using categorical pressure level indices.
+    Plot radiosonde/aircraft profiles using categorical pressure level indices.
     This is more accurate than binning continuous pressure values.
     Shows metrics stratified by the 16 standard pressure levels.
+
+    Args:
+        min_samples: Minimum number of observations required per pressure level.
+                     Levels with fewer samples are excluded from plots (but kept in CSV)
+                     to avoid showing unreliable statistics.
+                     Default: 500 (sufficient for stable statistics)
     """
     filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
     df = pd.read_csv(filepath)
@@ -450,77 +457,133 @@ def plot_radiosonde_profiles_by_pressure_level(
         if level_df is None or level_df.empty:
             continue
 
-        # Save table
+        # Save table (with all levels, including those with few samples)
         out_layer = os.path.join(fig_dir, f"radiosonde_{feat}_epoch_{epoch}_level_skill.csv")
         level_df.to_csv(out_layer, index=False)
         print(f"  -> Saved pressure-level skill table: {out_layer}")
 
         p_hpa = level_df["pressure_hPa"].to_numpy()
 
+        # Filter out invalid pressure values (NaN, zero, negative) for log scale
+        valid_mask = np.isfinite(p_hpa) & (p_hpa > 0)
+        if not np.any(valid_mask):
+            print(f"  [WARN] No valid pressure values for {feat}, skipping vertical profile plots")
+            continue
+
+        # Filter out levels with insufficient samples for reliable statistics
+        sample_counts = level_df["N"].to_numpy()
+        sufficient_samples_mask = sample_counts >= min_samples
+        # Combine both filters
+        plot_mask = valid_mask & sufficient_samples_mask
+
+        if not np.any(plot_mask):
+            print(f"  [WARN] No pressure levels with sufficient samples (>={min_samples}) for {feat}, skipping plots")
+            continue
+
+        # Count how many levels were excluded
+        excluded_count = valid_mask.sum() - plot_mask.sum()
+        if excluded_count > 0:
+            excluded_levels = level_df[valid_mask & ~sufficient_samples_mask]
+            excluded_info = ", ".join([f"{row['pressure_level_label']} (N={row['N']})"
+                                      for _, row in excluded_levels.iterrows()])
+            print(f"  [INFO] Excluding {excluded_count} level(s) with insufficient data: {excluded_info}")
+
+        # Apply mask to all arrays
+        p_hpa = p_hpa[plot_mask]
+        level_df_filtered = level_df[plot_mask].reset_index(drop=True)
+
+        # Final safety check: need at least 2 points for a meaningful profile plot
+        if len(p_hpa) < 2:
+            print(f"  [WARN] Only {len(p_hpa)} level(s) remaining after filtering for {feat}, need at least 2 for profile plot")
+            continue
+
+        # Check if pressure range is sufficient for log scale (need at least 2x ratio)
+        p_min, p_max = p_hpa.min(), p_hpa.max()
+        if p_max / p_min < 1.5:
+            print(f"  [WARN] Pressure range too narrow for {feat} ({p_min:.0f}-{p_max:.0f} hPa, ratio={p_max/p_min:.2f}), skipping plots")
+            continue
+
         # -------------------------
         # (A) True vs Pred profile
         # -------------------------
-        t_prof = level_df["mean_true"].to_numpy()
-        y_prof = level_df["mean_pred"].to_numpy()
-        labels = level_df["pressure_level_label"].to_numpy()
+        t_prof = level_df_filtered["mean_true"].to_numpy()
+        y_prof = level_df_filtered["mean_pred"].to_numpy()
+        labels = level_df_filtered["pressure_level_label"].to_numpy()
 
-        plt.figure(figsize=(7, 9))
-        plt.plot(t_prof, p_hpa, marker="o", markersize=8, linewidth=2, label="True (level avg)")
-        plt.plot(y_prof, p_hpa, marker="s", markersize=8, linewidth=2, label="Pred (level avg)")
-        plt.gca().invert_yaxis()
-        plt.yscale("log")
-        plt.yticks(p_hpa, labels)
-        plt.xlabel(f"{feat} ({agg})", fontsize=12)
-        plt.ylabel("Pressure Level", fontsize=12)
-        plt.title(f"{instrument_name} • {feat} • True vs Pred\nEpoch {epoch} (by pressure level)", fontsize=13)
-        plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-        plt.legend(fontsize=11)
-        out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_true_vs_pred_by_level_epoch_{epoch}.png")
-        plt.savefig(out_png, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"  -> Saved True-vs-Pred-by-level plot: {out_png}")
+        try:
+            plt.figure(figsize=(7, 9))
+            plt.plot(t_prof, p_hpa, marker="o", markersize=8, linewidth=2, label="True (level avg)")
+            plt.plot(y_prof, p_hpa, marker="s", markersize=8, linewidth=2, label="Pred (level avg)")
+            plt.gca().invert_yaxis()
+            plt.yscale("log")
+            plt.yticks(p_hpa, labels)
+            plt.xlabel(f"{feat} ({agg})", fontsize=12)
+            plt.ylabel("Pressure Level", fontsize=12)
+            plt.title(f"{instrument_name} • {feat} • True vs Pred\nEpoch {epoch} (by pressure level)", fontsize=13)
+            plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+            plt.legend(fontsize=11)
+            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_true_vs_pred_by_level_epoch_{epoch}.png")
+            plt.savefig(out_png, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"  -> Saved True-vs-Pred-by-level plot: {out_png}")
+        except Exception as e:
+            plt.close()
+            print(f"  [ERROR] Failed to create True-vs-Pred plot for {feat}: {e}")
 
         # -------------------------
         # (B) RMSE profile
         # -------------------------
-        rmse = level_df["RMSE"].to_numpy()
+        rmse = level_df_filtered["RMSE"].to_numpy()
 
-        plt.figure(figsize=(7, 9))
-        plt.plot(rmse, p_hpa, marker="o", markersize=8, linewidth=2, color="red", label="RMSE")
-        plt.gca().invert_yaxis()
-        plt.yscale("log")
-        plt.yticks(p_hpa, labels)
-        plt.xlabel("RMSE", fontsize=12)
-        plt.ylabel("Pressure Level", fontsize=12)
-        plt.title(f"{instrument_name} • {feat} • RMSE\nEpoch {epoch} (by pressure level)", fontsize=13)
-        plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-        plt.legend(fontsize=11)
-        out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_rmse_by_level_epoch_{epoch}.png")
-        plt.savefig(out_png, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"  -> Saved RMSE-by-level plot: {out_png}")
+        try:
+            plt.figure(figsize=(7, 9))
+            plt.plot(rmse, p_hpa, marker="o", markersize=8, linewidth=2, color="red", label="RMSE")
+            plt.gca().invert_yaxis()
+            plt.yscale("log")
+            plt.yticks(p_hpa, labels)
+            plt.xlabel("RMSE", fontsize=12)
+            plt.ylabel("Pressure Level", fontsize=12)
+            plt.title(f"{instrument_name} • {feat} • RMSE\nEpoch {epoch} (by pressure level)", fontsize=13)
+            plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+            plt.legend(fontsize=11)
+            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_rmse_by_level_epoch_{epoch}.png")
+            plt.savefig(out_png, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"  -> Saved RMSE-by-level plot: {out_png}")
+        except Exception as e:
+            plt.close()
+            print(f"  [ERROR] Failed to create RMSE plot for {feat}: {e}")
 
         # -------------------------
         # (C) Variance Ratio profile (KEY METRIC!)
         # -------------------------
-        var_ratio = level_df["variance_ratio"].to_numpy()
+        var_ratio = level_df_filtered["variance_ratio"].to_numpy()
 
-        plt.figure(figsize=(7, 9))
-        plt.plot(var_ratio * 100, p_hpa, marker="o", markersize=8, linewidth=2, color="green", label="Variance Ratio")
-        plt.axvline(x=100, color="gray", linestyle="--", linewidth=1.5, label="Perfect (100%)")
-        plt.gca().invert_yaxis()
-        plt.yscale("log")
-        plt.yticks(p_hpa, labels)
-        plt.xlabel("Prediction Variance / True Variance (%)", fontsize=12)
-        plt.ylabel("Pressure Level", fontsize=12)
-        plt.title(f"{instrument_name} • {feat} • Variance Ratio\nEpoch {epoch} (by pressure level)", fontsize=13)
-        plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
-        plt.xlim(0, max(120, var_ratio.max() * 105))
-        plt.legend(fontsize=11)
-        out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_variance_ratio_by_level_epoch_{epoch}.png")
-        plt.savefig(out_png, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"  -> Saved Variance-Ratio-by-level plot: {out_png}")
+        try:
+            plt.figure(figsize=(7, 9))
+            plt.plot(var_ratio * 100, p_hpa, marker="o", markersize=8, linewidth=2, color="green", label="Variance Ratio")
+            plt.axvline(x=100, color="gray", linestyle="--", linewidth=1.5, label="Perfect (100%)")
+            plt.gca().invert_yaxis()
+            plt.yscale("log")
+            plt.yticks(p_hpa, labels)
+            plt.xlabel("Prediction Variance / True Variance (%)", fontsize=12)
+            plt.ylabel("Pressure Level", fontsize=12)
+            plt.title(f"{instrument_name} • {feat} • Variance Ratio\nEpoch {epoch} (by pressure level)", fontsize=13)
+            plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+            # Handle potential NaN values in variance ratio
+            var_ratio_finite = var_ratio[np.isfinite(var_ratio)]
+            if len(var_ratio_finite) > 0:
+                plt.xlim(0, max(120, np.max(var_ratio_finite) * 105))
+            else:
+                plt.xlim(0, 120)
+            plt.legend(fontsize=11)
+            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_variance_ratio_by_level_epoch_{epoch}.png")
+            plt.savefig(out_png, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"  -> Saved Variance-Ratio-by-level plot: {out_png}")
+        except Exception as e:
+            plt.close()
+            print(f"  [ERROR] Failed to create Variance-Ratio plot for {feat}: {e}")
 
 
 def plot_instrument_maps(
@@ -762,7 +825,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 53
+    EPOCH_TO_PLOT = 58
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
@@ -778,7 +841,21 @@ if __name__ == "__main__":
         fig_dir=plot_dir,
     )
 
+    # Plot aircraft profiles by categorical pressure level (similar to radiosonde)
+    # Use lower min_samples threshold for aircraft due to sparser data distribution
+    plot_radiosonde_profiles_by_pressure_level(
+        "aircraft",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        data_dir=DATA_DIR,
+        fig_dir=plot_dir,
+        min_samples=1000,  # Exclude very sparse levels (e.g., 150 hPa with N=240)
+    )
+
     # add the OCELOT | Target | Difference + RMSE figures
+    # Aircraft conventional observations (temperature, humidity, winds)
+    plot_ocelot_target_diff("aircraft", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=4, data_dir=DATA_DIR, fig_dir=plot_dir, units="various")
+
     # ASCAT backscatter: add units for sigma0
     plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
 
@@ -802,6 +879,18 @@ if __name__ == "__main__":
         data_dir=DATA_DIR,
         fig_dir=plot_dir,
         error_metric="auto",  # ABS for most, sMAPE for pressure
+        drop_small_truth=True,
+    )
+
+    # Aircraft: similar to radiosonde with 4 features (T, q, u, v)
+    plot_instrument_maps(
+        "aircraft",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=4,
+        data_dir=DATA_DIR,
+        fig_dir=plot_dir,
+        error_metric="auto",  # ABS for temperature and winds
         drop_small_truth=True,
     )
 

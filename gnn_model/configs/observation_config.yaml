@@ -10,8 +10,9 @@ pipeline:
     conventional:
       _default: 1
       surface_obs: 1
-    # snow_cover: 1        # keep all (stride 1)
       radiosonde: 1
+      aircraft: 1
+    # snow_cover: 1        # keep all (stride 1)
     mode:
       satellite:
         _default: random  # "stride" | "random" | "none"
@@ -31,6 +32,7 @@ instrument_weights:
   surface_obs: 1.0
   radiosonde: 1.0
   ascat: 1.0
+  aircraft: 1.0
   # snow_cover: 1.0
   ssmis: 1.0
   seviri: 1.0
@@ -41,7 +43,8 @@ channel_weights:
   amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   avhrr: [1.0, 1.0, 1.0]
   surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
-  radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
+  radiosonde: [1.0, 1.0, 1.0, 1.0]
+  aircraft: [1.0, 1.0, 1.0, 1.0]
   ascat: [1.0, 1.0, 1.0]
   ssmis: [
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
@@ -198,7 +201,7 @@ observation_config:
       # Predicting: Temperature, Dewpoint, Wind components (4 variables)
       features: [airTemperature, dewPointTemperature, wind_u, wind_v]
       metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
-      input_dim: 12                    # 7 (geo/time enc) + 1 meta + 4 feats
+      input_dim: 12                    # 7 (geo/time enc) + 1 meta + 4 feats [+8 pressure embedding added by model]
       target_dim: 4                    # Only predict T, Td, u, v (not pressure)
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
@@ -228,18 +231,41 @@ observation_config:
           qm_flag_col: windQuality
           keep: [2,]
 
-#   snow_cover:
-#     source: zarr
-#     zarr_name: snow_cover
-#     features: [snowDepth]
-#     metadata: [height, airTemperature]
-#     qc_filters:
-#       snowDepth:
-#         range: [0, 6.5]
-#     input_dim: 10          # dims: 7 (geo/time) + 2 meta + 1 feat
-#     target_dim: 1
-#     encoder_hidden_layers: 2
-#     decoder_hidden_layers: 2
+    aircraft:
+      source: zarr
+      zarr_name: aircraft
+      # NOTE: Similar to radiosonde - airPressure used as vertical coordinate
+      # Aircraft measures: Temperature, Wind components, and Humidity
+      # UNITS: airTemperature=°C, airPressure=hPa, specificHumidity=kg/kg, windU/windV=m/s
+      # Physical ranges based on 500k samples from aircraft_2022.zarr (P0.1-P99.9 with margins)
+      features: [airTemperature, specificHumidity, windU, windV]
+      metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
+      input_dim: 12                    # 7 (geo/time enc) + 1 meta + 4 feats [+8 pressure embedding added by model]
+      target_dim: 4                    # Predict T, q, u, v
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        # QC filters based on actual data statistics
+        airPressure:
+          range: [100, 1100]             # hPa (actual: 179-1018, mean=513)
+          qm_flag_col: airPressureQuality
+          keep: [0, 1, 2]
+        airTemperature:
+          range: [-85, 40]               # °C (actual: -70 to +29, mean=-22.7)
+          qm_flag_col: airTemperatureQuality
+          keep: [0, 1, 2]
+        specificHumidity:
+          range: [0.0, 0.030]            # kg/kg (actual: 0-0.019, mean=0.0022)
+          qm_flag_col: specificHumidityQuality
+          keep: [0, 1, 2]
+        windU:
+          range: [-110, 110]             # m/s (actual: -18 to +89, mean=19.2)
+          qm_flag_col: windQuality
+          keep: [0, 1, 2]
+        windV:
+          range: [-130, 130]             # m/s (actual: -104 to +56, mean=1.8)
+          qm_flag_col: windQuality
+          keep: [0, 1, 2]
 
 feature_stats:  # Statistics for the features used in the model
   surface_obs:
@@ -251,15 +277,19 @@ feature_stats:  # Statistics for the features used in the model
     wind_v: [0.10, 3.37]
 
   radiosonde:  
-    airPressure: [319.24, 296.08]
-    airTemperature: [238.30, 27.93]
-    dewPointTemperature: [221.01, 33.97]
-    wind_u: [7.53, 15.19]
-    wind_v: [-0.02, 8.86]
-    latitude: [32.05, 27.07]
-    longitude: [1.96, 100.91]
-      #  snow_cover:
-      #    snowDepth: [0.38, 0.68]
+    airPressure: [319.23, 296.08]        # hPa (2024 zarr: 42.9M samples)
+    airTemperature: [238.30, 27.99]      # K (2024 zarr: 33.1M samples)
+    dewPointTemperature: [221.02, 34.03] # K (2024 zarr: 32.4M samples)
+    wind_u: [7.66, 15.60]                # m/s (computed from windSpeed/windDirection: 35.1M samples)
+    wind_v: [-0.02, 9.05]                # m/s (computed from windSpeed/windDirection: 35.1M samples)
+
+  aircraft:
+    airPressure: [505.53, 274.24]        # hPa (2024 zarr: 209.3M samples)
+    airTemperature: [-18.39, 27.15]      # °C (2024 zarr: 208.5M samples)
+    specificHumidity: [0.0028, 0.0040]   # kg/kg (2024 zarr: 17.0M samples, 8.1% valid)
+    windU: [12.32, 15.96]                # m/s (2024 zarr: 206.5M samples)
+    windV: [0.30, 12.09]                 # m/s (2024 zarr: 206.5M samples)
+
   atms:
     bt_channel_1: [211.00, 40.60]
     bt_channel_2: [201.65, 42.08]

@@ -335,7 +335,7 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
-            # Store pressure level index for radiosonde (if available)
+            # Store pressure level index for radiosonde and aircraft (if available)
             if "input_pressure_level" in inst_dict:
                 data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
                 print(
@@ -343,7 +343,7 @@ class GNNDataModule(pl.LightningDataModule):
                     f"shape={data[node_type_input].pressure_level.shape}, "
                     f"range=[{data[node_type_input].pressure_level.min()}, {data[node_type_input].pressure_level.max()}]"
                 )
-            elif inst_name == "radiosonde":
+            elif inst_name in ["radiosonde", "aircraft"]:
                 print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_input}! Data may not be preprocessed with new code.")
 
             # Create encoder edges (observation to mesh)
@@ -434,12 +434,12 @@ class GNNDataModule(pl.LightningDataModule):
                     dtype=torch.long
                 )
 
-            # Pressure data for radiosonde (used for evaluation CSV)
+            # Pressure data for radiosonde and aircraft (used for evaluation CSV)
             if "target_pressure_hpa_list" in inst_dict and step < len(inst_dict["target_pressure_hpa_list"]):
                 pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
                 data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
 
-            # Store pressure level index for radiosonde (if available)
+            # Store pressure level index for radiosonde and aircraft (if available)
             if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
                 pressure_level_idx = inst_dict["target_pressure_level_list"][step][keep_t]
                 data[node_type_target].pressure_level = pressure_level_idx.long()
@@ -448,7 +448,7 @@ class GNNDataModule(pl.LightningDataModule):
                     f"shape={data[node_type_target].pressure_level.shape}, "
                     f"range=[{data[node_type_target].pressure_level.min()}, {data[node_type_target].pressure_level.max()}]"
                 )
-            elif inst_name == "radiosonde":
+            elif inst_name in ["radiosonde", "aircraft"]:
                 print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_target}! Data may not be preprocessed with new code.")
 
             # Edges - filter lat/lon too

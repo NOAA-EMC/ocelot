@@ -139,7 +139,7 @@ class GNNLightning(pl.LightningModule):
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
 
-        # Create pressure-level embedding for radiosonde (16 standard levels)
+        # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
         self.pressure_level_embed_dim = 8
         self.pressure_level_embedder = nn.Embedding(
             num_embeddings=16,  # 16 standard pressure levels
@@ -225,9 +225,9 @@ class GNNLightning(pl.LightningModule):
                     )
 
                 # Initial MLP to project raw features to hidden_dim
-                # Add pressure-level embedding dimensions for radiosonde input
+                # Add pressure-level embedding dimensions for radiosonde and aircraft input
                 embedder_input_dim = input_dim
-                if inst_name == "radiosonde":
+                if inst_name in ["radiosonde", "aircraft"]:
                     embedder_input_dim += 8  # Add pressure-level embedding dimension
                 self.observation_embedders[node_type_input] = make_mlp([embedder_input_dim] + self.mlp_blueprint_end)
 
@@ -473,7 +473,7 @@ class GNNLightning(pl.LightningModule):
             if node_type == "mesh":
                 embedded_features[node_type] = self.mesh_embedder(x)
             elif node_type.endswith("_input"):
-                # Apply pressure-level embedding for radiosonde if available
+                # Apply pressure-level embedding for radiosonde and aircraft if available
                 if "pressure_level" in data[node_type]:
                     pressure_level_idx = data[node_type].pressure_level  # [N]
                     pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
@@ -634,12 +634,13 @@ class GNNLightning(pl.LightningModule):
 
                     # Condition decoder on viewing geometry at initialization
                     # - For satellites: viewing zenith angle (scan angle)
-                    # - For radiosonde: pressure level (vertical viewing geometry)
+                    # - For radiosonde/aircraft: pressure level (vertical viewing geometry)
                     reference_device = mesh_features_processed.device
                     N = data[step_node_type].num_nodes
 
                     # Embed viewing geometry information FIRST (before decoder initialization)
                     sa_emb = None
+                    pressure_emb = None
                     pressure_emb = None
 
                     if base_type == "ascat_target":
@@ -654,8 +655,8 @@ class GNNLightning(pl.LightningModule):
                             sa = data[step_node_type].x
                             print(f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={sa.mean().item():.4f}, "
                                   f"std={sa.std().item():.4f}, min={sa.min().item():.4f}, max={sa.max().item():.4f}")
-                    elif base_type == "radiosonde_target" and "pressure_level" in data[step_node_type]:
-                        # For radiosonde: condition on pressure level (vertical geometry)
+                    elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
+                        # For radiosonde and aircraft: condition on pressure level (vertical geometry)
                         pressure_level_idx = data[step_node_type].pressure_level  # [N]
                         pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
 
@@ -670,7 +671,7 @@ class GNNLightning(pl.LightningModule):
                             sa_emb
                         ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
                     elif pressure_emb is not None:
-                        # Radiosonde: condition decoder on pressure level (vertical viewing geometry)
+                        # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
                         # Make prediction explicitly depend on geometry
                         padding_dim = self.hidden_dim - self.pressure_level_embed_dim
                         target_features_initial = torch.cat([
@@ -1232,7 +1233,7 @@ class GNNLightning(pl.LightningModule):
         all_pred = []
         all_true = []
         all_mask = []
-        all_pressure = []  # Pressure in hPa for radiosonde evaluation
+        all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
 
         for step in range(len(preds_list)):
@@ -1264,7 +1265,7 @@ class GNNLightning(pl.LightningModule):
                     lat_deg = np.zeros(n)
                     lon_deg = np.zeros(n)
 
-                # Get pressure data if available (for radiosonde)
+                # Get pressure data if available (for radiosonde and aircraft)
                 if hasattr(batch[step_node_type], 'target_pressure_hpa'):
                     pressure_hpa = batch[step_node_type].target_pressure_hpa.cpu().numpy()
                 else:
@@ -1328,7 +1329,7 @@ class GNNLightning(pl.LightningModule):
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
 
-        # Add pressure columns for radiosonde evaluation
+        # Add pressure columns for radiosonde and aircraft evaluation
         all_pressure_arr = np.array(all_pressure)
         all_pressure_level_arr = np.array(all_pressure_level)
 
