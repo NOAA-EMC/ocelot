@@ -23,6 +23,7 @@ from datetime import timedelta
 
 torch.set_float32_matmul_precision("medium")
 
+
 def main():
     print(f"Hostname: {socket.gethostname()}")
     print(f"  SLURM_PROCID: {os.environ.get('SLURM_PROCID')}")
@@ -53,7 +54,7 @@ def main():
                         help="Limit number of batches (for testing)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose output")
-    
+
     # Evaluation mode
     parser.add_argument("--eval-mode", action="store_true",
                         help="Evaluation mode: expects target observations to exis"
@@ -146,7 +147,7 @@ def main():
 
     model.eval()
     model.prediction_output_dir = args.output_dir
-    
+
     # Get model hyperparameters
     latent_step_hours = model.hparams.get('latent_step_hours', 3)
     data_window_hours = model.hparams.get('data_window_hours', 12)

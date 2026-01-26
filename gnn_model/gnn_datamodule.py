@@ -112,9 +112,8 @@ class GNNDataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.save_hyperparameters()
-        
         self.prediction_mode = prediction_mode
-        
+
         # If require_targets not specified, default based on prediction_mode
         # prediction_mode=True → require_targets=False (inference)
         # prediction_mode=False → require_targets=True (training/validation)
@@ -163,7 +162,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.val_start = pd.to_datetime(start_date)
             self.hparams.val_end = pd.to_datetime(end_date)
             print(f"[DataModule] Prediction mode: Using entire date range {start_date} to {end_date}")
-        
+
         # Validate no overlap between train and validation windows to prevent data leakage (training mode only)
         if not prediction_mode and self.hparams.train_end > self.hparams.val_start:
             raise ValueError(

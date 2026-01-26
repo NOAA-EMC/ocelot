@@ -1672,7 +1672,8 @@ class GNNLightning(pl.LightningModule):
                     temp_mesh_pred_edges = self._load_mesh_prediction_edges()
                     mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
                     if mesh_predictions:
-                        self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx=batch_idx, epoch=self.current_epoch, mode='val', batch=batch, output_dir='val_target_csv')
+                        self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx=batch_idx,
+                                                    epoch=self.current_epoch, mode='val', batch=batch, output_dir='val_target_csv')
             except Exception as e:
                 print(f"[MESH PRED] Failed (non-critical): {e}")
                 import traceback
@@ -1684,19 +1685,19 @@ class GNNLightning(pl.LightningModule):
         """
         Extract initialization time string from batch in YYYYMMDDHH format.
         Handles multiple formats: pandas Timestamp, list/tuple, Unix timestamp, tensor.
-        
+
         Args:
             batch: Batch data containing input_time or time attribute
-            
+
         Returns:
             str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
         """
         from datetime import datetime
         import pandas as pd
-        
+
         if batch is None:
             return 'unknown'
-        
+
         # Try input_time first
         ts = None
         if hasattr(batch, 'input_time') and batch.input_time is not None:
@@ -1705,41 +1706,41 @@ class GNNLightning(pl.LightningModule):
                 ts = batch.input_time[0] if len(batch.input_time) > 0 else None
             else:
                 ts = batch.input_time
-        
+
         # Fallback to batch.time if input_time not available
         elif hasattr(batch, 'time') and batch.time is not None:
             if isinstance(batch.time, (list, tuple)):
                 ts = batch.time[0] if len(batch.time) > 0 else None
             else:
                 ts = batch.time
-        
+
         # Now convert ts to string based on its type
         if ts is None:
             return 'unknown'
-        
+
         try:
             # Handle pandas Timestamp
             if isinstance(ts, pd.Timestamp):
                 return ts.strftime('%Y%m%d%H')
-            
+
             # Handle Unix timestamp (float/int)
             elif isinstance(ts, (int, float)):
                 dt = datetime.fromtimestamp(ts)
                 return dt.strftime('%Y%m%d%H')
-            
+
             # Handle tensor (PyTorch/numpy with .item() method)
             elif hasattr(ts, 'item'):
                 dt = datetime.fromtimestamp(ts.item())
                 return dt.strftime('%Y%m%d%H')
-            
+
             # Handle datetime object directly
             elif isinstance(ts, datetime):
                 return ts.strftime('%Y%m%d%H')
-            
+
             else:
                 print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
                 return 'unknown'
-                
+
         except Exception as e:
             print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
             return 'unknown'
@@ -1748,7 +1749,7 @@ class GNNLightning(pl.LightningModule):
                                       valid_mask_list, out_dir, batch_idx, mode='val'):
         """
         Save latent rollout as concatenated observations.
-        
+
         Args:
             mode: 'val' or 'predict' - determines output filename format
         """
@@ -1935,7 +1936,7 @@ class GNNLightning(pl.LightningModule):
     def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_target_csv'):
         """
         Save predictions on mesh grid - one file per forecast hour.
-        
+
         Args:
             predictions: Dict of predictions per instrument
             batch_idx: Batch index
@@ -2134,10 +2135,10 @@ class GNNLightning(pl.LightningModule):
 
             # Check if any real ground truth data exists
             has_real_targets = any(
-                gt is not None and gt.numel() > 0 
+                gt is not None and gt.numel() > 0
                 for gt in gts_list
             )
-            
+
             if not has_real_targets:
                 print(f"[PREDICT] Pred step: Skipping {node_type} - no ground truth data (inference mode)")
                 continue
@@ -2184,7 +2185,6 @@ class GNNLightning(pl.LightningModule):
 
         return all_predictions
 
-
     def on_predict_epoch_start(self):
         """Setup before prediction epoch starts."""
         print("[PREDICT] Starting prediction epoch")
@@ -2197,14 +2197,12 @@ class GNNLightning(pl.LightningModule):
         os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'target'), exist_ok=True)
         print(f"[PREDICT] Output directory: {self._prediction_output_dir}")
 
-
     def on_predict_batch_end(self, outputs, batch, batch_idx):
         """Cleanup after each prediction batch."""
         import gc
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
 
     def on_predict_epoch_end(self):
         """Cleanup and summary after prediction epoch ends."""

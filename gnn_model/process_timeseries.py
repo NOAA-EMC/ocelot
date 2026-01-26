@@ -807,7 +807,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_data['features'][~target_data['valid_ch']] = np.nan
 
             # Check if we have any valid data left
-            if input_features_raw_clean.shape[0] == 0 or all(td['features'].shape[0] == 0 for td in target_data_cleaned):
+            if input_features_raw_clean.shape[0] == 0 or (require_targets and all(td['features'].shape[0] == 0 for td in target_data_cleaned)):
                 del data_summary[bin_name][obs_type][inst_name]
                 continue
 
