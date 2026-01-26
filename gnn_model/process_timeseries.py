@@ -357,7 +357,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 # Check if we should use all levels (skip filtering)
                 matching_mode = level_selection.get('matching_mode', 'exact')
 
-                # NEW: Support for using ALL pressure levels
+                # Support for using ALL pressure levels
                 if matching_mode == 'all' or matching_mode == 'none':
                     # Skip level filtering - use ALL observations
                     pass
@@ -506,9 +506,6 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             def _get_feature(arrs, name, idx):
                 if name in arrs:
                     data = arrs[name][idx]
-                    # FIX: Negate windV for aircraft (zarr file has wrong sign convention)
-                    if name == "windV" and inst_name == "aircraft":
-                        return -data
                     return data
                 if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
                     ws = arrs["windSpeed"][idx].astype(np.float32)
