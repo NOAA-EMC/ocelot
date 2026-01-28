@@ -1862,7 +1862,6 @@ class GNNLightning(pl.LightningModule):
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
 
-<<<<<<< HEAD
         # Add pressure columns for radiosonde and aircraft evaluation
         all_pressure_arr = np.array(all_pressure)
         all_pressure_level_arr = np.array(all_pressure_level)
