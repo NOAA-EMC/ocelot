@@ -1,7 +1,10 @@
 import yaml
 import torch
 
-INSTRUMENT_NAME_TO_ID = {"atms": 0, "surface_obs": 1, "amsua": 2, "snow_cover": 3, "avhrr": 4, "radiosonde": 5, "ascat": 6}
+INSTRUMENT_NAME_TO_ID = {
+    "atms": 0, "surface_obs": 1, "amsua": 2, "snow_cover": 3, "avhrr": 4,
+    "radiosonde": 5, "ascat": 6, "ssmis": 7, "seviri": 8, "aircraft": 9
+    }
 
 
 def load_weights_from_yaml(path):

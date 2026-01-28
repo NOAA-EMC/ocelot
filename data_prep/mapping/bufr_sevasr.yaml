@@ -1,0 +1,84 @@
+bufr:
+  variables:
+    # MetaData
+    timestamp:
+      datetime:
+        year: "*/YEAR"
+        month: "*/MNTH"
+        day: "*/DAYS"
+        hour: "*/HOUR"
+        minute: "*/MINU"
+        second: "*/SECO"
+
+    latitude:
+      query: "*/CLATH"
+
+    longitude:
+      query: "*/CLONH"
+
+    satelliteId:
+      query: "*/SAID"
+
+    satelliteZenithAngle:
+      query: "*/SAZA"
+
+    solarZenithAngle:
+      query: "*/SOZA"
+
+    # Early 2022 sevasr data has 12 channels for some reason (inconsistent)... 
+    # So we filter it to 11 here.
+    bt_all:
+      query: "*/RPSEQ10{1-11}/TMBRST[1]"
+
+    bt_clear:
+      query: "*/RPSEQ10{1-11}/TMBRST[2]"
+
+encoder:
+  dimensions:
+    - name: ch
+      paths: 
+        - "*/RPSEQ7{1-11}"
+        - "*/RPSEQ10{1-11}"
+        
+  variables:
+    # MetaData
+    - name: "time"
+      source: variables/timestamp
+      longName: "Datetime"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: "latitude"
+      source: variables/latitude
+      longName: "Latitude"
+      units: "degrees_north"
+      range: [ -90, 90 ]
+
+    - name: "longitude"
+      source: variables/longitude
+      longName: "Longitude"
+      units: "degrees_east"
+      range: [ -180, 180 ]
+
+    - name: "satelliteId"
+      source: variables/satelliteId
+      longName: "Satellite Identifier"
+
+    - name: "solarZenithAngle"
+      source: variables/solarZenithAngle
+      longName: "Satellite Identifier"
+
+    - name: "satelliteZenithAngle"
+      source: variables/satelliteZenithAngle
+      longName: "Satellite Zenith Angle"
+      units: "degree"
+
+    - name: "bt_all"
+      source: variables/bt_all
+      longName: "Brightness Temperature"
+      units: "K"
+
+    - name: "bt_clear"
+      source: variables/bt_clear
+      longName: "Brightness Temperature"
+      units: "K"
+

@@ -16,11 +16,18 @@ bufr:
       query: "[*/CLONH, */CLON]"
 
     # Observation Values
-    airPressure:
+    airPressure_bufr:
       query: "*/PRES"  # Air pressure at station level
       type: float
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
+
+    pressureMeanSeaLevel_bufr:
+      query: "*/PMSL"
+      type: float
+      transforms:
+        - scale: 0.01  # Convert from Pa to hPa
+
 
     airTemperature:
       query: "*/TMDB"  # Dry bulb temperature
@@ -28,7 +35,7 @@ bufr:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
     seaTemperature:
-      query: "[*/SST1, */SEATEMPM/SST1, */IDMSMDBS/BBYSTSL{1}/SST1]"
+      query: "[*/SST1, */SEATEMPM/SST1]" # #*/IDMSMDBS/BBYSTSL{1}/SST1]"
       transforms:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
@@ -47,8 +54,9 @@ bufr:
       query: "[*/WDIR, */WNDSQ4/WDIR]"
       type: float
 
-    height:
-      query: "[*/SELV, */HSMSL, */HSAWS, */HSAWS[1]]"  # Height above ground level
+    height_bufr:
+      query: "[*/SELV, */HSMSL]" #, */HSAWS, */HSAWS[1]]"  # Height above ground level
+      type: float
 
   encoder:
     variables:
@@ -71,9 +79,14 @@ bufr:
         range: [-180, 180]
 
       # Observation Values
-      - name: "airPressure"
-        source: variables/airPressure
+      - name: "airPressure_bufr"
+        source: variables/airPressure_bufr
         longName: "Air Pressure at Station Level"
+        units: "hPa"
+
+      - name: "pressureMeanSeaLevel_bufr"
+        source: variables/pressureMeanSeaLevel_bufr
+        longName: "Air Pressure Reduced to Mean Sea Level"
         units: "hPa"
 
       - name: "airTemperature"
@@ -84,6 +97,11 @@ bufr:
       - name: "dewPointTemperature"
         source: variables/dewPointTemperature
         longName: "Dew Point Temperature at Station Level"
+        units: "Celsius"
+
+      - name: "airTemperature"
+        source: variables/airTemperature
+        longName: "Air Temperature at Station Level"
         units: "Celsius"
 
       - name: "relativeHumidity"
@@ -101,7 +119,7 @@ bufr:
         longName: "Wind Direction at Station Level"
         units: "radians"
 
-      - name: "height"
-        source: variables/height
+      - name: "height_bufr"
+        source: variables/height_bufr
         longName: "Height Above Ground Level"
         units: "meters"

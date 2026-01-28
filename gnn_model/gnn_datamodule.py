@@ -1,17 +1,3 @@
-"""
-PyTorch Lightning DataModule for GNN-based weather observation processing.
-
-Provides:
-- Custom samplers (BalancedSequentialShard, BalancedRandomShard) for DDP training
-- Time-windowed data loading with train/val splitting
-- Graph construction from heterogeneous observation data (satellite, conventional)
-- Dynamic DataLoader configuration based on sampling mode (sequential vs random)
-- Support for sequential bin ordering (1 worker) and parallel loading (4 workers)
-
-Author: Azadeh Gholoubi (NOAA/EMC)
-Date: November 2025
-"""
-
 import os
 import importlib
 import lightning.pytorch as pl
@@ -20,7 +6,7 @@ import torch
 import torch.distributed as dist
 import zarr
 from zarr.storage import LRUStoreCache
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
@@ -30,72 +16,6 @@ from create_mesh_graph_global import obs_mesh_conn
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
-
-
-def _ddp_world():
-    if dist.is_available() and dist.is_initialized():
-        return dist.get_world_size(), dist.get_rank()
-    return 1, 0
-
-
-class BalancedSequentialShard(Sampler[int]):
-    """Contiguous shards, uneven allowed, no padding, no drop_last."""
-    def __init__(self, num_samples: int, num_replicas: int = None, rank: int = None):
-        if num_samples < 1:
-            raise ValueError("BalancedSequentialShard: num_samples must be >= 1")
-        ws, rk = _ddp_world()
-        self.num_replicas = ws if num_replicas is None else num_replicas
-        self.rank = rk if rank is None else rank
-        self.total = num_samples
-
-        base = self.total // self.num_replicas
-        rem = self.total % self.num_replicas
-        self.num_local = base + (1 if self.rank < rem else 0)
-
-        start = self.rank * base + min(self.rank, rem)
-        end = start + self.num_local
-        self._indices = list(range(self.total))[start:end]
-
-    def __iter__(self):
-        return iter(self._indices)
-
-    def __len__(self):
-        return self.num_local
-
-    def set_epoch(self, _: int):
-        pass
-
-
-class BalancedRandomShard(Sampler[int]):
-    """Shuffled shards per epoch, uneven allowed, no padding, no drop_last."""
-    def __init__(self, num_samples: int, seed: int = 0, num_replicas: int = None, rank: int = None):
-        if num_samples < 1:
-            raise ValueError("BalancedRandomShard: num_samples must be >= 1")
-        ws, rk = _ddp_world()
-        self.num_replicas = ws if num_replicas is None else num_replicas
-        self.rank = rk if rank is None else rank
-        self.total = num_samples
-        self.seed = seed
-        self.epoch = 0
-
-        base = self.total // self.num_replicas
-        rem = self.total % self.num_replicas
-        self.num_local = base + (1 if self.rank < rem else 0)
-
-        self._start = self.rank * base + min(self.rank, rem)
-        self._end = self._start + self.num_local
-
-    def __iter__(self):
-        g = torch.Generator()
-        g.manual_seed(self.seed + self.epoch)
-        order = torch.randperm(self.total, generator=g).tolist()
-        return iter(order[self._start:self._end])
-
-    def __len__(self):
-        return self.num_local
-
-    def set_epoch(self, epoch: int):
-        self.epoch = epoch
 
 
 def _t32(x):
@@ -165,7 +85,6 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours=12,       # latent rollout support
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
-        sampling_mode="sequential",  # "sequential" or "random" - controls bin distribution within ranks
         **kwargs,
     ):
         super().__init__()
@@ -195,7 +114,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         default_train_start = pd.to_datetime(start_date)
         default_train_end = default_train_start + pd.Timedelta(days=train_days)
-        default_val_start = default_train_end + pd.Timedelta(days=1)
+        default_val_start = default_train_end  # Validation starts where training ends
         default_val_end = pd.to_datetime(end_date)
 
         self.hparams.train_start = pd.to_datetime(kwargs.get("train_start", default_train_start))
@@ -212,15 +131,13 @@ class GNNDataModule(pl.LightningDataModule):
             )
 
         # Log the train/val split for transparency
-        pool_total_days = (self.hparams.val_end - self.hparams.train_start).days
         train_days = (self.hparams.train_end - self.hparams.train_start).days
         val_days = (self.hparams.val_end - self.hparams.val_start).days
         total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
-        print(
-            "[DataModule] Train/Val Split - "
-            f"Train: {train_days} days ({(train_days / max(1, pool_total_days)) * 100:.1f}%), "
-            f"Val: {val_days} days ({(val_days / max(1, pool_total_days)) * 100:.1f}%)"
-        )
+        print(f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days/total_days*100:.1f}%), "
+              f"Val: {val_days} days ({val_days/total_days*100:.1f}%)")
+        print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
+        print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
 
         # Ensure latent_step_hours has a valid value
         if self.hparams.latent_step_hours is None:
@@ -418,6 +335,17 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
+            # Store pressure level index for radiosonde and aircraft (if available)
+            if "input_pressure_level" in inst_dict:
+                data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
+                print(
+                    f"[DATAMODULE] Stored pressure_level for {node_type_input}: "
+                    f"shape={data[node_type_input].pressure_level.shape}, "
+                    f"range=[{data[node_type_input].pressure_level.min()}, {data[node_type_input].pressure_level.max()}]"
+                )
+            elif inst_name in ["radiosonde", "aircraft"]:
+                print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_input}! Data may not be preprocessed with new code.")
+
             # Create encoder edges (observation to mesh)
             if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
                 grid_lat_deg = inst_dict["input_lat_deg"]
@@ -445,11 +373,8 @@ class GNNDataModule(pl.LightningDataModule):
             target_features = inst_dict["target_features_final_list"][step]
 
             # Get channel mask and check validity
-            target_channel_mask_list = inst_dict.get("target_channel_mask_list", [])
-            if step < len(target_channel_mask_list):
-                target_channel_mask = target_channel_mask_list[step]
-            else:
-                target_channel_mask = None
+            target_channel_mask = inst_dict.get("target_channel_mask_list", [None])[step] if step < len(
+                inst_dict.get("target_channel_mask_list", [])) else None
 
             if target_channel_mask is not None:
                 target_channel_mask = target_channel_mask.to(torch.bool)
@@ -464,6 +389,7 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
                 data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
+                data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
                 continue
 
             keep_np = keep_t.cpu().numpy()
@@ -508,6 +434,23 @@ class GNNDataModule(pl.LightningDataModule):
                     dtype=torch.long
                 )
 
+            # Pressure data for radiosonde and aircraft (used for evaluation CSV)
+            if "target_pressure_hpa_list" in inst_dict and step < len(inst_dict["target_pressure_hpa_list"]):
+                pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
+                data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
+
+            # Store pressure level index for radiosonde and aircraft (if available)
+            if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
+                pressure_level_idx = inst_dict["target_pressure_level_list"][step][keep_t]
+                data[node_type_target].pressure_level = pressure_level_idx.long()
+                print(
+                    f"[DATAMODULE] Stored pressure_level for {node_type_target}: "
+                    f"shape={data[node_type_target].pressure_level.shape}, "
+                    f"range=[{data[node_type_target].pressure_level.min()}, {data[node_type_target].pressure_level.max()}]"
+                )
+            elif inst_name in ["radiosonde", "aircraft"]:
+                print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_target}! Data may not be preprocessed with new code.")
+
             # Edges - filter lat/lon too
             if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
@@ -545,6 +488,7 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
+            data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
@@ -570,53 +514,22 @@ class GNNDataModule(pl.LightningDataModule):
             feature_stats=self.feature_stats,
             tag="TRAIN",
         )
-
-        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        n = len(self.train_bin_names)
-
-        if self.hparams.sampling_mode == "random":
-            sampler = BalancedRandomShard(n, seed=0, num_replicas=world_size, rank=rank)
-            sampler_type = "BalancedRandomShard"
-            num_workers = 4  # Multiple workers OK for random mode
-        else:
-            sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
-            sampler_type = "BalancedSequentialShard"
-            num_workers = 1  # Single worker required to maintain sequential order
-
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
-            shuffle=False,
-            sampler=sampler,
-            num_workers=num_workers,
+            shuffle=True,
+            num_workers=4,
             pin_memory=True,
-            persistent_workers=False,
+            persistent_workers=False,   # safer while debugging stale refs
             worker_init_fn=self._worker_init,
         )
-
-        # Safe preview of a couple indices for logging (works for both samplers)
-        idx_preview = list(iter(sampler))
-        first_bin = self.train_bin_names[idx_preview[0]] if idx_preview else None
-        last_bin = self.train_bin_names[idx_preview[-1]] if idx_preview else None
-
-        print(f"[DL] TRAIN window={self.hparams.train_start.date()}..{self.hparams.train_end.date()} "
-              f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
-              f"first={first_bin} last={last_bin} sampler={sampler_type}")
-
-        if self.hparams.sampling_mode == "sequential":
-            print(f"[DL] TRAIN Sequential: Rank {rank} processing bins {first_bin}→{last_bin} in chronological order")
-            print(f"[DL] TRAIN Sequential: Using {num_workers} worker(s) to maintain bin order")
-        else:
-            print(f"[DL] TRAIN Random: Bins will be shuffled each epoch")
-            print(f"[DL] TRAIN Random: Using {num_workers} worker(s) for parallel loading")
-
+        print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
+              f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
         return loader
 
     def val_dataloader(self):
         if not self.val_bin_names:
             return None
-
         ds = BinDataset(
             self.val_bin_names,
             self.val_data_summary,
@@ -626,36 +539,15 @@ class GNNDataModule(pl.LightningDataModule):
             feature_stats=self.feature_stats,
             tag="VAL",
         )
-
-        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        n = len(self.val_bin_names)
-
-        # Use BalancedSequentialShard: Each rank gets contiguous bins, processes sequentially
-        # This enables per-rank sequential background for FSOI
-        sampler = BalancedSequentialShard(n, num_replicas=world_size, rank=rank)
-        sampler_name = "BalancedSequentialShard"
-        # Single worker required to maintain sequential order for validation (needed for FSOI)
-        num_workers = 1
-
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
-            sampler=sampler,
-            num_workers=num_workers,
+            num_workers=4,
             pin_memory=True,
             persistent_workers=False,
             worker_init_fn=self._worker_init,
         )
-
-        idx_preview = list(iter(sampler))
-        first_bin = self.val_bin_names[idx_preview[0]] if idx_preview else None
-        last_bin = self.val_bin_names[idx_preview[-1]] if idx_preview else None
-
-        print(f"[DL] VAL   window={self.hparams.val_start.date()}..{self.hparams.val_end.date()} "
-              f"bins={n} rank={rank}/{world_size} -> idx[{len(sampler)}] "
-              f"first={first_bin} last={last_bin} sampler={sampler_name}")
-        print(f"[DL] VAL   Per-rank sequential: Each rank processes its bins in order (bin{idx_preview[0]+1}→bin{idx_preview[-1]+1})")
-        print(f"[DL] VAL   Using {num_workers} worker(s) to maintain sequential order for FSOI")
+        print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
+              f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
         return loader

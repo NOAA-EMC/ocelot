@@ -134,9 +134,17 @@ class GNNLightning(pl.LightningModule):
         self.mesh_embedder = make_mlp([mesh_feature_dim] + self.mlp_blueprint_end)
 
         # Create scan-angle embedders once to avoid loop-order surprises
+        # These embeddings are used ONLY for decoder initialization
         self.scan_angle_embed_dim = 8
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
+
+        # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
+        self.pressure_level_embed_dim = 8
+        self.pressure_level_embedder = nn.Embedding(
+            num_embeddings=16,  # 16 standard pressure levels
+            embedding_dim=self.pressure_level_embed_dim
+        )
 
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
@@ -217,18 +225,19 @@ class GNNLightning(pl.LightningModule):
                     )
 
                 # Initial MLP to project raw features to hidden_dim
-                self.observation_embedders[node_type_input] = make_mlp([input_dim] + self.mlp_blueprint_end)
+                # Add pressure-level embedding dimensions for radiosonde and aircraft input
+                embedder_input_dim = input_dim
+                if inst_name in ["radiosonde", "aircraft"]:
+                    embedder_input_dim += 8  # Add pressure-level embedding dimension
+                self.observation_embedders[node_type_input] = make_mlp([embedder_input_dim] + self.mlp_blueprint_end)
 
-                # Final MLP: add scan-angle embedder for ATMS, AMSU-A, AVHRR, and ASCAT targets
-                targets_with_scan = {"atms_target", "amsua_target", "avhrr_target", "ascat_target"}
-                if node_type_target in targets_with_scan:
-                    # Embedders already created above; just use them
-                    input_dim_for_mapper = hidden_dim + self.scan_angle_embed_dim
-                else:
-                    input_dim_for_mapper = hidden_dim
+                # Output mapper takes ONLY decoded features (hidden_dim)
+                # Geometry conditioning happens at decoder initialization, not in output mapper
+                input_dim_for_mapper = hidden_dim
 
                 output_map_layers = [input_dim_for_mapper] + [hidden_dim] * hidden_layers + [target_dim]
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
+                # Geometry dependence is enforced solely through decoder conditioning
 
         self.processor = Processor(
             hidden_dim=hidden_dim,
@@ -236,23 +245,6 @@ class GNNLightning(pl.LightningModule):
             edge_types=edge_types,
             num_message_passing_steps=num_layers,
         )
-
-        # --- wire processor choice ---
-        self.processor_type = processor_type  # "interaction" | "sliding_transformer"
-
-        if self.processor_type == "sliding_transformer":
-            self.swt = SlidingWindowTransformerProcessor(
-                hidden_dim=self.hidden_dim,
-                window=processor_window,
-                depth=processor_depth,
-                num_heads=processor_heads,
-                dropout=processor_dropout,
-                use_causal_mask=True,
-            )
-        elif self.processor_type == "interaction":
-            pass  # already built self.processor above
-        else:
-            raise ValueError(f"Unknown processor_type: {processor_type!r}")
 
         def _as_f32(x):
             import torch
@@ -481,7 +473,19 @@ class GNNLightning(pl.LightningModule):
             if node_type == "mesh":
                 embedded_features[node_type] = self.mesh_embedder(x)
             elif node_type.endswith("_input"):
-                embedded_features[node_type] = self.observation_embedders[node_type](x)
+                # Apply pressure-level embedding for radiosonde and aircraft if available
+                if "pressure_level" in data[node_type]:
+                    pressure_level_idx = data[node_type].pressure_level  # [N]
+                    pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
+                    # Concatenate with original features
+                    x_with_embed = torch.cat([x, pressure_embed], dim=-1)  # [N, input_dim + 8]
+                    print(
+                        f"PRESSURE-LEVEL EMBEDDING APPLIED: {node_type} | "
+                        f"orig={x.shape} + embed={pressure_embed.shape} → combined={x_with_embed.shape}"
+                    )
+                    embedded_features[node_type] = self.observation_embedders[node_type](x_with_embed)
+                else:
+                    embedded_features[node_type] = self.observation_embedders[node_type](x)
 
         # --------------------------------------------------------------------
         # STAGE 2: ENCODE (Pass information from observations TO the mesh)
@@ -511,10 +515,12 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"  edge_index {edge_index.shape}")
                 # --- End Debugging ---
 
+                # Use computed edge_rep if available, otherwise fall back to zero edge_attr
+                edge_features = edge_rep if edge_rep is not None else edge_attr
                 encoded_mesh_features = encoder(
                     send_rep=obs_features,
                     rec_rep=encoded_mesh_features,
-                    edge_rep=edge_attr,
+                    edge_rep=edge_features,
                 )
 
         # --------------------------------------------------------------------
@@ -626,31 +632,80 @@ class GNNLightning(pl.LightningModule):
                     decoder = self.observation_decoders[decoder_key]
                     decoder.edge_index = step_edge_index
 
-                    # Decode mesh features to target predictions
-                    # Use device from mesh features to avoid checkpoint loading issues
+                    # Condition decoder on viewing geometry at initialization
+                    # - For satellites: viewing zenith angle (scan angle)
+                    # - For radiosonde/aircraft: pressure level (vertical viewing geometry)
                     reference_device = mesh_features_processed.device
-                    target_features_initial = torch.zeros(data[step_node_type].num_nodes, self.hidden_dim, device=reference_device)
+                    N = data[step_node_type].num_nodes
+
+                    # Embed viewing geometry information FIRST (before decoder initialization)
+                    sa_emb = None
+                    pressure_emb = None
+                    pressure_emb = None
+
+                    if base_type == "ascat_target":
+                        scan_angle = data[step_node_type].x  # [N,3] for ASCAT
+                        sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
+                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
+                        scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR
+                        sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
+
+                        # Diagnostic: verify scan angle varies
+                        if base_type == "atms_target" and self.global_step % 200 == 0:
+                            sa = data[step_node_type].x
+                            print(f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={sa.mean().item():.4f}, "
+                                  f"std={sa.std().item():.4f}, min={sa.min().item():.4f}, max={sa.max().item():.4f}")
+                    elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
+                        # For radiosonde and aircraft: condition on pressure level (vertical geometry)
+                        pressure_level_idx = data[step_node_type].pressure_level  # [N]
+                        pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
+
+                    # Decoder initialization: CONDITION on viewing geometry
+                    # Instead of zeros, initialize decoder WITH geometry information
+                    if sa_emb is not None:
+                        # Satellite: condition decoder on scan angle (viewing zenith angle)
+                        # Concatenate scan embedding with zeros to reach hidden_dim
+                        padding_dim = self.hidden_dim - self.scan_angle_embed_dim
+                        target_features_initial = torch.cat([
+                            torch.zeros(N, padding_dim, device=reference_device),
+                            sa_emb
+                        ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
+                    elif pressure_emb is not None:
+                        # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
+                        # Make prediction explicitly depend on geometry
+                        padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                        target_features_initial = torch.cat([
+                            torch.zeros(N, padding_dim, device=reference_device),
+                            pressure_emb
+                        ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+                    else:
+                        # Conventional obs without viewing geometry: use zeros
+                        target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
+
                     edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
 
+                    # Decoder now receives GEOMETRY-CONDITIONED initialization
+                    # This ensures the model CANNOT make predictions without knowing viewing geometry
                     decoded_target_features = decoder(
                         send_rep=mesh_features_processed,
-                        rec_rep=target_features_initial,
+                        rec_rep=target_features_initial,  # NOW conditioned on viewing geometry!
                         edge_rep=edge_attr,
                     )
 
-                    # Apply scan angle embedding if needed
-                    scan_angle = data[step_node_type].x
+                    # Decoder output goes directly to output mapper
+                    # The model learns to use the geometry information that's embedded in target_features_initial
 
-                    if base_type == "ascat_target":
-                        scan_angle_embedded = self.ascat_scan_angle_embedder(scan_angle)
-                        final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
-                        step_prediction = self.output_mappers[base_type](final_features)
-                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
-                        scan_angle_embedded = self.scan_angle_embedder(scan_angle)
-                        final_features = torch.cat([decoded_target_features, scan_angle_embedded], dim=-1)
-                        step_prediction = self.output_mappers[base_type](final_features)
-                    else:
-                        step_prediction = self.output_mappers[base_type](decoded_target_features)
+                    # Diagnostic logging for radiosonde
+                    if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
+                        print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
+
+                    # Diagnostic logging for satellites
+                    if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
+                        print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
+
+                    # Safety: verify mapper exists before using
+                    assert base_type in self.output_mappers, f"Missing output mapper for {base_type}"
+                    step_prediction = self.output_mappers[base_type](decoded_target_features)
 
                     # Store prediction for this step
                     predictions[base_type].append(step_prediction)
@@ -1178,6 +1233,8 @@ class GNNLightning(pl.LightningModule):
         all_pred = []
         all_true = []
         all_mask = []
+        all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
+        all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
 
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
@@ -1207,16 +1264,32 @@ class GNNLightning(pl.LightningModule):
                     n = y_pred_unnorm.shape[0]
                     lat_deg = np.zeros(n)
                     lon_deg = np.zeros(n)
+
+                # Get pressure data if available (for radiosonde and aircraft)
+                if hasattr(batch[step_node_type], 'target_pressure_hpa'):
+                    pressure_hpa = batch[step_node_type].target_pressure_hpa.cpu().numpy()
+                else:
+                    pressure_hpa = np.full(y_pred_unnorm.shape[0], np.nan)
+
+                # Get pressure level index if available (for stratified analysis)
+                if hasattr(batch[step_node_type], 'pressure_level'):
+                    pressure_level_idx = batch[step_node_type].pressure_level.cpu().numpy()
+                else:
+                    pressure_level_idx = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int32)
             else:
                 n = y_pred_unnorm.shape[0]
                 lat_deg = np.zeros(n)
                 lon_deg = np.zeros(n)
+                pressure_hpa = np.full(n, np.nan)
+                pressure_level_idx = np.full(n, -1, dtype=np.int32)
 
             # Collect data from this step
             all_lat.extend(lat_deg)
             all_lon.extend(lon_deg)
             all_pred.append(y_pred_unnorm.detach().cpu().numpy())
             all_true.append(y_true_unnorm.detach().cpu().numpy())
+            all_pressure.extend(pressure_hpa)
+            all_pressure_level.extend(pressure_level_idx)
 
             if valid_mask is not None:
                 all_mask.append(valid_mask.detach().cpu().numpy().astype(bool))
@@ -1255,6 +1328,57 @@ class GNNLightning(pl.LightningModule):
             df[f"pred_{col}"] = all_pred_concat[:, i]
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
+
+        # Add pressure columns for radiosonde and aircraft evaluation
+        all_pressure_arr = np.array(all_pressure)
+        all_pressure_level_arr = np.array(all_pressure_level)
+
+        # Define standard pressure levels for labeling
+        STANDARD_PRESSURE_LEVELS = np.array([1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10])
+
+        if not np.all(np.isnan(all_pressure_arr)):
+            df["pressure_hPa"] = all_pressure_arr
+            # Compute log_pressure_height: z = -8000 * ln(P/1013.25) meters
+            pressure_clipped = np.clip(all_pressure_arr, 1.0, 1100.0)
+            log_pressure_height = -8000.0 * np.log(pressure_clipped / 1013.25)
+            df["log_pressure_height_m"] = log_pressure_height
+            # Also add normalized version for reference
+            df["log_pressure_height_norm"] = log_pressure_height / 20000.0
+
+            # Add pressure level index and label for stratified analysis
+            df["pressure_level_idx"] = all_pressure_level_arr
+            # Create human-readable labels (e.g., "850hPa", "500hPa")
+            pressure_level_labels = []
+            for idx in all_pressure_level_arr:
+                if 0 <= idx < len(STANDARD_PRESSURE_LEVELS):
+                    pressure_level_labels.append(f"{STANDARD_PRESSURE_LEVELS[idx]:.0f}hPa")
+                else:
+                    pressure_level_labels.append("unknown")
+            df["pressure_level_label"] = pressure_level_labels
+
+            print(
+                f"  Added pressure columns: pressure_hPa, log_pressure_height_m, "
+                f"log_pressure_height_norm, pressure_level_idx, pressure_level_label"
+            )
+            print(f"  Pressure range: {np.nanmin(all_pressure_arr):.1f} - {np.nanmax(all_pressure_arr):.1f} hPa")
+            # Show distribution by pressure level
+            valid_levels = all_pressure_level_arr[all_pressure_level_arr >= 0]
+            if len(valid_levels) > 0:
+                print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
+        elif np.any(all_pressure_level_arr >= 0):
+            # Even if pressure_hPa is not available, save pressure_level if it exists
+            df["pressure_level_idx"] = all_pressure_level_arr
+            pressure_level_labels = []
+            for idx in all_pressure_level_arr:
+                if 0 <= idx < len(STANDARD_PRESSURE_LEVELS):
+                    pressure_level_labels.append(f"{STANDARD_PRESSURE_LEVELS[idx]:.0f}hPa")
+                else:
+                    pressure_level_labels.append("unknown")
+            df["pressure_level_label"] = pressure_level_labels
+            print(f"  Added pressure_level_idx and pressure_level_label columns")
+            valid_levels = all_pressure_level_arr[all_pressure_level_arr >= 0]
+            if len(valid_levels) > 0:
+                print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
 
         # Save with same filename format as standard rollout
         filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"

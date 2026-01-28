@@ -68,7 +68,7 @@ def summarize_zarr(path: str, max_obs: int) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarize variables in a Zarr file")
     parser.add_argument("zarr_path", help="Path to Zarr dataset")
-    parser.add_argument("--max_obs", default=0, help="Limit the number of data obs for large files.")
+    parser.add_argument("--max_obs", type=int, default=0, help="Limit the number of data obs for large files.")
     args = parser.parse_args()
     summarize_zarr(args.zarr_path, int(args.max_obs))
 

@@ -15,6 +15,9 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
+    stationElevation:
+      query: "*/ELV"
+
     sequenceId:
       query: "*/SID"
 
@@ -41,7 +44,7 @@ bufr:
     airPressureProgramCode:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/PPC"
 
-    height:
+    height_prepbufr:
       query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
 
     # Quality Markers

@@ -24,7 +24,7 @@ class Encoder(bufr.encoders.EncoderBase):
                output_template_path: str,
                append: bool = False) -> dict:
 
-        if container.size() == 0:
+        if container is None or container.size() == 0:
             return {}
 
         result: dict = {}

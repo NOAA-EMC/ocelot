@@ -16,8 +16,14 @@ bufr:
       query: "[*/CLONH, */CLON]"
 
     # Observation Values
-    airPressure:
+    airPressure_bufr:
       query: "[*/PRES, */PRLC]"  # Air pressure  missing from NC000007
+      type: float
+      transforms:
+        - scale: 0.01  # Convert from Pa to hPa
+
+    pressureMeanSeaLevel_bufr:
+      query: "*/PMSL"
       type: float
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
@@ -47,8 +53,9 @@ bufr:
       query: "[*/WDIR]"
       type: float
 
-    height:
+    height_bufr:
       query: "[*/SELV, */HSMSL]"  # Height above ground level
+      type: float
 
 encoder:
   variables:
@@ -71,14 +78,24 @@ encoder:
       range: [-180, 180]
 
     # Observation Values
-    - name: "airPressure"
-      source: variables/airPressure
+    - name: "airPressure_bufr"
+      source: variables/airPressure_bufr
       longName: "Air Pressure at Station Level"
+      units: "hPa"
+
+    - name: "pressureMeanSeaLevel_bufr"
+      source: variables/pressureMeanSeaLevel_bufr
+      longName: "Air Pressure Reduced to Mean Sea Level"
       units: "hPa"
 
     - name: "airTemperature"
       source: variables/airTemperature
       longName: "Air Temperature at Station Level"
+      units: "Celsius"
+
+    - name: "seaTemperature"
+      source: variables/seaTemperature
+      longName: "Sea Temperature"
       units: "Celsius"
 
     - name: "dewPointTemperature"
@@ -101,8 +118,8 @@ encoder:
       longName: "Wind Direction at Station Level"
       units: "radians"
 
-    - name: "height"
-      source: variables/height
+    - name: "height_bufr"
+      source: variables/height_bufr
       longName: "Height Above Ground Level"
       units: "meters"
 
