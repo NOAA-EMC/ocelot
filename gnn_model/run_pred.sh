@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 00:45:00
+#SBATCH -t 04:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -56,7 +56,7 @@ nvidia-smi
 # Prediction mode:
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
     --checkpoint checkpoints/gnn-epoch-epoch=134-val_loss-val_loss=0.03.ckpt \
-    --start_date 2023-01-01 \
-    --end_date 2023-01-10 \
+    --start_date 2023-01-10 \
+    --end_date 2023-03-01 \
     --output_dir predictions \
-    --eval-mode
+#    --eval-mode
