@@ -7,6 +7,7 @@ pipeline:
       avhrr: 100
       # amsua: 3   
       # ascat: 2
+      cris_pca: 100
     conventional:
       _default: 1
       surface_obs: 1
@@ -20,6 +21,7 @@ pipeline:
         amsua: random
         avhrr: random
         ascat: random   # ASCAT sampling mode
+        cris_pca: random
       conventional:
         _default: random
     #   snow_cover: none    # ignore subsampling for snow_cover
@@ -36,6 +38,7 @@ instrument_weights:
   # snow_cover: 1.0
   ssmis: 1.0
   seviri: 1.0
+  cris_pca: 1.0
 
 
 channel_weights:
@@ -55,6 +58,7 @@ channel_weights:
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0
     ]
+  cris_pca: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
 observation_config:
@@ -120,6 +124,18 @@ observation_config:
       metadata: [satelliteZenithAngle, solarZenithAngle]
       input_dim: 12
       target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    cris_pca:
+      sat_ids: [225, ]
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [global_pc_score_PC_1, global_pc_score_PC_2, global_pc_score_PC_3, global_pc_score_PC_4, 
+                 global_pc_score_PC_5, global_pc_score_PC_6, global_pc_score_PC_7, 
+                 global_pc_score_PC_8, global_pc_score_PC_9, global_pc_score_PC_10]
+      metadata: [sensorZenithAngle, solarZenithAngle]
+      input_dim: 19
+      target_dim: 10
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
@@ -379,3 +395,14 @@ feature_stats:  # Statistics for the features used in the model
     bt_clear_ch_7 : [73.44, 287.69]
     bt_clear_ch_8 : [73.44, 264.72]
     bt_clear_ch_9 : [73.44, 290.49]
+  cris_pca:
+    global_pc_score_PC_1:  [21.311, 134.148]
+    global_pc_score_PC_2:  [43.232, 233.701]
+    global_pc_score_PC_3:  [-18.520, 99.163]
+    global_pc_score_PC_4:  [-12.467, 93.472]
+    global_pc_score_PC_5:  [5.194, 26.501]
+    global_pc_score_PC_6:  [49.447, 463.281]
+    global_pc_score_PC_7:  [22.897, 121.348]
+    global_pc_score_PC_8:  [40.887, 225.485]
+    global_pc_score_PC_9:  [-18.183, 98.384]
+    global_pc_score_PC_10: [-11.259, 91.164]

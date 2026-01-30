@@ -825,7 +825,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 58
+    EPOCH_TO_PLOT = 56
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
@@ -865,6 +865,8 @@ if __name__ == "__main__":
     plot_ocelot_target_diff("ssmis", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=24, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
     plot_ocelot_target_diff("seviri", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
 
+    plot_ocelot_target_diff("cris_pca", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=10, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+    
     # AVHRR reflectance/albedo: omit units or add as needed
     plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir)
     # Surface obs and snow cover: omit units or add as needed
@@ -978,6 +980,17 @@ if __name__ == "__main__":
         EPOCH_TO_PLOT,
         BATCH_IDX_TO_PLOT,
         num_channels=16,
+        data_dir=DATA_DIR,
+        fig_dir=plot_dir,
+        error_metric="percent",
+        drop_small_truth=False,
+    )
+
+    plot_instrument_maps(
+        "cris_pca",
+        EPOCH_TO_PLOT,
+        BATCH_IDX_TO_PLOT,
+        num_channels=15,
         data_dir=DATA_DIR,
         fig_dir=plot_dir,
         error_metric="percent",
