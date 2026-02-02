@@ -21,11 +21,13 @@ encoder:
       source: latitude
       longName: "Latitude"
       units: "degree_north"
+      range: [-90.0, 90.0]
 
     - name: longitude
       source: longitude
       longName: "Longitude"
       units: "degree_east"
+      range: [-180.0, 180.0]
 
     - name: time
       source: time
@@ -41,6 +43,28 @@ encoder:
       source: scan_position
       longName: "Scan position"
       units: "1"
+
+    - name: satelliteId
+      source: satelliteId
+      longName: "Satellite ID"
+      units: "1"
+
+    - name: "solarZenithAngle"
+      source: solarZenithAngle
+      longName: "Solar Zenith Angle"
+      units: "degree"
+      range: [0, 180]
+
+    - name: "sensorZenithAngle"
+      source: sensorZenithAngle
+      longName: "Sensor Zenith Angle"
+      units: "degree"
+      range: [0, 90]
+
+    - name: "sensorAzimuthAngle"
+      source: sensorAzimuthAngle
+      longName: "Sensor Azimuth Angle"
+      units: "degree"
 
     - name: global_pc_score
       source: global_pc_score

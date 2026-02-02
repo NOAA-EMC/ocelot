@@ -134,7 +134,6 @@ class PcaRunner(Runner):
             end_str = match.group("end_time")
             file_start = datetime.strptime(start_str, "%Y%m%d%H%M%S")
             file_end = datetime.strptime(end_str, "%Y%m%d%H%M%S")
-
             if file_end < parameters.start_time or file_start > parameters.stop_time:
                 continue
 
@@ -173,13 +172,30 @@ class NcdfRunner(Runner):
         print("FILES FOUND:", len(files))
 
         for fname in files:
-            print("CHECKING:", fname)
-
-            if not self.regex.match(fname):
-                print("NO REGEX MATCH")
+            match = self.regex.match(fname)
+            if not match:
                 continue
 
-            print("MATCH:", fname)
+            #print("CHECKING:", fname)
+
+            #if not match:
+            #    print("NO REGEX MATCH")
+            #    continue
+
+            start_str = match.group("start_time")
+            try:
+                file_start = datetime.strptime(start_str, "%Y%m%d%H%M%S")
+            except:
+                file_start = datetime.strptime(start_str, "%Y%m%dT%H%M%S")
+            try:
+                end_str = match.group("end_time")
+                file_end = datetime.strptime(end_str, "%Y%m%d%H%M%S")
+            except:
+                file_end = file_start
+            if file_end < parameters.start_time or file_start > parameters.stop_time:
+                continue
+
+            #print("MATCH:", fname)
 
             input_path = os.path.join(directory, fname)
             container = self._make_obs(comm, input_path)

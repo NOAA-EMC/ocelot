@@ -168,7 +168,10 @@ class Encoder(bufr.encoders.EncoderBase):
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
                     dim_val = dim_vals[i] if dim_vals[i] != 0 else i + 1
-                    add_variable(var, f'{var_name}_{dim_names[1]}_{dim_val}', var_data[:, i])
+                    dim_name = dim_names[1]
+                    if dim_name == "dim_2":
+                        dim_name = "PC"
+                    add_variable(var, f'{var_name}_{dim_name}_{dim_val}', var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
@@ -195,7 +198,10 @@ class Encoder(bufr.encoders.EncoderBase):
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
                     dim_val = dim_vals[i] if dim_vals[i] != 0 else i + 1
-                    root[f'{var_name}_{dim_names[1]}_{dim_val}'].append(var_data[:, i])
+                    dim_name = dim_names[1]
+                    if dim_name == "dim_2":
+                        dim_name = "PC"
+                    root[f'{var_name}_{dim_name}_{dim_val}'].append(var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 

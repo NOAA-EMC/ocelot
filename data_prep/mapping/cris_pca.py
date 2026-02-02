@@ -24,8 +24,8 @@ class CrisPcaObsBuilder(ObsBuilder):
     """
 
     def __init__(self):
-        print("\n*** CrisPcaObsBuilder CONSTRUCTOR ***")
-        print("    ENCODER_YAML =", ENCODER_YAML)
+        #print("\n*** CrisPcaObsBuilder CONSTRUCTOR ***")
+        #print("    ENCODER_YAML =", ENCODER_YAML)
 
         # --- Load YAML FIRST (before calling super) ---
         with open(ENCODER_YAML, "r") as f:
@@ -43,7 +43,7 @@ class CrisPcaObsBuilder(ObsBuilder):
 
         self._dim_path_map = dim_path_map
 
-        print("    DIM PATH MAP:", self._dim_path_map)
+        #print("    DIM PATH MAP:", self._dim_path_map)
 
         # NOW call parent (which calls _make_description)
         super().__init__(None, log_name=os.path.basename(__file__))
@@ -59,12 +59,10 @@ class CrisPcaObsBuilder(ObsBuilder):
     def load_input(self, filename):
         print(f"*** load_input() CALLED: {filename}")
         ds = xr.open_dataset(filename, decode_times=False)
-        print("    dims:", ds.sizes)
         return ds
 
     # -----------------------------------------------------
     def preprocess_dataset(self, ds):
-        print("*** preprocess_dataset() CALLED ***")
 
         required = ["atrack", "xtrack", "fov"]
         for d in required:
@@ -75,8 +73,6 @@ class CrisPcaObsBuilder(ObsBuilder):
         nx = ds.sizes["xtrack"]
         nf = ds.sizes["fov"]
         nlocs = na * nx * nf
-
-        print(f"    atrack={na}, xtrack={nx}, fov={nf} -> nlocs={nlocs}")
 
         # Build indices
         a, x, f = xr.broadcast(
@@ -96,17 +92,19 @@ class CrisPcaObsBuilder(ObsBuilder):
         out["scan_position"] = xr.DataArray(scan_pos, dims=("location",))
 
         # Flatten lat/lon into encoder variable names
-        for v_in, v_out in [("lat", "latitude"), ("lon", "longitude")]:
+        for v_in, v_out in [("lat", "latitude"), ("lon", "longitude"),
+                ("sat_azi", "sensorAzimuthAngle"),
+                ("sol_zen", "solarZenithAngle"), ("sat_zen", "sensorZenithAngle")]:
             if v_in in ds:
-                print(f"    flattening {v_in} -> {v_out}")
                 out[v_out] = xr.DataArray(
                     ds[v_in].values.reshape(nlocs),
                     dims=("location",)
                 )
+        # Hardcode NOAA-20 sat id for now
+        out["satelliteId"] = xr.DataArray(np.ones(nlocs)*225, dims=("location",))
 
         # Time
         if "obs_time_tai93" in ds:
-            print("    converting obs_time_tai93 -> UNIX seconds")
 
             time3d = xr.broadcast(ds["obs_time_tai93"], ds["lat"])[0]
             time_tai93 = time3d.values.reshape(nlocs)
@@ -122,18 +120,16 @@ class CrisPcaObsBuilder(ObsBuilder):
         # Global PC scores
         if "global_pc_score" in ds:
             npc = ds.sizes["npc_global"]
-            print(f"    flattening global_pc_score to (location, {npc})")
             out["global_pc_score"] = xr.DataArray(
-                ds["global_pc_score"].values.reshape(nlocs, npc),
+                    ds["global_pc_score"].values.reshape(nlocs, npc)[:,1:25],
                 dims=("location", "npc_global")
             )
 
-        print("*** preprocess complete, vars:", list(out.variables))
+        # Sample every 17th location
+        out = out.isel(location=slice(None, None, 17))
+
         return out
 
-    # -----------------------------------------------------
-    # 2) Build a DataContainer from the flattened Dataset
-    # -----------------------------------------------------
     # -----------------------------------------------------
     # 2) Build a DataContainer from the flattened Dataset
     # -----------------------------------------------------
@@ -153,11 +149,9 @@ class CrisPcaObsBuilder(ObsBuilder):
                 )
             dim_paths.append(self._dim_path_map[d])
 
-        print(f"    _dims_for_var({varname}, {dims}) -> {dim_paths}")
         return dim_paths
 
     def make_obs(self, comm, input_path):
-        print("***** Entering make_obs *****")
         ds = self.load_input(input_path)
         ds = self.preprocess_dataset(ds)
 
@@ -166,8 +160,6 @@ class CrisPcaObsBuilder(ObsBuilder):
         # Load YAML once more (or reuse self._encoder_yaml)
         enc = self._encoder_yaml["encoder"]
         variables = enc["variables"]
-
-        print('VARIABLES=', variables)
 
         for v in variables:
             name = v["name"]
@@ -179,9 +171,6 @@ class CrisPcaObsBuilder(ObsBuilder):
 
             xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
-
-            print(f"Adding {name} from {source} with dim_paths {dim_paths}")
-            print("  shape =", ds[source].values.shape)
 
             container.add(
                 name,
