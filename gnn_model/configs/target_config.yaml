@@ -2,7 +2,7 @@
 enabled: true  # Master switch
 variables:
   surface_obs:
-    - airPressure_pb_event_1  # p
+    - airPressure_prepbufr_event_1  # p
     - airTemperature    # temp
     - wind_u            # u
     - wind_v            # v

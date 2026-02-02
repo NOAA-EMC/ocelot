@@ -1665,21 +1665,48 @@ class GNNLightning(pl.LightningModule):
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
 
-        # MK: Generate mesh predictions for first batch only
-        if batch_idx == 0 and self.target_variables_enabled and self.trainer.is_global_zero:
-            try:
-                with torch.no_grad():  # Disable gradients for mesh prediction
-                    temp_mesh_pred_edges = self._load_mesh_prediction_edges()
-                    mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
-                    if mesh_predictions:
-                        self._save_mesh_predictions(mesh_predictions, temp_mesh_pred_edges, batch_idx=batch_idx,
-                                                    epoch=self.current_epoch, mode='val', batch=batch, output_dir='val_target_csv')
-            except Exception as e:
-                print(f"[MESH PRED] Failed (non-critical): {e}")
-                import traceback
-                traceback.print_exc()
+        # MK: Save mesh features from first batch for epoch-end processing
+        if batch_idx == 0 and self.target_variables_enabled:
+            self._last_val_mesh_features = mesh_features_per_step
+            self._last_val_batch = batch
 
         return avg_loss
+
+    def on_validation_epoch_end(self):
+        """Generate mesh predictions at END of validation epoch."""
+        if not self.target_variables_enabled or not self.trainer.is_global_zero:
+            return
+
+        # Check if we saved mesh features during validation
+        if not hasattr(self, '_last_val_mesh_features') or self._last_val_mesh_features is None:
+            print("[MESH PRED] No mesh features from validation, skipping")
+            return
+
+        try:
+            with torch.no_grad():
+                temp_mesh_pred_edges = self._load_mesh_prediction_edges()
+                mesh_predictions = self._decode_all_steps_to_mesh(
+                    self._last_val_mesh_features,
+                    temp_mesh_pred_edges
+                )
+                if mesh_predictions:
+                    self._save_mesh_predictions(
+                        mesh_predictions,
+                        temp_mesh_pred_edges,
+                        batch_idx=0,
+                        epoch=self.current_epoch,
+                        mode='val',
+                        batch=self._last_val_batch,
+                        output_dir='val_target_csv'
+                    )
+        except Exception as e:
+            print(f"[MESH PRED] Failed (non-critical): {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Clean up
+            self._last_val_mesh_features = None
+            self._last_val_batch = None
 
     def _extract_init_time_str(self, batch):
         """
@@ -1977,7 +2004,7 @@ class GNNLightning(pl.LightningModule):
                 # Unnormalize using existing method
                 node_type = f"{inst_name}_target"
                 pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
-                pred_np = pred_unnorm.cpu().numpy()
+                pred_np = pred_unnorm.detach().cpu().numpy()
 
                 df = pd.DataFrame({
                     'lat': mesh_lats,

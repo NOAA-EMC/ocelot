@@ -23,6 +23,47 @@ CALM_WIND_THRESHOLD = 2.0  # m/s
 
 PLOT_DIR = "figures"
 
+def find_csv_files(
+    data_dir: str,
+    instrument_name: str,
+    epoch: int | None = None,
+    batch_idx: int | None = None,
+    init_time: str | None = None,
+) -> list[str]:
+    """
+    Find CSV files matching the specified criteria.
+
+    For training mode: specify epoch and batch_idx
+    For testing mode: specify init_time
+
+    Args:
+        data_dir: Directory containing CSV files
+        instrument_name: Name of instrument to filter by
+        epoch: Epoch number for training mode (optional)
+        batch_idx: Batch index for training mode (optional)
+        init_time: Initialization time for testing mode (optional, format: YYYYMMDDHH)
+
+    Returns:
+        List of matching file paths. May be empty if no files found.
+    """
+    pattern = os.path.join(data_dir, '*.csv')
+    csv_files = glob.glob(pattern)
+
+    # Filter by instrument name
+    if instrument_name:
+        csv_files = [f for f in csv_files if instrument_name in os.path.basename(f)]
+
+    # Training mode filters
+    if epoch is not None:
+        csv_files = [f for f in csv_files if f'epoch{epoch}_' in os.path.basename(f)]
+    if batch_idx is not None:
+        csv_files = [f for f in csv_files if f'batch{batch_idx}' in os.path.basename(f)]
+
+    # Testing mode filters
+    if init_time is not None:
+        csv_files = [f for f in csv_files if f'init_{init_time}' in os.path.basename(f)]
+
+    return csv_files
 
 def _robust_sym_limits(x, q=99.0):
     """Return symmetric limits [-m, m] using the qth percentile of |x|."""
@@ -52,25 +93,13 @@ def plot_ocelot_target_diff(
     Make a 3-panel figure: OCELOT (prediction), Target (truth), Difference (pred - true),
     and annotate RMSE on the Difference panel.
     """
-    pattern = os.path.join(data_dir, '*.csv')
-    csv_files = glob.glob(pattern)
-
-    # Filter files
-    if instrument_name:
-        csv_files = [f for f in csv_files if instrument_name in os.path.basename(f)]
-    if epoch is not None:
-        csv_files = [f for f in csv_files if f'epoch{epoch}_' in os.path.basename(f)]
-    if batch_idx is not None:
-        csv_files = [f for f in csv_files if f'batch{batch_idx}' in os.path.basename(f)]
+    csv_files = find_csv_files(data_dir, instrument_name, epoch, batch_idx)  # , init_time)
     if not csv_files:
         print(f"No CSV files found matching criteria in {data_dir}")
         return
-    print(csv_files)
-
     if len(csv_files) != 1:
         print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
         return
-
     [filepath] = csv_files
     print(filepath)
     # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
@@ -457,8 +486,22 @@ def plot_radiosonde_profiles_by_pressure_level(
                      to avoid showing unreliable statistics.
                      Default: 500 (sufficient for stable statistics)
     """
-    filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
-    df = pd.read_csv(filepath)
+    # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+    csv_files = find_csv_files(data_dir, instrument_name, epoch, batch_idx)  # , init_time)
+    if not csv_files:
+        print(f"No CSV files found matching criteria in {data_dir}")
+        return
+    if len(csv_files) != 1:
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
+        return
+    [filepath] = csv_files
+    print(filepath)
+    try:
+        df = pd.read_csv(filepath)
+        print(f"\n--- Processing {instrument_name} from {filepath} ---")
+    except FileNotFoundError:
+        print(f"\nWarning: Could not find data file {filepath}. Skipping.")
+        return
 
     os.makedirs(fig_dir, exist_ok=True)
 
@@ -621,16 +664,7 @@ def plot_instrument_maps(
     """
     Load prediction CSV and generate maps for each feature with robust errors.
     """
-    pattern = os.path.join(data_dir, '*.csv')
-    csv_files = glob.glob(pattern)
-
-    # Filter files
-    if instrument_name:
-        csv_files = [f for f in csv_files if instrument_name in os.path.basename(f)]
-    if epoch is not None:
-        csv_files = [f for f in csv_files if f'epoch{epoch}_' in os.path.basename(f)]
-    if batch_idx is not None:
-        csv_files = [f for f in csv_files if f'batch{batch_idx}' in os.path.basename(f)]
+    csv_files = find_csv_files(data_dir, instrument_name, epoch, batch_idx)  # , init_time)
     if not csv_files:
         print(f"No CSV files found matching criteria in {data_dir}")
         return
