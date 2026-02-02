@@ -335,6 +335,17 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
+            # Store pressure level index for radiosonde and aircraft (if available)
+            if "input_pressure_level" in inst_dict:
+                data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
+                print(
+                    f"[DATAMODULE] Stored pressure_level for {node_type_input}: "
+                    f"shape={data[node_type_input].pressure_level.shape}, "
+                    f"range=[{data[node_type_input].pressure_level.min()}, {data[node_type_input].pressure_level.max()}]"
+                )
+            elif inst_name in ["radiosonde", "aircraft"]:
+                print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_input}! Data may not be preprocessed with new code.")
+
             # Create encoder edges (observation to mesh)
             if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
                 grid_lat_deg = inst_dict["input_lat_deg"]
@@ -378,6 +389,7 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
                 data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
+                data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
                 continue
 
             keep_np = keep_t.cpu().numpy()
@@ -422,6 +434,23 @@ class GNNDataModule(pl.LightningDataModule):
                     dtype=torch.long
                 )
 
+            # Pressure data for radiosonde and aircraft (used for evaluation CSV)
+            if "target_pressure_hpa_list" in inst_dict and step < len(inst_dict["target_pressure_hpa_list"]):
+                pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
+                data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
+
+            # Store pressure level index for radiosonde and aircraft (if available)
+            if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
+                pressure_level_idx = inst_dict["target_pressure_level_list"][step][keep_t]
+                data[node_type_target].pressure_level = pressure_level_idx.long()
+                print(
+                    f"[DATAMODULE] Stored pressure_level for {node_type_target}: "
+                    f"shape={data[node_type_target].pressure_level.shape}, "
+                    f"range=[{data[node_type_target].pressure_level.min()}, {data[node_type_target].pressure_level.max()}]"
+                )
+            elif inst_name in ["radiosonde", "aircraft"]:
+                print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_target}! Data may not be preprocessed with new code.")
+
             # Edges - filter lat/lon too
             if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
@@ -459,6 +488,7 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
+            data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused

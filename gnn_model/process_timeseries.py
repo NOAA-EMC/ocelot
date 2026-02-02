@@ -8,6 +8,36 @@ from timing_utils import timing_resource_decorator
 # Maximum number of channels supported for per-channel variable mapping
 MAX_SUPPORTED_CHANNELS = 9
 
+# Standard pressure levels for radiosonde embeddings (hPa)
+STANDARD_PRESSURE_LEVELS = np.array([
+    1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10
+])
+
+
+def get_pressure_level_index(pressure_hpa):
+    """
+    Map pressure values to nearest standard level index for categorical embedding.
+
+    Args:
+        pressure_hpa: numpy array of pressure values in hPa
+
+    Returns:
+        level_indices: numpy array of integers (0-15) for the 16 standard levels
+    """
+    pressure_hpa = np.asarray(pressure_hpa)
+    level_indices = np.zeros(pressure_hpa.shape, dtype=np.int32)
+
+    for i, p in enumerate(pressure_hpa.flat):
+        if not np.isfinite(p):
+            level_indices.flat[i] = -1  # Invalid -> will be masked later
+        else:
+            # Find nearest standard level
+            diffs = np.abs(STANDARD_PRESSURE_LEVELS - p)
+            nearest_idx = np.argmin(diffs)
+            level_indices.flat[i] = nearest_idx
+
+    return level_indices.reshape(pressure_hpa.shape)
+
 
 def _subsample_by_mode(indices: np.ndarray, mode: str, stride: int, seed: int | None):
     """
@@ -322,10 +352,20 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             # --- Level selection ---
             obs_cfg = observation_config[obs_type][inst_name]
             level_selection = obs_cfg.get('level_selection')
+
             if level_selection:
-                if level_selection:
+                # Check if we should use all levels (skip filtering)
+                matching_mode = level_selection.get('matching_mode', 'exact')
+
+                # Support for using ALL pressure levels
+                if matching_mode == 'all' or matching_mode == 'none':
+                    # Skip level filtering - use ALL observations
+                    pass
+                else:
+                    # Original behavior: filter to specific levels
                     col = level_selection["filter_col"]
                     levels = np.asarray(level_selection["levels"])
+
                     if input_idx.size:
                         input_idx = input_idx[np.isin(z[col][input_idx], levels)]
                     for i, idx in enumerate(target_indices_list):
@@ -465,7 +505,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             # -------------------- Feature extraction (following original pattern) --------------------
             def _get_feature(arrs, name, idx):
                 if name in arrs:
-                    return arrs[name][idx]
+                    data = arrs[name][idx]
+                    return data
                 if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
                     ws = arrs["windSpeed"][idx].astype(np.float32)
                     wd = arrs["windDirection"][idx].astype(np.float32)
@@ -475,12 +516,50 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     return u if name == "wind_u" else v
                 raise KeyError(f"Requested feature '{name}' not found in Zarr and no fallback rule defined.")
 
+            def _get_metadata(arrs, name, idx):
+                """
+                Get metadata value, handling derived fields like log_pressure_height.
+
+                For log_pressure_height: z = -8000 * ln(P/1013.25) meters
+                This converts pressure to approximate geopotential height using the barometric formula.
+                """
+                if name in arrs:
+                    return arrs[name][idx].astype(np.float32)
+
+                # Derived field: log_pressure_height from airPressure
+                if name == "log_pressure_height" and "airPressure" in arrs:
+                    pressure = arrs["airPressure"][idx].astype(np.float32)
+                    # Clip pressure to valid range to avoid log issues
+                    pressure_clipped = np.clip(pressure, 1.0, 1100.0)
+                    # Barometric formula: z = -H * ln(P/P0) where H ~ 8000m (scale height)
+                    log_pressure_height = -8000.0 * np.log(pressure_clipped / 1013.25)
+                    # Normalize to roughly [-0.5, 1.5] range (surface ~0, tropopause ~1)
+                    # Surface (1013 hPa) -> 0m -> 0.0
+                    # 500 hPa -> ~5500m -> 0.275
+                    # 100 hPa -> ~16000m -> 0.8
+                    log_pressure_height_norm = log_pressure_height / 20000.0
+                    return log_pressure_height_norm.astype(np.float32)
+
+                raise KeyError(f"Requested metadata '{name}' not found in Zarr and no derivation rule defined.")
+
+            def _stack_metadata(arrs, keys, idx):
+                """Stack metadata columns, handling derived fields."""
+                if not keys:
+                    return np.empty((len(idx), 0), dtype=np.float32)
+                return np.column_stack([_get_metadata(arrs, k, idx) for k in keys]).astype(np.float32)
+
             # Extract input features
             input_features_raw = np.column_stack([_get_feature(z, k, input_idx) for k in feat_keys]).astype(np.float32)
-            input_metadata_raw = _stack_or_empty(z, meta_keys, input_idx)
+            input_metadata_raw = _stack_metadata(z, meta_keys, input_idx)
             input_lat_raw = z["latitude"][input_idx]
             input_lon_raw = z["longitude"][input_idx]
             input_times_raw = z["time"][input_idx]
+
+            # Extract pressure level indices for radiosonde and aircraft (categorical embedding)
+            input_pressure_level = None
+            if inst_name in ['radiosonde', 'aircraft'] and 'airPressure' in z:
+                pressure = z['airPressure'][input_idx].astype(np.float32)
+                input_pressure_level = get_pressure_level_index(pressure)
 
             # Extract ALL target features
             target_features_raw_list = []
@@ -488,6 +567,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             target_lat_raw_list = []
             target_lon_raw_list = []
             target_times_raw_list = []
+            target_pressure_level_list = []
 
             for target_idx in target_indices_list:
                 if target_idx.size == 0:
@@ -496,12 +576,17 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_lat_raw_list.append(np.array([], dtype=np.float32))
                     target_lon_raw_list.append(np.array([], dtype=np.float32))
                     target_times_raw_list.append(np.array([], dtype=np.float32))
+                    if inst_name in ['radiosonde', 'aircraft']:
+                        target_pressure_level_list.append(np.array([], dtype=np.int32))
                 else:
                     target_features_raw_list.append(np.column_stack([_get_feature(z, k, target_idx) for k in feat_keys]).astype(np.float32))
-                    target_metadata_raw_list.append(_stack_or_empty(z, meta_keys, target_idx))
+                    target_metadata_raw_list.append(_stack_metadata(z, meta_keys, target_idx))
                     target_lat_raw_list.append(z["latitude"][target_idx])
                     target_lon_raw_list.append(z["longitude"][target_idx])
                     target_times_raw_list.append(z["time"][target_idx])
+                    if inst_name in ['radiosonde', 'aircraft'] and 'airPressure' in z:
+                        pressure = z['airPressure'][target_idx].astype(np.float32)
+                        target_pressure_level_list.append(get_pressure_level_index(pressure))
 
             # Replace fill values with NaN
             FILL_VALUE = 3.402823e38
@@ -647,6 +732,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
             # Filter ALL targets based on metadata validity
             target_data_cleaned = []
+            target_pressure_hpa_list = []
+
             for step in range(num_latent_steps):
                 target_idx = target_indices_list[step]
                 target_features_raw = target_features_raw_list[step]
@@ -658,27 +745,41 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                 if target_idx.size == 0:
                     target_data_cleaned.append({
-                        'indices': np.array([], dtype=int),
-                        'features': np.empty((0, n_ch), dtype=np.float32),
-                        'metadata': np.empty((0, len(meta_keys)), dtype=np.float32),
-                        'lat': np.array([], dtype=np.float32),
-                        'lon': np.array([], dtype=np.float32),
-                        'times': np.array([], dtype=np.float32),
-                        'valid_ch': np.empty((0, n_ch), dtype=bool),
+                        "indices": np.array([], dtype=int),
+                        "features": np.empty((0, n_ch), dtype=np.float32),
+                        "metadata": np.empty((0, len(meta_keys)), dtype=np.float32),
+                        "lat": np.array([], dtype=np.float32),
+                        "lon": np.array([], dtype=np.float32),
+                        "times": np.array([], dtype=np.float32),
+                        "valid_ch": np.empty((0, n_ch), dtype=bool),
                     })
+                    target_pressure_hpa_list.append(np.array([], dtype=np.float32))
                     continue
 
-                # TARGETS: require metadata only; allow per-channel NaNs
-                valid_target_meta = ~np.isnan(target_metadata_raw).any(axis=1) if target_metadata_raw.size else np.ones(target_idx.size, bool)
+                # IMPORTANT: valid_target_meta should be computed AFTER fill-values->NaN has happened.
+                valid_target_meta = (
+                    ~np.isnan(target_metadata_raw).any(axis=1)
+                    if target_metadata_raw.size
+                    else np.ones(target_idx.size, dtype=bool)
+                )
+
+                # pressure aligned to kept rows
+                if "airPressure" in z:
+                    p_raw = z["airPressure"][target_idx].astype(np.float32)
+                    p_kept = p_raw[valid_target_meta]
+                else:
+                    p_kept = np.full(np.count_nonzero(valid_target_meta), np.nan, dtype=np.float32)
+
+                target_pressure_hpa_list.append(p_kept)
 
                 target_data_cleaned.append({
-                    'indices': target_idx[valid_target_meta],
-                    'features': target_features_raw[valid_target_meta],
-                    'metadata': target_metadata_raw[valid_target_meta] if target_metadata_raw.size else target_metadata_raw,
-                    'lat': target_lat_raw[valid_target_meta],
-                    'lon': target_lon_raw[valid_target_meta],
-                    'times': target_times_raw[valid_target_meta],
-                    'valid_ch': target_valid_ch[valid_target_meta],
+                    "indices": target_idx[valid_target_meta],
+                    "features": target_features_raw[valid_target_meta],
+                    "metadata": target_metadata_raw[valid_target_meta] if target_metadata_raw.size else target_metadata_raw,
+                    "lat": target_lat_raw[valid_target_meta],
+                    "lon": target_lon_raw[valid_target_meta],
+                    "times": target_times_raw[valid_target_meta],
+                    "valid_ch": target_valid_ch[valid_target_meta],
                 })
 
             # Apply per-channel invalidation: set bad channels to NaN
@@ -885,18 +986,50 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
 
+            # Store pressure level indices for radiosonde and aircraft
+            if inst_name in ['radiosonde', 'aircraft'] and input_pressure_level is not None:
+                # Filter to kept rows
+                input_pressure_level_clean = input_pressure_level[keep_inputs]
+                data_summary_bin["input_pressure_level"] = torch.tensor(input_pressure_level_clean, dtype=torch.long)
+
+            # Store target pressure level indices
+            target_pressure_level_list_filtered = []
+            if inst_name in ['radiosonde', 'aircraft'] and target_pressure_level_list:
+                for step, target_data in enumerate(target_data_cleaned):
+                    if len(target_pressure_level_list) > step and target_pressure_level_list[step].size > 0:
+                        # Get the valid_target_meta mask for this step
+                        target_idx = target_indices_list[step]
+                        target_metadata_raw = target_metadata_raw_list[step]
+                        valid_target_meta = (
+                            ~np.isnan(target_metadata_raw).any(axis=1)
+                            if target_metadata_raw.size
+                            else np.ones(target_idx.size, dtype=bool)
+                        )
+                        # Filter pressure levels to kept rows
+                        target_pressure_level_list_filtered.append(
+                            torch.tensor(target_pressure_level_list[step][valid_target_meta], dtype=torch.long)
+                        )
+                    else:
+                        target_pressure_level_list_filtered.append(torch.tensor([], dtype=torch.long))
+
             data_summary_bin.update({
                 "target_features_final_list": target_features_final_list,
                 "target_metadata_list": target_metadata_list,
                 "scan_angle_list": scan_angle_list,
                 "target_channel_mask_list": target_channel_mask_list,
                 "target_lat_deg_list": target_lat_deg_list,
-                "target_lon_deg_list": target_lon_deg_list
+                "target_lon_deg_list": target_lon_deg_list,
+                "target_pressure_hpa_list": target_pressure_hpa_list
             })
+
+            # Add pressure level lists if we have them
+            if inst_name in ['radiosonde', 'aircraft'] and target_pressure_level_list_filtered:
+                data_summary_bin["target_pressure_level_list"] = target_pressure_level_list_filtered
 
             NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]
 
+            # Print summary
             print(f"[{bin_name}] {inst_name}: input {orig_in} -> "
                   f"{input_features_final.shape[0]}, targets {orig_tg_sizes} -> "
                   f"{[t.shape[0] for t in target_features_final_list]}")
