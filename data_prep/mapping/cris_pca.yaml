@@ -7,14 +7,11 @@ encoder:
       type: string
       value: "CrIS PCA netCDF (test)"
 
-  dimensions:
-    - name: location
-      source: "location"
-      path: "*"
+  # dimensions:
   
-    - name: npc_global
-      source: npc_global
-      path: "*/NPCGLOBAL"
+    # - name: npc_global
+    #   source: npc_global
+    #   path: "*/NPCGLOBAL"
 
   variables:
     - name: latitude
