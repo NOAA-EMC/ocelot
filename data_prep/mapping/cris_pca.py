@@ -34,16 +34,16 @@ class CrisPcaObsBuilder(ObsBuilder):
         self._encoder_yaml = full_yaml
 
         # Build dimension map
-        # enc = full_yaml.get("encoder", {})
+        enc = full_yaml.get("encoder", {})
         dim_path_map = {}
-        for dim in full_yaml.get("dimensions", []):
+        for dim in enc.get("dimensions", []):
             n = dim["name"]
             p = dim["path"]
             dim_path_map[n] = p
 
         self._dim_path_map = dim_path_map
 
-        #print("    DIM PATH MAP:", self._dim_path_map)
+        print("    DIM PATH MAP:", self._dim_path_map)
 
         # NOW call parent (which calls _make_description)
         super().__init__(None, log_name=os.path.basename(__file__))
@@ -125,8 +125,8 @@ class CrisPcaObsBuilder(ObsBuilder):
                 dims=("location", "npc_global")
             )
 
-        # Sample every 17th location
-        out = out.isel(location=slice(None, None, 17))
+#        # Sample every 17th location
+#        out = out.isel(location=slice(None, None, 17))
 
         return out
 
@@ -172,6 +172,10 @@ class CrisPcaObsBuilder(ObsBuilder):
             xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
 
+
+            print("Name=",name)
+            print("ds[source].values=",ds[source].values)
+            print("dim_paths=",dim_paths)
             container.add(
                 name,
                 ds[source].values,

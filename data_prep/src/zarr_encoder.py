@@ -2,6 +2,7 @@ import re
 from typing import Union
 import zarr
 import numpy as np
+from pprint import pprint
 
 import bufr
 from bufr.obs_builder import add_encoder_type
@@ -29,6 +30,8 @@ class Encoder(bufr.encoders.EncoderBase):
 
         result: dict = {}
         for category in container.all_sub_categories():
+            print("category=",category)
+        for category in container.all_sub_categories():
             cat_idx = 0
             substitutions = {}
             for key in container.get_category_map().keys():
@@ -39,8 +42,27 @@ class Encoder(bufr.encoders.EncoderBase):
 
             store = zarr.DirectoryStore(output_path)
             root = zarr.group(store=store, overwrite=(not append))
+            print("category=",category)
             dims = self.get_encoder_dimensions(container, category)
+            print("type(dims)=",type(dims))
+            print("dir(dims)=",dir(dims))
+            if hasattr(dims, "__dict__"):
+                pprint(dims.__dict__)
+            else:
+                print("No __dict__ (likely uses __slots__)")
 
+            slots = getattr(type(dims), "__slots__", None)
+            print("slots:", slots)
+            
+            if slots:
+                state = {}
+                for s in slots:
+                    try:
+                        state[s] = getattr(dims, s)
+                    except Exception as e:
+                        state[s] = f"<error: {e}>"
+                pprint(state)
+            
             if 'time' not in root:
                 self._add_attrs(root)
                 self._init_dimensions(root, container, category, dims)

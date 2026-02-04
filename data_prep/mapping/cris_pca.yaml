@@ -1,12 +1,3 @@
-dimensions:
-  - name: location
-    source: "location"
-    path: "*"
-
-  - name: npc_global
-    source: npc_global
-    path: "*/NPCGLOBAL"
-
 encoder:
   categories:
     - name: cris_pca
@@ -15,6 +6,15 @@ encoder:
     - name: source
       type: string
       value: "CrIS PCA netCDF (test)"
+
+  dimensions:
+    - name: location
+      source: "location"
+      path: "*"
+  
+    - name: npc_global
+      source: npc_global
+      path: "*/NPCGLOBAL"
 
   variables:
     - name: latitude
