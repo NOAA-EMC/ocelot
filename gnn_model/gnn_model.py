@@ -154,8 +154,8 @@ class GNNLightning(pl.LightningModule):
         # For hierarchical mode, we'll need to handle multiple mesh levels
         if self.is_hierarchical:
             # Store all mesh levels
-            # NOTE: create_mesh returns [finest, ..., coarsest] in hierarchical mode
-            # We reverse to [coarsest, ..., finest] for easier processing (level 0 = coarsest, increases to finest)
+            # NOTE: create_mesh returns [coarsest, ..., finest] in hierarchical mode
+            # We reverse to [finest, ..., coarsest] for easier processing (level 0 = finest, increases to coarsest)
             self.num_mesh_levels = len(self.mesh_structure["mesh_features_torch"])
             mesh_x_list = list(reversed(self.mesh_structure["mesh_features_torch"]))
             mesh_edge_index_list = list(reversed(self.mesh_structure["m2m_edge_index_torch"]))
@@ -355,10 +355,12 @@ class GNNLightning(pl.LightningModule):
                 self.register_buffer(f"mesh_edge_attr_level_{i}", _as_f32(mea))
 
             # Also store up/down connections if available
-            # NOTE: These also need to be reversed AND meaning swapped!
-            # Original: mesh_up[i]: finest[i] -> coarser[i+1], mesh_down[i]: coarser[i+1] -> finest[i]
-            # After reversing meshes: need to reverse and SWAP up<->down
-            # Result: mesh_up[i]: coarser[i] -> finer[i+1], mesh_down[i]: finer[i+1] -> coarser[i]
+            # NOTE: create_mesh builds edges in mesh_list_rev order [finest,...,coarsest]
+            #   mesh_up[i]: connects mesh_list_rev[i] → mesh_list_rev[i+1] (fine→coarse)
+            #   mesh_down[i]: reverse direction (coarse→fine)
+            # After reversing to [finest,...,coarsest], we need to reverse lists AND swap meanings
+            #   new mesh_up[i]: should go coarse→fine (use reversed mesh_down)
+            #   new mesh_down[i]: should go fine→coarse (use reversed mesh_up)
             if "mesh_up_ei_list" in self.mesh_structure:
                 # Reverse and SWAP: old "up" (fine->coarse) becomes new "down" (fine->coarse at reversed indices)
                 # old "down" (coarse->fine) becomes new "up" (coarse->fine at reversed indices)
