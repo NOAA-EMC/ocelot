@@ -1,3 +1,22 @@
+observation:
+  dim_path_map:
+    location: "*"
+    npc_global: "*/NPCGLOBAL"
+
+  variable_map:
+    - source: lat
+      name: latitude
+    - source: lon
+      name: longitude
+    - source: sat_azi
+      name: sensorAzimuthAngle
+    - source: sol_zen
+      name: solarZenithAngle
+    - source: sat_zen
+      name: sensorZenithAngle
+
+  global_pc_score_slice: [1, 25]  # [start, end) for npc_global dimension
+
 encoder:
   categories:
     - name: cris_pca
@@ -6,12 +25,6 @@ encoder:
     - name: source
       type: string
       value: "CrIS PCA netCDF (test)"
-
-  # dimensions:
-  
-    # - name: npc_global
-    #   source: npc_global
-    #   path: "*/NPCGLOBAL"
 
   variables:
     - name: latitude
@@ -67,4 +80,3 @@ encoder:
       source: global_pc_score
       longName: "Global PC score"
       units: "1"
-
