@@ -195,7 +195,7 @@ class NcdfRunner(Runner):
             if file_end < parameters.start_time or file_start > parameters.stop_time:
                 continue
 
-            #print("MATCH:", fname)
+            print("MATCH:", fname)
 
             input_path = os.path.join(directory, fname)
             container = self._make_obs(comm, input_path)
