@@ -146,14 +146,11 @@ class CrisPcaObsBuilder(ObsBuilder):
             xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
 
-            self.log.debug("Name=",name)
-            self.log.debug("ds[source].values=",ds[source].values)
-            self.log.debug("dim_paths=",dim_paths)
-            container.add(
-                name,
-                ds[source].values,
-                dim_paths
+            vals = ds[source].values
+            self.log.debug(
+                f"name={name} shape={getattr(vals, 'shape', None)} dim_paths={dim_paths}"
             )
+            container.add(name, vals, dim_paths)
 
         return container
 
