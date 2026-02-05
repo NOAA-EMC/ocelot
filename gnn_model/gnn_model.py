@@ -154,17 +154,17 @@ class GNNLightning(pl.LightningModule):
         # For hierarchical mode, we'll need to handle multiple mesh levels
         if self.is_hierarchical:
             # Store all mesh levels
-            # NOTE: create_mesh returns [coarsest, ..., finest] in hierarchical mode
-            # We reverse to [finest, ..., coarsest] for easier processing (level 0 = finest, increases to coarsest)
+            # NOTE: create_mesh returns mesh_features_torch as [finest, ..., coarsest] (built from mesh_list_rev)
+            # We keep this ordering for hierarchical processing
             self.num_mesh_levels = len(self.mesh_structure["mesh_features_torch"])
-            mesh_x_list = list(reversed(self.mesh_structure["mesh_features_torch"]))
-            mesh_edge_index_list = list(reversed(self.mesh_structure["m2m_edge_index_torch"]))
-            mesh_edge_attr_list = list(reversed(self.mesh_structure["m2m_features_torch"]))
+            mesh_x_list = self.mesh_structure["mesh_features_torch"]  # [finest, ..., coarsest]
+            mesh_edge_index_list = self.mesh_structure["m2m_edge_index_torch"]
+            mesh_edge_attr_list = self.mesh_structure["m2m_features_torch"]
 
             # For backward compatibility, also use the finest mesh as default
-            mesh_x = mesh_x_list[-1]  # Finest is last after reversal (index -1)
-            mesh_edge_index = mesh_edge_index_list[-1]
-            mesh_edge_attr = mesh_edge_attr_list[-1]
+            mesh_x = mesh_x_list[0]  # Finest is at index 0
+            mesh_edge_index = mesh_edge_index_list[0]
+            mesh_edge_attr = mesh_edge_attr_list[0]
         else:
             # Fixed/multiscale mode: use single (merged) mesh
             mesh_x = self.mesh_structure["mesh_features_torch"][0]
@@ -312,13 +312,24 @@ class GNNLightning(pl.LightningModule):
             # Use hierarchical processor for multi-level mesh
             print(f"[MESH INIT] ✓ HIERARCHICAL MODE ENABLED")
             print(f"[MESH INIT]   - Number of mesh levels: {self.num_mesh_levels}")
-            print(f"[MESH INIT]   - Mesh sizes (coarsest→finest): {[m.shape[0] for m in mesh_x_list]}")
+            print(f"[MESH INIT]   - Mesh sizes (finest→coarsest): {[m.shape[0] for m in mesh_x_list]}")
             print(f"[MESH INIT]   - Processor type: {processor_type}")
             self.processor = HierarchicalProcessor(
                 hidden_dim=hidden_dim,
                 num_levels=self.num_mesh_levels,
                 num_message_passing_steps=num_layers,
             )
+
+            # Coarse→fine conditioning: project coarse features to fine level
+            # This gives coarse levels indirect supervision through fine level's loss
+            self.coarse_to_fine_norm = nn.LayerNorm(hidden_dim)  # Normalize coarse features
+            self.coarse_to_fine_proj = nn.Linear(hidden_dim, hidden_dim)  # Project to delta
+            # Gating: allows model to control how much coarse info to use
+            self.coarse_to_fine_gate = nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim),  # [fine; coarse] → gate
+                nn.Sigmoid()  # Gate values in [0, 1]
+            )
+            print(f"[MESH INIT]   - Coarse→Fine conditioning enabled (gated + normalized)")
         else:
             # Use standard processor for fixed/multiscale mesh
             print(f"[MESH INIT] ✓ FIXED MESH MODE")
@@ -355,27 +366,23 @@ class GNNLightning(pl.LightningModule):
                 self.register_buffer(f"mesh_edge_attr_level_{i}", _as_f32(mea))
 
             # Also store up/down connections if available
-            # NOTE: create_mesh builds edges in mesh_list_rev order [finest,...,coarsest]
-            #   mesh_up[i]: connects mesh_list_rev[i] → mesh_list_rev[i+1] (fine→coarse)
-            #   mesh_down[i]: reverse direction (coarse→fine)
-            # After reversing to [finest,...,coarsest], we need to reverse lists AND swap meanings
-            #   new mesh_up[i]: should go coarse→fine (use reversed mesh_down)
-            #   new mesh_down[i]: should go fine→coarse (use reversed mesh_up)
+            # NOTE: Edges were built for mesh_list_rev [finest,...,coarsest] which matches our mesh_x_list
+            #   mesh_up[i]: connects level i → level i+1 (fine→coarse in current ordering)
+            #   mesh_down[i]: connects level i+1 → level i (coarse→fine in current ordering)
+            # No reversal needed - use directly
             if "mesh_up_ei_list" in self.mesh_structure:
-                # Reverse and SWAP: old "up" (fine->coarse) becomes new "down" (fine->coarse at reversed indices)
-                # old "down" (coarse->fine) becomes new "up" (coarse->fine at reversed indices)
-                mesh_down_ei_list_new = list(reversed(self.mesh_structure["mesh_up_ei_list"]))
-                mesh_down_features_list_new = list(reversed(self.mesh_structure["mesh_up_features_list"]))
-                mesh_up_ei_list_new = list(reversed(self.mesh_structure["mesh_down_ei_list"]))
-                mesh_up_features_list_new = list(reversed(self.mesh_structure["mesh_down_features_list"]))
+                mesh_up_ei_list = self.mesh_structure["mesh_up_ei_list"]
+                mesh_up_features_list = self.mesh_structure["mesh_up_features_list"]
+                mesh_down_ei_list = self.mesh_structure["mesh_down_ei_list"]
+                mesh_down_features_list = self.mesh_structure["mesh_down_features_list"]
 
-                for i, up_ei in enumerate(mesh_up_ei_list_new):
+                for i, up_ei in enumerate(mesh_up_ei_list):
                     self.register_buffer(f"mesh_up_edge_index_{i}", _as_i64(up_ei))
-                for i, up_feat in enumerate(mesh_up_features_list_new):
+                for i, up_feat in enumerate(mesh_up_features_list):
                     self.register_buffer(f"mesh_up_edge_attr_{i}", _as_f32(up_feat))
-                for i, down_ei in enumerate(mesh_down_ei_list_new):
+                for i, down_ei in enumerate(mesh_down_ei_list):
                     self.register_buffer(f"mesh_down_edge_index_{i}", _as_i64(down_ei))
-                for i, down_feat in enumerate(mesh_down_features_list_new):
+                for i, down_feat in enumerate(mesh_down_features_list):
                     self.register_buffer(f"mesh_down_edge_attr_{i}", _as_f32(down_feat))
 
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
@@ -712,16 +719,16 @@ class GNNLightning(pl.LightningModule):
                     # Hierarchical transformer: process all mesh levels with cross-scale attention
                     print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
                     # Prepare mesh features for all levels
-                    # NOTE: Level ordering is [coarsest, ..., finest] (level 0 = coarsest, level -1 = finest)
+                    # NOTE: Level ordering is [finest, ..., coarsest] (level 0 = finest, level -1 = coarsest)
                     mesh_features_list = []
 
                     for level in range(self.num_mesh_levels):
                         level_mesh_x = getattr(self, f"mesh_x_level_{level}")
 
-                        # For now, only process the finest level (level -1 or num_levels-1)
+                        # Only the FINEST level (level 0) receives encoded features
                         # Coarser levels start with zeros
                         # TODO: Could distribute encoded features across levels based on spatial scale
-                        if level == self.num_mesh_levels - 1:  # Finest level
+                        if level == 0:  # Finest level
                             mesh_features_list.append(current_mesh_features)
                         else:
                             # Initialize coarser levels with zeros
@@ -754,8 +761,57 @@ class GNNLightning(pl.LightningModule):
 
                     print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
 
-                    # Use the finest level output (level -1 or num_levels-1)
-                    current_mesh_features = processed_levels[-1]
+                    # COARSE→FINE CONDITIONING: Add hierarchical information flow
+                    # Gather coarse features (L1) to fine nodes (L0) for better multi-scale learning
+                    if self.num_mesh_levels > 1:
+                        fine_features = processed_levels[0]  # [N_fine, H] - finest level (L0)
+                        coarse_features = processed_levels[1]  # [N_coarse, H] - coarse level (L1)
+
+                        # DIRECTION CHECK: down_edges should be coarse→fine
+                        # mesh_down_edge_index_0: L1→L0 (coarse to fine)
+                        # Shape: [2, E] where [0, :] = source (coarse), [1, :] = target (fine)
+                        down_edge_index = getattr(self, "mesh_down_edge_index_0")
+
+                        # Verify directionality: source indices should be < N_coarse
+                        if step == 0 and self.global_step == 0:
+                            src_max = down_edge_index[0].max().item()
+                            dst_max = down_edge_index[1].max().item()
+                            print(f"[COARSE→FINE] Edge direction check: src_max={src_max} (expect <{coarse_features.shape[0]}), "
+                                  f"dst_max={dst_max} (expect <{fine_features.shape[0]})")
+
+                        # Gather: each edge gets coarse features from source
+                        coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]
+
+                        # Aggregate to fine nodes using mean (stable across variable degree)
+                        fine_conditioned = torch.zeros_like(fine_features)
+                        fine_conditioned.scatter_reduce_(
+                            0,
+                            down_edge_index[1].unsqueeze(-1).expand(-1, self.hidden_dim),
+                            coarse_gathered,
+                            reduce='mean'  # Mean is safest - keeps scale stable
+                        )
+
+                        # Normalize coarse signal before projection
+                        fine_conditioned_norm = self.coarse_to_fine_norm(fine_conditioned)
+
+                        # Project to delta
+                        delta = self.coarse_to_fine_proj(fine_conditioned_norm)
+
+                        # Gated residual: model learns how much coarse info to use
+                        gate_input = torch.cat([fine_features, fine_conditioned_norm], dim=-1)  # [N, 2H]
+                        gate = self.coarse_to_fine_gate(gate_input)  # [N, H] in [0, 1]
+
+                        # Final: fine + gated coarse contribution
+                        current_mesh_features = fine_features + gate * delta
+
+                        if step == 0:  # Diagnostics once per batch
+                            delta_norm = delta.norm(dim=-1).mean().item()
+                            gate_mean = gate.mean().item()
+                            print(f"[COARSE→FINE] L1({coarse_features.shape[0]})→L0({fine_features.shape[0]}) | "
+                                  f"δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
+                    else:
+                        # Use the finest level output (level 0)
+                        current_mesh_features = processed_levels[0]
                 else:
                     # Single-level transformer for fixed mesh
                     print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
@@ -772,9 +828,9 @@ class GNNLightning(pl.LightningModule):
                     level_mesh_ei = getattr(self, f"mesh_edge_index_level_{level}")
                     level_mesh_ea = getattr(self, f"mesh_edge_attr_level_{level}")
 
-                    # For now, only process the finest level (last level)
+                    # Only the FINEST level (level 0) receives encoded features
                     # Future: distribute features across levels
-                    if level == self.num_mesh_levels - 1:
+                    if level == 0:
                         mesh_features_list.append(current_mesh_features)
                     else:
                         # Initialize coarser levels with zeros for now
@@ -828,8 +884,49 @@ class GNNLightning(pl.LightningModule):
                     down_edge_attr_list,
                 )
 
-                # Use the finest level output
-                current_mesh_features = processed_levels[-1]
+                # COARSE→FINE CONDITIONING: Add hierarchical information flow (InteractionNet path)
+                if self.num_mesh_levels > 1:
+                    fine_features = processed_levels[0]  # [N_fine * batch, H]
+                    coarse_features = processed_levels[1]  # [N_coarse * batch, H]
+
+                    # Use batched down edges (L1→L0) for conditioning
+                    # Already batched for multiple graphs
+                    down_edge_index = down_edge_index_list[0]  # Already batched
+
+                    # Direction check (only once at start)
+                    if step == 0 and self.global_step == 0:
+                        src_max = down_edge_index[0].max().item()
+                        dst_max = down_edge_index[1].max().item()
+                        print(f"[COARSE→FINE] InteractionNet edge check: src_max={src_max}, dst_max={dst_max}")
+
+                    # Gather coarse features to fine nodes
+                    coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]
+
+                    # Aggregate to fine nodes (mean for stability)
+                    fine_conditioned = torch.zeros_like(fine_features)
+                    fine_conditioned.scatter_reduce_(
+                        0,
+                        down_edge_index[1].unsqueeze(-1).expand(-1, self.hidden_dim),
+                        coarse_gathered,
+                        reduce='mean'
+                    )
+
+                    # Normalize → Project → Gate
+                    fine_conditioned_norm = self.coarse_to_fine_norm(fine_conditioned)
+                    delta = self.coarse_to_fine_proj(fine_conditioned_norm)
+                    gate_input = torch.cat([fine_features, fine_conditioned_norm], dim=-1)
+                    gate = self.coarse_to_fine_gate(gate_input)
+
+                    # Gated residual
+                    current_mesh_features = fine_features + gate * delta
+
+                    if step == 0:  # Diagnostics
+                        delta_norm = delta.norm(dim=-1).mean().item()
+                        gate_mean = gate.mean().item()
+                        print(f"[COARSE→FINE] InteractionNet: δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
+                else:
+                    # Use the finest level output (level 0)
+                    current_mesh_features = processed_levels[0]
             else:  # standard processor (fixed mesh or hierarchical with transformer)
                 # Remove decoder edges (mesh → target), but keep encoder edges (input → mesh)
                 processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
