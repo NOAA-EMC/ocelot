@@ -61,11 +61,11 @@ def main():
     parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
     # Mesh configuration arguments
-    parser.add_argument("--mesh_type", type=str, default="fixed", 
-                       choices=["fixed", "multiscale", "hierarchical"],
-                       help="Type of mesh to use: 'fixed' (merged), 'multiscale', or 'hierarchical'")
-    parser.add_argument("--mesh_levels", type=int, default=4, 
-                       help="Number of mesh levels to use (only for hierarchical mode)")
+    parser.add_argument("--mesh_type", type=str, default="fixed",
+                        choices=["fixed", "multiscale", "hierarchical"],
+                        help="Type of mesh to use: 'fixed' (merged), 'multiscale', or 'hierarchical'")
+    parser.add_argument("--mesh_levels", type=int, default=4,
+                        help="Number of mesh levels to use (only for hierarchical mode)")
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -95,8 +95,8 @@ def main():
         data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v6"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
-    FULL_START_DATE = "2024-01-01"
-    FULL_END_DATE = "2024-12-31"
+    FULL_START_DATE = "2023-01-01"
+    FULL_END_DATE = "2023-12-31"
     TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
     VALID_WINDOW_DAYS = 8   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
