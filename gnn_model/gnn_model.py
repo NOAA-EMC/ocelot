@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from processor import Processor
+from interaction_hierarchical_processor import HierarchicalProcessor
 from utils import make_mlp
 from interaction_net import InteractionNet
 from create_mesh_graph_global import create_mesh
@@ -21,6 +22,7 @@ from typing import Dict, Tuple, List
 from torch_geometric.utils import scatter
 from loss import weighted_huber_loss
 from processor_transformer import SlidingWindowTransformerProcessor
+from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
 
 
@@ -51,6 +53,8 @@ class GNNLightning(pl.LightningModule):
         observation_config,
         hidden_dim,
         mesh_resolution=6,
+        mesh_type="fixed",  # "fixed", "multiscale", or "hierarchical"
+        mesh_levels=4,
         num_layers=4,
         lr=1e-4,
         instrument_weights=None,
@@ -112,14 +116,60 @@ class GNNLightning(pl.LightningModule):
             print("[MODEL] instrument_weights:", {self.instrument_id_to_name[k]: float(v) for k, v in self.instrument_weights.items()})
 
         self.hidden_dim = hidden_dim
+        self.mesh_type = mesh_type
+        self.mesh_levels = mesh_levels
+        
+        print(f"\n{'='*70}")
+        print(f"[GNN MODEL] Initializing with configuration:")
+        print(f"  - Mesh type: {mesh_type}")
+        print(f"  - Mesh levels: {mesh_levels}")
+        print(f"  - Mesh resolution (splits): {mesh_resolution}")
+        print(f"  - Processor type: {processor_type}")
+        print(f"  - Encoder type: {encoder_type}")
+        print(f"  - Decoder type: {decoder_type}")
+        print(f"{'='*70}\n")
 
         # --- Create and store the mesh structure as part of the model ---
-        self.mesh_structure = create_mesh(splits=mesh_resolution, levels=4, hierarchical=False, plot=False)
+        # mesh_type determines how the mesh is structured:
+        # - "fixed": Single merged mesh (hierarchical=False) - original behavior
+        # - "multiscale": Multiple meshes but not hierarchical (for future use)
+        # - "hierarchical": Multiple mesh levels with up/down connections
+        hierarchical_mode = (mesh_type == "hierarchical")
+        
+        self.mesh_structure = create_mesh(
+            splits=mesh_resolution, 
+            levels=mesh_levels, 
+            hierarchical=hierarchical_mode, 
+            plot=False
+        )
+        
+        # Store whether we're in hierarchical mode
+        self.is_hierarchical = hierarchical_mode
+        
+        # Get mesh feature dimension from the first mesh
         mesh_feature_dim = self.mesh_structure["mesh_features_torch"][0].shape[1]
-        # --- Register the static mesh data as model buffers ---
-        mesh_x = self.mesh_structure["mesh_features_torch"][0]
-        mesh_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-        mesh_edge_attr = self.mesh_structure["m2m_features_torch"][0]
+        
+        # --- Prepare mesh data for registration ---
+        # For fixed/multiscale mode, use only the first (finest) mesh
+        # For hierarchical mode, we'll need to handle multiple mesh levels
+        if self.is_hierarchical:
+            # Store all mesh levels
+            # NOTE: create_mesh returns [finest, ..., coarsest] in hierarchical mode
+            # We reverse to [coarsest, ..., finest] for easier processing (level 0 = coarsest, increases to finest)
+            self.num_mesh_levels = len(self.mesh_structure["mesh_features_torch"])
+            mesh_x_list = list(reversed(self.mesh_structure["mesh_features_torch"]))
+            mesh_edge_index_list = list(reversed(self.mesh_structure["m2m_edge_index_torch"]))
+            mesh_edge_attr_list = list(reversed(self.mesh_structure["m2m_features_torch"]))
+            
+            # For backward compatibility, also use the finest mesh as default
+            mesh_x = mesh_x_list[-1]  # Finest is last after reversal (index -1)
+            mesh_edge_index = mesh_edge_index_list[-1]
+            mesh_edge_attr = mesh_edge_attr_list[-1]
+        else:
+            # Fixed/multiscale mode: use single (merged) mesh
+            mesh_x = self.mesh_structure["mesh_features_torch"][0]
+            mesh_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
+            mesh_edge_attr = self.mesh_structure["m2m_features_torch"][0]
 
         # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
@@ -153,16 +203,34 @@ class GNNLightning(pl.LightningModule):
         self.processor_type = processor_type  # "interaction" | "sliding_transformer"
 
         if self.processor_type == "sliding_transformer":
-            self.swt = SlidingWindowTransformerProcessor(
-                hidden_dim=self.hidden_dim,
-                window=processor_window,
-                depth=processor_depth,
-                num_heads=processor_heads,
-                dropout=processor_dropout,
-                use_causal_mask=True,
-            )
+            if self.is_hierarchical:
+                # Use hierarchical transformer for multi-level processing
+                print(f"[PROCESSOR INIT] Creating HierarchicalSlidingWindowTransformer")
+                print(f"[PROCESSOR INIT]   - Levels: {self.num_mesh_levels}, Window: {processor_window}, Depth: {processor_depth}")
+                self.swt = HierarchicalSlidingWindowTransformer(
+                    hidden_dim=self.hidden_dim,
+                    num_levels=self.num_mesh_levels,
+                    window=processor_window,
+                    depth=processor_depth,
+                    num_heads=processor_heads,
+                    dropout=processor_dropout,
+                    use_causal_mask=True,
+                    use_cross_scale=True,  # Enable cross-scale attention
+                )
+            else:
+                # Use single-level transformer for fixed mesh
+                print(f"[PROCESSOR INIT] Creating SlidingWindowTransformerProcessor (single-level)")
+                print(f"[PROCESSOR INIT]   - Window: {processor_window}, Depth: {processor_depth}")
+                self.swt = SlidingWindowTransformerProcessor(
+                    hidden_dim=self.hidden_dim,
+                    window=processor_window,
+                    depth=processor_depth,
+                    num_heads=processor_heads,
+                    dropout=processor_dropout,
+                    use_causal_mask=True,
+                )
         elif self.processor_type == "interaction":
-            pass  # already built self.processor above
+            pass  # processor will be built later
         else:
             raise ValueError(f"Unknown processor_type: {processor_type!r}")
 
@@ -239,12 +307,29 @@ class GNNLightning(pl.LightningModule):
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
-        self.processor = Processor(
-            hidden_dim=hidden_dim,
-            node_types=node_types,
-            edge_types=edge_types,
-            num_message_passing_steps=num_layers,
-        )
+        # --- Create processor based on mesh type ---
+        if self.is_hierarchical:
+            # Use hierarchical processor for multi-level mesh
+            print(f"[MESH INIT] ✓ HIERARCHICAL MODE ENABLED")
+            print(f"[MESH INIT]   - Number of mesh levels: {self.num_mesh_levels}")
+            print(f"[MESH INIT]   - Mesh sizes (coarsest→finest): {[m.shape[0] for m in mesh_x_list]}")
+            print(f"[MESH INIT]   - Processor type: {processor_type}")
+            self.processor = HierarchicalProcessor(
+                hidden_dim=hidden_dim,
+                num_levels=self.num_mesh_levels,
+                num_message_passing_steps=num_layers,
+            )
+        else:
+            # Use standard processor for fixed/multiscale mesh
+            print(f"[MESH INIT] ✓ FIXED MESH MODE")
+            print(f"[MESH INIT]   - Mesh size: {mesh_x.shape[0]} nodes")
+            print(f"[MESH INIT]   - Processor type: {processor_type}")
+            self.processor = Processor(
+                hidden_dim=hidden_dim,
+                node_types=node_types,
+                edge_types=edge_types,
+                num_message_passing_steps=num_layers,
+            )
 
         def _as_f32(x):
             import torch
@@ -256,9 +341,40 @@ class GNNLightning(pl.LightningModule):
 
             return x.clone().detach().to(torch.long) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.long)
 
+        # Register primary mesh buffers (finest level for hierarchical, only mesh for fixed)
         self.register_buffer("mesh_x", _as_f32(mesh_x))
         self.register_buffer("mesh_edge_index", _as_i64(mesh_edge_index))
         self.register_buffer("mesh_edge_attr", _as_f32(mesh_edge_attr))
+        
+        # Register hierarchical mesh buffers if in hierarchical mode
+        if self.is_hierarchical:
+            # Register mesh levels as lists (will be accessed by index during forward pass)
+            for i, (mx, mei, mea) in enumerate(zip(mesh_x_list, mesh_edge_index_list, mesh_edge_attr_list)):
+                self.register_buffer(f"mesh_x_level_{i}", _as_f32(mx))
+                self.register_buffer(f"mesh_edge_index_level_{i}", _as_i64(mei))
+                self.register_buffer(f"mesh_edge_attr_level_{i}", _as_f32(mea))
+            
+            # Also store up/down connections if available
+            # NOTE: These also need to be reversed AND meaning swapped!
+            # Original: mesh_up[i]: finest[i] -> coarser[i+1], mesh_down[i]: coarser[i+1] -> finest[i]
+            # After reversing meshes: need to reverse and SWAP up<->down
+            # Result: mesh_up[i]: coarser[i] -> finer[i+1], mesh_down[i]: finer[i+1] -> coarser[i]
+            if "mesh_up_ei_list" in self.mesh_structure:
+                # Reverse and SWAP: old "up" (fine->coarse) becomes new "down" (fine->coarse at reversed indices)
+                # old "down" (coarse->fine) becomes new "up" (coarse->fine at reversed indices)
+                mesh_down_ei_list_new = list(reversed(self.mesh_structure["mesh_up_ei_list"]))
+                mesh_down_features_list_new = list(reversed(self.mesh_structure["mesh_up_features_list"]))
+                mesh_up_ei_list_new = list(reversed(self.mesh_structure["mesh_down_ei_list"]))
+                mesh_up_features_list_new = list(reversed(self.mesh_structure["mesh_down_features_list"]))
+                
+                for i, up_ei in enumerate(mesh_up_ei_list_new):
+                    self.register_buffer(f"mesh_up_edge_index_{i}", _as_i64(up_ei))
+                for i, up_feat in enumerate(mesh_up_features_list_new):
+                    self.register_buffer(f"mesh_up_edge_attr_{i}", _as_f32(up_feat))
+                for i, down_ei in enumerate(mesh_down_ei_list_new):
+                    self.register_buffer(f"mesh_down_edge_index_{i}", _as_i64(down_ei))
+                for i, down_feat in enumerate(mesh_down_features_list_new):
+                    self.register_buffer(f"mesh_down_edge_attr_{i}", _as_f32(down_feat))
 
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         # PyG Data/HeteroData implements .to()
@@ -457,6 +573,7 @@ class GNNLightning(pl.LightningModule):
         num_mesh_nodes = self.mesh_x.shape[0]
 
         # Inject and batch static mesh data
+        # For hierarchical mode, we use the finest mesh level for encoding/decoding
         data["mesh"].x = self.mesh_x.repeat(num_graphs, 1)
         data["mesh", "to", "mesh"].edge_attr = self.mesh_edge_attr.repeat(num_graphs, 1)
 
@@ -529,14 +646,17 @@ class GNNLightning(pl.LightningModule):
         encoded_features = embedded_features
         encoded_features["mesh"] = encoded_mesh_features
 
-        for node_type in self.processor.norms[0].keys():
-            print(f"prep: [node_type] ", node_type)
-            if node_type not in encoded_features:
-                if node_type in data.node_types:
-                    num_nodes = data[node_type].num_nodes
-                    # Use device from existing encoded features to avoid checkpoint loading issues
-                    reference_device = encoded_mesh_features.device
-                    encoded_features[node_type] = torch.zeros(num_nodes, self.hidden_dim, device=reference_device)
+        # For hierarchical processor, we don't need to prepare node types
+        # For standard processor, ensure all node types exist
+        if not self.is_hierarchical and hasattr(self.processor, 'norms'):
+            for node_type in self.processor.norms[0].keys():
+                print(f"prep: [node_type] ", node_type)
+                if node_type not in encoded_features:
+                    if node_type in data.node_types:
+                        num_nodes = data[node_type].num_nodes
+                        # Use device from existing encoded features to avoid checkpoint loading issues
+                        reference_device = encoded_mesh_features.device
+                        encoded_features[node_type] = torch.zeros(num_nodes, self.hidden_dim, device=reference_device)
 
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
@@ -586,8 +706,129 @@ class GNNLightning(pl.LightningModule):
             self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
             # --- PROCESS: evolve mesh one step ---
             if self.processor_type == "sliding_transformer":
-                current_mesh_features = self.swt(current_mesh_features)
-            else:  # interaction processor
+                if self.is_hierarchical:
+                    # Hierarchical transformer: process all mesh levels with cross-scale attention
+                    print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
+                    # Prepare mesh features for all levels
+                    # NOTE: Level ordering is [coarsest, ..., finest] (level 0 = coarsest, level -1 = finest)
+                    mesh_features_list = []
+                    
+                    for level in range(self.num_mesh_levels):
+                        level_mesh_x = getattr(self, f"mesh_x_level_{level}")
+                        
+                        # For now, only process the finest level (level -1 or num_levels-1)
+                        # Coarser levels start with zeros
+                        # TODO: Could distribute encoded features across levels based on spatial scale
+                        if level == self.num_mesh_levels - 1:  # Finest level
+                            mesh_features_list.append(current_mesh_features)
+                        else:
+                            # Initialize coarser levels with zeros
+                            num_nodes_this_level = level_mesh_x.shape[0]
+                            mesh_features_list.append(
+                                torch.zeros(num_nodes_this_level, self.hidden_dim, 
+                                          device=current_mesh_features.device)
+                            )
+                    
+                    print(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
+                    
+                    # Prepare up/down edge indices for cross-scale attention
+                    up_edge_index_list = []
+                    down_edge_index_list = []
+                    
+                    for level in range(self.num_mesh_levels - 1):
+                        up_ei = getattr(self, f"mesh_up_edge_index_{level}")
+                        down_ei = getattr(self, f"mesh_down_edge_index_{level}")
+                        up_edge_index_list.append(up_ei)
+                        down_edge_index_list.append(down_ei)
+                    
+                    print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
+                    
+                    # Process through hierarchical transformer
+                    processed_levels = self.swt(
+                        mesh_features_list,
+                        up_edge_index_list,
+                        down_edge_index_list
+                    )
+                    
+                    print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
+                    
+                    # Use the finest level output (level -1 or num_levels-1)
+                    current_mesh_features = processed_levels[-1]
+                else:
+                    # Single-level transformer for fixed mesh
+                    print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
+                    current_mesh_features = self.swt(current_mesh_features)
+            elif self.is_hierarchical and self.processor_type == "interaction":
+                # Hierarchical processor with InteractionNet: process across multiple mesh levels
+                # Prepare mesh features for all levels (replicate for batch)
+                mesh_features_list = []
+                mesh_edge_index_list = []
+                mesh_edge_attr_list = []
+                
+                for level in range(self.num_mesh_levels):
+                    level_mesh_x = getattr(self, f"mesh_x_level_{level}")
+                    level_mesh_ei = getattr(self, f"mesh_edge_index_level_{level}")
+                    level_mesh_ea = getattr(self, f"mesh_edge_attr_level_{level}")
+                    
+                    # For now, only process the finest level (last level)
+                    # Future: distribute features across levels
+                    if level == self.num_mesh_levels - 1:
+                        mesh_features_list.append(current_mesh_features)
+                    else:
+                        # Initialize coarser levels with zeros for now
+                        num_nodes_this_level = level_mesh_x.shape[0]
+                        mesh_features_list.append(
+                            torch.zeros(num_nodes_this_level, self.hidden_dim, 
+                                      device=current_mesh_features.device)
+                        )
+                    
+                    # Batch the edge indices
+                    num_nodes_this_level = level_mesh_x.shape[0]
+                    batched_ei = [level_mesh_ei + i * num_nodes_this_level for i in range(num_graphs)]
+                    mesh_edge_index_list.append(torch.cat(batched_ei, dim=1))
+                    mesh_edge_attr_list.append(level_mesh_ea.repeat(num_graphs, 1))
+                
+                # Prepare up/down connections
+                up_edge_index_list = []
+                up_edge_attr_list = []
+                down_edge_index_list = []
+                down_edge_attr_list = []
+                
+                for level in range(self.num_mesh_levels - 1):
+                    up_ei = getattr(self, f"mesh_up_edge_index_{level}")
+                    up_ea = getattr(self, f"mesh_up_edge_attr_{level}")
+                    down_ei = getattr(self, f"mesh_down_edge_index_{level}")
+                    down_ea = getattr(self, f"mesh_down_edge_attr_{level}")
+                    
+                    # Batch the hierarchical edges
+                    num_nodes_fine = getattr(self, f"mesh_x_level_{level}").shape[0]
+                    num_nodes_coarse = getattr(self, f"mesh_x_level_{level+1}").shape[0]
+                    
+                    batched_up_ei = []
+                    batched_down_ei = []
+                    for i in range(num_graphs):
+                        batched_up_ei.append(up_ei + torch.tensor([[i * num_nodes_fine], [i * num_nodes_coarse]], device=up_ei.device))
+                        batched_down_ei.append(down_ei + torch.tensor([[i * num_nodes_coarse], [i * num_nodes_fine]], device=down_ei.device))
+                    
+                    up_edge_index_list.append(torch.cat(batched_up_ei, dim=1))
+                    up_edge_attr_list.append(up_ea.repeat(num_graphs, 1))
+                    down_edge_index_list.append(torch.cat(batched_down_ei, dim=1))
+                    down_edge_attr_list.append(down_ea.repeat(num_graphs, 1))
+                
+                # Process through hierarchical processor
+                processed_levels = self.processor(
+                    mesh_features_list,
+                    mesh_edge_index_list,
+                    mesh_edge_attr_list,
+                    up_edge_index_list,
+                    up_edge_attr_list,
+                    down_edge_index_list,
+                    down_edge_attr_list,
+                )
+                
+                # Use the finest level output
+                current_mesh_features = processed_levels[-1]
+            else:  # standard processor (fixed mesh or hierarchical with transformer)
                 # Remove decoder edges (mesh → target), but keep encoder edges (input → mesh)
                 processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
                                    if "_target" not in et[2]}

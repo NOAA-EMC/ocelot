@@ -155,17 +155,17 @@ observation_config:
     surface_obs:
       source: zarr
       zarr_name: raw_surface_obs
-      # height maps to height_pb_event_1 in the Zarr file
-      # Using airPressure_pb_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
+      # height maps to height_prepbufr_event_1 in the Zarr file
+      # Using airPressure_prepbufr_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
       # because pressureMeanSeaLevel_pb appears to be all missing values (3.4e38)
-      features: [airPressure_pb_event_1, airTemperature, dewPointTemperature, wind_u, wind_v]
-      metadata: [height_pb_event_1]
+      features: [airPressure_prepbufr_event_1, airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: [height_prepbufr_event_1]
       input_dim: 13                      # 7 (geo/time enc) + 1 meta + 5 feats
       target_dim: 5
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_filters:
-        airPressure_pb_event_1:
+        airPressure_prepbufr_event_1:
           range: [300, 1100]            # hPa; physically reasonable surface pressure range
           qm_flag_col: airPressureQuality_event_1
           keep: [1,2]
@@ -265,7 +265,7 @@ observation_config:
 
 feature_stats:  # Statistics for the features used in the model (with FULL QC filtering applied)
   surface_obs:
-    airPressure_pb_event_1: [985.30, 49.97]       # hPa (station pressure); 2020-2024: 602M valid samples (95.8% pass QC)
+    airPressure_prepbufr_event_1: [985.30, 49.97]       # hPa (station pressure); 2020-2024: 602M valid samples (95.8% pass QC)
     airTemperature: [13.99, 12.14]                # Celsius; 2020-2024: 545M valid samples (87.2% pass QC)
     dewPointTemperature: [7.94, 11.47]            # Celsius; 2020-2024: 485M valid samples (77.7% pass QC)
     wind_u: [0.03, 3.30]                          # m/s (u-component, computed from windSpeed/windDirection)
