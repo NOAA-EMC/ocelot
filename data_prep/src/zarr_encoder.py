@@ -30,8 +30,6 @@ class Encoder(bufr.encoders.EncoderBase):
 
         result: dict = {}
         for category in container.all_sub_categories():
-            print("category=",category)
-        for category in container.all_sub_categories():
             cat_idx = 0
             substitutions = {}
             for key in container.get_category_map().keys():
