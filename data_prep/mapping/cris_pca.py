@@ -40,7 +40,7 @@ class CrisPcaObsBuilder(ObsBuilder):
         obs = self.cris_pca_yaml.get("observation", {})
         self._dim_path_map = obs.get("dim_path_map", {})
         self._variable_map = obs.get("variable_map", [])
-        pc_slice = obs.get("global_pc_score_slice", [1, 25])
+        pc_slice = obs.get("global_pc_score_slice", [0, 24])
         self._pc_score_start, self._pc_score_end = pc_slice[0], pc_slice[1]
 
         # Subsampling config: optional in YAML
@@ -56,6 +56,13 @@ class CrisPcaObsBuilder(ObsBuilder):
         enc = self.cris_pca_yaml.get("encoder", {})
         self._encoder_variables = enc.get("variables", [])
 
+        # optional: write flattened Dataset to netCDF for debugging / inspection
+        write_cfg = obs.get("write_netcdf", {})
+        print(f'cfg:{write_cfg}')
+        self._write_netcdf_enabled = bool(write_cfg.get("enabled", False))
+        self._write_netcdf_path = write_cfg.get("path", "cris_pca_out.nc")
+        self._write_netcdf_mode = write_cfg.get("mode", "w")
+
     # -----------------------------------------------------
     def load_input(self, filename):
         self.log.info(f"*** load_input() CALLED: {filename}")
@@ -64,65 +71,63 @@ class CrisPcaObsBuilder(ObsBuilder):
 
     # -----------------------------------------------------
     def preprocess_dataset(self, ds):
-
+        print(f"*** preprocess_dataset() CALLED with dataset: {ds}")
         required = ["atrack", "xtrack", "fov"]
         for d in required:
             if d not in ds.sizes:
                 raise RuntimeError(f"Missing dimension {d}")
 
-        na = ds.sizes["atrack"]
-        nx = ds.sizes["xtrack"]
-        nf = ds.sizes["fov"]
+        na, nx, nf = ds.sizes["atrack"], ds.sizes["xtrack"], ds.sizes["fov"]
         nlocs = na * nx * nf
 
-        out = xr.Dataset()
-        out = out.assign_coords(location=np.arange(nlocs))
+        out = xr.Dataset(coords={"location": np.arange(nlocs)})
 
-        # Build indices
-        a, x, f = xr.broadcast(
-            xr.DataArray(np.arange(na), dims="atrack"),
-            xr.DataArray(np.arange(nx), dims="xtrack"),
-            xr.DataArray(np.arange(nf), dims="fov"),
-        )
-
-        xtrack = x.values.ravel()
-        fov = f.values.ravel()
-
-        scan_pos = nf * xtrack + fov
-
+        # scan_position (repeats for each atrack, by design)
+        x = np.arange(nx, dtype=np.int32)
+        f = np.arange(nf, dtype=np.int32)
+        scan_pos_2d = (nf * x[:, None] + f[None, :]).ravel()           # length nx*nf
+        scan_pos = np.tile(scan_pos_2d, na)                            # length nlocs
         out["scan_position"] = xr.DataArray(scan_pos, dims=("location",))
 
-        # Flatten variables from netCDF into encoder names (from observation.variable_map)
+        # Flatten mapped variables safely
         for entry in self._variable_map:
             v_in = entry["source"]
             v_out = entry["name"]
             if v_in in ds:
-                out[v_out] = xr.DataArray(
-                    ds[v_in].values.reshape(nlocs),
-                    dims=("location",)
-                )
+                da = ds[v_in].stack(location=("atrack","xtrack","fov")).transpose("location")
+                da = da.reset_index("location", drop=True)        # <-- removes MultiIndex
+                da = da.assign_coords(location=out["location"])   # <-- use your integer location
+                out[v_out] = da
+
         # Hardcode NOAA-20 sat id for now
-        out["satelliteId"] = xr.DataArray(np.ones(nlocs)*225, dims=("location",))
+        out["satelliteId"] = xr.DataArray(np.full(nlocs, 225, dtype=np.int32), dims=("location",))
 
-        # Time
-        time3d = xr.broadcast(ds["obs_time_tai93"], ds["lat"])[0]
-        time_tai93 = time3d.values.reshape(nlocs)
+        t3 = ds["obs_time_tai93"].expand_dims(fov=ds["fov"])
+        t = t3.stack(location=("atrack","xtrack","fov")).transpose("location")
+        t = t.reset_index("location", drop=True).assign_coords(location=out["location"])
+
         offset = (TAI93_EPOCH - UNIX_EPOCH) / np.timedelta64(1, "s")
-        time_unix = time_tai93 + offset
-        out["time"] = xr.DataArray(time_unix, dims=("location",))
+        out["time"] = t + offset
 
-        # Global PC scores
-        npc = ds.sizes["npc_global"]
-        out["global_pc_score"] = xr.DataArray(
-                ds["global_pc_score"].values.reshape(nlocs, npc)[
-                    :, self._pc_score_start : self._pc_score_end
-                ],
-            dims=("location", "npc_global")
-        )
+        # Global PC scores (dims preserved correctly)
+        pc = ds["global_pc_score"].stack(location=("atrack","xtrack","fov")).transpose("location","npc_global")
+        pc = pc.reset_index("location", drop=True).assign_coords(location=out["location"])
+        pc = pc.isel(npc_global=slice(self._pc_score_start, self._pc_score_end))
+        out["global_pc_score"] = pc
 
-        # apply configurable subsampling (may be no-op if disabled)
+        # subsample
         out = self._apply_subsample(out)
 
+        # optionally write to netCDF (path taken from YAML)
+        print(f'cdf{self._write_netcdf_enabled}')
+        if self._write_netcdf_enabled:
+            out_path = os.path.expanduser(self._write_netcdf_path)
+            dirpath = os.path.dirname(out_path)
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+            out.to_netcdf(out_path, mode=self._write_netcdf_mode)
+            self.log.info(f"Wrote preprocessed dataset to {out_path}")
+ 
         return out
 
     # -----------------------------------------------------
@@ -160,11 +165,17 @@ class CrisPcaObsBuilder(ObsBuilder):
             dim_paths = self._dims_for_var(name, xr_dims)
 
             vals = ds[source].values
-            self.log.debug(
+
+            if name == 'global_pc_score':
+                print(f'global_pc_score  first 10: {vals[:10, 0]}')
+
+            self.log.info(
                 f"name={name} shape={getattr(vals, 'shape', None)} dim_paths={dim_paths}"
             )
             container.add(name, vals, dim_paths)
 
+        var_data = container.get('global_pc_score', category=[])
+        print(f'After: global_pc_score from container first 10: {var_data[:10, 0]}')
         return container
 
     def _apply_subsample(self, out):
