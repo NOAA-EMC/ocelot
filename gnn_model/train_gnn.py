@@ -62,8 +62,8 @@ def main():
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
     # Mesh configuration arguments
     parser.add_argument("--mesh_type", type=str, default="fixed",
-                        choices=["fixed", "multiscale", "hierarchical"],
-                        help="Type of mesh to use: 'fixed' (merged), 'multiscale', or 'hierarchical'")
+                        choices=["fixed", "hierarchical"],
+                        help="Type of mesh to use: 'fixed' (GraphCast multiscale merged) or 'hierarchical' (U-Net latent)")
     parser.add_argument("--mesh_levels", type=int, default=4,
                         help="Number of mesh levels to use (only for hierarchical mode)")
     args = parser.parse_args()
@@ -95,8 +95,8 @@ def main():
         data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v6"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
-    FULL_START_DATE = "2023-01-01"
-    FULL_END_DATE = "2023-12-31"
+    FULL_START_DATE = "2024-01-01"
+    FULL_END_DATE = "2024-12-31"
     TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
     VALID_WINDOW_DAYS = 8   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
@@ -133,7 +133,7 @@ def main():
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
-    mesh_type = args.mesh_type  # Options: "fixed" (default), "multiscale", "hierarchical"
+    mesh_type = args.mesh_type  # Options: "fixed" (GraphCast merged multiscale), "hierarchical" (U-Net latent)
     mesh_levels = args.mesh_levels  # Number of mesh levels to use (only for hierarchical mode)
     hidden_dim = 128
     num_layers = 10

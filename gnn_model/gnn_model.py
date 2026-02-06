@@ -131,9 +131,8 @@ class GNNLightning(pl.LightningModule):
 
         # --- Create and store the mesh structure as part of the model ---
         # mesh_type determines how the mesh is structured:
-        # - "fixed": Single merged mesh (hierarchical=False) - original behavior
-        # - "multiscale": Multiple meshes but not hierarchical (for future use)
-        # - "hierarchical": Multiple mesh levels with up/down connections
+        # - "fixed": Single merged mesh (GraphCast's multiscale merged mesh) - hierarchical=False
+        # - "hierarchical": Multiple mesh levels with up/down connections (U-Net-style latent hierarchy)
         hierarchical_mode = (mesh_type == "hierarchical")
 
         self.mesh_structure = create_mesh(
@@ -150,8 +149,8 @@ class GNNLightning(pl.LightningModule):
         mesh_feature_dim = self.mesh_structure["mesh_features_torch"][0].shape[1]
 
         # --- Prepare mesh data for registration ---
-        # For fixed/multiscale mode, use only the first (finest) mesh
-        # For hierarchical mode, we'll need to handle multiple mesh levels
+        # For fixed mode: use only the first (finest) mesh - GraphCast's merged multiscale mesh
+        # For hierarchical mode: we'll need to handle multiple mesh levels
         if self.is_hierarchical:
             # Store all mesh levels
             # NOTE: create_mesh returns mesh_features_torch as [finest, ..., coarsest] (built from mesh_list_rev)
@@ -166,7 +165,7 @@ class GNNLightning(pl.LightningModule):
             mesh_edge_index = mesh_edge_index_list[0]
             mesh_edge_attr = mesh_edge_attr_list[0]
         else:
-            # Fixed/multiscale mode: use single (merged) mesh
+            # Fixed mode: use single merged mesh (GraphCast approach)
             mesh_x = self.mesh_structure["mesh_features_torch"][0]
             mesh_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
             mesh_edge_attr = self.mesh_structure["m2m_features_torch"][0]
@@ -331,8 +330,8 @@ class GNNLightning(pl.LightningModule):
             )
             print(f"[MESH INIT]   - Coarse→Fine conditioning enabled (gated + normalized)")
         else:
-            # Use standard processor for fixed/multiscale mesh
-            print(f"[MESH INIT] ✓ FIXED MESH MODE")
+            # Use standard processor for fixed mesh (GraphCast baseline)
+            print(f"[MESH INIT] ✓ FIXED MESH MODE (GraphCast baseline)")
             print(f"[MESH INIT]   - Mesh size: {mesh_x.shape[0]} nodes")
             print(f"[MESH INIT]   - Processor type: {processor_type}")
             self.processor = Processor(
