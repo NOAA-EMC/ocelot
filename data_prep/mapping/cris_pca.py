@@ -43,6 +43,16 @@ class CrisPcaObsBuilder(ObsBuilder):
         pc_slice = obs.get("global_pc_score_slice", [1, 25])
         self._pc_score_start, self._pc_score_end = pc_slice[0], pc_slice[1]
 
+        # Subsampling config: optional in YAML
+        subs = obs.get("subsample", {})
+        # default behavior preserves previous behavior (random with p=1/17, seed=0)
+        self._subsample_enabled = subs.get("enabled", True)
+        self._subsample_method = subs.get("method", "random")  # "random" or "every_n"
+        self._subsample_n = int(subs.get("n", 17))
+        # probability used only for random method; default 1/n
+        self._subsample_p = float(subs.get("p", 1.0 / self._subsample_n))
+        self._subsample_seed = int(subs.get("seed", 0))
+
         enc = self.cris_pca_yaml.get("encoder", {})
         self._encoder_variables = enc.get("variables", [])
 
@@ -65,6 +75,9 @@ class CrisPcaObsBuilder(ObsBuilder):
         nf = ds.sizes["fov"]
         nlocs = na * nx * nf
 
+        out = xr.Dataset()
+        out = out.assign_coords(location=np.arange(nlocs))
+
         # Build indices
         a, x, f = xr.broadcast(
             xr.DataArray(np.arange(na), dims="atrack"),
@@ -76,9 +89,6 @@ class CrisPcaObsBuilder(ObsBuilder):
         fov = f.values.ravel()
 
         scan_pos = nf * xtrack + fov
-
-        out = xr.Dataset()
-        out = out.assign_coords(location=np.arange(nlocs))
 
         out["scan_position"] = xr.DataArray(scan_pos, dims=("location",))
 
@@ -109,6 +119,9 @@ class CrisPcaObsBuilder(ObsBuilder):
                 ],
             dims=("location", "npc_global")
         )
+
+        # apply configurable subsampling (may be no-op if disabled)
+        out = self._apply_subsample(out)
 
         return out
 
@@ -153,6 +166,28 @@ class CrisPcaObsBuilder(ObsBuilder):
             container.add(name, vals, dim_paths)
 
         return container
+
+    def _apply_subsample(self, out):
+        """
+        Apply subsampling to the flattened Dataset according to YAML config.
+        Returns the (possibly) reduced Dataset with location coords re-assigned.
+        """
+        if not self._subsample_enabled:
+            return out
+
+        nloc = out.sizes["location"]
+        if self._subsample_method == "every_n":
+            # deterministic: keep every n-th record
+            out = out.isel(location=slice(0, None, self._subsample_n))
+        elif self._subsample_method == "random":
+            # random subsample with probability p and deterministic seed
+            rng = np.random.default_rng(self._subsample_seed)
+            mask = rng.random(nloc) < self._subsample_p
+            out = out.isel(location=mask)
+        else:
+            raise RuntimeError(f"unknown subsample method '{self._subsample_method}'")
+
+        return out.assign_coords(location=np.arange(out.sizes["location"]))
 
 
 add_main_functions(CrisPcaObsBuilder)

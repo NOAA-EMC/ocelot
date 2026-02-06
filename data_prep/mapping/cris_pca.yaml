@@ -17,6 +17,13 @@ observation:
 
   global_pc_score_slice: [1, 25]  # [start, end) for npc_global dimension
 
+  subsample:
+    enabled: false        # set false to disable subsampling
+    method: every_n      # "every_n" or "random"
+    n: 17                # used by every_n (keep every n-th)
+    p: 0.058823529       # optional probability for random (default 1/n)
+    seed: 0              # RNG seed for deterministic random sampling
+
 encoder:
   categories:
     - name: cris_pca
