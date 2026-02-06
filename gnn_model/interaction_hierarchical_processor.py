@@ -10,7 +10,7 @@ class HierarchicalProcessor(nn.Module):
     """
     A hierarchical processor that performs message passing across multiple mesh levels.
 
-    ⚠️ WARNING: This uses InteractionNet which may cause OOM (Out of Memory) issues
+    WARNING: This uses InteractionNet which may cause OOM (Out of Memory) issues
     on large meshes. For transformer-based hierarchical processing (recommended),
     use HierarchicalSlidingWindowTransformer from processor_transformer_hierarchical.py
 

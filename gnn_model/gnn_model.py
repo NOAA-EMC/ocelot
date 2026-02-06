@@ -53,7 +53,7 @@ class GNNLightning(pl.LightningModule):
         observation_config,
         hidden_dim,
         mesh_resolution=6,
-        mesh_type="fixed",  # "fixed", "multiscale", or "hierarchical"
+        mesh_type="fixed",  # "fixed" or "hierarchical"
         mesh_levels=4,
         num_layers=4,
         lr=1e-4,
@@ -368,7 +368,6 @@ class GNNLightning(pl.LightningModule):
             # NOTE: Edges were built for mesh_list_rev [finest,...,coarsest] which matches our mesh_x_list
             #   mesh_up[i]: connects level i → level i+1 (fine→coarse in current ordering)
             #   mesh_down[i]: connects level i+1 → level i (coarse→fine in current ordering)
-            # No reversal needed - use directly
             if "mesh_up_ei_list" in self.mesh_structure:
                 mesh_up_ei_list = self.mesh_structure["mesh_up_ei_list"]
                 mesh_up_features_list = self.mesh_structure["mesh_up_features_list"]
