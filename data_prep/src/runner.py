@@ -176,12 +176,6 @@ class NcdfRunner(Runner):
             if not match:
                 continue
 
-            #print("CHECKING:", fname)
-
-            #if not match:
-            #    print("NO REGEX MATCH")
-            #    continue
-
             start_str = match.group("start_time")
             try:
                 file_start = datetime.strptime(start_str, "%Y%m%d%H%M%S")

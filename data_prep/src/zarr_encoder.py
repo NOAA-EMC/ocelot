@@ -47,7 +47,7 @@ class Encoder(bufr.encoders.EncoderBase):
                 print("No __dict__ (likely uses __slots__)")
 
             slots = getattr(type(dims), "__slots__", None)
-            
+
             if slots:
                 state = {}
                 for s in slots:
@@ -56,7 +56,7 @@ class Encoder(bufr.encoders.EncoderBase):
                     except Exception as e:
                         state[s] = f"<error: {e}>"
                 pprint(state)
-            
+
             if 'time' not in root:
                 self._add_attrs(root)
                 self._init_dimensions(root, container, category, dims)

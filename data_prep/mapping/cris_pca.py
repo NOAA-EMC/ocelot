@@ -125,7 +125,7 @@ class CrisPcaObsBuilder(ObsBuilder):
                 os.makedirs(dirpath, exist_ok=True)
             out.to_netcdf(out_path, mode=self._write_netcdf_mode)
             self.log.info(f"Wrote preprocessed dataset to {out_path}")
- 
+
         return out
 
     # -----------------------------------------------------
@@ -161,7 +161,7 @@ class CrisPcaObsBuilder(ObsBuilder):
 
             xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
- 
+
             da = ds[source]
             vals = np.asarray(da.values, dtype=np.float64, order="C")
             vals = np.ascontiguousarray(vals)
