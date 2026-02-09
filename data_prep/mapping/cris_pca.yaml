@@ -18,14 +18,14 @@ observation:
   global_pc_score_slice: [0, 24]  # [start, end) for npc_global dimension start from 0, end is exclusive
 
   subsample:
-    enabled: False        # set false to disable subsampling
-    method: every_n      # "every_n" or "random"
+    enabled: True        # set false to disable subsampling
+    method: random      # "every_n" or "random"
     n: 17                # used by every_n (keep every n-th)
-    p: 0.058823529       # optional probability for random (default 1/n)
+    p: 0.05       # optional probability for random (default 1/n)
     seed: 0              # RNG seed for deterministic random sampling
 
   write_netcdf:
-    enabled: True       # set true to write the preprocessed Dataset to a netCDF
+    enabled: False       # set true to write the preprocessed Dataset to a netCDF
     path: "cris_pca_out.nc"
     mode: "w"            # netCDF write mode ("w" or "a")
 

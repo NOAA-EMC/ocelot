@@ -58,7 +58,6 @@ class CrisPcaObsBuilder(ObsBuilder):
 
         # optional: write flattened Dataset to netCDF for debugging / inspection
         write_cfg = obs.get("write_netcdf", {})
-        print(f'cfg:{write_cfg}')
         self._write_netcdf_enabled = bool(write_cfg.get("enabled", False))
         self._write_netcdf_path = write_cfg.get("path", "cris_pca_out.nc")
         self._write_netcdf_mode = write_cfg.get("mode", "w")
@@ -71,7 +70,7 @@ class CrisPcaObsBuilder(ObsBuilder):
 
     # -----------------------------------------------------
     def preprocess_dataset(self, ds):
-        print(f"*** preprocess_dataset() CALLED with dataset: {ds}")
+        self.log.debug(f"*** preprocess_dataset() CALLED with dataset: {ds}")
         required = ["atrack", "xtrack", "fov"]
         for d in required:
             if d not in ds.sizes:
@@ -119,7 +118,6 @@ class CrisPcaObsBuilder(ObsBuilder):
         out = self._apply_subsample(out)
 
         # optionally write to netCDF (path taken from YAML)
-        print(f'cdf{self._write_netcdf_enabled}')
         if self._write_netcdf_enabled:
             out_path = os.path.expanduser(self._write_netcdf_path)
             dirpath = os.path.dirname(out_path)
@@ -163,19 +161,13 @@ class CrisPcaObsBuilder(ObsBuilder):
 
             xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
+            
+            da = ds[source]
+            vals = np.asarray(da.values, dtype=np.float64, order="C")
+            vals = np.ascontiguousarray(vals)
 
-            vals = ds[source].values
-
-            if name == 'global_pc_score':
-                print(f'global_pc_score  first 10: {vals[:10, 0]}')
-
-            self.log.info(
-                f"name={name} shape={getattr(vals, 'shape', None)} dim_paths={dim_paths}"
-            )
             container.add(name, vals, dim_paths)
 
-        var_data = container.get('global_pc_score', category=[])
-        print(f'After: global_pc_score from container first 10: {var_data[:10, 0]}')
         return container
 
     def _apply_subsample(self, out):
