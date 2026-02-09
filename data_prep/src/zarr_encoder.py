@@ -40,17 +40,13 @@ class Encoder(bufr.encoders.EncoderBase):
 
             store = zarr.DirectoryStore(output_path)
             root = zarr.group(store=store, overwrite=(not append))
-            print("category=",category)
             dims = self.get_encoder_dimensions(container, category)
-            print("type(dims)=",type(dims))
-            print("dir(dims)=",dir(dims))
             if hasattr(dims, "__dict__"):
                 pprint(dims.__dict__)
             else:
                 print("No __dict__ (likely uses __slots__)")
 
             slots = getattr(type(dims), "__slots__", None)
-            print("slots:", slots)
             
             if slots:
                 state = {}

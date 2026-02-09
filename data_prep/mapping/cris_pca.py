@@ -93,7 +93,7 @@ class CrisPcaObsBuilder(ObsBuilder):
             v_in = entry["source"]
             v_out = entry["name"]
             if v_in in ds:
-                da = ds[v_in].stack(location=("atrack","xtrack","fov")).transpose("location")
+                da = ds[v_in].stack(location=("atrack", "xtrack", "fov")).transpose("location")
                 da = da.reset_index("location", drop=True)        # <-- removes MultiIndex
                 da = da.assign_coords(location=out["location"])   # <-- use your integer location
                 out[v_out] = da
@@ -102,14 +102,14 @@ class CrisPcaObsBuilder(ObsBuilder):
         out["satelliteId"] = xr.DataArray(np.full(nlocs, 225, dtype=np.int32), dims=("location",))
 
         t3 = ds["obs_time_tai93"].expand_dims(fov=ds["fov"])
-        t = t3.stack(location=("atrack","xtrack","fov")).transpose("location")
+        t = t3.stack(location=("atrack", "xtrack", "fov")).transpose("location")
         t = t.reset_index("location", drop=True).assign_coords(location=out["location"])
 
         offset = (TAI93_EPOCH - UNIX_EPOCH) / np.timedelta64(1, "s")
         out["time"] = t + offset
 
         # Global PC scores (dims preserved correctly)
-        pc = ds["global_pc_score"].stack(location=("atrack","xtrack","fov")).transpose("location","npc_global")
+        pc = ds["global_pc_score"].stack(location=("atrack", "xtrack", "fov")).transpose("location", "npc_global")
         pc = pc.reset_index("location", drop=True).assign_coords(location=out["location"])
         pc = pc.isel(npc_global=slice(self._pc_score_start, self._pc_score_end))
         out["global_pc_score"] = pc
@@ -161,7 +161,7 @@ class CrisPcaObsBuilder(ObsBuilder):
 
             xr_dims = ds[source].dims
             dim_paths = self._dims_for_var(name, xr_dims)
-            
+ 
             da = ds[source]
             vals = np.asarray(da.values, dtype=np.float64, order="C")
             vals = np.ascontiguousarray(vals)
