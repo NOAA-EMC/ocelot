@@ -179,12 +179,14 @@ class NcdfRunner(Runner):
             start_str = match.group("start_time")
             try:
                 file_start = datetime.strptime(start_str, "%Y%m%d%H%M%S")
-            except:
+            except ValueError:
+                # fallback to alternative timestamp format
                 file_start = datetime.strptime(start_str, "%Y%m%dT%H%M%S")
             try:
                 end_str = match.group("end_time")
                 file_end = datetime.strptime(end_str, "%Y%m%d%H%M%S")
-            except:
+            except (IndexError, ValueError):
+                # missing end_time group or parse failure -> use start as end
                 file_end = file_start
             if file_end < parameters.start_time or file_start > parameters.stop_time:
                 continue
