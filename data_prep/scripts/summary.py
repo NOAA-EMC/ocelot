@@ -28,6 +28,7 @@ def summarize_zarr(path: str, max_obs: int) -> str:
         "Min",
         "Mean",
         "Max",
+        "std",
     ]]
 
     for var_name in root.array_keys():
@@ -47,8 +48,9 @@ def summarize_zarr(path: str, max_obs: int) -> str:
             mn = np.min(good)
             mean = np.mean(good)
             mx = np.max(good)
+            std = np.std(good)
         else:
-            mn = mean = mx = float("nan")
+            mn = mean = mx = std = float("nan")
         pct = 100.0 * good_count / total if total else 0.0
         rows.append([
             var_name,
@@ -58,6 +60,7 @@ def summarize_zarr(path: str, max_obs: int) -> str:
             f"{mn:.3f}",
             f"{mean:.3f}",
             f"{mx:.3f}",
+            f"{std:.3f}",
         ])
 
     table = _format_table(rows)

@@ -95,8 +95,8 @@ def main():
         data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v6"
 
     # --- DEFINE THE FULL DATE RANGE FOR THE EXPERIMENT ---
-    FULL_START_DATE = "2024-01-01"
-    FULL_END_DATE = "2024-12-31"
+    FULL_START_DATE = "2022-01-01"
+    FULL_END_DATE = "2022-12-31"
     TRAIN_WINDOW_DAYS = 12  # The size of the training window for each epoch
     VALID_WINDOW_DAYS = 8   # The size of the validation window for each epoch
     WINDOW_DAYS = TRAIN_WINDOW_DAYS
