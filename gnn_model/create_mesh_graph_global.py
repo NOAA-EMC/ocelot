@@ -243,6 +243,7 @@ def create_mesh(splits, levels, hierarchical, plot=False):
         ):
             plot_graph(m2m_edge_index, mesh_lat_lon, title=f"Mesh level {level_i}")
             plt.show()
+
     mesh_structure = {
         "m2m_graphs": m2m_graphs,
         "mesh_lat_lon_list": mesh_lat_lon_list,
@@ -252,6 +253,14 @@ def create_mesh(splits, levels, hierarchical, plot=False):
         "mesh_features_torch": mesh_features_torch,
         "mesh_lat_lon_torch": mesh_lat_lon_torch,
     }
+
+    # Add hierarchical connections if in hierarchical mode
+    if hierarchical:
+        mesh_structure["mesh_up_ei_list"] = mesh_up_ei_list
+        mesh_structure["mesh_down_ei_list"] = mesh_down_ei_list
+        mesh_structure["mesh_up_features_list"] = mesh_up_features_list
+        mesh_structure["mesh_down_features_list"] = mesh_down_features_list
+
     return mesh_structure
 
 

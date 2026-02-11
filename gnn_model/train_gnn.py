@@ -60,6 +60,12 @@ def main():
     parser.add_argument("--limit_val_batches", type=int, default=None, help="Limit validation batches per epoch")
     parser.add_argument("--devices", type=int, default=None, help="Override number of devices/GPUs")
     parser.add_argument("--num_nodes", type=int, default=None, help="Override number of nodes")
+    # Mesh configuration arguments
+    parser.add_argument("--mesh_type", type=str, default="fixed",
+                        choices=["fixed", "hierarchical"],
+                        help="Type of mesh to use: 'fixed' (GraphCast multiscale merged) or 'hierarchical' (U-Net latent)")
+    parser.add_argument("--mesh_levels", type=int, default=4,
+                        help="Number of mesh levels to use (only for hierarchical mode)")
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -127,6 +133,8 @@ def main():
 
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
+    mesh_type = args.mesh_type  # Options: "fixed" (GraphCast merged multiscale), "hierarchical" (U-Net latent)
+    mesh_levels = args.mesh_levels  # Number of mesh levels to use (only for hierarchical mode)
     hidden_dim = 128
     num_layers = 10
     lr = 5e-4
@@ -157,6 +165,8 @@ def main():
         instrument_weights=instrument_weights,
         channel_weights=channel_weights,
         mesh_resolution=mesh_resolution,
+        mesh_type=mesh_type,
+        mesh_levels=mesh_levels,
         verbose=args.verbose,
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,

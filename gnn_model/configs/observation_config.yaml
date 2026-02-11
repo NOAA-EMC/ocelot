@@ -45,7 +45,7 @@ channel_weights:
   atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
   amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   avhrr: [1.0, 1.0, 1.0]
-  surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
+  surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (5): pressure, temp, dewpoint, wind_u, wind_v
   radiosonde: [1.0, 1.0, 1.0, 1.0]
   aircraft: [1.0, 1.0, 1.0, 1.0]
   ascat: [1.0, 1.0, 1.0]
@@ -171,35 +171,32 @@ observation_config:
     surface_obs:
       source: zarr
       zarr_name: raw_surface_obs
-      # NOTE: wind_u and wind_v are computed from windSpeed and windDirection
-      # height maps to height_pb_event_1 in the Zarr file
-      # Using airPressure_pb_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
+      # height maps to height_prepbufr_event_1 in the Zarr file
+      # Using airPressure_prepbufr_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
       # because pressureMeanSeaLevel_pb appears to be all missing values (3.4e38)
-      features: [airPressure_pb_event_1, airTemperature, dewPointTemperature, relativeHumidity, wind_u, wind_v]
-      metadata: [height_pb_event_1]
-      input_dim: 14                      # 7 (geo/time enc) + 1 meta + 6 feats
-      target_dim: 6
+      features: [airPressure_prepbufr_event_1, airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: [height_prepbufr_event_1]
+      input_dim: 13                      # 7 (geo/time enc) + 1 meta + 5 feats
+      target_dim: 5
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_filters:
-        airPressure_pb_event_1:
-          range: [300, 1200]
+        airPressure_prepbufr_event_1:
+          range: [300, 1100]            # hPa; physically reasonable surface pressure range
           qm_flag_col: airPressureQuality_event_1
-          keep: [1,2,4,9]
+          keep: [1,2]
         airTemperature:
-          range: [-80, 60]
+          range: [-90, 60]              # Celsius; physically reasonable surface temperature range
           qm_flag_col: airTemperatureQuality_event_1
           keep: [1,2,4,9]
         dewPointTemperature:
-          range: [-100, 40]
+          range: [-100, 50]             # Celsius; physically reasonable (Td ≤ T, can be very dry)
           qm_flag_col: dewPointTemperatureQuality_event_1
           keep: [1,2,4,9]
-        relativeHumidity:
-          range: [0, 100]
         windSpeed:
-          range: [0, 75]
+          range: [0, 100]               # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
         windDirection:
-          range: [0, 360]   # degrees
+          range: [0, 360]               # degrees (NOTE: zarr metadata incorrectly says "radians")
 
       qc_relations:                   # cross-variable checks
         dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)
@@ -227,25 +224,25 @@ observation_config:
       qc_filters:
         # Keep airPressure QC to filter bad pressure values (needed for log_pressure_height)
         airPressure:
-          range: [1, 1200]
+          range: [1, 1100]              # hPa; physically reasonable (surface to high altitude)
           qm_flag_col: airPressureQuality
           keep: [1, 2]
         airTemperature:
-          range: [173, 370]
+          range: [-90, 50]              # Celsius; physically reasonable atmospheric range
           qm_flag_col: airTemperatureQuality
-          reject: [13, 14, 15,]
+          reject: [13, 14, 15]          # Reject bad flags
         dewPointTemperature:
-          range: [135, 350]
+          range: [-120, 40]             # Celsius; physically reasonable (very dry stratosphere to humid surface)
           qm_flag_col: dewPointTemperatureQuality
-          reject: [13, 14, 15,]
+          reject: [13, 14, 15]          # Reject bad flags
         windSpeed:
-          range: [0, 75]
+          range: [0, 150]               # m/s; physically reasonable (jet stream can exceed 100 m/s)
           qm_flag_col: windQuality
-          keep: [2,]
+          keep: [2]                     # Keep only good flag 2
         windDirection:
-          range: [0, 6.28]  # radians
+          range: [0, 6.28]              # radians; full circle 0-2π
           qm_flag_col: windQuality
-          keep: [2,]
+          keep: [2]                     # Keep only good flag 2
 
     aircraft:
       source: zarr
@@ -253,7 +250,6 @@ observation_config:
       # NOTE: Similar to radiosonde - airPressure used as vertical coordinate
       # Aircraft measures: Temperature, Wind components, and Humidity
       # UNITS: airTemperature=°C, airPressure=hPa, specificHumidity=kg/kg, windU/windV=m/s
-      # Physical ranges based on 500k samples from aircraft_2022.zarr (P0.1-P99.9 with margins)
       features: [airTemperature, specificHumidity, windU, windV]
       metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
       input_dim: 12                    # 7 (geo/time enc) + 1 meta + 4 feats [+8 pressure embedding added by model]
@@ -261,50 +257,49 @@ observation_config:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_filters:
-        # QC filters based on actual data statistics
+        # QC filters based on physical reasonableness
         airPressure:
-          range: [100, 1100]             # hPa (actual: 179-1018, mean=513)
+          range: [100, 1100]             # hPa; physically reasonable for aircraft altitude range
           qm_flag_col: airPressureQuality
           keep: [0, 1, 2]
         airTemperature:
-          range: [-85, 40]               # °C (actual: -70 to +29, mean=-22.7)
+          range: [-90, 50]               # Celsius; physically reasonable for atmospheric temperature
           qm_flag_col: airTemperatureQuality
           keep: [0, 1, 2]
         specificHumidity:
-          range: [0.0, 0.030]            # kg/kg (actual: 0-0.019, mean=0.0022)
+          range: [0.0, 0.040]            # kg/kg; physically reasonable (max ~35 g/kg at 40°C)
           qm_flag_col: specificHumidityQuality
-          keep: [0, 1, 2]
+          reject: [3, 9, 13, 14, 15]     # Reject doubtful/bad flags
         windU:
-          range: [-110, 110]             # m/s (actual: -18 to +89, mean=19.2)
+          range: [-100, 100]             # m/s; physically reasonable (jet stream winds)
           qm_flag_col: windQuality
           keep: [0, 1, 2]
         windV:
-          range: [-130, 130]             # m/s (actual: -104 to +56, mean=1.8)
+          range: [-100, 100]             # m/s; physically reasonable (jet stream winds)
           qm_flag_col: windQuality
           keep: [0, 1, 2]
 
-feature_stats:  # Statistics for the features used in the model
+feature_stats:  # Statistics for the features used in the model (with FULL QC filtering applied)
   surface_obs:
-    airPressure_pb_event_1: [978.24, 57.32]  # Station pressure (was pressureMeanSeaLevel_pb)
-    airTemperature: [14.12, 12.15]
-    dewPointTemperature: [8.07, 11.52]
-    relativeHumidity: [74.38, 19.18]
-    wind_u: [0.16, 3.64]
-    wind_v: [0.10, 3.37]
+    airPressure_prepbufr_event_1: [985.30, 49.97]       # hPa (station pressure); 2020-2024: 602M valid samples (95.8% pass QC)
+    airTemperature: [13.99, 12.14]                # Celsius; 2020-2024: 545M valid samples (87.2% pass QC)
+    dewPointTemperature: [7.94, 11.47]            # Celsius; 2020-2024: 485M valid samples (77.7% pass QC)
+    wind_u: [0.03, 3.30]                          # m/s (u-component, computed from windSpeed/windDirection)
+    wind_v: [-0.03, 3.37]                         # m/s (v-component, computed from windSpeed/windDirection)
 
   radiosonde:  
-    airPressure: [319.23, 296.08]        # hPa (2024 zarr: 42.9M samples)
-    airTemperature: [238.30, 27.99]      # K (2024 zarr: 33.1M samples)
-    dewPointTemperature: [221.02, 34.03] # K (2024 zarr: 32.4M samples)
-    wind_u: [7.66, 15.60]                # m/s (computed from windSpeed/windDirection: 35.1M samples)
-    wind_v: [-0.02, 9.05]                # m/s (computed from windSpeed/windDirection: 35.1M samples)
+    airPressure: [319.23, 296.08]            # hPa (not in features, used as metadata for log_pressure_height)
+    airTemperature: [-32.49, 28.82]          # Celsius (as stored in zarr); 2020-2024: ~54% pass QC
+    dewPointTemperature: [-47.40, 34.48]     # Celsius (as stored in zarr); 2020-2024: ~52% pass QC
+    wind_u: [4.95, 13.71]                    # m/s (computed from windSpeed/windDirection); 2020-2024: ~60% pass QC
+    wind_v: [-0.31, 8.13]                    # m/s (computed from windSpeed/windDirection); 2020-2024: ~60% pass QC
 
   aircraft:
-    airPressure: [505.53, 274.24]        # hPa (2024 zarr: 209.3M samples)
-    airTemperature: [-18.39, 27.15]      # °C (2024 zarr: 208.5M samples)
-    specificHumidity: [0.0028, 0.0040]   # kg/kg (2024 zarr: 17.0M samples, 8.1% valid)
-    windU: [12.32, 15.96]                # m/s (2024 zarr: 206.5M samples)
-    windV: [0.30, 12.09]                 # m/s (2024 zarr: 206.5M samples)
+    airPressure: [505.53, 274.24]            # hPa (not in features, used as metadata for log_pressure_height)
+    airTemperature: [-18.56, 27.68]          # Celsius; 2020-2024: ~91% pass QC (flags 0,1,2)
+    specificHumidity: [0.0038, 0.0043]       # kg/kg; 2020-2024: ~6% pass QC (sparse data!)
+    windU: [11.28, 15.43]                    # m/s; 2020-2024: ~92% pass QC (flags 0,1,2)
+    windV: [0.27, 11.46]                     # m/s; 2020-2024: ~92% pass QC (flags 0,1,2)
 
   atms:
     bt_channel_1: [211.00, 40.60]

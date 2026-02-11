@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 08:30:00
+#SBATCH -t 10:30:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -56,9 +56,26 @@ echo "SLURM Node List: $SLURM_NODELIST"
 echo "Visible GPUs on this node:"
 nvidia-smi
 
+# ============================================================================
+# MESH CONFIGURATION: Hierarchical vs Fixed
+# ============================================================================
+# ARCHITECTURE NOTES:
+# • Fixed mesh = GraphCast's multiscale merged mesh (single node set + multiscale edges)
+# • Hierarchical = U-Net-style latent hierarchy (L0=40962, L1=10242, L2=2562, L3=642 nodes)
+#   - Only L0 interfaces with observations/predictions
+#   - L1-L3 are latent levels with cross-scale attention
+#   - L1→L0 conditioning provides gradient supervision to coarse level
+# ============================================================================
+
 # Launch training (env is propagated to ranks)
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
 
-# Resume training from the latest checkpoint
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_latest
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --resume_from_checkpoint checkpoints/last.ckpt
+# HIERARCHICAL MODE
+# Resume training from the latest checkpoint in hierarchical mode
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --mesh_levels 4 --resume_from_latest
+
+# FIXED MODE
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type fixed --resume_from_latest
+
+# Resume from specific checkpoint
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt
