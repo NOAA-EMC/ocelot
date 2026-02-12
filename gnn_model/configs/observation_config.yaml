@@ -7,7 +7,7 @@ pipeline:
       avhrr: 100
       # amsua: 3   
       # ascat: 2
-      cris_pca: 100
+      cris_pca: 2
     conventional:
       _default: 1
       surface_obs: 1
