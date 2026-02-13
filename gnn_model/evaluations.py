@@ -1,10 +1,68 @@
+#!/usr/bin/env python
+"""
+Evaluation script for OCELOT weather prediction model.
+Supports both training validation and testing prediction modes.
+"""
+
 import os
 import glob
+import argparse
 import numpy as np
 import pandas as pd
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
+
+
+# Parse command-line arguments
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run evaluation plots for OCELOT model predictions"
+    )
+    parser.add_argument(
+        "--init_time",
+        type=str,
+        default=None,
+        help="Initialization time (format: YYYYMMDDHH, e.g., 2025011000)"
+    )
+    parser.add_argument(
+        "--fhr",
+        type=int,
+        default=None,
+        help="Forecast hour (e.g., 3, 6, 9, 12)"
+    )
+    parser.add_argument(
+        "--epoch",
+        type=int,
+        default=None,
+        help="Epoch number for training mode"
+    )
+    parser.add_argument(
+        "--batch_idx",
+        type=int,
+        default=None,
+        help="Batch index for training mode"
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="val_csv",
+        help="Directory containing CSV files"
+    )
+    parser.add_argument(
+        "--plot_dir",
+        type=str,
+        default="figures",
+        help="Directory to save output plots"
+    )
+    parser.add_argument(
+        "--pred_only",
+        action="store_true",
+        default=False,
+        help="Prediction-only mode (no ground truth comparison)"
+    )
+    return parser.parse_args()
+
 
 # ----------------- helpers -----------------
 TINY_THRESH = {
@@ -21,7 +79,6 @@ AUTO_ABS = {"airTemperature", "dewPointTemperature", "relativeHumidity", "wind_u
 
 CALM_WIND_THRESHOLD = 2.0  # m/s
 
-PLOT_DIR = "figures"
 
 def find_csv_files(
     data_dir: str,
@@ -29,12 +86,13 @@ def find_csv_files(
     epoch: int | None = None,
     batch_idx: int | None = None,
     init_time: str | None = None,
-) -> list[str]:
+    fhr: int | None = None,
+) -> tuple[list[str], str, str]:
     """
     Find CSV files matching the specified criteria.
 
     For training mode: specify epoch and batch_idx
-    For testing mode: specify init_time
+    For testing mode: specify init_time and/or fhr
 
     Args:
         data_dir: Directory containing CSV files
@@ -42,9 +100,13 @@ def find_csv_files(
         epoch: Epoch number for training mode (optional)
         batch_idx: Batch index for training mode (optional)
         init_time: Initialization time for testing mode (optional, format: YYYYMMDDHH)
+        fhr: Forecast hour for target predictions (optional, e.g., 3, 6, 9, 12)
 
     Returns:
-        List of matching file paths. May be empty if no files found.
+        Tuple of (file_list, filename_tag, title_tag):
+        - file_list: List of matching file paths
+        - filename_tag: String to append to filenames (e.g., "_init_2024112500_epoch_156_f003")
+        - title_tag: String to append to plot titles (e.g., " • Init 2024112500 • Epoch 156 • F003")
     """
     pattern = os.path.join(data_dir, '*.csv')
     csv_files = glob.glob(pattern)
@@ -63,7 +125,28 @@ def find_csv_files(
     if init_time is not None:
         csv_files = [f for f in csv_files if f'init_{init_time}' in os.path.basename(f)]
 
-    return csv_files
+    # Forecast hour filter (for target predictions)
+    if fhr is not None:
+        csv_files = [f for f in csv_files if f'_f{fhr:03d}' in os.path.basename(f)]
+
+    # Generate tags based on what's provided
+    filename_tag = ""
+    title_tag = ""
+
+    if init_time is not None:
+        filename_tag += f"_init_{init_time}"
+        title_tag += f" • Init {init_time}"
+
+    if epoch is not None:
+        filename_tag += f"_epoch_{epoch}"
+        title_tag += f" • Epoch {epoch}"
+
+    if fhr is not None:
+        filename_tag += f"_f{fhr:03d}"
+        title_tag += f" • F{fhr:03d}"
+
+    return csv_files, filename_tag, title_tag
+
 
 def _robust_sym_limits(x, q=99.0):
     """Return symmetric limits [-m, m] using the qth percentile of |x|."""
@@ -79,11 +162,13 @@ def _robust_sym_limits(x, q=99.0):
 
 def plot_ocelot_target_diff(
     instrument_name: str,
-    epoch: int,
-    batch_idx: int,
+    epoch: int | None = None,
+    batch_idx: int | None = None,
+    init_time: str | None = None,
+    fhr: int | None = None,
     num_channels: int = 1,
     data_dir: str = "val_csv",
-    fig_dir: str = PLOT_DIR,
+    fig_dir: str = "figures",
     units: str | None = None,  # e.g., "K" for ATMS/AMSU-A
     robust_q: float = 99.0,  # robust clipping for Difference panel
     point_size: int = 7,
@@ -92,15 +177,36 @@ def plot_ocelot_target_diff(
     """
     Make a 3-panel figure: OCELOT (prediction), Target (truth), Difference (pred - true),
     and annotate RMSE on the Difference panel.
+
+    Args:
+        instrument_name: Name of the instrument
+        epoch: Epoch number (training mode)
+        batch_idx: Batch index (training mode)
+        init_time: Initialization time (testing mode, format: YYYYMMDDHH)
+        fhr: Forecast hour (testing mode, e.g., 3, 6, 9, 12)
+        num_channels: Number of channels for the instrument
+        data_dir: Directory containing the CSV files
+        fig_dir: Directory to save figures
+        units: Units for the colorbar labels
+        robust_q: Percentile for robust clipping in difference panel
+        point_size: Size of scatter plot points
+        projection: Cartopy projection for the map
     """
-    csv_files = find_csv_files(data_dir, instrument_name, epoch, batch_idx)  # , init_time)
+    csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
+
     if not csv_files:
         print(f"No CSV files found matching criteria in {data_dir}")
         return
+
     if len(csv_files) != 1:
-        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}.")
+        print(f"  Files found:")
+        for f in csv_files:
+            print(f"    - {os.path.basename(f)}")
+        print(f"  Current filters: epoch={epoch}, batch_idx={batch_idx}, init_time={init_time}, fhr={fhr}")
         return
-    [filepath] = csv_files
+
+    filepath = csv_files[0]
     print(filepath)
     # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
     try:
@@ -190,7 +296,7 @@ def plot_ocelot_target_diff(
             ax.set_title(ttl, fontsize=14)
 
         # Suptitle with context
-        fig.suptitle(f"{instrument_name} • {fname} • Epoch {epoch}", fontsize=16, y=1.02)
+        fig.suptitle(f"{instrument_name} • {fname}{title_tag}", fontsize=16, y=1.02)
 
         # OCELOT (prediction)
         sc0 = axes[0].scatter(lon, lat, c=p, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
@@ -228,7 +334,128 @@ def plot_ocelot_target_diff(
 
         plt.tight_layout()
         safe_fname = str(fname).replace(" ", "_")
-        out_png = os.path.join(fig_dir, f"{instrument_name}_OCELOT_Target_Diff_{safe_fname}_epoch_{epoch}.png")
+        out_png = os.path.join(fig_dir, f"{instrument_name}_OCELOT_Target_Diff_{safe_fname}{filename_tag}.png")
+        plt.savefig(out_png, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  -> Saved plot: {out_png}")
+
+
+def plot_prediction_maps(
+    instrument_name: str,
+    epoch: int | None = None,
+    batch_idx: int | None = None,
+    init_time: str | None = None,
+    fhr: int | None = None,
+    num_channels: int = 1,
+    data_dir: str = "val_csv",
+    fig_dir: str = "figures",
+    units: str | None = None,
+    point_size: int = 7,
+    projection=ccrs.PlateCarree(),
+):
+    """
+    Plot prediction-only maps (no ground truth comparison).
+    Used for forecast files that don't have true_ columns.
+
+    Args:
+        instrument_name: Name of the instrument
+        epoch: Epoch number (training mode)
+        batch_idx: Batch index (training mode)
+        init_time: Initialization time (testing mode, format: YYYYMMDDHH)
+        fhr: Forecast hour (testing mode, e.g., 3, 6, 9, 12)
+        num_channels: Number of channels for the instrument
+        data_dir: Directory containing the CSV files
+        fig_dir: Directory to save figures
+        units: Units for the colorbar labels
+        point_size: Size of scatter plot points
+        projection: Cartopy projection for the map
+    """
+    csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
+
+    if not csv_files:
+        print(f"No CSV files found matching criteria in {data_dir}")
+        return
+
+    if len(csv_files) != 1:
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}.")
+        print(f"  Files found:")
+        for f in csv_files:
+            print(f"    - {os.path.basename(f)}")
+        print(f"  Current filters: epoch={epoch}, batch_idx={batch_idx}, init_time={init_time}, fhr={fhr}")
+        return
+
+    filepath = csv_files[0]
+    print(filepath)
+
+    try:
+        df = pd.read_csv(filepath)
+        print(f"\n--- Processing {instrument_name} from {filepath} ---")
+    except FileNotFoundError:
+        print(f"\nWarning: Could not find data file {filepath}. Skipping.")
+        return
+
+    os.makedirs(fig_dir, exist_ok=True)
+
+    feats = _discover_features(df, num_channels)
+
+    for fname in feats:
+        pred_col = f"pred_{fname}"
+        needed = [pred_col, "lon", "lat"]
+        if not all(c in df.columns for c in needed):
+            print(f"Warning: Missing columns for '{fname}'. Skipping.")
+            continue
+
+        # Get prediction data
+        p = _np(df[pred_col])
+        lon = _np(df["lon"])
+        lat = _np(df["lat"])
+
+        # Basic finite checks
+        valid = np.isfinite(p) & np.isfinite(lon) & np.isfinite(lat)
+
+        # Check for mask columns (QC validity masks)
+        mask_col = f"mask_{fname}"
+        if mask_col in df.columns:
+            mask = df[mask_col].fillna(False).astype(bool).to_numpy()
+            valid &= mask
+            print(f"  Using QC mask for {fname}: {mask.sum()}/{len(mask)} valid observations")
+
+        if not np.any(valid):
+            print(f"Info: No valid rows for '{fname}' after QC filtering. Skipping.")
+            continue
+
+        # Apply validity filter
+        total_obs = len(p)
+        valid_obs = valid.sum()
+        filtered_obs = total_obs - valid_obs
+        print(f"  {fname}: {valid_obs}/{total_obs} observations retained ({filtered_obs} filtered by QC)")
+
+        p, lon, lat = p[valid], lon[valid], lat[valid]
+
+        # Color limits
+        vmin = float(np.nanmin(p))
+        vmax = float(np.nanmax(p))
+
+        # --- make figure (single panel) ---
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6), subplot_kw={"projection": projection})
+
+        # Title
+        ax.set_title(f"{instrument_name} • {fname}{title_tag}", fontsize=14)
+
+        # Prediction map
+        sc = ax.scatter(lon, lat, c=p, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        cb = fig.colorbar(sc, ax=ax, orientation="horizontal", pad=0.1)
+        cb.set_label(f"Prediction{f' ({units})' if units else ''}")
+
+        # Geo styling
+        ax.set_global()
+        _add_land_boundaries(ax)
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+
+        plt.tight_layout()
+        safe_fname = str(fname).replace(" ", "_")
+        out_png = os.path.join(fig_dir, f"{instrument_name}_prediction_{safe_fname}{filename_tag}.png")
         plt.savefig(out_png, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -468,10 +695,12 @@ def radiosonde_metrics_by_pressure_level(
 
 def plot_radiosonde_profiles_by_pressure_level(
     instrument_name: str,
-    epoch: int,
-    batch_idx: int,
+    epoch: int | None = None,
+    batch_idx: int | None = None,
+    init_time: str | None = None,
+    fhr: int | None = None,
     data_dir: str = "val_csv",
-    fig_dir: str = PLOT_DIR,
+    fig_dir: str = "figures",
     agg="mean",  # or "median"
     min_samples: int = 500,  # Minimum samples required per level for reliable statistics
 ):
@@ -481,20 +710,32 @@ def plot_radiosonde_profiles_by_pressure_level(
     Shows metrics stratified by the 16 standard pressure levels.
 
     Args:
+        instrument_name: Name of the instrument
+        epoch: Epoch number (training mode)
+        batch_idx: Batch index (training mode)
+        init_time: Initialization time (testing mode, format: YYYYMMDDHH)
+        fhr: Forecast hour (testing mode, e.g., 3, 6, 9, 12)
         min_samples: Minimum number of observations required per pressure level.
                      Levels with fewer samples are excluded from plots (but kept in CSV)
                      to avoid showing unreliable statistics.
                      Default: 500 (sufficient for stable statistics)
     """
     # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
-    csv_files = find_csv_files(data_dir, instrument_name, epoch, batch_idx)  # , init_time)
+    csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
+
     if not csv_files:
         print(f"No CSV files found matching criteria in {data_dir}")
         return
+
     if len(csv_files) != 1:
-        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}.")
+        print(f"  Files found:")
+        for f in csv_files:
+            print(f"    - {os.path.basename(f)}")
+        print(f"  Current filters: epoch={epoch}, batch_idx={batch_idx}, init_time={init_time}, fhr={fhr}")
         return
-    [filepath] = csv_files
+
+    filepath = csv_files[0]
     print(filepath)
     try:
         df = pd.read_csv(filepath)
@@ -523,7 +764,7 @@ def plot_radiosonde_profiles_by_pressure_level(
             continue
 
         # Save table (with all levels, including those with few samples)
-        out_layer = os.path.join(fig_dir, f"radiosonde_{feat}_epoch_{epoch}_level_skill.csv")
+        out_layer = os.path.join(fig_dir, f"radiosonde_{feat}{filename_tag}_level_skill.csv")
         level_df.to_csv(out_layer, index=False)
         print(f"  -> Saved pressure-level skill table: {out_layer}")
 
@@ -584,10 +825,10 @@ def plot_radiosonde_profiles_by_pressure_level(
             plt.yticks(p_hpa, labels)
             plt.xlabel(f"{feat} ({agg})", fontsize=12)
             plt.ylabel("Pressure Level", fontsize=12)
-            plt.title(f"{instrument_name} • {feat} • True vs Pred\nEpoch {epoch} (by pressure level)", fontsize=13)
+            plt.title(f"{instrument_name} • {feat} • True vs Pred{title_tag}\n(by pressure level)", fontsize=13)
             plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
             plt.legend(fontsize=11)
-            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_true_vs_pred_by_level_epoch_{epoch}.png")
+            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_true_vs_pred_by_level{filename_tag}.png")
             plt.savefig(out_png, dpi=150, bbox_inches="tight")
             plt.close()
             print(f"  -> Saved True-vs-Pred-by-level plot: {out_png}")
@@ -608,10 +849,10 @@ def plot_radiosonde_profiles_by_pressure_level(
             plt.yticks(p_hpa, labels)
             plt.xlabel("RMSE", fontsize=12)
             plt.ylabel("Pressure Level", fontsize=12)
-            plt.title(f"{instrument_name} • {feat} • RMSE\nEpoch {epoch} (by pressure level)", fontsize=13)
+            plt.title(f"{instrument_name} • {feat} • RMSE{title_tag}\n(by pressure level)", fontsize=13)
             plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
             plt.legend(fontsize=11)
-            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_rmse_by_level_epoch_{epoch}.png")
+            out_png = os.path.join(fig_dir, f"{instrument_name}_{feat}_rmse_by_level{filename_tag}.png")
             plt.savefig(out_png, dpi=150, bbox_inches="tight")
             plt.close()
             print(f"  -> Saved RMSE-by-level plot: {out_png}")
@@ -653,25 +894,46 @@ def plot_radiosonde_profiles_by_pressure_level(
 
 def plot_instrument_maps(
     instrument_name: str,
-    epoch: int,
-    batch_idx: int,
+    epoch: int | None = None,
+    batch_idx: int | None = None,
+    init_time: str | None = None,
+    fhr: int | None = None,
     num_channels: int = 1,
     data_dir: str = "val_csv",
-    fig_dir: str = PLOT_DIR,
+    fig_dir: str = "figures",
     error_metric: str = "auto",  # "auto" | "absolute" | "percent" | "smape"
     drop_small_truth: bool = True,  # for percent/sMAPE
 ):
     """
     Load prediction CSV and generate maps for each feature with robust errors.
+
+    Args:
+        instrument_name: Name of the instrument
+        epoch: Epoch number (training mode)
+        batch_idx: Batch index (training mode)
+        init_time: Initialization time (testing mode, format: YYYYMMDDHH)
+        fhr: Forecast hour (testing mode, e.g., 3, 6, 9, 12)
+        num_channels: Number of channels for the instrument
+        data_dir: Directory containing the CSV files
+        fig_dir: Directory to save figures
+        error_metric: Error metric to use (auto, absolute, percent, smape)
+        drop_small_truth: Drop small truth values for relative metrics
     """
-    csv_files = find_csv_files(data_dir, instrument_name, epoch, batch_idx)  # , init_time)
+    csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
+
     if not csv_files:
         print(f"No CSV files found matching criteria in {data_dir}")
         return
+
     if len(csv_files) != 1:
-        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}. Skipping.")
+        print(f"Warning: Expected 1 file, found {len(csv_files)} for {instrument_name}.")
+        print(f"  Files found:")
+        for f in csv_files:
+            print(f"    - {os.path.basename(f)}")
+        print(f"  Current filters: epoch={epoch}, batch_idx={batch_idx}, init_time={init_time}, fhr={fhr}")
         return
-    [filepath] = csv_files
+
+    filepath = csv_files[0]
     # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
     try:
         df = pd.read_csv(filepath)
@@ -717,7 +979,7 @@ def plot_instrument_maps(
                 # Use categorical pressure levels (preferred method)
                 level_df = radiosonde_metrics_by_pressure_level(df, fname, level_col=level_col, label_col=label_col)
                 if level_df is not None and len(level_df) > 0:
-                    out_layer = os.path.join(fig_dir, f"radiosonde_{fname}_epoch_{epoch}_level_skill.csv")
+                    out_layer = os.path.join(fig_dir, f"radiosonde_{fname}{filename_tag}_level_skill.csv")
                     level_df.to_csv(out_layer, index=False)
                     print(f"  -> Saved pressure-level skill (categorical): {out_layer}")
             else:
@@ -726,7 +988,7 @@ def plot_instrument_maps(
                 if pcol is not None:
                     layer_df = radiosonde_metrics_by_pressure(df, fname, pcol=pcol)
                     if layer_df is not None and len(layer_df) > 0:
-                        out_layer = os.path.join(fig_dir, f"radiosonde_{fname}_epoch_{epoch}_pressure_skill.csv")
+                        out_layer = os.path.join(fig_dir, f"radiosonde_{fname}{filename_tag}_pressure_skill.csv")
                         layer_df.to_csv(out_layer, index=False)
                         print(f"  -> Saved pressure-layer skill (binned): {out_layer}")
 
@@ -751,7 +1013,7 @@ def plot_instrument_maps(
         vmin = float(np.nanmin([t.min(), p.min()]))
         vmax = float(np.nanmax([t.max(), p.max()]))
 
-        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • {fname} • Epoch: {epoch}")
+        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • {fname}{title_tag}")
 
         # Ground Truth
         sc1 = axes[0].scatter(lon, lat, c=t, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
@@ -792,7 +1054,7 @@ def plot_instrument_maps(
         axes[0].set_ylabel("Latitude")
 
         safe_fname = str(fname).replace(" ", "_")
-        out_png = os.path.join(fig_dir, f"{instrument_name}_map_{safe_fname}_epoch_{epoch}_{metric}.png")
+        out_png = os.path.join(fig_dir, f"{instrument_name}_map_{safe_fname}{filename_tag}_{metric}.png")
         plt.savefig(out_png, dpi=150)
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -832,7 +1094,7 @@ def plot_instrument_maps(
         vmin = float(np.nanmin([ts.min(), ps.min()]))
         vmax = float(np.nanmax([ts.max(), ps.max()]))
 
-        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_speed • Epoch: {epoch}")
+        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_speed{title_tag}")
 
         sc1 = axes[0].scatter(lon_all, lat_all, c=ts, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
@@ -854,7 +1116,7 @@ def plot_instrument_maps(
         axes[0].set_ylabel("Latitude")
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_speed_epoch_{epoch}.png")
+        out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_speed{filename_tag}.png")
         plt.savefig(out_png, dpi=150)
         plt.close()
         print(f"  -> Saved plot: {out_png}")
@@ -868,7 +1130,7 @@ def plot_instrument_maps(
             vmin = float(np.nanmin([tdir_plot.min(), pdir_plot.min()]))
             vmax = float(np.nanmax([tdir_plot.max(), pdir_plot.max()]))
 
-            fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_direction • Epoch: {epoch}")
+            fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_direction{title_tag}")
 
             sc1 = axes[0].scatter(lon_dir, lat_dir, c=tdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
             fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
@@ -890,7 +1152,7 @@ def plot_instrument_maps(
             axes[0].set_ylabel("Latitude")
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_direction_epoch_{epoch}.png")
+            out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_direction{filename_tag}.png")
             plt.savefig(out_png, dpi=150)
             plt.close()
             print(f"  -> Saved plot: {out_png}")
@@ -898,161 +1160,240 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 58
-    BATCH_IDX_TO_PLOT = 0
-    DATA_DIR = "val_csv"
+
+    # Configuration - command-line args override these defaults
+    USE_ARGS = True  # Set to True for training mode, False for testing mode
+
+    if USE_ARGS:  # Recommend to use run_evaluation.py
+        # Parse command-line arguments
+        args = parse_args()
+        EPOCH_TO_PLOT = args.epoch
+        BATCH_IDX_TO_PLOT = args.batch_idx
+        INIT_TIME = args.init_time
+        FHR = args.fhr
+        DATA_DIR = args.data_dir
+        PLOT_DIR = args.plot_dir
+        PRED_ONLY = args.pred_only
+    else:  # Manually configure arguments, see examples below
+        # Example[1] Training mode - Non-target (Original outputs)
+        # PRED_ONLY = False  # Set false if have ground truth for comparison
+        # EPOCH_TO_PLOT = 159
+        # BATCH_IDX_TO_PLOT = 0
+        # INIT_TIME = "2024112500"
+        # FHR = None  # No forecast hours in training
+        # DATA_DIR = "val_csv"
+        # PLOT_DIR = "figures_val"
+        # Example[2] Training mode - Target (Prediction)
+        PRED_ONLY = True
+        EPOCH_TO_PLOT = 159
+        BATCH_IDX_TO_PLOT = 0
+        INIT_TIME = "2024112500"
+        FHR = 3
+        DATA_DIR = "val_target_csv"
+        PLOT_DIR = "figures_val/tar"
+        # Example[3] Testing mode
+        # PRED_ONLY = True
+        # EPOCH_TO_PLOT = None
+        # BATCH_IDX_TO_PLOT = None
+        # INIT_TIME = "2025011000"
+        # FHR = 3  # Forecast hour: 3, 6, 9, or 12
+        # DATA_DIR = "predictions/pred_csv/target/"
+        # PLOT_DIR = "figures_test/tar"
 
     plot_dir = os.path.abspath(PLOT_DIR)
     os.makedirs(plot_dir, exist_ok=True)
 
-    # Plot radiosonde profiles by categorical pressure level (more accurate)
-    plot_radiosonde_profiles_by_pressure_level(
-        "radiosonde",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-    )
+    # Choose plotting approach based on PRED_ONLY flag
+    if PRED_ONLY:
+        # Forecast-only visualization (target files)
+        print("\n=== Plotting prediction-only maps (no ground truth) ===\n")
 
-    # Plot aircraft profiles by categorical pressure level (similar to radiosonde)
-    # Use lower min_samples threshold for aircraft due to sparser data distribution
-    plot_radiosonde_profiles_by_pressure_level(
-        "aircraft",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        min_samples=1000,  # Exclude very sparse levels (e.g., 150 hPa with N=240)
-    )
+        plot_prediction_maps("radiosonde", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=5, data_dir=DATA_DIR, fig_dir=plot_dir)
+        plot_prediction_maps("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
 
-    # add the OCELOT | Target | Difference + RMSE figures
-    # Aircraft conventional observations (temperature, humidity, winds)
-    plot_ocelot_target_diff("aircraft", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=4, data_dir=DATA_DIR, fig_dir=plot_dir, units="various")
+    else:
+        # Model evaluation with ground truth
+        print("\n=== Plotting OCELOT vs Target comparison ===\n")
 
-    # ASCAT backscatter: add units for sigma0
-    plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
+        # Plot radiosonde profiles by categorical pressure level (more accurate)
+        plot_radiosonde_profiles_by_pressure_level(
+            "radiosonde",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+        )
 
-    # brightness temperature instruments (add units to annotate RMSE like your sample)
-    plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-    plot_ocelot_target_diff("amsua", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=15, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-    plot_ocelot_target_diff("ssmis", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=24, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-    plot_ocelot_target_diff("seviri", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+        # Plot aircraft profiles by categorical pressure level (similar to radiosonde)
+        # Use lower min_samples threshold for aircraft due to sparser data distribution
+        plot_radiosonde_profiles_by_pressure_level(
+            "aircraft",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            min_samples=1000,  # Exclude very sparse levels (e.g., 150 hPa with N=240)
+        )
 
-    # AVHRR reflectance/albedo: omit units or add as needed
-    plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir)
-    # Surface obs and snow cover: omit units or add as needed
-    plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
-    plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=2, data_dir=DATA_DIR, fig_dir=plot_dir)
+        # Aircraft conventional observations (temperature, humidity, winds)
+        plot_ocelot_target_diff("aircraft", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR,
+                                num_channels=4, data_dir=DATA_DIR, fig_dir=plot_dir, units="various")
 
-    plot_instrument_maps(
-        "radiosonde",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=5,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="auto",  # ABS for most, sMAPE for pressure
-        drop_small_truth=True,
-    )
+        # ASCAT backscatter: add units for sigma0
+        plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR,
+                                num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
 
-    # Aircraft: similar to radiosonde with 4 features (T, q, u, v)
-    plot_instrument_maps(
-        "aircraft",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=4,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="auto",  # ABS for temperature and winds
-        drop_small_truth=True,
-    )
+        # brightness temperature instruments (add units to annotate RMSE like your sample)
+        plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR,
+                                num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+        plot_ocelot_target_diff("amsua", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR,
+                                num_channels=15, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+        plot_ocelot_target_diff("ssmis", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR,
+                                num_channels=24, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+        plot_ocelot_target_diff("seviri", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR,
+                                num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
 
-    # ASCAT backscatter: use absolute error for sigma0 measurements
-    plot_instrument_maps(
-        "ascat",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=3,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="absolute",  # Absolute error for backscatter coefficients
-        drop_small_truth=False,
-    )
+        # AVHRR reflectance/albedo: omit units or add as needed
+        plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir)
+        # Surface obs and snow cover: omit units or add as needed
+        plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
+        plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=2, data_dir=DATA_DIR, fig_dir=plot_dir)
 
-    # Surface obs: ABS for thermo/u/v, sMAPE for pressure
-    plot_instrument_maps(
-        "surface_obs",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=6,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="auto",  # ABS for most, sMAPE for pressure
-        drop_small_truth=True,
-    )
+        # plot_instrument_maps also requires ground truth
 
-    plot_instrument_maps(
-        "snow_cover",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=2,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="auto",
-        drop_small_truth=True,
-    )
+        plot_instrument_maps(
+            "radiosonde",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=5,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="auto",  # ABS for most, sMAPE for pressure
+            drop_small_truth=True,
+        )
 
-    plot_instrument_maps(
-        "avhrr",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=3,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="percent",
-        drop_small_truth=False,
-    )
+        # Aircraft: similar to radiosonde with 4 features (T, q, u, v)
+        plot_instrument_maps(
+            "aircraft",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=4,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="auto",  # ABS for temperature and winds
+            drop_small_truth=True,
+        )
 
-    plot_instrument_maps(
-        "atms",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=22,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="percent",
-        drop_small_truth=False,
-    )
+        # ASCAT backscatter: use absolute error for sigma0 measurements
+        plot_instrument_maps(
+            "ascat",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=3,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="absolute",  # Absolute error for backscatter coefficients
+            drop_small_truth=False,
+        )
 
-    plot_instrument_maps(
-        "amsua",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=15,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="percent",
-        drop_small_truth=False,
-    )
+        # Surface obs: ABS for thermo/u/v, sMAPE for pressure
+        plot_instrument_maps(
+            "surface_obs",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=6,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="auto",  # ABS for most, sMAPE for pressure
+            drop_small_truth=True,
+        )
 
-    plot_instrument_maps(
-        "ssmis",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=24,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="percent",
-        drop_small_truth=False,
-    )
+        plot_instrument_maps(
+            "snow_cover",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=2,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="auto",
+            drop_small_truth=True,
+        )
 
-    plot_instrument_maps(
-        "seviri",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=16,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="percent",
-        drop_small_truth=False,
-    )
+        plot_instrument_maps(
+            "avhrr",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=3,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="percent",
+            drop_small_truth=False,
+        )
+
+        plot_instrument_maps(
+            "atms",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=22,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="percent",
+            drop_small_truth=False,
+        )
+
+        plot_instrument_maps(
+            "amsua",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=15,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="percent",
+            drop_small_truth=False,
+        )
+
+        plot_instrument_maps(
+            "ssmis",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=24,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="percent",
+            drop_small_truth=False,
+        )
+
+        plot_instrument_maps(
+            "seviri",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=16,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="percent",
+            drop_small_truth=False,
+        )

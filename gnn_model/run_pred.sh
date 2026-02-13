@@ -9,9 +9,9 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 04:00:00
-#SBATCH --output=gnn_train_%j.out
-#SBATCH --error=gnn_train_%j.err
+#SBATCH -t 05:00:00
+#SBATCH --output=gnn_pred_%j.out
+#SBATCH --error=gnn_pred_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 
 echo "Running on H100 nodes..."
@@ -55,8 +55,8 @@ nvidia-smi
 
 # Prediction mode:
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
-    --checkpoint checkpoints/gnn-epoch-epoch=134-val_loss-val_loss=0.03.ckpt \
-    --start_date 2023-01-10 \
-    --end_date 2023-03-01 \
+    --checkpoint checkpoints/gnn-epoch-epoch=151-val_loss-val_loss=0.02.ckpt \
+    --start_date 2025-03-30 \
+    --end_date 2025-04-01 \
     --output_dir predictions \
 #    --eval-mode

@@ -683,9 +683,14 @@ class GNNLightning(pl.LightningModule):
                 embedded_features[node_type] = self.mesh_embedder(x)
             elif node_type.endswith("_input"):
                 # Apply pressure-level embedding for radiosonde and aircraft if available
-                if "pressure_level" in data[node_type]:
-                    pressure_level_idx = data[node_type].pressure_level  # [N]
-                    pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
+                needs_pressure_level = node_type in ["radiosonde_input", "aircraft_input"]
+                if needs_pressure_level:
+                    if "pressure_level" in data[node_type] and data[node_type].pressure_level.shape[0] > 0:
+                        pressure_level_idx = data[node_type].pressure_level  # [N]
+                        pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
+                    else:
+                        pressure_embed = torch.zeros(x.shape[0], 8, device=x.device, dtype=x.dtype)
+
                     # Concatenate with original features
                     x_with_embed = torch.cat([x, pressure_embed], dim=-1)  # [N, input_dim + 8]
                     print(
@@ -693,6 +698,7 @@ class GNNLightning(pl.LightningModule):
                         f"orig={x.shape} + embed={pressure_embed.shape} → combined={x_with_embed.shape}"
                     )
                     embedded_features[node_type] = self.observation_embedders[node_type](x_with_embed)
+
                 else:
                     embedded_features[node_type] = self.observation_embedders[node_type](x)
 
