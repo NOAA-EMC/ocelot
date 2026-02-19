@@ -55,8 +55,8 @@ nvidia-smi
 
 # Prediction mode:
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
-    --checkpoint checkpoints/gnn-epoch-epoch=151-val_loss-val_loss=0.02.ckpt \
-    --start_date 2025-03-30 \
-    --end_date 2025-04-01 \
+    --checkpoint /scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/target-directProj-clean/ocelot/gnn_model/checkpoints/gnn-epoch-epoch=151-val_loss-val_loss=0.02.ckpt \
+    --start_date 2025-03-01 \
+    --end_date 2025-03-02 \
     --output_dir predictions \
-#    --eval-mode
+    # --eval-mode
