@@ -41,20 +41,21 @@ export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot/gnn_model:/sc
 EVAL_SCRIPT="evaluations.py"
 
 # --- Training Mode Parameters ---
-# Leave empty for testing mode, or set for training mode:
-EPOCH_TO_PLOT="9"
-BATCH_IDX_TO_PLOT="0"
+# Leave empty ("") for testing mode, or set for training mode:
+EPOCH_TO_PLOT=""
+BATCH_IDX_TO_PLOT=""
 
 # --- Data Directories ---
 # Training mode example:
-#   DATA_DIR="val_csv"                             # Training validation
+#   DATA_DIR="val_csv"                             # Training validation (obs location; PRED_ONLY = false)
+#   DATA_DIR="val_target_csv"                      # Training validation (mesh; PRED_ONLY = true)
 # Testing mode examples:
-#   DATA_DIR="predictions/pred_csv/target/"        # Target files (forecast only)
-#   DATA_DIR="predictions/pred_csv/non-target/"    # Non-target files (with truth)
-DATA_DIR="val_target_csv" # "predictions/pred_csv/non-target/"
+#   DATA_DIR="predictions/pred_csv/non-target/"    # Non-target files (with truth; PRED_ONLY = false)
+#   DATA_DIR="predictions/pred_csv/target/"        # Target files (forecast only; PRED_ONLY = true)
+DATA_DIR="predictions/pred_csv/target/"
 
 # Output directory for plots
-PLOT_DIR="final_fig_val/target"  # "figures/"
+PLOT_DIR="figures_test/tar"  # "figures/"
 
 # --- Mode Configuration ---
 # Set PRED_ONLY=true for forecast-only (target files, no ground truth)
@@ -62,9 +63,9 @@ PLOT_DIR="final_fig_val/target"  # "figures/"
 PRED_ONLY=true
 
 # --- Date Range for Batch Processing ---
-START_DATE=${1:-"2024112500"}
-END_DATE=${2:-"2024112500"}
-FHR_LIST=(12)
+START_DATE=${1:-"2025030100"}
+END_DATE=${2:-"2025040100"}
+FHR_LIST=(3 6 9 12)
 # Examples:
 #   FHR_LIST=(3 6 9 12)  # All forecast hours
 #   FHR_LIST=(3)         # Single forecast hour

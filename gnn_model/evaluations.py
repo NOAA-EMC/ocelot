@@ -1176,21 +1176,21 @@ if __name__ == "__main__":
         PRED_ONLY = args.pred_only
     else:  # Manually configure arguments, see examples below
         # Example[1] Training mode - Non-target (Original outputs)
-        # PRED_ONLY = False  # Set false if have ground truth for comparison
-        # EPOCH_TO_PLOT = 159
-        # BATCH_IDX_TO_PLOT = 0
-        # INIT_TIME = "2024112500"
-        # FHR = None  # No forecast hours in training
-        # DATA_DIR = "val_csv"
-        # PLOT_DIR = "figures_val"
-        # Example[2] Training mode - Target (Prediction)
-        PRED_ONLY = True
+        PRED_ONLY = False  # Set false if have ground truth for comparison
         EPOCH_TO_PLOT = 159
         BATCH_IDX_TO_PLOT = 0
         INIT_TIME = "2024112500"
-        FHR = 3
-        DATA_DIR = "val_target_csv"
-        PLOT_DIR = "figures_val/tar"
+        FHR = None  # No forecast hours in training
+        DATA_DIR = "val_csv"
+        PLOT_DIR = "figures_val"
+        # Example[2] Training mode - Target (Prediction)
+        # PRED_ONLY = True
+        # EPOCH_TO_PLOT = 159
+        # BATCH_IDX_TO_PLOT = 0
+        # INIT_TIME = "2024112500"
+        # FHR = 3
+        # DATA_DIR = "val_target_csv"
+        # PLOT_DIR = "figures_val/tar"
         # Example[3] Testing mode
         # PRED_ONLY = True
         # EPOCH_TO_PLOT = None
