@@ -14,3 +14,7 @@ variables:
     - wind_u            # u
     - wind_v            # v
 
+# Pressure level index for mesh grid decoding (radiosonde/aircraft only)
+# Standard levels: 0=1000, 1=925, 2=850, 3=700, 4=500, 5=400, 6=300,
+#                  7=250, 8=200, 9=150, 10=100, 11=70, 12=50, 13=30, 14=20, 15=10 hPa
+mesh_pressure_level_idx: 0

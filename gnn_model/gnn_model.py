@@ -106,10 +106,12 @@ class GNNLightning(pl.LightningModule):
         self.target_variables_enabled = target_config.get('enabled', False)
         self.target_variable_config = target_config
         self.target_instruments = list(target_config.get('variables', {}).keys())
+        self.mesh_pressure_level_idx = target_config.get('mesh_pressure_level_idx', 0)
         print(f"[DEBUG CONFIG] target_variables_enabled: {self.target_variables_enabled}")
         print(f"[DEBUG CONFIG] target_variable_config: {self.target_variable_config}")
         print(f"[DEBUG CONFIG] variables in config: {self.target_variable_config.get('variables', {})}")
         print(f"[DEBUG CONFIG] Target instruments for mesh prediction: {self.target_instruments}")
+        print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
 
         # Mirror process_timeseries._name2id()
         self.instrument_name_to_id = _build_instrument_map(self.observation_config)
@@ -2020,12 +2022,11 @@ class GNNLightning(pl.LightningModule):
                 # Only add pressure columns for instruments that use pressure-level conditioning
                 if base_inst_name in ['radiosonde', 'aircraft']:
                     STANDARD_PRESSURE_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
-                    mesh_pressure_level_idx = self.hparams.get('mesh_pressure_level_idx', 0)
-                    pressure_hpa = STANDARD_PRESSURE_LEVELS[mesh_pressure_level_idx]
+                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.mesh_pressure_level_idx]
                     log_pressure_height = -8000.0 * np.log(np.clip(pressure_hpa, 1.0, 1100.0) / 1013.25)
 
                     df['pressure_hPa'] = pressure_hpa
-                    df['pressure_level_idx'] = mesh_pressure_level_idx
+                    df['pressure_level_idx'] = self.mesh_pressure_level_idx
                     df['pressure_level_label'] = f"{pressure_hpa}hPa"
                     df['log_pressure_height_m'] = log_pressure_height
                     df['log_pressure_height_norm'] = log_pressure_height / 20000.0
@@ -2072,7 +2073,7 @@ class GNNLightning(pl.LightningModule):
 
         return predictions
 
-    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, mesh_pressure_level_idx=0):
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges):
         """Decode one step's mesh features to mesh grid."""
         # Get decoder
         decoder_key = f"mesh__to__{inst_name}_target"
@@ -2095,7 +2096,7 @@ class GNNLightning(pl.LightningModule):
         # (satellites, surface obs, etc.) use zeros, consistent with their training setup.
         base_inst = inst_name.replace('_target', '')
         if base_inst in ['radiosonde', 'aircraft']:
-            fixed_idx = torch.full((N,), mesh_pressure_level_idx, dtype=torch.long, device=device)
+            fixed_idx = torch.full((N,), self.mesh_pressure_level_idx, dtype=torch.long, device=device)
             pressure_emb = self.pressure_level_embedder(fixed_idx)  # [N, 8]
             padding_dim = self.hidden_dim - self.pressure_level_embed_dim
             rec_rep = torch.cat([
@@ -2104,8 +2105,8 @@ class GNNLightning(pl.LightningModule):
             ], dim=-1)  # [N, hidden_dim]
 
             print(f"[MESH PRED] Decoding {inst_name} conditioned on pressure level "
-                  f"{mesh_pressure_level_idx} "
-                  f"({[1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10][mesh_pressure_level_idx]} hPa)")
+                  f"{self.mesh_pressure_level_idx} "
+                  f"({[1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10][self.mesh_pressure_level_idx]} hPa)")
         else:
             # Satellites, surface obs etc.: no pressure conditioning (same as training)
             rec_rep = torch.zeros(N, self.hidden_dim, device=device)
