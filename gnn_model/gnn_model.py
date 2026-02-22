@@ -51,8 +51,8 @@ class GNNLightning(pl.LightningModule):
     def __init__(
         self,
         observation_config,
-        target_config,
         hidden_dim,
+        target_config=None,
         mesh_resolution=6,
         mesh_type="fixed",  # "fixed" or "hierarchical"
         mesh_levels=4,
@@ -64,6 +64,7 @@ class GNNLightning(pl.LightningModule):
         detect_anomaly=False,
         max_rollout_steps=1,
         rollout_schedule="step",
+        latent_step_hours=3,
         feature_stats=None,
         processor_type: str = "interaction",  # "interaction" | "sliding_transformer"
         processor_window: int = 4,
@@ -99,19 +100,21 @@ class GNNLightning(pl.LightningModule):
         self.channel_weights = channel_weights or {}
         self.max_rollout_steps = max_rollout_steps
         self.rollout_schedule = rollout_schedule
+        self.latent_step_hours = latent_step_hours
 
         self.observation_config = observation_config
 
-        # MK: Load target variable config
-        self.target_variables_enabled = target_config.get('enabled', False)
+        # Load target variable config
+        self.enable_mesh_pred = target_config.get('enable_mesh_pred', False)
         self.target_variable_config = target_config
         self.target_instruments = list(target_config.get('variables', {}).keys())
         self.mesh_pressure_level_idx = target_config.get('mesh_pressure_level_idx', 0)
-        print(f"[DEBUG CONFIG] target_variables_enabled: {self.target_variables_enabled}")
-        print(f"[DEBUG CONFIG] target_variable_config: {self.target_variable_config}")
-        print(f"[DEBUG CONFIG] variables in config: {self.target_variable_config.get('variables', {})}")
-        print(f"[DEBUG CONFIG] Target instruments for mesh prediction: {self.target_instruments}")
-        print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
+        if self.verbose:
+            print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
+            print(f"[DEBUG CONFIG] target_variable_config: {self.target_variable_config}")
+            print(f"[DEBUG CONFIG] variables in config: {self.target_variable_config.get('variables', {})}")
+            print(f"[DEBUG CONFIG] Target instruments for mesh prediction: {self.target_instruments}")
+            print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
 
         # Mirror process_timeseries._name2id()
         self.instrument_name_to_id = _build_instrument_map(self.observation_config)
@@ -419,7 +422,7 @@ class GNNLightning(pl.LightningModule):
         if not os.path.exists(edges_file):
             raise FileNotFoundError(
                 f"Mesh prediction edges file not found: {edges_file}\n"
-                f"Please run: python precompute_mesh_edges.py --config target_config.yaml"
+                f"Please run: python precompute_mesh_edges.py --config configs/target_config.yaml"
             )
 
         # Load pre-computed data
@@ -470,9 +473,15 @@ class GNNLightning(pl.LightningModule):
         print(f"[MESH PRED] Loaded edges for {list(mesh_pred_edges.keys())}")
         return mesh_pred_edges
 
+    def _get_mesh_pred_edges(self):
+        """Load and cache mesh prediction edges once for the entire run."""
+        if not hasattr(self, '_cached_mesh_pred_edges') or self._cached_mesh_pred_edges is None:
+            self._cached_mesh_pred_edges = self._load_mesh_prediction_edges()
+        return self._cached_mesh_pred_edges
+
     def _is_target_variable(self, inst_name: str) -> bool:
         """Check if instrument has target variables configured."""
-        if not self.target_variables_enabled:
+        if not self.enable_mesh_pred:
             return False
         return inst_name in self.target_instruments
 
@@ -807,8 +816,8 @@ class GNNLightning(pl.LightningModule):
         if self.processor_type == "sliding_transformer":
             self.swt.reset()
 
-        # MK: New local list for mesh features
-        mesh_features_per_step = []
+        # Local list for mesh features
+        mesh_features_per_step = [] if self.enable_mesh_pred else None
 
         for step in range(num_latent_steps):
             self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
@@ -1037,8 +1046,9 @@ class GNNLightning(pl.LightningModule):
                 processed = self.processor(step_features, processor_edges)
                 current_mesh_features = processed["mesh"]
 
-            # MK: Save mesh features if needed (independent of self.training check here)
-            mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
+            # Save mesh features if needed (independent of self.training check here)
+            if self.enable_mesh_pred:
+                mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
 
             self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
 
@@ -1402,7 +1412,8 @@ class GNNLightning(pl.LightningModule):
         # Log rollout steps appropriately
         step_info = self._get_latent_step_info(batch)
         latent_rollout_steps = step_info["num_steps"]
-        print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
+        if self.verbose:
+            print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
 
         self.log(
             "train_loss",
@@ -1441,7 +1452,6 @@ class GNNLightning(pl.LightningModule):
         # if isinstance(all_predictions, tuple):
         #     all_predictions, _ = all_predictions
 
-        # MK
         # Forward pass: Dict[node_type, List[Tensor]] per step
         result = self(batch)
 
@@ -1673,8 +1683,8 @@ class GNNLightning(pl.LightningModule):
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
 
-        # MK: Save mesh features from first batch for epoch-end processing
-        if batch_idx == 0 and self.target_variables_enabled:
+        # Save mesh features from first batch for epoch-end processing
+        if batch_idx == 0 and self.enable_mesh_pred:
             self._last_val_mesh_features = mesh_features_per_step
             self._last_val_batch = batch
 
@@ -1682,7 +1692,7 @@ class GNNLightning(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Generate mesh predictions at END of validation epoch."""
-        if not self.target_variables_enabled or not self.trainer.is_global_zero:
+        if not self.enable_mesh_pred or not self.trainer.is_global_zero:
             return
 
         # Check if we saved mesh features during validation
@@ -1692,7 +1702,7 @@ class GNNLightning(pl.LightningModule):
 
         try:
             with torch.no_grad():
-                temp_mesh_pred_edges = self._load_mesh_prediction_edges()
+                temp_mesh_pred_edges = self._get_mesh_pred_edges()
                 mesh_predictions = self._decode_all_steps_to_mesh(
                     self._last_val_mesh_features,
                     temp_mesh_pred_edges
@@ -1987,7 +1997,7 @@ class GNNLightning(pl.LightningModule):
 
         # Calculate forecast hours
         num_steps = len(next(iter(predictions.values())))
-        latent_step_hours = self.hparams.get('latent_step_hours', 3)
+        latent_step_hours = self.latent_step_hours
         forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
 
         print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
@@ -2182,11 +2192,10 @@ class GNNLightning(pl.LightningModule):
             all_predictions, mesh_features_per_step = forward_output
         else:
             all_predictions = forward_output
-            mesh_features_per_step = []
+            mesh_features_per_step = None
 
         # Extract ground truths and metadata
         ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
-        print(f"[MK] ground_truth: {ground_truth_data}")
 
         # Determine rollout steps
         step_info = self._get_latent_step_info(batch)
@@ -2229,20 +2238,20 @@ class GNNLightning(pl.LightningModule):
             )
 
         # Save mesh predictions (target variables on grid)
-        if self.target_variables_enabled:
+        if self.enable_mesh_pred:
             try:
                 with torch.no_grad():
-                    temp_mesh_pred_edges = self._load_mesh_prediction_edges()
                     # Use mesh features from forward pass
                     if not mesh_features_per_step:
                         print("[PREDICT] No mesh features available for mesh predictions")
                     else:
-                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, temp_mesh_pred_edges)
+                        mesh_pred_edges = self._get_mesh_pred_edges()
+                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges)
                         if mesh_predictions:
                             mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'target')
                             self._save_mesh_predictions(
                                 mesh_predictions,
-                                temp_mesh_pred_edges,
+                                mesh_pred_edges,
                                 batch_idx=batch_idx,
                                 epoch=0,
                                 mode='predict',
@@ -2259,7 +2268,9 @@ class GNNLightning(pl.LightningModule):
     def on_predict_epoch_start(self):
         """Setup before prediction epoch starts."""
         print("[PREDICT] Starting prediction epoch")
-        self._save_mesh_predictions_enabled = True
+        if not self.enable_mesh_pred:
+            print("[WARN] enable_mesh_pred is False — mesh grid outputs will NOT be generated. "
+                  "Set 'enable_mesh_pred: true' in target_config.yaml to produce gridded outputs.")
         self._mesh_predictions_buffer = {}
         self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
         os.makedirs(self._prediction_output_dir, exist_ok=True)
@@ -2278,9 +2289,7 @@ class GNNLightning(pl.LightningModule):
     def on_predict_epoch_end(self):
         """Cleanup and summary after prediction epoch ends."""
         print("[PREDICT] Prediction epoch completed")
-
-        if hasattr(self, '_save_mesh_predictions_enabled'):
-            self._save_mesh_predictions_enabled = False
+        self._cached_mesh_pred_edges = None
 
         # Generate summary statistics
         if hasattr(self, '_prediction_output_dir'):

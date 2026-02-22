@@ -164,8 +164,8 @@ def main():
     # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
         observation_config=observation_config,
-        target_config=target_config,
         hidden_dim=hidden_dim,
+        target_config=target_config,
         num_layers=num_layers,
         lr=lr,
         instrument_weights=instrument_weights,
@@ -176,6 +176,7 @@ def main():
         verbose=args.verbose,
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
+        latent_step_hours=latent_step_hours,
         feature_stats=feature_stats,
         # Model options
         processor_type="sliding_transformer",   # sliding_transformer or "interaction"

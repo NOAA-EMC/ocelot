@@ -6,7 +6,7 @@ The training script then loads these pre-computed edges instead of calling
 obs_mesh_conn at runtime.
 
 Usage:
-    python precompute_mesh_edges.py --config target_config.yaml --output mesh_pred_edges.npz
+    python precompute_mesh_edges.py --config configs/target_config.yaml --output mesh_pred_edges.npz
 """
 
 import argparse

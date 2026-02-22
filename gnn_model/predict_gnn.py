@@ -57,7 +57,7 @@ def main():
 
     # Evaluation mode
     parser.add_argument("--eval-mode", action="store_true",
-                        help="Evaluation mode: expects target observations to exis"
+                        help="Evaluation mode: expects target observations to exist."
                              "Default: False (inference mode - no targets required)")
 
     args = parser.parse_args()
