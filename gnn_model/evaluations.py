@@ -1171,7 +1171,7 @@ if __name__ == "__main__":
         PLOT_DIR = args.plot_dir
         HAS_GROUND_TRUTH = args.has_ground_truth
     else:  # Manually configure arguments, see examples below
-        ## Example[1] Training mode - Obs-location ourputs (Original outputs)
+        # --- Example[1] Training mode - Obs-location ourputs (Original outputs) ---
         HAS_GROUND_TRUTH = True  # Set True if have ground truth for comparison
         EPOCH_TO_PLOT = 159
         BATCH_IDX_TO_PLOT = 0
@@ -1179,7 +1179,7 @@ if __name__ == "__main__":
         FHR = None               # No forecast hours in training
         DATA_DIR = "val_csv"
         PLOT_DIR = "figures/val/obs"
-        ## Example[2] Training mode - Mesh Prediction
+        # --- Example[2] Training mode - Mesh Prediction ---
         # HAS_GROUND_TRUTH = False
         # EPOCH_TO_PLOT = 159
         # BATCH_IDX_TO_PLOT = 0
@@ -1187,7 +1187,7 @@ if __name__ == "__main__":
         # FHR = 12
         # DATA_DIR = "val_mesh_csv"
         # PLOT_DIR = "figures/val/mesh"
-        ## Example[3] Testing mode - Evaluation
+        # --- Example[3] Testing mode - Evaluation ---
         # HAS_GROUND_TRUTH = True
         # EPOCH_TO_PLOT = None
         # BATCH_IDX_TO_PLOT = None
@@ -1195,7 +1195,7 @@ if __name__ == "__main__":
         # FHR = None
         # DATA_DIR = "predictions/pred_csv/obs-space/"
         # PLOT_DIR = "figures/test/obs"
-        ## Example[4] Testing mode - Inference
+        # --- Example[4] Testing mode - Inference ---
         # HAS_GROUND_TRUTH = False
         # EPOCH_TO_PLOT = None
         # BATCH_IDX_TO_PLOT = None
