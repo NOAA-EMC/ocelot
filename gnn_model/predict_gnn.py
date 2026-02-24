@@ -95,8 +95,8 @@ def main():
     with open(cfg_path, "r") as f:
         _raw_cfg = yaml.safe_load(f)
 
-    with open('configs/target_config.yaml', 'r') as f:
-        target_config = yaml.safe_load(f)
+    with open('configs/mesh_config.yaml', 'r') as f:
+        mesh_config = yaml.safe_load(f)
 
     pipeline_cfg = _raw_cfg.get("pipeline", {})
 
@@ -119,7 +119,7 @@ def main():
         model = GNNLightning.load_from_checkpoint(
             args.checkpoint,
             observation_config=observation_config,
-            target_config=target_config,
+            mesh_config=mesh_config,
             feature_stats=feature_stats,
             instrument_weights=instrument_weights,
             channel_weights=channel_weights,
@@ -135,7 +135,7 @@ def main():
 
         model = GNNLightning(
             observation_config=observation_config,
-            target_config=target_config,
+            mesh_config=mesh_config,
             feature_stats=feature_stats,
             instrument_weights=instrument_weights,
             channel_weights=channel_weights,
@@ -239,12 +239,12 @@ def main():
     # Generate summary
     print("\nPrediction summary:")
 
-    obs_dir = os.path.join(args.output_dir, 'pred_csv', 'non-target')
-    mesh_dir = os.path.join(args.output_dir, 'pred_csv', 'target')
+    obs_dir = os.path.join(args.output_dir, 'pred_csv', 'obs-space')
+    mesh_dir = os.path.join(args.output_dir, 'pred_csv', 'mesh-grid')
 
     if os.path.exists(obs_dir):
         csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]
-        print(f"  Observation predictions (non-target): {len(csv_files)} files")
+        print(f"  Observation predictions (obs-space): {len(csv_files)} files")
 
         instruments = {}
         for f in csv_files:

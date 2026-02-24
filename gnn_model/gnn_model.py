@@ -52,7 +52,7 @@ class GNNLightning(pl.LightningModule):
         self,
         observation_config,
         hidden_dim,
-        target_config=None,
+        mesh_config=None,
         mesh_resolution=6,
         mesh_type="fixed",  # "fixed" or "hierarchical"
         mesh_levels=4,
@@ -104,16 +104,16 @@ class GNNLightning(pl.LightningModule):
 
         self.observation_config = observation_config
 
-        # Load target variable config
-        self.enable_mesh_pred = target_config.get('enable_mesh_pred', False)
-        self.target_variable_config = target_config
-        self.target_instruments = list(target_config.get('variables', {}).keys())
-        self.mesh_pressure_level_idx = target_config.get('mesh_pressure_level_idx', 0)
+        # Load mesh-grid variable config
+        self.enable_mesh_pred = mesh_config.get('enable_mesh_pred', False)
+        self.mesh_variable_config = mesh_config
+        self.mesh_instruments = list(mesh_config.get('variables', {}).keys())
+        self.mesh_pressure_level_idx = mesh_config.get('mesh_pressure_level_idx', 0)
         if self.verbose:
             print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
-            print(f"[DEBUG CONFIG] target_variable_config: {self.target_variable_config}")
-            print(f"[DEBUG CONFIG] variables in config: {self.target_variable_config.get('variables', {})}")
-            print(f"[DEBUG CONFIG] Target instruments for mesh prediction: {self.target_instruments}")
+            print(f"[DEBUG CONFIG] mesh_variable_config: {self.mesh_variable_config}")
+            print(f"[DEBUG CONFIG] variables in config: {self.mesh_variable_config.get('variables', {})}")
+            print(f"[DEBUG CONFIG] Instruments for mesh prediction: {self.mesh_instruments}")
             print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
 
         # Mirror process_timeseries._name2id()
@@ -422,27 +422,27 @@ class GNNLightning(pl.LightningModule):
         if not os.path.exists(edges_file):
             raise FileNotFoundError(
                 f"Mesh prediction edges file not found: {edges_file}\n"
-                f"Please run: python precompute_mesh_edges.py --config configs/target_config.yaml"
+                f"Please run: python precompute_mesh_edges.py --config configs/mesh_config.yaml"
             )
 
         # Load pre-computed data
         data = np.load(edges_file)
 
         # Get coordinates (same for all instruments)
-        target_lats = data['lats']
-        target_lons = data['lons']
+        mesh_lats = data['lats']
+        mesh_lons = data['lons']
         num_nodes = int(data['num_nodes'])
 
         print(f"[MESH PRED] Loaded grid:")
-        print(f"  Lat range: [{target_lats.min():.2f}, {target_lats.max():.2f}]")
-        print(f"  Lon range: [{target_lons.min():.2f}, {target_lons.max():.2f}]")
+        print(f"  Lat range: [{mesh_lats.min():.2f}, {mesh_lats.max():.2f}]")
+        print(f"  Lon range: [{mesh_lons.min():.2f}, {mesh_lons.max():.2f}]")
         print(f"  Grid points: {num_nodes}")
 
-        # Build edges dict for each target instrument
+        # Build edges dict for each mesh instrument
         mesh_pred_edges = {}
 
-        for inst_name in self.target_instruments:
-            if not self._is_target_variable(inst_name):
+        for inst_name in self.mesh_instruments:
+            if not self._is_mesh_pred_variable(inst_name):
                 continue
 
             edge_index_key = f'{inst_name}_edge_index'
@@ -459,14 +459,14 @@ class GNNLightning(pl.LightningModule):
             mesh_pred_edges[inst_name] = {
                 'edge_index': edge_index,  # CPU tensor (no .to(device))
                 'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim)),  # CPU
-                'lats': torch.from_numpy(target_lats).float(),  # CPU
-                'lons': torch.from_numpy(target_lons).float(),  # CPU
+                'lats': torch.from_numpy(mesh_lats).float(),  # CPU
+                'lons': torch.from_numpy(mesh_lons).float(),  # CPU
                 'num_nodes': num_nodes
             }
 
         if not mesh_pred_edges:
             raise ValueError(
-                f"No valid edges loaded for target instruments: {self.target_instruments}\n"
+                f"No valid edges loaded for mesh instruments: {self.mesh_instruments}\n"
                 f"Available in file: {[k for k in data.files if k.endswith('_edge_index')]}"
             )
 
@@ -479,11 +479,11 @@ class GNNLightning(pl.LightningModule):
             self._cached_mesh_pred_edges = self._load_mesh_prediction_edges()
         return self._cached_mesh_pred_edges
 
-    def _is_target_variable(self, inst_name: str) -> bool:
-        """Check if instrument has target variables configured."""
+    def _is_mesh_pred_variable(self, inst_name: str) -> bool:
+        """Check if instrument has mesh variables configured."""
         if not self.enable_mesh_pred:
             return False
-        return inst_name in self.target_instruments
+        return inst_name in self.mesh_instruments
 
     def _normalize_inst_weights(self, weights_in):
         out = {}
@@ -1715,7 +1715,7 @@ class GNNLightning(pl.LightningModule):
                         epoch=self.current_epoch,
                         mode='val',
                         batch=self._last_val_batch,
-                        output_dir='val_target_csv'
+                        output_dir='val_mesh_csv'
                     )
         except Exception as e:
             print(f"[MESH PRED] Failed (non-critical): {e}")
@@ -1876,13 +1876,20 @@ class GNNLightning(pl.LightningModule):
             return
 
         # Concatenate all steps
+        # If there is no ground truth at all, treat this as inference mode and skip saving
+        if not all_true:
+            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
+            return
+
         all_pred_concat = np.vstack(all_pred)
         all_true_concat = np.vstack(all_true)
         all_mask_concat = np.vstack(all_mask)
-        # Skip saving if no real ground truth data (inference mode)
-        if all_true_concat.size == 0 or np.sum(np.abs(all_true_concat)) == 0:
-            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
+
+        # Skip saving if no real ground truth data
+        if all_true_concat.size == 0:
+            print(f"[PREDICT] latent csv: Skipping {node_type} - empty ground truth array")
             return
+
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
 
@@ -1977,7 +1984,7 @@ class GNNLightning(pl.LightningModule):
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
 
-    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_target_csv'):
+    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
         """
         Save predictions on mesh grid - one file per forecast hour.
 
@@ -2009,14 +2016,14 @@ class GNNLightning(pl.LightningModule):
             base_inst_name = inst_name.replace('_target', '')
 
             # Get target variables (only the ones we want to predict on mesh)
-            target_vars = self.target_variable_config.get('variables', {}).get(inst_name, [])
+            mesh_vars = self.mesh_variable_config.get('variables', {}).get(inst_name, [])
 
             # Get ALL features and find indices of target variables
             obs_type = "satellite" if inst_name in self.observation_config.get("satellite", {}) else "conventional"
             all_features = self.observation_config[obs_type][inst_name]['features']
 
             # Find indices of target variables
-            target_indices = [i for i, feat in enumerate(all_features) if feat in target_vars]
+            mesh_indices = [i for i, feat in enumerate(all_features) if feat in mesh_vars]
 
             for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
                 # Unnormalize using existing method
@@ -2042,7 +2049,7 @@ class GNNLightning(pl.LightningModule):
                     df['log_pressure_height_norm'] = log_pressure_height / 20000.0
 
                 # Add only target variable predictions
-                for feat_idx in target_indices:
+                for feat_idx in mesh_indices:
                     feat_name = all_features[feat_idx]
                     df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
 
@@ -2067,8 +2074,8 @@ class GNNLightning(pl.LightningModule):
         predictions = {}
 
         with torch.no_grad():
-            for inst_name in self.target_instruments:
-                if not self._is_target_variable(inst_name):
+            for inst_name in self.mesh_instruments:
+                if not self._is_mesh_pred_variable(inst_name):
                     continue
 
                 if inst_name not in mesh_pred_edges:
@@ -2225,7 +2232,7 @@ class GNNLightning(pl.LightningModule):
 
             # Save to CSV
             # if batch_idx < 10:
-            out_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'non-target')
+            out_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
             self._save_latent_concatenated_csv(
                 batch=batch,
                 node_type=node_type,
@@ -2248,7 +2255,7 @@ class GNNLightning(pl.LightningModule):
                         mesh_pred_edges = self._get_mesh_pred_edges()
                         mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges)
                         if mesh_predictions:
-                            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'target')
+                            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
                             self._save_mesh_predictions(
                                 mesh_predictions,
                                 mesh_pred_edges,
@@ -2270,13 +2277,13 @@ class GNNLightning(pl.LightningModule):
         print("[PREDICT] Starting prediction epoch")
         if not self.enable_mesh_pred:
             print("[WARN] enable_mesh_pred is False — mesh grid outputs will NOT be generated. "
-                  "Set 'enable_mesh_pred: true' in target_config.yaml to produce gridded outputs.")
+                  "Set 'enable_mesh_pred: true' in mesh_config.yaml to produce gridded outputs.")
         self._mesh_predictions_buffer = {}
         self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
         os.makedirs(self._prediction_output_dir, exist_ok=True)
         # Create pred_csv subdirectories
-        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'non-target'), exist_ok=True)
-        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'target'), exist_ok=True)
+        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space'), exist_ok=True)
+        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid'), exist_ok=True)
         print(f"[PREDICT] Output directory: {self._prediction_output_dir}")
 
     def on_predict_batch_end(self, outputs, batch, batch_idx):
@@ -2293,15 +2300,15 @@ class GNNLightning(pl.LightningModule):
 
         # Generate summary statistics
         if hasattr(self, '_prediction_output_dir'):
-            obs_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'non-target')
+            obs_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
             if os.path.exists(obs_dir):
                 csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]
-                print(f"[PREDICT] Generated {len(csv_files)} observation CSV files (non-target)")
+                print(f"[PREDICT] Generated {len(csv_files)} observation CSV files (obs-space)")
 
-            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'target')
+            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
             if os.path.exists(mesh_dir):
                 mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
-                print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (target)")
+                print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-5)

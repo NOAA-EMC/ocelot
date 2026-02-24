@@ -56,10 +56,9 @@ def parse_args():
         help="Directory to save output plots"
     )
     parser.add_argument(
-        "--pred_only",
+        "--has_ground_truth",
         action="store_true",
-        default=False,
-        help="Prediction-only mode (no ground truth comparison)"
+        help="Set if CSV files contain true_ columns for comparison with predictions"
     )
     return parser.parse_args()
 
@@ -207,8 +206,7 @@ def plot_ocelot_target_diff(
         return
 
     filepath = csv_files[0]
-    print(filepath)
-    # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
@@ -340,7 +338,7 @@ def plot_ocelot_target_diff(
         print(f"  -> Saved plot: {out_png}")
 
 
-def plot_prediction_maps(
+def plot_mesh_maps(
     instrument_name: str,
     epoch: int | None = None,
     batch_idx: int | None = None,
@@ -354,7 +352,7 @@ def plot_prediction_maps(
     projection=ccrs.PlateCarree(),
 ):
     """
-    Plot prediction-only maps (no ground truth comparison).
+    Plot mesh-grid maps (no ground truth comparison).
     Used for forecast files that don't have true_ columns.
 
     Args:
@@ -385,7 +383,6 @@ def plot_prediction_maps(
         return
 
     filepath = csv_files[0]
-    print(filepath)
 
     try:
         df = pd.read_csv(filepath)
@@ -720,7 +717,6 @@ def plot_radiosonde_profiles_by_pressure_level(
                      to avoid showing unreliable statistics.
                      Default: 500 (sufficient for stable statistics)
     """
-    # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
     csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
 
     if not csv_files:
@@ -736,7 +732,7 @@ def plot_radiosonde_profiles_by_pressure_level(
         return
 
     filepath = csv_files[0]
-    print(filepath)
+
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
@@ -934,7 +930,7 @@ def plot_instrument_maps(
         return
 
     filepath = csv_files[0]
-    # filepath = f"{data_dir}/val_{instrument_name}_target_epoch{epoch}_batch{batch_idx}_step0.csv"
+
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
@@ -1173,43 +1169,51 @@ if __name__ == "__main__":
         FHR = args.fhr
         DATA_DIR = args.data_dir
         PLOT_DIR = args.plot_dir
-        PRED_ONLY = args.pred_only
+        HAS_GROUND_TRUTH = args.has_ground_truth
     else:  # Manually configure arguments, see examples below
-        # Example[1] Training mode - Non-target (Original outputs)
-        PRED_ONLY = False  # Set false if have ground truth for comparison
+        ## Example[1] Training mode - Obs-location ourputs (Original outputs)
+        HAS_GROUND_TRUTH = True  # Set True if have ground truth for comparison
         EPOCH_TO_PLOT = 159
         BATCH_IDX_TO_PLOT = 0
         INIT_TIME = "2024112500"
-        FHR = None  # No forecast hours in training
+        FHR = None               # No forecast hours in training
         DATA_DIR = "val_csv"
-        PLOT_DIR = "figures_val"
-        # Example[2] Training mode - Target (Prediction)
-        # PRED_ONLY = True
+        PLOT_DIR = "figures/val/obs"
+        ## Example[2] Training mode - Mesh Prediction
+        # HAS_GROUND_TRUTH = False
         # EPOCH_TO_PLOT = 159
         # BATCH_IDX_TO_PLOT = 0
         # INIT_TIME = "2024112500"
-        # FHR = 3
-        # DATA_DIR = "val_target_csv"
-        # PLOT_DIR = "figures_val/tar"
-        # Example[3] Testing mode
-        # PRED_ONLY = True
+        # FHR = 12
+        # DATA_DIR = "val_mesh_csv"
+        # PLOT_DIR = "figures/val/mesh"
+        ## Example[3] Testing mode - Evaluation
+        # HAS_GROUND_TRUTH = True
         # EPOCH_TO_PLOT = None
         # BATCH_IDX_TO_PLOT = None
-        # INIT_TIME = "2025011000"
-        # FHR = 3  # Forecast hour: 3, 6, 9, or 12
-        # DATA_DIR = "predictions/pred_csv/target/"
-        # PLOT_DIR = "figures_test/tar"
+        # INIT_TIME = "2025030100"
+        # FHR = None
+        # DATA_DIR = "predictions/pred_csv/obs-space/"
+        # PLOT_DIR = "figures/test/obs"
+        ## Example[4] Testing mode - Inference
+        # HAS_GROUND_TRUTH = False
+        # EPOCH_TO_PLOT = None
+        # BATCH_IDX_TO_PLOT = None
+        # INIT_TIME = "2025030100"
+        # FHR = 12               # Forecast hour: 3, 6, 9, or 12
+        # DATA_DIR = "predictions/pred_csv/mesh-grid/"
+        # PLOT_DIR = "figures/test/mesh"
 
     plot_dir = os.path.abspath(PLOT_DIR)
     os.makedirs(plot_dir, exist_ok=True)
 
-    # Choose plotting approach based on PRED_ONLY flag
-    if PRED_ONLY:
+    # Choose plotting approach based on HAS_GROUND_TRUTH flag
+    if not HAS_GROUND_TRUTH:
         # Forecast-only visualization (target files)
         print("\n=== Plotting prediction-only maps (no ground truth) ===\n")
 
-        plot_prediction_maps("radiosonde", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=5, data_dir=DATA_DIR, fig_dir=plot_dir)
-        plot_prediction_maps("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
+        plot_mesh_maps("radiosonde", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=5, data_dir=DATA_DIR, fig_dir=plot_dir)
+        plot_mesh_maps("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
 
     else:
         # Model evaluation with ground truth

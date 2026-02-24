@@ -2,7 +2,7 @@
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A da-cpu
 #SBATCH -p u1-service
-#SBATCH -J gnn_eval_M2M
+#SBATCH -J gnn_eval
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=1
@@ -42,34 +42,34 @@ EVAL_SCRIPT="evaluations.py"
 
 # --- Training Mode Parameters ---
 # Leave empty ("") for testing mode, or set for training mode:
-EPOCH_TO_PLOT=""
-BATCH_IDX_TO_PLOT=""
+EPOCH_TO_PLOT="2"
+BATCH_IDX_TO_PLOT="0"
 
 # --- Data Directories ---
 # Training mode example:
-#   DATA_DIR="val_csv"                             # Training validation (obs location; PRED_ONLY = false)
-#   DATA_DIR="val_target_csv"                      # Training validation (mesh; PRED_ONLY = true)
+#   DATA_DIR="val_csv"                             # Training validation (obs location; set HAS_GROUND_TRUTH = true)
+#   DATA_DIR="val_mesh_csv"                        # Training validation (mesh; set HAS_GROUND_TRUTH = false)
 # Testing mode examples:
-#   DATA_DIR="predictions/pred_csv/non-target/"    # Non-target files (with truth; PRED_ONLY = false)
-#   DATA_DIR="predictions/pred_csv/target/"        # Target files (forecast only; PRED_ONLY = true)
-DATA_DIR="predictions/pred_csv/target/"
+#   DATA_DIR="predictions/pred_csv/obs-space/"     # observation-location outputs (with ground truth; set HAS_GROUND_TRUTH = true)
+#   DATA_DIR="predictions/pred_csv/mesh-grid/"     # mesh-grid outputs (forecast only; set HAS_GROUND_TRUTH = false)
+DATA_DIR="val_csv"
 
 # Output directory for plots
-PLOT_DIR="figures_test/tar"  # "figures/"
+PLOT_DIR="figures"
 
 # --- Mode Configuration ---
-# Set PRED_ONLY=true for forecast-only (target files, no ground truth)
-# Set PRED_ONLY=false for comparison mode (non-target files, has ground truth)
-PRED_ONLY=true
+# Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth
+# Set HAS_GROUND_TRUTH=false for mesh-grid files, no ground truth
+HAS_GROUND_TRUTH=true
 
 # --- Date Range for Batch Processing ---
-START_DATE=${1:-"2025030100"}
-END_DATE=${2:-"2025040100"}
-FHR_LIST=(3 6 9 12)
+START_DATE=${1:-"2024112500"}
+END_DATE=${2:-"2024112500"}
+FHR_LIST=("")
 # Examples:
-#   FHR_LIST=(3 6 9 12)  # All forecast hours
-#   FHR_LIST=(3)         # Single forecast hour
-#   FHR_LIST=("")        # Non-target data
+#   FHR_LIST=("")        # obs-space data (always empty)
+#   FHR_LIST=(3)         # mesh-grid data: Single forecast hour
+#   FHR_LIST=(3 6 9 12)  # mesh-grid data: All forecast hours
 
 # ============================================
 
@@ -97,7 +97,7 @@ echo "  End date: $END_DATE"
 echo "  Forecast hours: ${FHR_LIST[@]}"
 echo "  Data directory: $DATA_DIR"
 echo "  Plot directory: $PLOT_DIR"
-echo "  Prediction only: $PRED_ONLY"
+echo "  Has ground truth?: $HAS_GROUND_TRUTH"
 
 # Fixed: Added spaces inside [ ] brackets
 if [ -n "$EPOCH_TO_PLOT" ]; then
@@ -156,9 +156,9 @@ do
             CMD="$CMD --fhr $FHR"
         fi
 
-        # Fixed: Comparison for strings usually needs == and PRED_ONLY was set to "false" earlier
-        if [ "$PRED_ONLY" == "true" ]; then
-            CMD="$CMD --pred_only"
+        # Fixed: Comparison for strings usually needs == and HAS_GROUND_TRUTH was set to "true" earlier
+        if [ "$HAS_GROUND_TRUTH" == "true" ]; then
+            CMD="$CMD --has_ground_truth"
         fi
 
         if [ -n "$EPOCH_TO_PLOT" ]; then

@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 05:00:00
+#SBATCH -t 01:00:00
 #SBATCH --output=gnn_pred_%j.out
 #SBATCH --error=gnn_pred_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -57,6 +57,11 @@ nvidia-smi
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
     --checkpoint /scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/target-directProj-clean/ocelot/gnn_model/checkpoints/gnn-epoch-epoch=151-val_loss-val_loss=0.02.ckpt \
     --start_date 2025-03-01 \
-    --end_date 2025-03-02 \
+    --end_date 2025-03-03 \
     --output_dir predictions \
-    # --eval-mode
+    --eval-mode  # comment out to run in inference mode
+    # Evaluation mode: Predict on obs-space for all instruments (AMSUA, aircraft, etc.) with ground truth comparisons.
+    #                  The last timebin is held as the target bin, consistent with training.
+    # Inference mode: Predict on mesh-grid for the instruments specified in configs/mesh_config.yaml.
+    #                 As the target bin is not used in this mode, all timebins are used as input.
+

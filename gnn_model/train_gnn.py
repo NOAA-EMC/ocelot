@@ -87,8 +87,8 @@ def main():
         _raw_cfg = yaml.safe_load(f)
 
     # Load target config separately
-    with open('configs/target_config.yaml', 'r') as f:
-        target_config = yaml.safe_load(f)
+    with open('configs/mesh_config.yaml', 'r') as f:
+        mesh_config = yaml.safe_load(f)
 
     pipeline_cfg = _raw_cfg.get("pipeline", {})
 
@@ -165,7 +165,7 @@ def main():
     model = GNNLightning(
         observation_config=observation_config,
         hidden_dim=hidden_dim,
-        target_config=target_config,
+        mesh_config=mesh_config,
         num_layers=num_layers,
         lr=lr,
         instrument_weights=instrument_weights,
