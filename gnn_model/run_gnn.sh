@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --exclude=u22g09,u22g08,u22g10
+#SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
 #SBATCH -q gpu
@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 10:30:00
+#SBATCH -t 08:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -68,14 +68,14 @@ nvidia-smi
 # ============================================================================
 
 # Launch training (env is propagated to ranks)
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
 
 # HIERARCHICAL MODE
 # Resume training from the latest checkpoint in hierarchical mode
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --mesh_levels 4 --resume_from_latest
 
 # FIXED MODE
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type fixed --resume_from_latest
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type fixed --resume_from_latest
 
 # Resume from specific checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt

@@ -52,6 +52,7 @@ class GNNLightning(pl.LightningModule):
         self,
         observation_config,
         hidden_dim,
+        mesh_config=None,
         mesh_resolution=6,
         mesh_type="fixed",  # "fixed" or "hierarchical"
         mesh_levels=4,
@@ -63,6 +64,7 @@ class GNNLightning(pl.LightningModule):
         detect_anomaly=False,
         max_rollout_steps=1,
         rollout_schedule="step",
+        latent_step_hours=3,
         feature_stats=None,
         processor_type: str = "interaction",  # "interaction" | "sliding_transformer"
         processor_window: int = 4,
@@ -98,8 +100,22 @@ class GNNLightning(pl.LightningModule):
         self.channel_weights = channel_weights or {}
         self.max_rollout_steps = max_rollout_steps
         self.rollout_schedule = rollout_schedule
+        self.latent_step_hours = latent_step_hours
 
         self.observation_config = observation_config
+
+        # Load mesh-grid variable config
+        self.enable_mesh_pred = mesh_config.get('enable_mesh_pred', False)
+        self.mesh_variable_config = mesh_config
+        self.mesh_instruments = list(mesh_config.get('variables', {}).keys())
+        self.mesh_pressure_level_idx = mesh_config.get('mesh_pressure_level_idx', 0)
+        if self.verbose:
+            print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
+            print(f"[DEBUG CONFIG] mesh_variable_config: {self.mesh_variable_config}")
+            print(f"[DEBUG CONFIG] variables in config: {self.mesh_variable_config.get('variables', {})}")
+            print(f"[DEBUG CONFIG] Instruments for mesh prediction: {self.mesh_instruments}")
+            print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
+
         # Mirror process_timeseries._name2id()
         self.instrument_name_to_id = _build_instrument_map(self.observation_config)
         self.instrument_id_to_name = {v: k for k, v in self.instrument_name_to_id.items()}
@@ -389,6 +405,86 @@ class GNNLightning(pl.LightningModule):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
+    def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
+        """
+        Load pre-computed mesh prediction edges from file.
+
+        This avoids calling obs_mesh_conn at runtime, which causes rtree
+        multiprocessing issues when workers fork.
+
+        Args:
+            edges_file: Path to .npz file with pre-computed edges
+        """
+        import numpy as np
+
+        print(f"[MESH PRED] Loading pre-computed edges from {edges_file}...")
+
+        if not os.path.exists(edges_file):
+            raise FileNotFoundError(
+                f"Mesh prediction edges file not found: {edges_file}\n"
+                f"Please run: python precompute_mesh_edges.py --config configs/mesh_config.yaml"
+            )
+
+        # Load pre-computed data
+        data = np.load(edges_file)
+
+        # Get coordinates (same for all instruments)
+        mesh_lats = data['lats']
+        mesh_lons = data['lons']
+        num_nodes = int(data['num_nodes'])
+
+        print(f"[MESH PRED] Loaded grid:")
+        print(f"  Lat range: [{mesh_lats.min():.2f}, {mesh_lats.max():.2f}]")
+        print(f"  Lon range: [{mesh_lons.min():.2f}, {mesh_lons.max():.2f}]")
+        print(f"  Grid points: {num_nodes}")
+
+        # Build edges dict for each mesh instrument
+        mesh_pred_edges = {}
+
+        for inst_name in self.mesh_instruments:
+            if not self._is_mesh_pred_variable(inst_name):
+                continue
+
+            edge_index_key = f'{inst_name}_edge_index'
+            if edge_index_key not in data:
+                print(f"[MESH PRED] WARNING: No edges found for {inst_name}, skipping...")
+                continue
+
+            # Load edge_index (keep on CPU for now)
+            edge_index = torch.from_numpy(data[edge_index_key]).long()
+
+            print(f"[MESH PRED] {inst_name}: {edge_index.shape[1]} edges")
+
+            # Store on CPU - will move to device when used
+            mesh_pred_edges[inst_name] = {
+                'edge_index': edge_index,  # CPU tensor (no .to(device))
+                'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim)),  # CPU
+                'lats': torch.from_numpy(mesh_lats).float(),  # CPU
+                'lons': torch.from_numpy(mesh_lons).float(),  # CPU
+                'num_nodes': num_nodes
+            }
+
+        if not mesh_pred_edges:
+            raise ValueError(
+                f"No valid edges loaded for mesh instruments: {self.mesh_instruments}\n"
+                f"Available in file: {[k for k in data.files if k.endswith('_edge_index')]}"
+            )
+
+        print(f"[MESH PRED] Loaded edges for {list(mesh_pred_edges.keys())}")
+        return mesh_pred_edges
+
+    def _get_mesh_pred_edges(self):
+        """Load and cache mesh prediction edges once for the entire run."""
+        if not hasattr(self, '_cached_mesh_pred_edges') or self._cached_mesh_pred_edges is None:
+            self._cached_mesh_pred_edges = self._load_mesh_prediction_edges()
+        return self._cached_mesh_pred_edges
+
+    def _is_mesh_pred_variable(self, inst_name: str) -> bool:
+        """Check if instrument has mesh variables configured."""
+        if not self.enable_mesh_pred:
+            return False
+        return inst_name in self.mesh_instruments
+
     def _normalize_inst_weights(self, weights_in):
         out = {}
         if not weights_in:
@@ -574,7 +670,7 @@ class GNNLightning(pl.LightningModule):
 
         return tensor * std_vec + mean_vec
 
-    def forward(self, data: HeteroData, step_data_list=None) -> Dict[str, torch.Tensor]:
+    def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
 
         num_graphs = data.num_graphs
         num_mesh_nodes = self.mesh_x.shape[0]
@@ -598,9 +694,14 @@ class GNNLightning(pl.LightningModule):
                 embedded_features[node_type] = self.mesh_embedder(x)
             elif node_type.endswith("_input"):
                 # Apply pressure-level embedding for radiosonde and aircraft if available
-                if "pressure_level" in data[node_type]:
-                    pressure_level_idx = data[node_type].pressure_level  # [N]
-                    pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
+                needs_pressure_level = node_type in ["radiosonde_input", "aircraft_input"]
+                if needs_pressure_level:
+                    if "pressure_level" in data[node_type] and data[node_type].pressure_level.shape[0] > 0:
+                        pressure_level_idx = data[node_type].pressure_level  # [N]
+                        pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
+                    else:
+                        pressure_embed = torch.zeros(x.shape[0], 8, device=x.device, dtype=x.dtype)
+
                     # Concatenate with original features
                     x_with_embed = torch.cat([x, pressure_embed], dim=-1)  # [N, input_dim + 8]
                     print(
@@ -608,6 +709,7 @@ class GNNLightning(pl.LightningModule):
                         f"orig={x.shape} + embed={pressure_embed.shape} → combined={x_with_embed.shape}"
                     )
                     embedded_features[node_type] = self.observation_embedders[node_type](x_with_embed)
+
                 else:
                     embedded_features[node_type] = self.observation_embedders[node_type](x)
 
@@ -668,7 +770,12 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
         # --------------------------------------------------------------------
-        return self._forward_latent_rollout(data, encoded_features)
+        predictions, mesh_features_per_step = self._forward_latent_rollout(data, encoded_features)
+
+        if not self.training:
+            return predictions, mesh_features_per_step
+
+        return predictions
 
     def _forward_latent_rollout(self, data: HeteroData, encoded_features: dict) -> Dict[str, List[torch.Tensor]]:
         """
@@ -708,6 +815,9 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         if self.processor_type == "sliding_transformer":
             self.swt.reset()
+
+        # Local list for mesh features
+        mesh_features_per_step = [] if self.enable_mesh_pred else None
 
         for step in range(num_latent_steps):
             self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
@@ -936,6 +1046,10 @@ class GNNLightning(pl.LightningModule):
                 processed = self.processor(step_features, processor_edges)
                 current_mesh_features = processed["mesh"]
 
+            # Save mesh features if needed (independent of self.training check here)
+            if self.enable_mesh_pred:
+                mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
+
             self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
 
             # STAGE 4B: DECODE - Generate predictions for this latent step
@@ -1058,7 +1172,7 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"[LATENT] Warning: {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
 
         self.debug(f"[LATENT] Completed {num_latent_steps} sequential processor steps")
-        return predictions
+        return predictions, mesh_features_per_step
 
     def get_current_rollout_steps(self):
         """
@@ -1298,7 +1412,8 @@ class GNNLightning(pl.LightningModule):
         # Log rollout steps appropriately
         step_info = self._get_latent_step_info(batch)
         latent_rollout_steps = step_info["num_steps"]
-        print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
+        if self.verbose:
+            print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
 
         self.log(
             "train_loss",
@@ -1333,9 +1448,20 @@ class GNNLightning(pl.LightningModule):
         print(f"[validation_step] latent rollout steps: {latent_rollout_steps}")
 
         # Forward pass: Dict[node_type, List[Tensor]] per step
-        all_predictions = self(batch)
-        if isinstance(all_predictions, tuple):
-            all_predictions, _ = all_predictions
+        # all_predictions = self(batch)
+        # if isinstance(all_predictions, tuple):
+        #     all_predictions, _ = all_predictions
+
+        # Forward pass: Dict[node_type, List[Tensor]] per step
+        result = self(batch)
+
+        # Check if the result is a tuple (only happens in validation mode now)
+        if isinstance(result, tuple):
+            all_predictions, mesh_features_per_step = result
+        else:
+            # This path shouldn't be hit in validation_step, but is a good safeguard.
+            all_predictions = result
+            mesh_features_per_step = []  # Initialize empty list if somehow missed
 
         # Extract ground truths based on rollout mode
         ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
@@ -1556,11 +1682,122 @@ class GNNLightning(pl.LightningModule):
         if self.trainer.is_global_zero:
             print(f"--- Epoch {self.current_epoch} Validation ---")
             print(f"val_loss: {avg_loss.item():.6f}")
+
+        # Save mesh features from first batch for epoch-end processing
+        if batch_idx == 0 and self.enable_mesh_pred:
+            self._last_val_mesh_features = mesh_features_per_step
+            self._last_val_batch = batch
+
         return avg_loss
 
+    def on_validation_epoch_end(self):
+        """Generate mesh predictions at END of validation epoch."""
+        if not self.enable_mesh_pred or not self.trainer.is_global_zero:
+            return
+
+        # Check if we saved mesh features during validation
+        if not hasattr(self, '_last_val_mesh_features') or self._last_val_mesh_features is None:
+            print("[MESH PRED] No mesh features from validation, skipping")
+            return
+
+        try:
+            with torch.no_grad():
+                temp_mesh_pred_edges = self._get_mesh_pred_edges()
+                mesh_predictions = self._decode_all_steps_to_mesh(
+                    self._last_val_mesh_features,
+                    temp_mesh_pred_edges
+                )
+                if mesh_predictions:
+                    self._save_mesh_predictions(
+                        mesh_predictions,
+                        temp_mesh_pred_edges,
+                        batch_idx=0,
+                        epoch=self.current_epoch,
+                        mode='val',
+                        batch=self._last_val_batch,
+                        output_dir='val_mesh_csv'
+                    )
+        except Exception as e:
+            print(f"[MESH PRED] Failed (non-critical): {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Clean up
+            self._last_val_mesh_features = None
+            self._last_val_batch = None
+
+    def _extract_init_time_str(self, batch):
+        """
+        Extract initialization time string from batch in YYYYMMDDHH format.
+        Handles multiple formats: pandas Timestamp, list/tuple, Unix timestamp, tensor.
+
+        Args:
+            batch: Batch data containing input_time or time attribute
+
+        Returns:
+            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
+        """
+        from datetime import datetime
+        import pandas as pd
+
+        if batch is None:
+            return 'unknown'
+
+        # Try input_time first
+        ts = None
+        if hasattr(batch, 'input_time') and batch.input_time is not None:
+            # Handle if input_time is a list/tuple - take the first element
+            if isinstance(batch.input_time, (list, tuple)):
+                ts = batch.input_time[0] if len(batch.input_time) > 0 else None
+            else:
+                ts = batch.input_time
+
+        # Fallback to batch.time if input_time not available
+        elif hasattr(batch, 'time') and batch.time is not None:
+            if isinstance(batch.time, (list, tuple)):
+                ts = batch.time[0] if len(batch.time) > 0 else None
+            else:
+                ts = batch.time
+
+        # Now convert ts to string based on its type
+        if ts is None:
+            return 'unknown'
+
+        try:
+            # Handle pandas Timestamp
+            if isinstance(ts, pd.Timestamp):
+                return ts.strftime('%Y%m%d%H')
+
+            # Handle Unix timestamp (float/int)
+            elif isinstance(ts, (int, float)):
+                dt = datetime.fromtimestamp(ts)
+                return dt.strftime('%Y%m%d%H')
+
+            # Handle tensor (PyTorch/numpy with .item() method)
+            elif hasattr(ts, 'item'):
+                dt = datetime.fromtimestamp(ts.item())
+                return dt.strftime('%Y%m%d%H')
+
+            # Handle datetime object directly
+            elif isinstance(ts, datetime):
+                return ts.strftime('%Y%m%d%H')
+
+            else:
+                print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
+                return 'unknown'
+
+        except Exception as e:
+            print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
+            return 'unknown'
+
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
-                                      valid_mask_list, out_dir, batch_idx):
-        """Save latent rollout as concatenated observations (same format as standard)."""
+                                      valid_mask_list, out_dir, batch_idx, mode='val'):
+        """
+        Save latent rollout as concatenated observations.
+
+        Args:
+            mode: 'val' or 'predict' - determines output filename format
+        """
 
         step_info = self._get_latent_step_info(batch)
         step_mapping = step_info["step_mapping"]
@@ -1639,9 +1876,19 @@ class GNNLightning(pl.LightningModule):
             return
 
         # Concatenate all steps
-        all_pred_concat = np.vstack(all_pred)  # Shape: (total_obs, n_ch)
-        all_true_concat = np.vstack(all_true)  # Shape: (total_obs, n_ch)
-        all_mask_concat = np.vstack(all_mask)  # Shape: (total_obs, n_ch)
+        # If there is no ground truth at all, treat this as inference mode and skip saving
+        if not all_true:
+            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
+            return
+
+        all_pred_concat = np.vstack(all_pred)
+        all_true_concat = np.vstack(all_true)
+        all_mask_concat = np.vstack(all_mask)
+
+        # Skip saving if no real ground truth data
+        if all_true_concat.size == 0:
+            print(f"[PREDICT] latent csv: Skipping {node_type} - empty ground truth array")
+            return
 
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
@@ -1718,12 +1965,184 @@ class GNNLightning(pl.LightningModule):
             if len(valid_levels) > 0:
                 print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
 
-        # Save with same filename format as standard rollout
-        filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
+        # Extract init time for filename
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Save with appropriate filename based on mode
+        if mode == 'predict':
+            if init_time_str != 'unknown':
+                filename = f"{out_dir}/pred_{node_type}_init_{init_time_str}.csv"
+            else:
+                filename = f"{out_dir}/pred_{node_type}_batch{batch_idx}.csv"
+        else:  # validation mode
+            if init_time_str != 'unknown':
+                filename = f"{out_dir}/val_{node_type}_init_{init_time_str}_epoch{self.current_epoch}_batch{batch_idx}.csv"
+            else:
+                filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
         df.to_csv(filename, index=False)
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
+
+    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
+        """
+        Save predictions on mesh grid - one file per forecast hour.
+
+        Args:
+            predictions: Dict of predictions per instrument
+            batch_idx: Batch index
+            epoch: Epoch number
+            mode: 'val' or 'predict'
+            batch: Batch data (for extracting input_time)
+            output_dir: Directory to save files
+        """
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Extract init time for logging
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Calculate forecast hours
+        num_steps = len(next(iter(predictions.values())))
+        latent_step_hours = self.latent_step_hours
+        forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
+
+        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
+
+        for inst_name, pred_list in predictions.items():
+            edges = mesh_pred_edges[inst_name]
+            mesh_lats = edges['lats']
+            mesh_lons = edges['lons']
+            base_inst_name = inst_name.replace('_target', '')
+
+            # Get target variables (only the ones we want to predict on mesh)
+            mesh_vars = self.mesh_variable_config.get('variables', {}).get(inst_name, [])
+
+            # Get ALL features and find indices of target variables
+            obs_type = "satellite" if inst_name in self.observation_config.get("satellite", {}) else "conventional"
+            all_features = self.observation_config[obs_type][inst_name]['features']
+
+            # Find indices of target variables
+            mesh_indices = [i for i, feat in enumerate(all_features) if feat in mesh_vars]
+
+            for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
+                # Unnormalize using existing method
+                node_type = f"{inst_name}_target"
+                pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
+                pred_np = pred_unnorm.detach().cpu().numpy()
+
+                df = pd.DataFrame({
+                    'lat': mesh_lats,
+                    'lon': mesh_lons,
+                })
+
+                # Only add pressure columns for instruments that use pressure-level conditioning
+                if base_inst_name in ['radiosonde', 'aircraft']:
+                    STANDARD_PRESSURE_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
+                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.mesh_pressure_level_idx]
+                    log_pressure_height = -8000.0 * np.log(np.clip(pressure_hpa, 1.0, 1100.0) / 1013.25)
+
+                    df['pressure_hPa'] = pressure_hpa
+                    df['pressure_level_idx'] = self.mesh_pressure_level_idx
+                    df['pressure_level_label'] = f"{pressure_hpa}hPa"
+                    df['log_pressure_height_m'] = log_pressure_height
+                    df['log_pressure_height_norm'] = log_pressure_height / 20000.0
+
+                # Add only target variable predictions
+                for feat_idx in mesh_indices:
+                    feat_name = all_features[feat_idx]
+                    df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
+
+                # Use init_time if available, otherwise fall back to batch_idx
+                if init_time_str != 'unknown':
+                    if mode == 'predict':
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}.csv'
+                    else:
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                else:
+                    filepath = f'{output_dir}/{base_inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                df.to_csv(filepath, index=False)
+                print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
+
+    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges):
+        """Decode all forecast steps to mesh grid."""
+
+        if not mesh_features_per_step:  # Check if the list is empty
+            print("[MESH PRED] No mesh features available")
+            return {}
+
+        predictions = {}
+
+        with torch.no_grad():
+            for inst_name in self.mesh_instruments:
+                if not self._is_mesh_pred_variable(inst_name):
+                    continue
+
+                if inst_name not in mesh_pred_edges:
+                    continue
+
+                predictions[inst_name] = []
+
+                # Decode each step
+                for step_idx, mesh_feat in enumerate(mesh_features_per_step):
+                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name])
+                    predictions[inst_name].append(pred)
+
+        return predictions
+
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges):
+        """Decode one step's mesh features to mesh grid."""
+        # Get decoder
+        decoder_key = f"mesh__to__{inst_name}_target"
+        decoder = self.observation_decoders[decoder_key]
+
+        # Move edges to correct device (they're stored on CPU)
+        device = mesh_features.device
+        edge_index = edges['edge_index'].to(device)
+        edge_attr = edges['edge_attr'].to(device)
+
+        original_edge_index = decoder.edge_index
+        decoder.edge_index = edge_index
+
+        # Fix for pressure info in inference mode
+        # Set it to level = 0 (1000mb) by default.
+        N = edges['num_nodes']
+
+        # Condition decoder on viewing geometry — mirrors the regular forward pass logic.
+        # Only radiosonde/aircraft use pressure level conditioning; all other instruments
+        # (satellites, surface obs, etc.) use zeros, consistent with their training setup.
+        base_inst = inst_name.replace('_target', '')
+        if base_inst in ['radiosonde', 'aircraft']:
+            fixed_idx = torch.full((N,), self.mesh_pressure_level_idx, dtype=torch.long, device=device)
+            pressure_emb = self.pressure_level_embedder(fixed_idx)  # [N, 8]
+            padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+            rec_rep = torch.cat([
+                torch.zeros(N, padding_dim, device=device),
+                pressure_emb
+            ], dim=-1)  # [N, hidden_dim]
+
+            print(f"[MESH PRED] Decoding {inst_name} conditioned on pressure level "
+                  f"{self.mesh_pressure_level_idx} "
+                  f"({[1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10][self.mesh_pressure_level_idx]} hPa)")
+        else:
+            # Satellites, surface obs etc.: no pressure conditioning (same as training)
+            rec_rep = torch.zeros(N, self.hidden_dim, device=device)
+            print(f"[MESH PRED] Decoding {inst_name} with zero initialization (no pressure conditioning)")
+
+        # Decode
+        decoded = decoder(
+            send_rep=mesh_features,
+            rec_rep=rec_rep,
+            edge_rep=edge_attr
+        )
+
+        decoder.edge_index = original_edge_index
+
+        # Apply output mapper
+        output_key = f"{inst_name}_target"
+        predictions = self.output_mappers[output_key](decoded)
+
+        return predictions
 
     def on_after_backward(self):
         # Check if encoded gradient is available
@@ -1755,6 +2174,141 @@ class GNNLightning(pl.LightningModule):
                     self.debug(f"[DEBUG] Grad for {name}: None")
             total_grad_norm = total_grad_norm**0.5
             self.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
+
+    def predict_step(self, batch, batch_idx):
+        """
+        Prediction step for inference mode.
+
+        This method:
+        1. Runs forward pass to generate predictions
+        2. Saves predictions to CSV files
+        3. Does NOT compute loss or gradients
+
+        Args:
+            batch: Input batch data
+            batch_idx: Batch index
+
+        Returns:
+            dict: Predictions for all node types
+        """
+        print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
+
+        # Forward pass
+        forward_output = self(batch)
+        if isinstance(forward_output, tuple):
+            all_predictions, mesh_features_per_step = forward_output
+        else:
+            all_predictions = forward_output
+            mesh_features_per_step = None
+
+        # Extract ground truths and metadata
+        ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
+
+        # Determine rollout steps
+        step_info = self._get_latent_step_info(batch)
+        latent_rollout_steps = step_info["num_steps"]
+        print(f"[PREDICT] Latent rollout steps: {latent_rollout_steps}")
+
+        # Save predictions for each instrument
+        for node_type, preds_list in all_predictions.items():
+            print(f"[PREDICT] Processing node_type: {node_type}")
+
+            if node_type not in ground_truth_data:
+                continue
+
+            gt_data = ground_truth_data[node_type]
+            gts_list = gt_data["gts_list"]
+            valid_mask_list = gt_data["valid_mask_list"]
+
+            # Check if any real ground truth data exists
+            has_real_targets = any(
+                gt is not None and gt.numel() > 0
+                for gt in gts_list
+            )
+
+            if not has_real_targets:
+                print(f"[PREDICT] Pred step: Skipping {node_type} - no ground truth data (inference mode)")
+                continue
+
+            # Save to CSV
+            # if batch_idx < 10:
+            out_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
+            self._save_latent_concatenated_csv(
+                batch=batch,
+                node_type=node_type,
+                preds_list=preds_list,
+                gts_list=gts_list,
+                valid_mask_list=valid_mask_list,
+                out_dir=out_dir,
+                batch_idx=batch_idx,
+                mode='predict'
+            )
+
+        # Save mesh predictions (target variables on grid)
+        if self.enable_mesh_pred:
+            try:
+                with torch.no_grad():
+                    # Use mesh features from forward pass
+                    if not mesh_features_per_step:
+                        print("[PREDICT] No mesh features available for mesh predictions")
+                    else:
+                        mesh_pred_edges = self._get_mesh_pred_edges()
+                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges)
+                        if mesh_predictions:
+                            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
+                            self._save_mesh_predictions(
+                                mesh_predictions,
+                                mesh_pred_edges,
+                                batch_idx=batch_idx,
+                                epoch=0,
+                                mode='predict',
+                                batch=batch,
+                                output_dir=mesh_dir
+                            )
+            except Exception as e:
+                print(f"[PREDICT] Mesh prediction failed (non-critical): {e}")
+                import traceback
+                traceback.print_exc()
+
+        return all_predictions
+
+    def on_predict_epoch_start(self):
+        """Setup before prediction epoch starts."""
+        print("[PREDICT] Starting prediction epoch")
+        if not self.enable_mesh_pred:
+            print("[WARN] enable_mesh_pred is False — mesh grid outputs will NOT be generated. "
+                  "Set 'enable_mesh_pred: true' in mesh_config.yaml to produce gridded outputs.")
+        self._mesh_predictions_buffer = {}
+        self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
+        os.makedirs(self._prediction_output_dir, exist_ok=True)
+        # Create pred_csv subdirectories
+        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space'), exist_ok=True)
+        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid'), exist_ok=True)
+        print(f"[PREDICT] Output directory: {self._prediction_output_dir}")
+
+    def on_predict_batch_end(self, outputs, batch, batch_idx):
+        """Cleanup after each prediction batch."""
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def on_predict_epoch_end(self):
+        """Cleanup and summary after prediction epoch ends."""
+        print("[PREDICT] Prediction epoch completed")
+        self._cached_mesh_pred_edges = None
+
+        # Generate summary statistics
+        if hasattr(self, '_prediction_output_dir'):
+            obs_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
+            if os.path.exists(obs_dir):
+                csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]
+                print(f"[PREDICT] Generated {len(csv_files)} observation CSV files (obs-space)")
+
+            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
+            if os.path.exists(mesh_dir):
+                mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
+                print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-5)

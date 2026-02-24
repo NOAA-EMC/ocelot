@@ -85,6 +85,11 @@ def main():
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
     with open(cfg_path, "r") as f:
         _raw_cfg = yaml.safe_load(f)
+
+    # Load target config separately
+    with open('configs/mesh_config.yaml', 'r') as f:
+        mesh_config = yaml.safe_load(f)
+
     pipeline_cfg = _raw_cfg.get("pipeline", {})
 
     # Data/region path
@@ -160,6 +165,7 @@ def main():
     model = GNNLightning(
         observation_config=observation_config,
         hidden_dim=hidden_dim,
+        mesh_config=mesh_config,
         num_layers=num_layers,
         lr=lr,
         instrument_weights=instrument_weights,
@@ -170,6 +176,7 @@ def main():
         verbose=args.verbose,
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
+        latent_step_hours=latent_step_hours,
         feature_stats=feature_stats,
         # Model options
         processor_type="sliding_transformer",   # sliding_transformer or "interaction"
