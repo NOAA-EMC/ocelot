@@ -1,0 +1,82 @@
+aggregation:
+  by_channel: true
+  by_instrument: true
+  by_pressure_level: true
+  by_region: false
+  by_time: true
+  regions:
+    mid_latitudes_nh:
+      lat_range:
+      - 30
+      - 60
+    mid_latitudes_sh:
+      lat_range:
+      - -60
+      - -30
+    polar_nh:
+      lat_range:
+      - 60
+      - 90
+    polar_sh:
+      lat_range:
+      - -90
+      - -60
+    tropics:
+      lat_range:
+      - -30
+      - 30
+data:
+  batch_size: 1
+  end_date: '2024-01-03'
+  feature_masks:
+    aircraft:
+    - specificHumidity
+  num_workers: 1
+  output_dir: ./FSOI/fsoi_outputs/radiosonde_allvars_impact
+  save_per_obs_impacts: false
+  start_date: '2024-01-01'
+  store_full_tensors: false
+experiment:
+  description: "FSOI analysis to determine how different observation types\n(satellite\
+    \ radiances, surface obs, radiosondes, aircraft, etc.) impact\nforecast error\
+    \ of the full radiosonde profile vector:\n  - Temperature\n  - Dewpoint temperature\n\
+    \  - Wind u\n  - Wind v\n"
+  name: radiosonde_all_variables_impact
+forecast:
+  lead_steps:
+  - 0
+  stratify_by_pressure: true
+  stratify_by_variable: true
+  target_instruments:
+  - radiosonde
+  target_pressure_levels: all
+  target_variables: all
+  use_area_weights: false
+  use_channel_weights: false
+  use_instrument_weights: false
+memory:
+  max_decoder_nodes:
+    amsua: 30000
+    atms: 50000
+    avhrr: 30000
+    seviri: 30000
+    ssmis: 30000
+model:
+  checkpoint_path: checkpoints/
+output:
+  save_csv: true
+  save_netcdf: false
+  save_zarr: false
+plots:
+  save_scatter_samples: true
+  scatter_max_points: 200000
+validation:
+  check_alignment: true
+  check_gradients: true
+  check_reproducibility: true
+  fd_epsilon: 0.0001
+  fd_num_samples: 5
+  finite_difference_check: false
+  require_instruments: null
+  require_satellite: false
+  verbose: true

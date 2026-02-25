@@ -1,0 +1,169 @@
+# FSOI Configuration - Radiosonde Temperature Impact Study
+# Test how all observation types (satellite + conventional) impact
+# forecast error of radiosonde temperature
+
+# Forecast scoring parameters
+forecast:
+  # Which latent rollout step(s) to score
+  # Step 0 = first forecast window (+12h if latent_step_hours=12)
+  lead_steps: [0]  # Test +12h forecast
+
+  # CRITICAL: Only score radiosonde temperature targets
+  # This measures how well the model predicts radiosonde temp given all obs
+  # NOTE: Also controls which instruments get decoded (memory optimization)
+  # Start with ["radiosonde"] for testing, then expand
+  target_instruments: ["radiosonde"]  # Memory-efficient: only decode radiosonde targets
+  # For broader study: ["radiosonde", "atms", "amsua"]
+  # For full study: "all" (warning: high memory usage)
+
+  # Which radiosonde variables to include in error metric
+  # Options: "all" or list of variable names
+  target_variables: ["temperature"]  # Focus on temperature only
+  # If you want multiple: ["temperature", "u_wind", "v_wind", "specific_humidity"]
+
+  # Which pressure levels to include (optional filter)
+  # Common levels: 1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100 hPa
+  target_pressure_levels: "all"  # Or specify: [850, 500, 250, 100]
+
+  # Weighting scheme for forecast error
+  # DISABLED for GraphDOP comparison - use unweighted MSE
+  use_instrument_weights: false  # Disable instrument weights
+  use_channel_weights: false     # Disable channel/pressure weights
+
+  # Optional: apply area-weighting by latitude
+  # DISABLED for GraphDOP comparison
+  use_area_weights: false  # Disable area weights (no cos(lat))
+
+  # Compute a separate loss per radiosonde pressure level, then differentiate.
+  # This propagates a pressure_hpa value to ALL instruments (including ATMS,
+  # AMSUA, SSMIS, etc.) so the channel CSV can be plotted against pressure.
+  # Cost: 2 × N_levels forward passes instead of 2 (one per xa and xb).
+  stratify_by_pressure: true
+
+# Data processing parameters
+data:
+  # Date range for FSOI computation
+  start_date: "2024-01-01"
+  end_date: "2024-01-03"  # Need at least 2 days for 2+ bins (was 2024-01-07)
+
+  # Must be single GPU for sequential processing
+  batch_size: 1
+  num_workers: 1
+
+  # Output paths
+  output_dir: "./FSOI/fsoi_outputs/radiosonde_temp_impact"
+  save_per_obs_impacts: false  # Set to true for spatial maps (large files)
+
+  # Feature masks applied at inference (zeroed before computing FSOI)
+  feature_masks:
+    aircraft: [specificHumidity]  # Zero aircraft humidity channels at inference
+
+  # Memory control: whether to store full xa/xb/ga/gb tensors
+  # For long time windows, storing full tensors can consume excessive memory
+  # Set to false to store only aggregated FSOI statistics
+  store_full_tensors: false  # Recommended false for production runs
+  # Set to true for debugging or if you need per-observation analysis
+  # Set to true for debugging or if you need per-observation analysis
+
+# Memory management
+# Per-instrument cap on the number of decoder (pseudo-target) nodes created
+# in predict_at_targets().  Large swath instruments like AVHRR (1.3M obs)
+# and ATMS (200k obs) allocate huge GAT edge-attention tensors that cause
+# CUDA OOM even on 93 GiB H100s.  Subsampling the decoder does NOT affect
+# correctness: xb is a smooth spatial field and the subsampled nodes
+# still densely cover the globe.  xa is subsampled to the same rows so
+# δx = xa - xb remains valid per-observation innovation.
+# Set a key to null or remove it to disable capping for that instrument.
+memory:
+  max_decoder_nodes:
+    avhrr: 30000    # raw ~1.3M → 30k  (biggest memory user)
+    atms: 50000     # raw ~200k  → 50k
+    amsua: 30000    # raw ~30k   → 30k (usually already small, extra safety)
+    ssmis: 30000    # raw ~50k   → 30k
+    seviri: 30000   # raw ~36k   → 30k
+
+# Model parameters
+model:
+  checkpoint_path: "checkpoints/"  # Will use latest or specified checkpoint
+
+# Aggregation options
+aggregation:
+  # Aggregate FSOI by these dimensions
+  by_instrument: true   # See impact by obs type (ATMS, AMSUA, surface, etc.)
+  by_channel: true      # See impact by channel/pressure level
+  by_time: true         # Daily aggregates
+  by_region: false      # Can enable for regional analysis
+  by_pressure_level: true  # ADDED: Stratify by pressure levels to see vertical variation
+
+  # Region definitions (if by_region: true)
+  regions:
+    tropics:
+      lat_range: [-30, 30]
+    mid_latitudes_nh:
+      lat_range: [30, 60]
+    mid_latitudes_sh:
+      lat_range: [-60, -30]
+    polar_nh:
+      lat_range: [60, 90]
+    polar_sh:
+      lat_range: [-90, -60]
+
+# Validation checks
+validation:
+  # Verify reproducibility
+  check_reproducibility: true
+
+  # Check for non-null gradients
+  check_gradients: true
+
+  # Verify alignment between xa and xb
+  check_alignment: true
+
+  # Hard validation: require specific instruments have valid gradients
+  # Options: null (no requirements), or list like ["radiosonde", "atms"]
+  require_instruments: null  # Set to ["radiosonde"] to require radiosonde
+
+  # Require at least one satellite instrument has valid gradients
+  # Useful for debugging - set to false if testing bins without satellites
+  require_satellite: false  # Set to true once implementation is validated
+
+  # Finite-difference gradient validation (RECOMMENDED for first run)
+  # This validates that gradients are mathematically correct
+  finite_difference_check: false  # Enable for debugging (slow)
+  fd_num_samples: 5  # Test 5 random observations
+  fd_epsilon: 1.0e-4  # Perturbation size
+
+  # Print diagnostic info
+  verbose: true
+
+# Output formats
+output:
+  # Save summary statistics as CSV
+  save_csv: true
+
+  # Save per-observation impacts as Zarr (for mapping)
+  save_zarr: false  # Enable if you want spatial maps
+
+  # Save aggregated impacts as NetCDF
+  save_netcdf: false
+
+# Analysis notes (for documentation)
+experiment:
+  name: "radiosonde_temperature_impact"
+  description: |
+    FSOI analysis to determine how different observation types
+    (satellite radiances, surface obs, radiosondes, etc.) impact
+    forecast error of radiosonde temperature profiles.
+
+    Key questions:
+    1. Which obs types most reduce temperature forecast error?
+    2. Which satellite channels are most important for temperature?
+    3. How does impact vary by pressure level?
+    4. Are conventional obs or satellite obs more important?
+
+  expected_results: |
+    - Temperature-sensitive satellite channels (ATMS 5-8, AMSUA 5-10) 
+      should show strong negative impact (helpful)
+    - Surface temperature obs should help lower troposphere
+    - Other radiosondes should be highly beneficial (direct measurement)
+    - Moisture-sensitive channels may have weaker impact on temp forecast

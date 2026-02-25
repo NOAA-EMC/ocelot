@@ -1,0 +1,120 @@
+# FSOI Configuration - Radiosonde (All Variables) Impact Study
+# Objective:
+#   Measure how *all* observation types (satellite + conventional) impact
+#   forecast error of *all* radiosonde variables (T, Td, u, v).
+#
+# Notes:
+# - This differs from fsoi_config_radiosonde_temp.yaml by scoring all radiosonde
+#   channels instead of only temperature.
+# - Results will naturally contain per-channel breakdown (channel 0..3) in
+#   fsoi_by_channel.csv, so you can separate T vs Td vs winds.
+
+forecast:
+  lead_steps: [0]
+
+  # Decode/score only radiosonde verification targets (memory optimization)
+  target_instruments: ["radiosonde"]
+
+  # Score ALL radiosonde channels (T, Td, u, v)
+  # Use "all" to include all channels; or specify a subset like:
+  #   ["temperature", "dewpoint_temperature", "u_wind", "v_wind"]
+  target_variables: "all"
+
+  # Pressure levels filter ("all" or a list like [850, 500, 250])
+  target_pressure_levels: "all"
+
+  # Keep unweighted MSE for GraphDOP-style comparison
+  use_instrument_weights: false
+  use_channel_weights: false
+  use_area_weights: false
+
+  # Stratify loss by radiosonde pressure level (adds pressure info to ALL instruments)
+  stratify_by_pressure: true
+
+  # Additionally stratify the forecast-error metric by target variable.
+  # This enables Fig-5 style diagnostics:
+  #   - one heatmap per variable (pressure × data type)
+  #   - one combined heatmap with y=(variable, pressure)
+  # NOTE: this increases compute cost roughly by (#vars).
+  stratify_by_variable: true
+
+plots:
+  # Save a lightweight sample of per-observation (innovation, fsoi) points
+  # for innovation-vs-FSOI scatter plots.
+  save_scatter_samples: true
+  scatter_max_points: 200000
+
+data:
+  start_date: "2024-01-01"
+  end_date: "2024-01-03"
+
+  batch_size: 1
+  num_workers: 1
+
+  output_dir: "./FSOI/fsoi_outputs/radiosonde_allvars_impact"
+  save_per_obs_impacts: false
+
+  feature_masks:
+    aircraft: [specificHumidity]
+
+  store_full_tensors: false
+
+memory:
+  max_decoder_nodes:
+    avhrr: 30000
+    atms: 50000
+    amsua: 30000
+    ssmis: 30000
+    seviri: 30000
+
+model:
+  checkpoint_path: "checkpoints/"
+
+aggregation:
+  by_instrument: true
+  by_channel: true
+  by_time: true
+  by_region: false
+  by_pressure_level: true
+
+  regions:
+    tropics:
+      lat_range: [-30, 30]
+    mid_latitudes_nh:
+      lat_range: [30, 60]
+    mid_latitudes_sh:
+      lat_range: [-60, -30]
+    polar_nh:
+      lat_range: [60, 90]
+    polar_sh:
+      lat_range: [-90, -60]
+
+validation:
+  check_reproducibility: true
+  check_gradients: true
+  check_alignment: true
+
+  require_instruments: null
+  require_satellite: false
+
+  finite_difference_check: false
+  fd_num_samples: 5
+  fd_epsilon: 1.0e-4
+
+  verbose: true
+
+output:
+  save_csv: true
+  save_zarr: false
+  save_netcdf: false
+
+experiment:
+  name: "radiosonde_all_variables_impact"
+  description: |
+    FSOI analysis to determine how different observation types
+    (satellite radiances, surface obs, radiosondes, aircraft, etc.) impact
+    forecast error of the full radiosonde profile vector:
+      - Temperature
+      - Dewpoint temperature
+      - Wind u
+      - Wind v

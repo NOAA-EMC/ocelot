@@ -388,8 +388,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
             # --- Config & feature ordering ---
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
-            feat_keys = observation_config[obs_type][inst_name]["features"]
-            meta_keys = observation_config[obs_type][inst_name]["metadata"]
+            feat_keys = obs_cfg["features"]
+            meta_keys = obs_cfg.get("metadata") or []
             feat_pos = {k: i for i, k in enumerate(feat_keys)}
             n_ch = len(feat_keys)
 
@@ -569,6 +569,15 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             input_lon_raw = z["longitude"][input_idx]
             input_times_raw = z["time"][input_idx]
 
+            # Satellite ID extraction (optional; used as explicit feature for instruments that expect sat_id one-hot)
+            sat_ids_cfg = obs_cfg.get("sat_ids", None)
+            sat_id_field = None
+            input_sat_ids_raw = None
+            if obs_type == "satellite" and sat_ids_cfg:
+                sat_id_field = "satelliteId" if "satelliteId" in z else ("satelliteIdentifier" if "satelliteIdentifier" in z else None)
+                if sat_id_field is not None:
+                    input_sat_ids_raw = z[sat_id_field][input_idx].astype(np.int64)
+
             # Extract pressure level indices for radiosonde and aircraft (categorical embedding)
             input_pressure_level = None
             if inst_name in ['radiosonde', 'aircraft'] and 'airPressure' in z:
@@ -746,6 +755,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             input_lon_raw_clean = input_lon_raw[keep_inputs]
             input_times_clean = input_times_raw[keep_inputs]
             input_valid_ch_clean = input_valid_ch[keep_inputs]
+            input_sat_ids_raw_clean = input_sat_ids_raw[keep_inputs] if input_sat_ids_raw is not None else None
 
             # Filter ALL targets based on metadata validity
             target_data_cleaned = []
@@ -866,12 +876,33 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     input_metadata = np.empty((input_features_norm.shape[0], 0), dtype=np.float32)
 
                 # Assemble input features: geo/time + metadata + standardized features (NaN→0)
-                input_features_final = np.column_stack([
+                input_features_final_core = np.column_stack([
                     input_sin_lat, input_cos_lat, input_sin_lon, input_cos_lon,
                     input_sin_time, input_cos_time, input_dayofyear,
                     input_metadata,
                     np.nan_to_num(input_features_norm, nan=0.0)
                 ]).astype(np.float32)
+
+                # Append sat_id one-hot ONLY when the configured input_dim indicates it is expected.
+                # This keeps backward compatibility for instruments whose input_dim does not include sat_id columns.
+                expected_input_dim = obs_cfg.get("input_dim", None)
+                if sat_ids_cfg and expected_input_dim is not None:
+                    sat_ids_cfg_list = [int(x) for x in sat_ids_cfg]
+                    k = len(sat_ids_cfg_list)
+                    core_dim = int(input_features_final_core.shape[1])
+                    if k > 0 and int(expected_input_dim) == (core_dim + k):
+                        if input_sat_ids_raw_clean is not None:
+                            input_sat_onehot = np.stack(
+                                [(input_sat_ids_raw_clean == sid).astype(np.float32) for sid in sat_ids_cfg_list],
+                                axis=1,
+                            )
+                        else:
+                            input_sat_onehot = np.zeros((input_features_final_core.shape[0], k), dtype=np.float32)
+                        input_features_final = np.column_stack([input_features_final_core, input_sat_onehot]).astype(np.float32)
+                    else:
+                        input_features_final = input_features_final_core
+                else:
+                    input_features_final = input_features_final_core
 
                 # Process ALL target windows
                 target_features_final_list = []
