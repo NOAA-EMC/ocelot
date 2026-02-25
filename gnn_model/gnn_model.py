@@ -34,6 +34,38 @@ def _build_instrument_map(observation_config: dict) -> dict[str, int]:
     return {name: i for i, name in enumerate(order)}
 
 
+def _canonical_variable_name(feature_name: str) -> str:
+    """Map raw feature names to canonical variable names used by FSOI filters."""
+    if not feature_name:
+        return ""
+
+    key = feature_name.strip().lower().replace("-", "_")
+
+    mapping = {
+        # Temperatures
+        "airtemperature": "temperature",
+        "temperature": "temperature",
+        "dewpointtemperature": "dewpoint_temperature",
+        "dew_point_temperature": "dewpoint_temperature",
+
+        # Winds
+        "wind_u": "u_wind",
+        "windu": "u_wind",
+        "wind_v": "v_wind",
+        "windv": "v_wind",
+
+        # Humidity
+        "specifichumidity": "specific_humidity",
+        "specific_humidity": "specific_humidity",
+
+        # Pressure
+        "airpressure": "pressure",
+        "airpressure_prepbufr_event_1": "pressure",
+    }
+
+    return mapping.get(key, feature_name)
+
+
 class GNNLightning(pl.LightningModule):
     """
     A Graph Neural Network (GNN) model for processing structured spatiotemporal data.
@@ -104,6 +136,10 @@ class GNNLightning(pl.LightningModule):
 
         self.observation_config = observation_config
 
+        # Backward compatibility: older checkpoints may not have mesh_config in hparams.
+        # Lightning will pass mesh_config=None in that case.
+        mesh_config = mesh_config or {}
+
         # Load mesh-grid variable config
         self.enable_mesh_pred = mesh_config.get('enable_mesh_pred', False)
         self.mesh_variable_config = mesh_config
@@ -119,6 +155,25 @@ class GNNLightning(pl.LightningModule):
         # Mirror process_timeseries._name2id()
         self.instrument_name_to_id = _build_instrument_map(self.observation_config)
         self.instrument_id_to_name = {v: k for k, v in self.instrument_name_to_id.items()}
+
+        # Channel metadata used by FSOI variable filtering.
+        # Format: {instrument_name: [ {"channel": int, "feature": str, "variable_name": str}, ... ]}
+        self.instrument_channels: Dict[str, List[Dict]] = {}
+        for _, instruments in (self.observation_config or {}).items():
+            for inst_name, cfg in (instruments or {}).items():
+                features = cfg.get("features", []) or []
+                ch_info = []
+                for ch_idx, feat in enumerate(features):
+                    canonical = _canonical_variable_name(str(feat))
+                    ch_info.append(
+                        {
+                            "channel": ch_idx,
+                            "feature": str(feat),
+                            "variable": str(feat),
+                            "variable_name": canonical,
+                        }
+                    )
+                self.instrument_channels[inst_name] = ch_info
 
         # Normalize user-provided weights (accept names or ids)
         self.instrument_weights = self._normalize_inst_weights(instrument_weights)

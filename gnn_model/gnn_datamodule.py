@@ -175,8 +175,11 @@ class GNNDataModule(pl.LightningDataModule):
         train_days = (self.hparams.train_end - self.hparams.train_start).days
         val_days = (self.hparams.val_end - self.hparams.val_start).days
         total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
-        print(f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days/total_days*100:.1f}%), "
-              f"Val: {val_days} days ({val_days/total_days*100:.1f}%)")
+        denom_days = total_days if total_days != 0 else 1
+        print(
+            f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days / denom_days * 100:.1f}%), "
+            f"Val: {val_days} days ({val_days / denom_days * 100:.1f}%)"
+        )
         print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
         print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
 
@@ -393,6 +396,11 @@ class GNNDataModule(pl.LightningDataModule):
             if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
                 grid_lat_deg = inst_dict["input_lat_deg"]
                 grid_lon_deg = inst_dict["input_lon_deg"]
+
+                # Keep lat/lon on the observation nodes (used by FSOI matching)
+                data[node_type_input].lat = _t32(grid_lat_deg)
+                data[node_type_input].lon = _t32(grid_lon_deg)
+
                 edge_index_encoder, edge_attr_encoder = obs_mesh_conn(
                     grid_lat_deg,
                     grid_lon_deg,
@@ -499,6 +507,10 @@ class GNNDataModule(pl.LightningDataModule):
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
                 target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
 
+                # Keep lat/lon on the target nodes (used by FSOI matching)
+                data[node_type_target].lat = _t32(target_lat_deg)
+                data[node_type_target].lon = _t32(target_lon_deg)
+
                 if len(target_lat_deg) > 0:
                     edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
                         target_lat_deg,
@@ -516,6 +528,8 @@ class GNNDataModule(pl.LightningDataModule):
         # Create empty input node
         node_type_input = f"{inst_name}_input"
         data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+        data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
+        data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
         data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
 
@@ -536,6 +550,8 @@ class GNNDataModule(pl.LightningDataModule):
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
+            data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
+            data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
 
     # ------------- DataLoaders -------------
     def _worker_init(self, worker_id):
@@ -637,3 +653,35 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[PREDICT] require_targets={self.require_targets}")
 
         return loader
+
+    def fsoi_dataloader(self):
+        """Deterministic dataloader for FSOI.
+
+        Uses the same bin ordering as prediction, but enforces batch_size=1.
+        """
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            return None
+
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            require_targets=self.require_targets,
+            tag="FSOI",
+        )
+
+        return PyGDataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
