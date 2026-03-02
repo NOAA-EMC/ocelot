@@ -34,6 +34,7 @@ class BinDataset(Dataset):
         create_graph_fn,
         observation_config,
         feature_stats=None,
+        require_targets=True,
         tag="TRAIN",
     ):
         self.bin_names = list(bin_names) if bin_names is not None else []
@@ -42,6 +43,7 @@ class BinDataset(Dataset):
         self.create_graph_fn = create_graph_fn
         self.observation_config = observation_config
         self.feature_stats = feature_stats
+        self.require_targets = require_targets
         self.tag = tag
 
     def __len__(self):
@@ -52,16 +54,35 @@ class BinDataset(Dataset):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
+            # Extract input_time before extract_features
+            input_time = None
+            for obs_type in self.data_summary[bin_name].keys():
+                for inst_name in self.data_summary[bin_name][obs_type].keys():
+                    input_time = self.data_summary[bin_name][obs_type][inst_name].get('input_time')
+                    if input_time is not None:
+                        break
+                if input_time is not None:
+                    break
+
             out = extract_features(
                 self.z,
                 self.data_summary,
                 bin_name,
                 self.observation_config,
                 feature_stats=self.feature_stats,
+                require_targets=self.require_targets,
             )
             bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
             graph_data.bin_name = bin_name
+
+            # Add input_time to graph
+            if input_time is not None:
+                graph_data.input_time = input_time
+                print(f"[Dataset] Added input_time: {input_time}")
+            else:
+                print(f"[Dataset] WARNING: No input_time found for {bin_name}")
+
             return graph_data
         except Exception as e:
             print(f"[Rank {rank}] [{self.tag}] ERROR processing {bin_name}: {e}")
@@ -85,10 +106,22 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours=12,       # latent rollout support
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
+        prediction_mode=False,
+        require_targets=None,
         **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
+        self.prediction_mode = prediction_mode
+
+        # If require_targets not specified, default based on prediction_mode
+        # prediction_mode=True → require_targets=False (inference)
+        # prediction_mode=False → require_targets=True (training/validation)
+        if require_targets is None:
+            self.require_targets = not prediction_mode
+        else:
+            self.require_targets = require_targets
+        print(f"[DataModule] prediction_mode={prediction_mode}, require_targets={self.require_targets}")
 
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
@@ -122,8 +155,16 @@ class GNNDataModule(pl.LightningDataModule):
         self.hparams.val_start = pd.to_datetime(kwargs.get("val_start", default_val_start))
         self.hparams.val_end = pd.to_datetime(kwargs.get("val_end", default_val_end))
 
-        # Validate no overlap between train and validation windows to prevent data leakage
-        if self.hparams.train_end > self.hparams.val_start:
+        # In prediction mode, use all data (no split)
+        if prediction_mode:
+            self.hparams.train_start = pd.to_datetime(start_date)
+            self.hparams.train_end = pd.to_datetime(end_date)
+            self.hparams.val_start = pd.to_datetime(start_date)
+            self.hparams.val_end = pd.to_datetime(end_date)
+            print(f"[DataModule] Prediction mode: Using entire date range {start_date} to {end_date}")
+
+        # Validate no overlap between train and validation windows to prevent data leakage (training mode only)
+        if not prediction_mode and self.hparams.train_end > self.hparams.val_start:
             raise ValueError(
                 f"Data leakage detected! Training window ({self.hparams.train_start} to {self.hparams.train_end}) "
                 f"overlaps with validation window ({self.hparams.val_start} to {self.hparams.val_end}). "
@@ -134,8 +175,11 @@ class GNNDataModule(pl.LightningDataModule):
         train_days = (self.hparams.train_end - self.hparams.train_start).days
         val_days = (self.hparams.val_end - self.hparams.val_start).days
         total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
-        print(f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days/total_days*100:.1f}%), "
-              f"Val: {val_days} days ({val_days/total_days*100:.1f}%)")
+        denom_days = total_days if total_days != 0 else 1
+        print(
+            f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days / denom_days * 100:.1f}%), "
+            f"Val: {val_days} days ({val_days / denom_days * 100:.1f}%)"
+        )
         print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
         print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
 
@@ -250,6 +294,7 @@ class GNNDataModule(pl.LightningDataModule):
             pipeline_cfg=self.hparams.pipeline,
             window_size=self.hparams.window_size,
             latent_step_hours=self.hparams.latent_step_hours,
+            require_targets=True,
         )
         self.train_bin_names = sorted(self.train_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
         print(
@@ -267,6 +312,7 @@ class GNNDataModule(pl.LightningDataModule):
             pipeline_cfg=self.hparams.pipeline,
             window_size=self.hparams.window_size,
             latent_step_hours=self.hparams.latent_step_hours,
+            require_targets=self.require_targets,
         )
         self.val_bin_names = sorted(self.val_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
         print(
@@ -350,6 +396,11 @@ class GNNDataModule(pl.LightningDataModule):
             if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
                 grid_lat_deg = inst_dict["input_lat_deg"]
                 grid_lon_deg = inst_dict["input_lon_deg"]
+
+                # Keep lat/lon on the observation nodes (used by FSOI matching)
+                data[node_type_input].lat = _t32(grid_lat_deg)
+                data[node_type_input].lon = _t32(grid_lon_deg)
+
                 edge_index_encoder, edge_attr_encoder = obs_mesh_conn(
                     grid_lat_deg,
                     grid_lon_deg,
@@ -456,6 +507,10 @@ class GNNDataModule(pl.LightningDataModule):
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
                 target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
 
+                # Keep lat/lon on the target nodes (used by FSOI matching)
+                data[node_type_target].lat = _t32(target_lat_deg)
+                data[node_type_target].lon = _t32(target_lon_deg)
+
                 if len(target_lat_deg) > 0:
                     edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
                         target_lat_deg,
@@ -473,6 +528,8 @@ class GNNDataModule(pl.LightningDataModule):
         # Create empty input node
         node_type_input = f"{inst_name}_input"
         data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+        data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
+        data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
         data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
 
@@ -493,6 +550,8 @@ class GNNDataModule(pl.LightningDataModule):
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
+            data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
+            data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
 
     # ------------- DataLoaders -------------
     def _worker_init(self, worker_id):
@@ -512,6 +571,7 @@ class GNNDataModule(pl.LightningDataModule):
             self._create_graph_structure,
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
+            require_targets=True,  # Training always requires targets
             tag="TRAIN",
         )
         loader = PyGDataLoader(
@@ -537,6 +597,7 @@ class GNNDataModule(pl.LightningDataModule):
             self._create_graph_structure,
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
+            require_targets=True,  # Validation requires targets for comparison
             tag="VAL",
         )
         loader = PyGDataLoader(
@@ -551,3 +612,76 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
               f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
         return loader
+
+    def predict_dataloader(self):
+        """Create dataloader for prediction/inference mode."""
+        print("\n[PREDICT] Setting up prediction dataloader")
+
+        # Use val_data_summary for prediction
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            print("[PREDICT] Building prediction data summary...")
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            print("[WARN] No bins found for prediction!")
+            return None
+
+        # Create dataset
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            require_targets=self.require_targets,  # Use datamodule's require_targets setting
+            tag="PREDICT",
+        )
+
+        # Create dataloader
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
+            num_workers=1,  # Single worker for sequential processing
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
+
+        print(f"[PREDICT] Dataloader created: {len(self.val_bin_names)} bins")
+        print(f"[PREDICT] require_targets={self.require_targets}")
+
+        return loader
+
+    def fsoi_dataloader(self):
+        """Deterministic dataloader for FSOI.
+
+        Uses the same bin ordering as prediction, but enforces batch_size=1.
+        """
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            return None
+
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            require_targets=self.require_targets,
+            tag="FSOI",
+        )
+
+        return PyGDataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
