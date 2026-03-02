@@ -14,16 +14,16 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
-    height_pb:
+    height_prepbufr:
       query: "*/Z___INFO/Z__EVENT/ZOB"
 
-    stationElevation_pb:
+    stationElevation_prepbufr:
       query: "*/ELV"
 
-    pressureMeanSeaLevel_pb:
+    pressureMeanSeaLevel_prepbufr:
       query: "*/PMSL_SEQ/PMO"
 
-    airPressure_pb:
+    airPressure_prepbufr:
       query: "*/P___INFO/P__EVENT{1-3}/POB"
 
     eastwardWind:
@@ -34,6 +34,9 @@ bufr:
 
     specificHumidity:
       query: "*/Q___INFO/Q__EVENT/QOB"
+      type: float
+      transforms:
+        - scale: 0.000001    # convert g/kg to kg/kg
 
     # Quality Markers
     airTemperatureQuality:
@@ -70,52 +73,46 @@ encoder:
       longName: "Longitude"
       units: "degree_east"
 
-    - name: "height_pb"
-      source: variables/height_pb
+    - name: "height_prepbufr"
+      source: variables/height_prepbufr
       longName: "height from prepbufr (ZOB)"
       units: "m"
 
-    - name: "stationElevation_pb"
-      source: variables/stationElevation_pb
+    - name: "stationElevation_prepbufr"
+      source: variables/stationElevation_prepbufr
       longName: "stationElevation from prepbufr (ELV)"
       units: "m"
 
-    - name: "airPressure_pb"
-      source: variables/airPressure_pb
+    - name: "airPressure_prepbufr"
+      source: variables/airPressure_prepbufr
       longName: "airPressure from pb (POB)"
       units: "hPa"
 
-    - name: "pressureMeanSeaLevel_pb"
-      source: variables/pressureMeanSeaLevel_pb
+    - name: "pressureMeanSeaLevel_prepbufr"
+      source: variables/pressureMeanSeaLevel_prepbufr
       longName: "pressureMeanSeaLevel from pb (PMO)"
       units: "hPa"
 
     - name: "airTemperatureQuality"
       source: variables/airTemperatureQuality
       longName: "Air Temperature Quality Marker"
-      units: "quality_marker"
 
     - name: "specificHumidityQuality"
       source: variables/specificHumidityQuality
       longName: "Specific Humidity Quality Marker"
-      units: "quality_marker"
 
     - name: "dewPointTemperatureQuality"
       source: variables/dewPointTemperatureQuality
       longName: "Dew Point Temperature Quality Marker"
-      units: "quality_marker"
 
     - name: "windQuality"
       source: variables/windQuality
       longName: "Wind Quality Marker"
-      units: "quality_marker"
 
     - name: "airPressureQuality"
       source: variables/airPressureQuality
       longName: "Air Pressure Quality Marker"
-      units: "quality_marker"
 
     - name: "heightQuality"
       source: variables/heightQuality
       longName: "Height Quality Marker"
-      units: "quality_marker"

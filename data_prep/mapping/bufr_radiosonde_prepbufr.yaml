@@ -47,6 +47,12 @@ bufr:
     height_prepbufr:
       query: "*/PRSLEVEL/Z___INFO/Z__EVENT{1}/ZOB"
 
+    specificHumidity:
+      query: "*/PRSLEVEL/Q___INFO/Q__EVENT{1}/QOB"
+      type: float
+      transforms:
+        - scale: 0.000001   # convert mg/kg to kg/kg
+
     # Quality Markers
     airTemperatureQuality:
       query: "*/PRSLEVEL/T___INFO/T__EVENT{1}/TQM"
