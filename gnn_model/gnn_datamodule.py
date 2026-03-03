@@ -1,4 +1,7 @@
 import os
+import json
+import hashlib
+import time
 import importlib
 import lightning.pytorch as pl
 import pandas as pd
@@ -9,8 +12,6 @@ from zarr.storage import LRUStoreCache
 from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
-
-from nnja_adapter import build_zlike_from_df
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
 
@@ -18,8 +19,30 @@ from create_mesh_graph_global import obs_mesh_conn
 LAT_LON_COLUMNS = 2
 
 
+def _to_unix_seconds(t):
+    """Best-effort conversion of a pandas/py datetime-like to unix seconds (UTC)."""
+    if t is None:
+        return None
+    try:
+        ts = pd.Timestamp(t)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return int(ts.timestamp())
+    except Exception:
+        try:
+            return int(t)
+        except Exception:
+            return None
+
+
 def _t32(x):
     return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
+
+
+def _t64(x):
+    return x.long() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.long)
 
 
 # -------------------------
@@ -36,6 +59,7 @@ class BinDataset(Dataset):
         feature_stats=None,
         require_targets=True,
         tag="TRAIN",
+        verbose: bool = False,
     ):
         self.bin_names = list(bin_names) if bin_names is not None else []
         self.data_summary = data_summary
@@ -45,6 +69,7 @@ class BinDataset(Dataset):
         self.feature_stats = feature_stats
         self.require_targets = require_targets
         self.tag = tag
+        self.verbose = bool(verbose)
 
     def __len__(self):
         return len(self.bin_names)
@@ -52,18 +77,9 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
+        if self.verbose and rank == 0 and idx == 0:
+            print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
-            # Extract input_time before extract_features
-            input_time = None
-            for obs_type in self.data_summary[bin_name].keys():
-                for inst_name in self.data_summary[bin_name][obs_type].keys():
-                    input_time = self.data_summary[bin_name][obs_type][inst_name].get('input_time')
-                    if input_time is not None:
-                        break
-                if input_time is not None:
-                    break
-
             out = extract_features(
                 self.z,
                 self.data_summary,
@@ -76,12 +92,37 @@ class BinDataset(Dataset):
             graph_data = self.create_graph_fn(bin_data)
             graph_data.bin_name = bin_name
 
-            # Add input_time to graph
-            if input_time is not None:
-                graph_data.input_time = input_time
-                print(f"[Dataset] Added input_time: {input_time}")
-            else:
-                print(f"[Dataset] WARNING: No input_time found for {bin_name}")
+            # Attach bin-level timing metadata for downstream diagnostics (e.g., val_csv outputs).
+            # - init_time: start of the target window (forecast init / cycle time)
+            # - input_time: start of the input window
+            init_time_unix = None
+            input_time_unix = None
+            try:
+                for _obs_type, inst_dict in (bin_data or {}).items():
+                    if not isinstance(inst_dict, dict):
+                        continue
+                    for _inst_name, data_summary_bin in inst_dict.items():
+                        if not isinstance(data_summary_bin, dict):
+                            continue
+
+                        if input_time_unix is None and "input_time" in data_summary_bin:
+                            input_time_unix = _to_unix_seconds(data_summary_bin.get("input_time"))
+
+                        if init_time_unix is None:
+                            target_times = data_summary_bin.get("target_times")
+                            if isinstance(target_times, (list, tuple)) and len(target_times) > 0:
+                                init_time_unix = _to_unix_seconds(target_times[0])
+
+                        if init_time_unix is not None and input_time_unix is not None:
+                            raise StopIteration
+            except StopIteration:
+                pass
+            except Exception:
+                init_time_unix = None
+                input_time_unix = None
+
+            graph_data.init_time = _t64(int(init_time_unix) if init_time_unix is not None else -1)
+            graph_data.input_time = _t64(int(input_time_unix) if input_time_unix is not None else -1)
 
             return graph_data
         except Exception as e:
@@ -106,13 +147,19 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours=12,       # latent rollout support
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
+        cache_val_windows: bool = False,
+        val_cache_max_entries: int = 16,
         prediction_mode=False,
         require_targets=None,
+        verbose: bool = False,
         **kwargs,
     ):
         super().__init__()
+
+        # Normalize to int so Lightning hparams merge is stable across module/datamodule.
+        latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
         self.save_hyperparameters()
-        self.prediction_mode = prediction_mode
+        self.prediction_mode = bool(prediction_mode)
 
         # If require_targets not specified, default based on prediction_mode
         # prediction_mode=True → require_targets=False (inference)
@@ -122,6 +169,20 @@ class GNNDataModule(pl.LightningDataModule):
         else:
             self.require_targets = require_targets
         print(f"[DataModule] prediction_mode={prediction_mode}, require_targets={self.require_targets}")
+
+        # Optional cache for validation summaries keyed by (val_start,val_end)
+        self._cache_val_windows = bool(cache_val_windows)
+        self._val_cache_max_entries = int(val_cache_max_entries)
+        self._val_cache: dict[tuple[pd.Timestamp, pd.Timestamp], tuple[dict, list[str]]] = {}
+        self._val_cache_lru: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+
+        # On-disk cache for expensive summary builds (DDP-safe)
+        submit_dir = os.environ.get("SLURM_SUBMIT_DIR") or os.getcwd()
+        job_id = os.environ.get("SLURM_JOB_ID")
+        self._summary_cache_dir = os.path.join(submit_dir, ".summary_cache", job_id or "local")
+
+        # Keep as hparam for downstream access
+        self.hparams.verbose = bool(verbose)
 
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
@@ -188,10 +249,87 @@ class GNNDataModule(pl.LightningDataModule):
             window_hours = int(self.hparams.window_size.replace('h', ''))
             self.hparams.latent_step_hours = window_hours
 
+    def _ddp_info(self) -> tuple[bool, int]:
+        is_ddp = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
+        rank = dist.get_rank() if is_ddp else 0
+        return is_ddp, int(rank)
+
+    def _is_verbose(self) -> bool:
+        return bool(getattr(self.hparams, "verbose", False))
+
+    def _summary_cache_path(self, kind: str, start_dt, end_dt, require_targets: bool) -> str:
+        payload = {
+            "kind": kind,
+            "start": str(pd.to_datetime(start_dt)),
+            "end": str(pd.to_datetime(end_dt)),
+            "window_size": str(getattr(self.hparams, "window_size", "")),
+            "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
+            "require_targets": bool(require_targets),
+            "observation_config": getattr(self.hparams, "observation_config", None),
+            "pipeline": getattr(self.hparams, "pipeline", None),
+        }
+        s = json.dumps(payload, sort_keys=True, default=str)
+        h = hashlib.blake2b(s.encode("utf-8"), digest_size=16).hexdigest()
+        os.makedirs(self._summary_cache_dir, exist_ok=True)
+        return os.path.join(self._summary_cache_dir, f"{kind}_{h}.pt")
+
+    def _load_or_build_summary(self, kind: str, start_dt, end_dt, require_targets: bool) -> tuple[dict, list[str]]:
+        is_ddp, rank = self._ddp_info()
+        cache_path = self._summary_cache_path(kind, start_dt, end_dt, require_targets=require_targets)
+        verbose = self._is_verbose()
+
+        def _build() -> tuple[dict, list[str]]:
+            data_summary = organize_bins_times(
+                self.z,
+                start_dt,
+                end_dt,
+                self.hparams.observation_config,
+                pipeline_cfg=self.hparams.pipeline,
+                window_size=self.hparams.window_size,
+                latent_step_hours=self.hparams.latent_step_hours,
+                require_targets=require_targets,
+                verbose=False,
+            )
+            bin_names = sorted(data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+            return data_summary, bin_names
+
+        if not is_ddp:
+            if os.path.exists(cache_path):
+                obj = torch.load(cache_path)
+                return obj["data_summary"], obj["bin_names"]
+            data_summary, bin_names = _build()
+            torch.save({"data_summary": data_summary, "bin_names": bin_names}, cache_path)
+            return data_summary, bin_names
+
+        built_obj = None
+        if rank == 0:
+            if os.path.exists(cache_path):
+                built_obj = torch.load(cache_path)
+            else:
+                if verbose:
+                    print(f"[DM.cache] building {kind} summary -> {cache_path}")
+                data_summary, bin_names = _build()
+                built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+                tmp = f"{cache_path}.tmp.{os.getpid()}"
+                torch.save(built_obj, tmp)
+                os.replace(tmp, cache_path)
+
+        dist.barrier()
+
+        if rank == 0:
+            return built_obj["data_summary"], built_obj["bin_names"]
+
+        for _ in range(120):
+            if os.path.exists(cache_path):
+                break
+            time.sleep(0.25)
+        obj = torch.load(cache_path)
+        return obj["data_summary"], obj["bin_names"]
+
     # ------------- Setup / Zarr open -------------
 
     def setup(self, stage=None):
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        _, rank = self._ddp_info()
 
         # Open Zarrs once
         if self.z is None:
@@ -238,32 +376,11 @@ class GNNDataModule(pl.LightningDataModule):
                             if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
                                 print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
 
-                    elif src == "nnja":
-                        loader_path = inst_cfg["dataframe_loader"]
-                        mod_name, fn_name = loader_path.rsplit(".", 1)
-                        load_fn = getattr(importlib.import_module(mod_name), fn_name)
-
-                        need = list(inst_cfg["var_map"].values())
-                        need += [
-                            inst_cfg.get("lat_col", "LAT"),
-                            inst_cfg.get("lon_col", "LON"),
-                            inst_cfg.get("time_col", "OBS_TIMESTAMP"),
-                        ]
-
-                        df = load_fn(
-                            start_date=self.hparams.start_date,  # initial window used for first setup
-                            end_date=self.hparams.end_date,
-                            columns=need,
-                        )
-                        self.z[obs_type][inst_name] = build_zlike_from_df(
-                            df,
-                            var_map=inst_cfg["var_map"],
-                            lat_col=inst_cfg.get("lat_col", "LAT"),
-                            lon_col=inst_cfg.get("lon_col", "LON"),
-                            time_col=inst_cfg.get("time_col", "OBS_TIMESTAMP"),
-                        )
                     else:
-                        raise ValueError(f"Unknown source '{src}' for {inst_name}")
+                        raise ValueError(
+                            f"Unknown source '{src}' for {inst_name}. "
+                            "NNJA support has been removed from this repo; use src='zarr'."
+                        )
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -285,36 +402,36 @@ class GNNDataModule(pl.LightningDataModule):
 
     # ------------- Summary (re)builders -------------
     def _rebuild_train_summary(self):
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        self.train_data_summary = organize_bins_times(
-            self.z,
+        _, rank = self._ddp_info()
+        self.train_data_summary, self.train_bin_names = self._load_or_build_summary(
+            "train",
             self.hparams.train_start,
             self.hparams.train_end,
-            self.hparams.observation_config,
-            pipeline_cfg=self.hparams.pipeline,
-            window_size=self.hparams.window_size,
-            latent_step_hours=self.hparams.latent_step_hours,
             require_targets=True,
         )
-        self.train_bin_names = sorted(self.train_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
         print(
             f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
             f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
         )
 
     def _rebuild_val_summary(self):
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        self.val_data_summary = organize_bins_times(
-            self.z,
-            self.hparams.val_start,
-            self.hparams.val_end,
-            self.hparams.observation_config,
-            pipeline_cfg=self.hparams.pipeline,
-            window_size=self.hparams.window_size,
-            latent_step_hours=self.hparams.latent_step_hours,
-            require_targets=self.require_targets,
-        )
-        self.val_bin_names = sorted(self.val_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+        _, rank = self._ddp_info()
+        key = (pd.to_datetime(self.hparams.val_start), pd.to_datetime(self.hparams.val_end))
+        if self._cache_val_windows and key in self._val_cache:
+            self.val_data_summary, self.val_bin_names = self._val_cache[key]
+        else:
+            self.val_data_summary, self.val_bin_names = self._load_or_build_summary(
+                "val",
+                self.hparams.val_start,
+                self.hparams.val_end,
+                require_targets=self.require_targets,
+            )
+            if self._cache_val_windows:
+                self._val_cache[key] = (self.val_data_summary, self.val_bin_names)
+                self._val_cache_lru.append(key)
+                while len(self._val_cache_lru) > self._val_cache_max_entries:
+                    old = self._val_cache_lru.pop(0)
+                    self._val_cache.pop(old, None)
         print(
             f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
             f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"

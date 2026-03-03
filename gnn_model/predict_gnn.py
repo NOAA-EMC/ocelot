@@ -11,6 +11,7 @@ import time
 import yaml
 import pandas as pd
 import socket
+import inspect
 
 import lightning.pytorch as pl
 import torch
@@ -61,6 +62,15 @@ def main():
                              "Default: False (inference mode - no targets required)")
 
     args = parser.parse_args()
+
+    has_cuda = torch.cuda.is_available()
+    if not has_cuda and (args.devices != 1 or args.num_nodes != 1):
+        print(
+            "CUDA not available; overriding distributed args: "
+            f"--devices {args.devices} -> 1, --num_nodes {args.num_nodes} -> 1"
+        )
+        args.devices = 1
+        args.num_nodes = 1
 
     # --- HYPERPARAMETERS (loaded from checkpoint) ---
     # These will be loaded from the checkpoint but can be overridden if needed:
@@ -123,7 +133,7 @@ def main():
             feature_stats=feature_stats,
             instrument_weights=instrument_weights,
             channel_weights=channel_weights,
-            strict=True,
+            strict=False,
         )
         print("Model loaded successfully!")
     except Exception as e:
@@ -133,17 +143,30 @@ def main():
         ckpt = torch.load(args.checkpoint, map_location="cpu")
         hparams = ckpt.get('hyper_parameters', {})
 
+        # Filter hparams to match the current constructor signature (robust to checkpoint drift)
+        try:
+            sig = inspect.signature(GNNLightning.__init__)
+            allowed = set(sig.parameters.keys())
+            allowed.discard('self')
+            filtered_hparams = {k: v for k, v in (hparams or {}).items() if k in allowed}
+        except Exception:
+            filtered_hparams = dict(hparams or {})
+
         model = GNNLightning(
             observation_config=observation_config,
             mesh_config=mesh_config,
             feature_stats=feature_stats,
             instrument_weights=instrument_weights,
             channel_weights=channel_weights,
-            **hparams
+            **filtered_hparams
         )
 
-        model.load_state_dict(ckpt['state_dict'])
-        print("Model loaded successfully using alternative method!")
+        state = ckpt.get('state_dict', ckpt)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print(
+            "Model loaded successfully using alternative method (strict=False)! "
+            f"missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
+        )
 
     model.eval()
     model.prediction_output_dir = args.output_dir
@@ -196,11 +219,11 @@ def main():
         print(f"Multi-device mode: Using DDPStrategy with {args.devices} devices")
 
     trainer_kwargs = {
-        "accelerator": "gpu" if torch.cuda.is_available() else "cpu",
+        "accelerator": "gpu" if has_cuda else "cpu",
         "devices": args.devices,
         "num_nodes": args.num_nodes,
         "strategy": strategy,
-        "precision": "16-mixed",
+        "precision": "16-mixed" if has_cuda else 32,
         "logger": False,
         "enable_progress_bar": True,
         "enable_model_summary": False,

@@ -110,6 +110,50 @@ def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str, default_
     return max(1, stride), mode
 
 
+def _sampled_non_decreasing(time_arr, n_checks: int = 16) -> bool:
+    """Heuristic check that `time_arr` is non-decreasing.
+
+    Only samples a small number of points to avoid scanning the full array.
+    This is a safety guard before using binary search on Zarr-backed arrays.
+    """
+    try:
+        n = len(time_arr)
+        if n <= 1:
+            return True
+        n_checks = max(4, int(n_checks))
+        idxs = np.unique(np.linspace(0, n - 1, num=n_checks, dtype=np.int64))
+        vals = np.asarray([time_arr[int(i)] for i in idxs], dtype=np.int64)
+        return bool(np.all(vals[1:] >= vals[:-1]))
+    except Exception:
+        return False
+
+
+def _zarr_bisect_left(arr, x: int) -> int:
+    """Binary-search left bound on an indexable array-like (supports scalar __getitem__)."""
+    lo, hi = 0, len(arr)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        v = int(arr[mid])
+        if v < x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _zarr_bisect_right(arr, x: int) -> int:
+    """Binary-search right bound on an indexable array-like (supports scalar __getitem__)."""
+    lo, hi = 0, len(arr)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        v = int(arr[mid])
+        if v <= x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 @timing_resource_decorator
 def organize_bins_times(
     z_dict,
@@ -154,7 +198,8 @@ def organize_bins_times(
     target_hours = int(window_size[:-1])
     num_latent_steps = target_hours // latent_step_hours
     sub_window_freq = f"{latent_step_hours}h"
-    print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
+    if verbose:
+        print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
     t0 = int(start_date.timestamp())
     t1 = int(end_date.timestamp())
@@ -170,46 +215,87 @@ def organize_bins_times(
             n_total = len(time_arr)
             chunk = getattr(time_arr, "chunks", (2_000_000,))[0]  # safe default if not chunked
 
-            idx_parts = []
-            if obs_type == "satellite":
-                conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
-                # Handle different satellite ID field names
-                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
-                for i0 in range(0, n_total, chunk):
-                    i1 = min(i0 + chunk, n_total)
-                    t = time_arr[i0:i1]
-                    m_time = (t >= t0) & (t < t1)
-                    if not m_time.any():
+            # Fast path: if time is (likely) sorted, use binary-search bounds (O(log N)).
+            # This avoids scanning the entire time array for multi-year runs.
+            idx_all = None
+            fast_bounds = None  # (left,right) for contiguous slices
+            try_fast = _sampled_non_decreasing(time_arr)
+            if try_fast:
+                left = _zarr_bisect_left(time_arr, t0)
+                right = _zarr_bisect_left(time_arr, t1)  # exclusive upper bound
+
+                if right <= left:
+                    if verbose:
+                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
+                    continue
+
+                if obs_type == "satellite":
+                    conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                    sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
+                    sats = z[sat_id_field][left:right]
+                    m = np.isin(sats, conf_sat_ids)
+                    if not np.any(m):
+                        if verbose:
+                            print(f"No observations for {obs_type}.{key} in {start_date} → {end_date} (sat filter)")
                         continue
-                    sats = z[sat_id_field][i0:i1]
-                    m = m_time & np.isin(sats, conf_sat_ids)
-                    if m.any():
-                        idx_parts.append(np.flatnonzero(m) + i0)
-            else:
-                for i0 in range(0, n_total, chunk):
-                    i1 = min(i0 + chunk, n_total)
-                    t = time_arr[i0:i1]
-                    m_time = (t >= t0) & (t < t1)
-                    if m_time.any():
-                        idx_parts.append(np.flatnonzero(m_time) + i0)
+                    idx_all = (np.arange(left, right, dtype=np.int64))[m]
+                else:
+                    idx_all = np.arange(left, right, dtype=np.int64)
+                    fast_bounds = (left, right)
 
-            if not idx_parts:
-                if verbose:
-                    print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
-                continue
+            # Fallback: chunked scan (safe for unsorted arrays)
+            if idx_all is None:
+                idx_parts = []
+                if obs_type == "satellite":
+                    conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                    # Handle different satellite ID field names
+                    sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
+                    for i0 in range(0, n_total, chunk):
+                        i1 = min(i0 + chunk, n_total)
+                        t = time_arr[i0:i1]
+                        m_time = (t >= t0) & (t < t1)
+                        if not m_time.any():
+                            continue
+                        sats = z[sat_id_field][i0:i1]
+                        m = m_time & np.isin(sats, conf_sat_ids)
+                        if m.any():
+                            idx_parts.append(np.flatnonzero(m) + i0)
+                else:
+                    for i0 in range(0, n_total, chunk):
+                        i1 = min(i0 + chunk, n_total)
+                        t = time_arr[i0:i1]
+                        m_time = (t >= t0) & (t < t1)
+                        if m_time.any():
+                            idx_parts.append(np.flatnonzero(m_time) + i0)
 
-            idx_all = np.concatenate(idx_parts)
+                if not idx_parts:
+                    if verbose:
+                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
+                    continue
+
+                idx_all = np.concatenate(idx_parts)
 
             # --- Sort by zar_time (or time) with minimal copies ---
-            if "zar_time" in z:
-                zar = z["zar_time"][idx_all]
+            if fast_bounds is not None:
+                left, right = fast_bounds
+                if "zar_time" in z:
+                    zar = z["zar_time"][left:right]
+                else:
+                    zar = time_arr[left:right]
+                order = np.argsort(zar, kind="stable")
+                idx_all = (np.arange(left, right, dtype=np.int64))[order]
+                time_vals = time_arr[left:right]
+                time_ts = pd.to_datetime(time_vals[order], unit="s", utc=True)
             else:
-                zar = time_arr[idx_all]
-            order = np.argsort(zar, kind="stable")
-            idx_all = idx_all[order]
+                if "zar_time" in z:
+                    zar = z["zar_time"][idx_all]
+                else:
+                    zar = time_arr[idx_all]
+                order = np.argsort(zar, kind="stable")
+                idx_all = idx_all[order]
+                time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
 
             # --- Build window labels without a big DataFrame ---
-            time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
             win = time_ts.floor(window_size)  # tz-aware
 
             # unique ordered windows + integer codes for each row's window

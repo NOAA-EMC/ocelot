@@ -1,6 +1,6 @@
 # configs/target_config.yaml
 
-enable_mesh_pred: false  # Master switch: controls whether mesh grid outputs are generated
+enable_mesh_pred: true  # Master switch: controls whether mesh grid outputs are generated
 
 variables:
   surface_obs:

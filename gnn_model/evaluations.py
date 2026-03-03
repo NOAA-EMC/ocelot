@@ -1,7 +1,11 @@
 #!/usr/bin/env python
-"""
-Evaluation script for OCELOT weather prediction model.
-Supports both training validation and testing prediction modes.
+"""evaluations.py
+
+Evaluation utilities for OCELOT weather prediction model.
+
+This file historically focused on plotting diagnostics from CSV artifacts.
+We now also support *pointwise* verification metrics directly from the new
+`val_csv` format that includes init/valid timestamps.
 """
 
 import os
@@ -9,15 +13,35 @@ import glob
 import argparse
 import numpy as np
 import pandas as pd
-import cartopy.crs as ccrs
-import matplotlib.pyplot as plt
-from matplotlib.colors import TwoSlopeNorm
+
+# Plotting dependencies are optional for metrics-only usage.
+try:
+    import cartopy.crs as ccrs
+except Exception:  # pragma: no cover
+    ccrs = None
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+except Exception:  # pragma: no cover
+    plt = None
+    TwoSlopeNorm = None
 
 
 # Parse command-line arguments
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run evaluation plots for OCELOT model predictions"
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="plots",
+        choices=["plots", "metrics"],
+        help=(
+            "plots: generate diagnostic figures (existing behavior). "
+            "metrics: compute pointwise verification metrics from val_csv using valid time + lat/lon."
+        ),
     )
     parser.add_argument(
         "--init_time",
@@ -50,6 +74,38 @@ def parse_args():
         help="Directory containing CSV files"
     )
     parser.add_argument(
+        "--metrics_out",
+        type=str,
+        default="metrics_pointwise.csv",
+        help="Output CSV path for --mode metrics.",
+    )
+    parser.add_argument(
+        "--metrics_groupby",
+        type=str,
+        default="instrument,lead_hours_nominal",
+        help=(
+            "Comma-separated grouping keys for --mode metrics. "
+            "Common: instrument,lead_hours_nominal or instrument,lead_hours_nominal,pressure_level_label"
+        ),
+    )
+    parser.add_argument(
+        "--metrics_recursive",
+        action="store_true",
+        help="If set, recursively search under data_dir for matching CSVs (recommended for val_csv root).",
+    )
+    parser.add_argument(
+        "--metrics_pattern",
+        type=str,
+        default="val_*.csv",
+        help="Glob pattern (relative to data_dir) to include for --mode metrics.",
+    )
+    parser.add_argument(
+        "--metrics_min_count",
+        type=int,
+        default=100,
+        help="Minimum sample count per group/variable to report (metrics mode).",
+    )
+    parser.add_argument(
         "--plot_dir",
         type=str,
         default="figures",
@@ -61,6 +117,182 @@ def parse_args():
         help="Set if CSV files contain true_ columns for comparison with predictions"
     )
     return parser.parse_args()
+
+
+def _require_plotting():
+    if ccrs is None or plt is None:
+        raise RuntimeError(
+            "Plotting dependencies (cartopy/matplotlib) are not available in this environment. "
+            "Run with --mode metrics or install cartopy+matplotlib."
+        )
+
+
+def _parse_groupby_keys(s: str) -> list[str]:
+    keys = [k.strip() for k in (s or "").split(",") if k.strip()]
+    return keys or ["instrument", "lead_hours_nominal"]
+
+
+def _collect_csv_files(data_dir: str, pattern: str, recursive: bool) -> list[str]:
+    data_dir = os.path.abspath(data_dir)
+    if recursive:
+        glob_pat = os.path.join(data_dir, "**", pattern)
+        files = glob.glob(glob_pat, recursive=True)
+    else:
+        glob_pat = os.path.join(data_dir, pattern)
+        files = glob.glob(glob_pat)
+    return sorted([f for f in files if os.path.isfile(f)])
+
+
+def _infer_instrument_from_filename(path: str) -> str:
+    base = os.path.basename(path)
+    # Expected formats:
+    #   val_<instrument>_init_<YYYYMMDDHH>_epochE_batchB.csv
+    #   pred_<instrument>_init_<YYYYMMDDHH>.csv
+    if base.startswith("val_"):
+        base = base[len("val_"):]
+    elif base.startswith("pred_"):
+        base = base[len("pred_"):]
+    # chop suffixes
+    for token in ("_init_", "_epoch", "_batch", ".csv"):
+        if token in base:
+            base = base.split(token, 1)[0]
+    return base
+
+
+def compute_pointwise_metrics_from_val_csv(
+    data_dir: str,
+    out_path: str,
+    groupby_keys: list[str] | None = None,
+    pattern: str = "val_*.csv",
+    recursive: bool = True,
+    min_count: int = 100,
+):
+    """Compute pointwise metrics from val_csv artifacts.
+
+    Uses per-row (lat,lon,valid_time_unix) metadata and compares pred_* vs true_*.
+    Intended to mirror standard NWP verification: verify forecasts at observation locations
+    at the correct valid time, and aggregate by lead time.
+
+    Output rows are aggregated by the requested groupby keys and variable.
+    """
+    groupby_keys = groupby_keys or ["instrument", "lead_hours_nominal"]
+    files = _collect_csv_files(data_dir, pattern=pattern, recursive=recursive)
+    if not files:
+        raise FileNotFoundError(f"No CSV files found under {data_dir!r} with pattern {pattern!r} (recursive={recursive})")
+
+    rows_out = []
+
+    for fp in files:
+        try:
+            df = pd.read_csv(fp)
+        except Exception as e:
+            print(f"[metrics] Skipping unreadable CSV: {fp} ({e})")
+            continue
+
+        instrument = _infer_instrument_from_filename(fp)
+        df["instrument"] = instrument
+
+        # Ensure lead_hours_nominal exists; if missing, derive from unix times.
+        if "lead_hours_nominal" not in df.columns and {"init_time_unix", "valid_time_unix"}.issubset(df.columns):
+            try:
+                df["lead_hours_nominal"] = (df["valid_time_unix"].astype("int64") - df["init_time_unix"].astype("int64")) / 3600.0
+            except Exception:
+                pass
+
+        # Identify base variables from pred_* columns.
+        pred_cols = [c for c in df.columns if c.startswith("pred_")]
+        for pred_col in pred_cols:
+            base_var = pred_col[len("pred_"):]
+            true_col = f"true_{base_var}"
+            if true_col not in df.columns:
+                continue
+            mask_col = f"mask_{base_var}"
+
+            # Build validity mask
+            p = df[pred_col]
+            t = df[true_col]
+            valid = np.isfinite(p.to_numpy(dtype=float, na_value=np.nan)) & np.isfinite(t.to_numpy(dtype=float, na_value=np.nan))
+            if mask_col in df.columns:
+                try:
+                    valid &= df[mask_col].fillna(False).astype(bool).to_numpy()
+                except Exception:
+                    pass
+
+            if not valid.any():
+                continue
+
+            err = (p.to_numpy(dtype=float)[valid] - t.to_numpy(dtype=float)[valid]).astype(np.float64)
+            abs_err = np.abs(err)
+            sq_err = err * err
+
+            # Prepare grouping dataframe
+            gcols = {}
+            for k in groupby_keys:
+                if k in df.columns:
+                    vals = df.loc[valid, k].to_numpy()
+                    if k == "lead_hours_nominal":
+                        try:
+                            vals = vals.astype(float)
+                        except Exception:
+                            pass
+                    gcols[k] = vals
+                elif k == "variable":
+                    gcols[k] = np.array([base_var] * int(valid.sum()), dtype=object)
+                elif k == "instrument":
+                    gcols[k] = np.array([instrument] * int(valid.sum()), dtype=object)
+                else:
+                    # missing group key -> constant "unknown"
+                    gcols[k] = np.array(["unknown"] * int(valid.sum()), dtype=object)
+
+            # Always include variable
+            gcols["variable"] = np.array([base_var] * int(valid.sum()), dtype=object)
+
+            gdf = pd.DataFrame(gcols)
+            gdf["abs_err"] = abs_err
+            gdf["sq_err"] = sq_err
+            gdf["err"] = err
+
+            gb = gdf.groupby([k for k in groupby_keys if k != "variable"] + ["variable"], dropna=False)
+            agg = gb.agg(
+                n=("err", "size"),
+                sum_abs=("abs_err", "sum"),
+                sum_sq=("sq_err", "sum"),
+                sum_err=("err", "sum"),
+            ).reset_index()
+
+            if len(agg):
+                rows_out.append(agg)
+
+    if not rows_out:
+        raise RuntimeError("No metrics produced; check that your val_csv files contain pred_*/true_* columns and masks.")
+
+    # Combine across all files/batches by summing sufficient statistics.
+    out_df = pd.concat(rows_out, ignore_index=True)
+    gb_keys = [k for k in groupby_keys if k != "variable" and k in out_df.columns] + ["variable"]
+    out_df = out_df.groupby(gb_keys, dropna=False, as_index=False).agg(
+        n=("n", "sum"),
+        sum_abs=("sum_abs", "sum"),
+        sum_sq=("sum_sq", "sum"),
+        sum_err=("sum_err", "sum"),
+    )
+
+    out_df = out_df[out_df["n"] >= int(min_count)].copy()
+    denom = out_df["n"].astype(float).replace(0.0, np.nan)
+    out_df["mae"] = out_df["sum_abs"].astype(float) / denom
+    out_df["bias"] = out_df["sum_err"].astype(float) / denom
+    out_df["rmse"] = np.sqrt(out_df["sum_sq"].astype(float) / denom)
+    out_df.drop(columns=["sum_abs", "sum_sq", "sum_err"], inplace=True)
+
+    # Stable column ordering
+    base_cols = [k for k in groupby_keys if k in out_df.columns and k != "variable"]
+    cols = base_cols + ["variable", "n", "rmse", "mae", "bias"]
+    cols = [c for c in cols if c in out_df.columns] + [c for c in out_df.columns if c not in cols]
+    out_df = out_df[cols]
+
+    out_path = os.path.abspath(out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    out_df.to_csv(out_path, index=False)
+    print(f"[metrics] Wrote: {out_path} (rows={len(out_df)})")
 
 
 # ----------------- helpers -----------------
@@ -124,9 +356,12 @@ def find_csv_files(
     if init_time is not None:
         csv_files = [f for f in csv_files if f'init_{init_time}' in os.path.basename(f)]
 
-    # Forecast hour filter (for target predictions)
+    # Forecast hour filter (for legacy mesh-grid predictions)
+    # NOTE: new val_csv files contain multiple leads within one file; we filter by lead later.
     if fhr is not None:
-        csv_files = [f for f in csv_files if f'_f{fhr:03d}' in os.path.basename(f)]
+        legacy = [f for f in csv_files if f'_f{fhr:03d}' in os.path.basename(f)]
+        if legacy:
+            csv_files = legacy
 
     # Generate tags based on what's provided
     filename_tag = ""
@@ -157,6 +392,25 @@ def _robust_sym_limits(x, q=99.0):
     if m == 0:
         m = 1.0
     return -m, m
+
+
+def _filter_df_by_lead_hours_nominal(df: pd.DataFrame, fhr: int | None) -> pd.DataFrame:
+    """Filter val_csv rows to a single lead time when available.
+
+    Newer val_csv artifacts may contain multiple lead times in one CSV.
+    When `--fhr` is provided and `lead_hours_nominal` exists, filter rows
+    so downstream plots don’t mix leads.
+    """
+    if fhr is None:
+        return df
+    if "lead_hours_nominal" not in df.columns:
+        return df
+
+    lead = pd.to_numeric(df["lead_hours_nominal"], errors="coerce").to_numpy()
+    mask = np.isfinite(lead) & np.isclose(lead.astype(float), float(fhr))
+    if mask.all():
+        return df
+    return df.loc[mask].copy()
 
 
 def plot_ocelot_target_diff(
@@ -191,6 +445,7 @@ def plot_ocelot_target_diff(
         point_size: Size of scatter plot points
         projection: Cartopy projection for the map
     """
+    _require_plotting()
     csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
 
     if not csv_files:
@@ -210,6 +465,18 @@ def plot_ocelot_target_diff(
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
+        # New val_csv format includes multiple lead times per file.
+        # If fhr is provided and lead metadata exists, filter rows by lead.
+        if fhr is not None:
+            before = len(df)
+            df = _filter_df_by_lead_hours_nominal(df, fhr)
+            after = len(df)
+            if after == 0:
+                print(f"[WARN] No rows remain after filtering lead_hours_nominal=={int(fhr)}h. Skipping.")
+                return
+            if after != before:
+                title_tag += f" • Lead {int(fhr):d}h"
+                filename_tag += f"_lead_{int(fhr):02d}h"
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
@@ -387,6 +654,11 @@ def plot_mesh_maps(
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
+        if fhr is not None:
+            df = _filter_df_by_lead_hours_nominal(df, fhr)
+            if len(df) == 0:
+                print(f"[WARN] No rows remain after filtering lead_hours_nominal=={int(fhr)}h. Skipping.")
+                return
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
@@ -736,6 +1008,11 @@ def plot_radiosonde_profiles_by_pressure_level(
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
+        if fhr is not None:
+            df = _filter_df_by_lead_hours_nominal(df, fhr)
+            if len(df) == 0:
+                print(f"[WARN] No rows remain after filtering lead_hours_nominal=={int(fhr)}h. Skipping.")
+                return
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
@@ -934,6 +1211,11 @@ def plot_instrument_maps(
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
+        if fhr is not None:
+            df = _filter_df_by_lead_hours_nominal(df, fhr)
+            if len(df) == 0:
+                print(f"[WARN] No rows remain after filtering lead_hours_nominal=={int(fhr)}h. Skipping.")
+                return
     except FileNotFoundError:
         print(f"\nWarning: Could not find data file {filepath}. Skipping.")
         return
@@ -1163,6 +1445,21 @@ if __name__ == "__main__":
     if USE_ARGS:  # Recommend to use run_evaluation.py
         # Parse command-line arguments
         args = parse_args()
+
+        # Metrics-only mode: compute and exit early
+        if str(args.mode).lower() == "metrics":
+            keys = _parse_groupby_keys(args.metrics_groupby)
+            compute_pointwise_metrics_from_val_csv(
+                data_dir=args.data_dir,
+                out_path=args.metrics_out,
+                groupby_keys=keys,
+                pattern=args.metrics_pattern,
+                recursive=bool(args.metrics_recursive),
+                min_count=int(args.metrics_min_count),
+            )
+            raise SystemExit(0)
+
+        # Otherwise: plotting mode (existing behavior)
         EPOCH_TO_PLOT = args.epoch
         BATCH_IDX_TO_PLOT = args.batch_idx
         INIT_TIME = args.init_time

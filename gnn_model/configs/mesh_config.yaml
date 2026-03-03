@@ -4,7 +4,7 @@
 # Training:   set enable_mesh_pred: false (obs-space predictions only)
 # Inference:  set enable_mesh_pred: true  (generates gridded outputs for variables below)
 
-enable_mesh_pred: false  # Master switch: controls whether mesh grid outputs are generated
+enable_mesh_pred: true  # Master switch: controls whether mesh grid outputs are generated
 
 variables:
   surface_obs:

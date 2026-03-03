@@ -1,10 +1,18 @@
 import yaml
 import torch
 
-INSTRUMENT_NAME_TO_ID = {
-    "atms": 0, "surface_obs": 1, "amsua": 2, "snow_cover": 3, "avhrr": 4,
-    "radiosonde": 5, "ascat": 6, "ssmis": 7, "seviri": 8, "aircraft": 9
-    }
+
+def _build_instrument_map(observation_config: dict) -> dict[str, int]:
+    """Build instrument name→id mapping consistent with process_timeseries and the model.
+
+    IDs are assigned by sorted instrument names within each group, in group order:
+    satellite then conventional.
+    """
+    order: list[str] = []
+    for group in ("satellite", "conventional"):
+        if group in observation_config:
+            order += sorted(observation_config[group].keys())
+    return {name: i for i, name in enumerate(order)}
 
 
 def load_weights_from_yaml(path):
@@ -14,13 +22,19 @@ def load_weights_from_yaml(path):
     observation_config = config.get("observation_config", {})
     feature_stats = config.get("feature_stats", {})
 
+    name_to_id = _build_instrument_map(observation_config)
+
     if "obs_counts" in config:
-        raw = {INSTRUMENT_NAME_TO_ID[k]: 1.0 / (v + 1e-6) for k, v in config["obs_counts"].items()}
+        raw = {name_to_id[k]: 1.0 / (v + 1e-6) for k, v in config["obs_counts"].items() if k in name_to_id}
         s = sum(raw.values()) or 1.0
         instrument_weights = {k: v / s for k, v in raw.items()}
     else:
-        instrument_weights = {INSTRUMENT_NAME_TO_ID[k]: float(v) for k, v in config["instrument_weights"].items()}
+        instrument_weights = {name_to_id[k]: float(v) for k, v in config["instrument_weights"].items() if k in name_to_id}
 
-    channel_weights = {INSTRUMENT_NAME_TO_ID[k]: torch.tensor(v, dtype=torch.float32) for k, v in config["channel_weights"].items()}
+    channel_weights = {
+        name_to_id[k]: torch.tensor(v, dtype=torch.float32)
+        for k, v in config["channel_weights"].items()
+        if k in name_to_id
+    }
 
-    return observation_config, feature_stats, instrument_weights, channel_weights, INSTRUMENT_NAME_TO_ID
+    return observation_config, feature_stats, instrument_weights, channel_weights, name_to_id
