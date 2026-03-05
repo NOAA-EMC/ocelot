@@ -6,7 +6,7 @@ The primary function for using it is `scripts/gen_data.py`. It can be used to ea
 the data type of interest. For example:
 
 ```bash
-python gen_data.py -b 2024-04-01 2024-07-31 atms
+python gen_data.py -b 2024-04-01 2024-07-31 atms zarr
 ```
 
 This will generate data for the ATMS instrument for the time period of April 1, 2024 to July 31, 2024 using SLURM
@@ -14,13 +14,14 @@ sbatch. The script automatically breaks the job into smaller chunks that can be 
 cluster. The script also supports parallel execution (does not chunk the job), and serial mode. Please see the help:
 
 ```
-usage: gen_data.py [-h] [-s SUFFIX] [-p] [-b] [-a] [--slurm_account SLURM_ACCOUNT] start_date end_date {all,atms,surface_pressure,radiosonde}
+usage: gen_data.py [-h] [-s SUFFIX] [-p] [-b] [-a] [--slurm_account SLURM_ACCOUNT] start_date end_date {all,atms,surface_pressure,radiosonde} {zarr,parquet}
 
 positional arguments:
   start_date            Start date in YYYY-MM-DD format
   end_date              End date in YYYY-MM-DD format
   {all,atms,surface_pressure,radiosonde}
                         Data type to generate. "all" generates all data types.
+  {zarr,parquet}        Output format
 
 options:
   -h, --help            show this help message and exit
@@ -61,9 +62,9 @@ Since the data_prep code is already installed on HERA, you can run the script wi
 use it you can do the following:
 
 1) Log into HERA
-2) `cd /scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/`
+2) `cd /scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/`
 3) `source ./env.sh` To set up the environment.
 4) `cd src/ocelot/data_prep/scripts`
-5) `python gen_data.py -b 2024-04-01 2024-04-07 "atms" -s "my_suffix"` Please define a special suffix if you are playing
+5) `python gen_data.py -b 2024-04-01 2024-04-07 "atms" "zarr" -s "my_suffix"` Please define a special suffix if you are playing
 around as you will replace the existing data. Please note that the output directory for the data is defined by the 
 `configs/local_settings.py` file.

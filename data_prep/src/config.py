@@ -74,6 +74,19 @@ class PcaConfig(DataTypeConfig):
         return self.config['filename_regex']
 
 
+class NcdfConfig(DataTypeConfig):
+    def __init__(self, config):
+        super().__init__(config, 'netCDF')
+
+    @property
+    def directory(self):
+        return self.config['directory']
+
+    @property
+    def filename_regex(self):
+        return self.config['filename_regex']
+
+
 class Config:
     def __init__(self, yaml_path=''):
         if not yaml_path:
@@ -104,6 +117,8 @@ class Config:
                 data_types.append(TankConfig(data_type))
             elif data_type['type'] == 'pca':
                 data_types.append(PcaConfig(data_type))
+            elif data_type['type'] == 'netCDF':
+                data_types.append(NcdfConfig(data_type))
             else:
                 assert False, f"Unknown data type {data_type['type']} in config"
 

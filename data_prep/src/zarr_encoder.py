@@ -2,6 +2,7 @@ import re
 from typing import Union
 import zarr
 import numpy as np
+from pprint import pprint
 
 import bufr
 from bufr.obs_builder import add_encoder_type
@@ -40,6 +41,21 @@ class Encoder(bufr.encoders.EncoderBase):
             store = zarr.DirectoryStore(output_path)
             root = zarr.group(store=store, overwrite=(not append))
             dims = self.get_encoder_dimensions(container, category)
+            if hasattr(dims, "__dict__"):
+                pprint(dims.__dict__)
+            else:
+                print("No __dict__ (likely uses __slots__)")
+
+            slots = getattr(type(dims), "__slots__", None)
+
+            if slots:
+                state = {}
+                for s in slots:
+                    try:
+                        state[s] = getattr(dims, s)
+                    except Exception as e:
+                        state[s] = f"<error: {e}>"
+                pprint(state)
 
             if 'time' not in root:
                 self._add_attrs(root)
@@ -170,7 +186,10 @@ class Encoder(bufr.encoders.EncoderBase):
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
                     dim_val = dim_vals[i] if dim_vals[i] != 0 else i + 1
-                    add_variable(var, f'{var_name}_{dim_names[1]}_{dim_val}', var_data[:, i])
+                    dim_name = dim_names[1]
+                    if dim_name == "dim_2":
+                        dim_name = "PC"
+                    add_variable(var, f'{var_name}_{dim_name}_{dim_val}', var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
@@ -197,7 +216,10 @@ class Encoder(bufr.encoders.EncoderBase):
                 for i in range(var_data.shape[1]):
                     dim_vals = root[dim_names[1]]
                     dim_val = dim_vals[i] if dim_vals[i] != 0 else i + 1
-                    root[f'{var_name}_{dim_names[1]}_{dim_val}'].append(var_data[:, i])
+                    dim_name = dim_names[1]
+                    if dim_name == "dim_2":
+                        dim_name = "PC"
+                    root[f'{var_name}_{dim_name}_{dim_val}'].append(var_data[:, i])
             else:
                 raise ValueError(f'Variable {var_name} has an invalid shape {var_data.shape}')
 
