@@ -218,7 +218,7 @@ def _iter_index_chunks(ii: np.ndarray, chunk_size: int):
         return
     chunk_size = int(chunk_size)
     for s in range(0, len(ii), chunk_size):
-        yield ii[s : s + chunk_size]
+        yield ii[s: s + chunk_size]
 
 
 def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size: int = 200_000) -> pd.DataFrame:

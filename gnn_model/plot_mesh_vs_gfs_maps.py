@@ -148,8 +148,18 @@ def plot_tripanel(lon, lat, pred, gfs, title, out_png, units: str | None, point_
     vmin, vmax = _robust_limits(np.concatenate([pred, gfs]), 1.0, 99.0)
     dmin, dmax = _robust_sym(diff, 99.0)
 
-    fig, axes = plt.subplots(1, 3, figsize=(20, 5), subplot_kw={"projection": ccrs.PlateCarree()}, sharey=True)
-    panels = [("OCELOT", pred, "turbo", None), ("GFS", gfs, "turbo", None), ("OCELOT − GFS", diff, "bwr", TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax))]
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(20, 5),
+        subplot_kw={"projection": ccrs.PlateCarree()},
+        sharey=True,
+    )
+    panels = [
+        ("OCELOT", pred, "turbo", None),
+        ("GFS", gfs, "turbo", None),
+        ("OCELOT − GFS", diff, "bwr", TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)),
+    ]
 
     for ax, (ttl, field, cmap, norm) in zip(axes, panels):
         ax.set_title(ttl, fontsize=14)
@@ -201,7 +211,8 @@ def main() -> int:
     elif args.var == "t2m":
         pred_col, gfs_col, units = "pred_airTemperature", "gfs_t2m_C", "°C"
     else:
-        pred_col, gfs_col, units = ("pred_airPressure_prepbufr_event_1" if "pred_airPressure_prepbufr_event_1" in df.columns else "pred_airPressure"), "gfs_sp_hPa", "hPa"
+        pred_col = "pred_airPressure_prepbufr_event_1" if "pred_airPressure_prepbufr_event_1" in df.columns else "pred_airPressure"
+        gfs_col, units = "gfs_sp_hPa", "hPa"
 
     if pred_col not in df.columns or gfs_col not in df.columns:
         raise SystemExit(f"Missing columns for {args.var}: need {pred_col} and {gfs_col}")
