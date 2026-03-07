@@ -372,7 +372,20 @@ def organize_bins_times(
                 if require_targets and any(t.size == 0 for t in target_indices_list):
                     continue
 
-                bin_name = f"bin{bi+1}"
+                # IMPORTANT: Bin names must be globally time-aligned across instruments.
+                # Using per-instrument sequential numbering (bin1, bin2, ...) causes different
+                # instruments' windows to be mixed under the same bin name, which breaks
+                # init/valid/obs time semantics in downstream CSVs and plots.
+                #
+                # We therefore name bins by the *forecast init* (start of the target window).
+                # This makes bin keys consistent across instruments even when some instruments
+                # have missing windows.
+                if require_targets:
+                    init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
+                else:
+                    # In inference mode there is no target window; use input window start.
+                    init_key = pd.to_datetime(t_in, utc=True).strftime('%Y%m%d%H')
+                bin_name = f"bin{init_key}"
                 data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
                     "input_time": t_in,
                     "input_time_index": input_indices,
@@ -384,8 +397,11 @@ def organize_bins_times(
             if verbose:
                 total_bins = sum(
                     1
-                    for _ in range(n_bins)
-                    if f"bin{_+1}" in data_summary and obs_type in data_summary[f"bin{_+1}"] and key in data_summary[f"bin{_+1}"][obs_type]
+                    for _bin_name, _bin_dict in (data_summary or {}).items()
+                    if isinstance(_bin_dict, dict)
+                    and obs_type in _bin_dict
+                    and isinstance(_bin_dict.get(obs_type), dict)
+                    and key in _bin_dict[obs_type]
                 )
                 print(f"Created {total_bins} bins (pairs of input-target) for {obs_type}.{key}.")
 
@@ -610,7 +626,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
                     ws = arrs["windSpeed"][idx].astype(np.float32)
                     wd = arrs["windDirection"][idx].astype(np.float32)
-                    wd_rad = wd if np.nanmax(wd) <= (2 * np.pi + 0.1) else wd * (np.pi / 180.0)
+                    # windDirection is expected to be in radians for the current Zarrs.
+                    # Keep it in radians everywhere (no degrees detection/conversion).
+                    FILL_VALUE = 3.402823e38
+                    ws = np.where(ws >= FILL_VALUE, np.nan, ws)
+                    wd_rad = np.where(wd >= FILL_VALUE, np.nan, wd)
                     u = -ws * np.sin(wd_rad)
                     v = -ws * np.cos(wd_rad)
                     return u if name == "wind_u" else v
@@ -997,6 +1017,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 target_channel_mask_list = []
                 target_lat_deg_list = []
                 target_lon_deg_list = []
+                target_time_unix_list = []
 
                 for step in range(num_latent_steps):
                     target_data = target_data_cleaned[step]
@@ -1009,6 +1030,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
+                        target_time_unix_list.append(np.array([], dtype=np.int64))
                         continue
 
                     # Target normalization
@@ -1042,6 +1064,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask_list.append(torch.tensor(target_channel_mask, dtype=torch.bool))
                     target_lat_deg_list.append(target_data['lat'])
                     target_lon_deg_list.append(target_data['lon'])
+                    target_time_unix_list.append(np.asarray(target_data.get('times', []), dtype=np.int64))
 
             else:
                 # Conventional processing
@@ -1076,6 +1099,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 target_channel_mask_list = []
                 target_lat_deg_list = []
                 target_lon_deg_list = []
+                target_time_unix_list = []
 
                 for step in range(num_latent_steps):
                     target_data = target_data_cleaned[step]
@@ -1087,6 +1111,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
+                        target_time_unix_list.append(np.array([], dtype=np.int64))
                         continue
 
                     # Target normalization with clipping (conventional style)
@@ -1113,6 +1138,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask_list.append(torch.tensor(target_channel_mask, dtype=torch.bool))
                     target_lat_deg_list.append(target_data['lat'])
                     target_lon_deg_list.append(target_data['lon'])
+                    target_time_unix_list.append(np.asarray(target_data.get('times', []), dtype=np.int64))
 
             # -------------------- Store final results --------------------
             data_summary_bin["input_features_final"] = torch.tensor(input_features_final, dtype=torch.float32)
@@ -1153,6 +1179,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 "target_channel_mask_list": target_channel_mask_list,
                 "target_lat_deg_list": target_lat_deg_list,
                 "target_lon_deg_list": target_lon_deg_list,
+                "target_time_unix_list": target_time_unix_list,
                 "target_pressure_hpa_list": target_pressure_hpa_list
             })
 

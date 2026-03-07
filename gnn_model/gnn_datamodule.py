@@ -4,6 +4,7 @@ import hashlib
 import time
 import importlib
 import lightning.pytorch as pl
+import numpy as np
 import pandas as pd
 import torch
 import torch.distributed as dist
@@ -259,6 +260,9 @@ class GNNDataModule(pl.LightningDataModule):
 
     def _summary_cache_path(self, kind: str, start_dt, end_dt, require_targets: bool) -> str:
         payload = {
+            # Increment when binning semantics / summary structure changes.
+            # This forces rebuild instead of reusing an incompatible cached summary.
+            "summary_version": 2,
             "kind": kind,
             "start": str(pd.to_datetime(start_dt)),
             "end": str(pd.to_datetime(end_dt)),
@@ -290,7 +294,17 @@ class GNNDataModule(pl.LightningDataModule):
                 require_targets=require_targets,
                 verbose=False,
             )
-            bin_names = sorted(data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+            # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
+            # Fall back to lexicographic ordering if parsing fails.
+            def _bin_sort_key(name: str):
+                try:
+                    if name.startswith('bin'):
+                        return int(name[3:])
+                    return int(name)
+                except Exception:
+                    return name
+
+            bin_names = sorted(data_summary.keys(), key=_bin_sort_key)
             return data_summary, bin_names
 
         if not is_ddp:
@@ -558,6 +572,7 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
                 data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
+                data[node_type_target].obs_time_unix = torch.empty((0,), dtype=torch.long)
                 continue
 
             keep_np = keep_t.cpu().numpy()
@@ -606,6 +621,16 @@ class GNNDataModule(pl.LightningDataModule):
             if "target_pressure_hpa_list" in inst_dict and step < len(inst_dict["target_pressure_hpa_list"]):
                 pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
                 data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
+
+            # Per-observation timestamps (unix seconds) for verifying within-window spread
+            if "target_time_unix_list" in inst_dict and step < len(inst_dict["target_time_unix_list"]):
+                obs_unix = inst_dict["target_time_unix_list"][step]
+                obs_unix = np.asarray(obs_unix, dtype=np.int64)
+                if obs_unix.size:
+                    obs_unix = obs_unix[keep_np]
+                data[node_type_target].obs_time_unix = _t64(torch.tensor(obs_unix, dtype=torch.long))
+            else:
+                data[node_type_target].obs_time_unix = torch.full((y_t.shape[0],), -1, dtype=torch.long)
 
             # Store pressure level index for radiosonde and aircraft (if available)
             if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):

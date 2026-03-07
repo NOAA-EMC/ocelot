@@ -72,10 +72,26 @@ def _infer_cycle_from_valid(valid: pd.Timestamp, cycle_hours=(0, 6, 12, 18)) -> 
     return init
 
 
-def _round_to_step(hours: float, step_hours: int) -> int:
+def _round_to_step(hours: float, step_hours: int, tol_hours: float | None = None) -> int:
+    """Round a lead time to the nearest model step.
+
+    If tol_hours is provided, require the raw lead to be within tol_hours of a
+    step multiple; otherwise return -1 so the row can be dropped/flagged.
+
+    Note: Python's round() uses bankers rounding at exact halves. The tolerance
+    check is the primary guardrail against ambiguous 0.5-step cases.
+    """
     if not np.isfinite(hours):
         return -1
-    return int(step_hours * round(hours / step_hours))
+    step_hours = int(step_hours)
+    if step_hours <= 0:
+        return -1
+
+    fhr = float(step_hours) * float(round(float(hours) / float(step_hours)))
+    if tol_hours is not None and np.isfinite(float(tol_hours)):
+        if abs(float(hours) - float(fhr)) > float(tol_hours):
+            return -1
+    return int(fhr)
 
 
 @dataclass(frozen=True)
@@ -180,13 +196,26 @@ def _load_ocelot_csvs(patterns: Iterable[str]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _compute_gfs_keys(df: pd.DataFrame, init_mode: str, fhr_step: int, cycle_hours: tuple[int, ...]) -> pd.DataFrame:
+def _compute_gfs_keys(
+    df: pd.DataFrame,
+    init_mode: str,
+    fhr_step: int,
+    cycle_hours: tuple[int, ...],
+    fhr_tolerance_hours: float | None,
+) -> pd.DataFrame:
     if "datetime" not in df.columns:
         raise ValueError("CSV must include a 'datetime' column")
 
-    dt_valid = _parse_datetime_utc(df["datetime"])
-    df = df.assign(_valid_dt=dt_valid)
-    df = df.loc[df["_valid_dt"].notna()].copy()
+    # NOTE:
+    # In this repo's eval-mode prediction CSVs, `datetime` can represent the *per-observation timestamp*
+    # inside the target sub-window (e.g., within [init, init+3h)). That is NOT necessarily the nominal
+    # forecast valid time for a 3h/6h/... lead.
+    #
+    # For robust GFS matching we therefore prefer `lead_hours_nominal` when present, and only fall back
+    # to (datetime - init_datetime) when the nominal lead column is missing.
+    dt_obs = _parse_datetime_utc(df["datetime"])
+    df = df.assign(_obs_dt=dt_obs)
+    df = df.loc[df["_obs_dt"].notna()].copy()
 
     if init_mode == "from_csv" and "init_datetime" in df.columns:
         dt_init = _parse_datetime_utc(df["init_datetime"])
@@ -195,13 +224,48 @@ def _compute_gfs_keys(df: pd.DataFrame, init_mode: str, fhr_step: int, cycle_hou
         init_unix = pd.to_numeric(df["init_time_unix"], errors="coerce")
         df["_init_dt"] = pd.to_datetime(init_unix, unit="s", utc=True, errors="coerce")
     elif init_mode == "infer_from_valid":
-        df["_init_dt"] = df["_valid_dt"].apply(lambda x: _infer_cycle_from_valid(x, cycle_hours=cycle_hours))
+        # Best-effort inference from the observation datetime in CSV.
+        df["_init_dt"] = df["_obs_dt"].apply(lambda x: _infer_cycle_from_valid(x, cycle_hours=cycle_hours))
     else:
         raise ValueError(f"Unsupported init_mode={init_mode!r}. Use from_csv or infer_from_valid")
 
-    lead_hours = (df["_valid_dt"] - df["_init_dt"]).dt.total_seconds() / 3600.0
-    df["_fhr_raw"] = lead_hours
-    df["_fhr"] = df["_fhr_raw"].apply(lambda x: _round_to_step(float(x), fhr_step))
+    # Compute forecast hour.
+    fhr_raw = None
+    fhr_raw_source = "unknown"
+    if "lead_hours_nominal" in df.columns:
+        lead_nom = pd.to_numeric(df["lead_hours_nominal"], errors="coerce")
+        if lead_nom.notna().any():
+            fhr_raw = lead_nom
+            fhr_raw_source = "lead_hours_nominal"
+
+    if fhr_raw is None:
+        # Fallback: treat CSV datetime as a valid time.
+        # This can mis-map buckets (e.g., map many rows to f000 for the 3h bucket), so we warn below.
+        lead_hours = (df["_obs_dt"] - df["_init_dt"]).dt.total_seconds() / 3600.0
+        fhr_raw = lead_hours
+        fhr_raw_source = "datetime_minus_init"
+
+    df["_fhr_raw"] = fhr_raw
+    df["_fhr_raw_source"] = fhr_raw_source
+    df["_fhr"] = df["_fhr_raw"].apply(lambda x: _round_to_step(float(x), fhr_step, tol_hours=fhr_tolerance_hours))
+
+    # Nominal valid time used for GFS matching.
+    df["_valid_dt"] = df["_init_dt"] + pd.to_timedelta(df["_fhr"].astype(float), unit="h")
+
+    # If the CSV datetime looks like per-observation times within a bucket, call that out explicitly.
+    # This happens when (obs_dt - init_dt) spans a wide range within the same nominal fhr group.
+    try:
+        delta_h = (df["_obs_dt"] - df["_valid_dt"]).dt.total_seconds().abs() / 3600.0
+        med = float(delta_h.median()) if len(delta_h) else 0.0
+        p95 = float(delta_h.quantile(0.95)) if len(delta_h) else 0.0
+        if np.isfinite(med) and np.isfinite(p95) and (med > 0.25 or p95 > 1.0):
+            print(
+                "[WARN] CSV 'datetime' appears to be per-observation time, not nominal forecast valid time. "
+                "GFS matching will use init_datetime + fhr (from lead_hours_nominal if present). "
+                f"median|obs-valid|={med:.2f}h p95={p95:.2f}h"
+            )
+    except Exception:
+        pass
 
     bad = (df["_fhr"] < 0) | (~np.isfinite(df["_fhr"].astype(float)))
     if bad.any():
@@ -389,6 +453,15 @@ def main() -> int:
         help="How to choose GFS init time. from_csv uses init_* columns if present.",
     )
     ap.add_argument("--fhr_step", type=int, default=3, help="Round lead hours to nearest multiple of this (GFS step)")
+    ap.add_argument(
+        "--fhr_tolerance_hours",
+        type=float,
+        default=0.25,
+        help=(
+            "Fail-fast guardrail: require raw lead hours to be within this tolerance of a fhr_step multiple. "
+            "Rows outside tolerance are dropped. Use a negative value to disable. Default: 0.25h (15 min)."
+        ),
+    )
     ap.add_argument("--cycle_hours", default="0,6,12,18", help="Comma-separated cycle hours for infer_from_valid")
     ap.add_argument("--interp", default="nearest", choices=["nearest", "linear"], help="Spatial/vertical interpolation")
     ap.add_argument(
@@ -414,8 +487,18 @@ def main() -> int:
 
     cycle_hours = tuple(int(x) for x in args.cycle_hours.split(",") if x.strip() != "")
 
+    tol = float(args.fhr_tolerance_hours)
+    if tol < 0:
+        tol = None
+
     df = _load_ocelot_csvs(args.ocelot_csv)
-    df = _compute_gfs_keys(df, init_mode=args.init_mode, fhr_step=int(args.fhr_step), cycle_hours=cycle_hours)
+    df = _compute_gfs_keys(
+        df,
+        init_mode=args.init_mode,
+        fhr_step=int(args.fhr_step),
+        cycle_hours=cycle_hours,
+        fhr_tolerance_hours=tol,
+    )
 
     if args.instrument == "surface_obs":
         out = compare_surface_obs(df, gfs_root=args.gfs_root, method=args.interp, chunk_size=int(args.chunk_size))
@@ -444,7 +527,11 @@ def main() -> int:
     out["valid_datetime_used"] = out["_valid_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     out["fhr_used"] = out["_fhr"].astype(int)
 
-    out = out.drop(columns=[c for c in ["_init_dt", "_valid_dt"] if c in out.columns])
+    # Keep the original per-row datetime around for debugging (often this is observation time).
+    if "_obs_dt" in out.columns:
+        out["obs_datetime_from_csv"] = out["_obs_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    out = out.drop(columns=[c for c in ["_init_dt", "_valid_dt", "_obs_dt"] if c in out.columns])
 
     os.makedirs(os.path.dirname(args.out_csv) or ".", exist_ok=True)
     out.to_csv(args.out_csv, index=False)

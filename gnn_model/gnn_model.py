@@ -1945,6 +1945,7 @@ class GNNLightning(pl.LightningModule):
         all_lat = []
         all_lon = []
         all_ts = []  # per-observation valid times (unix seconds); -1 if missing
+        all_obs_ts = []  # per-observation observation times (unix seconds) inside 3h window; -1 if missing
         all_latent_step = []
         all_lead_hours_nominal = []
         all_pred = []
@@ -1989,6 +1990,13 @@ class GNNLightning(pl.LightningModule):
                 else:
                     ts = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int64)
 
+                # Per-observation real obs time (epoch seconds) if present
+                if hasattr(batch[step_node_type], 'obs_time_unix'):
+                    obs_ts = batch[step_node_type].obs_time_unix.detach().cpu().numpy()
+                    obs_ts = np.asarray(obs_ts, dtype=np.int64)
+                else:
+                    obs_ts = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int64)
+
                 # Get pressure data if available (for radiosonde and aircraft)
                 if hasattr(batch[step_node_type], 'target_pressure_hpa'):
                     pressure_hpa = batch[step_node_type].target_pressure_hpa.cpu().numpy()
@@ -2005,6 +2013,7 @@ class GNNLightning(pl.LightningModule):
                 lat_deg = np.zeros(n)
                 lon_deg = np.zeros(n)
                 ts = np.full(n, -1, dtype=np.int64)
+                obs_ts = np.full(n, -1, dtype=np.int64)
                 pressure_hpa = np.full(n, np.nan)
                 pressure_level_idx = np.full(n, -1, dtype=np.int32)
 
@@ -2012,6 +2021,7 @@ class GNNLightning(pl.LightningModule):
             all_lat.extend(lat_deg)
             all_lon.extend(lon_deg)
             all_ts.extend(ts.tolist())
+            all_obs_ts.extend(obs_ts.tolist())
             all_latent_step.extend([int(step)] * int(len(ts)))
             lead_nom = np.nan
             try:
@@ -2083,6 +2093,8 @@ class GNNLightning(pl.LightningModule):
             df.insert(0, 'init_datetime', init_dt_str)
             df.insert(1, 'init_time_unix', init_unix)
 
+        insert_pos = 2 if 'init_datetime' in df.columns else 0
+
         # Per-observation valid times (if present)
         ts_arr = np.asarray(all_ts, dtype=np.int64)
         if ts_arr.size == len(df):
@@ -2096,9 +2108,13 @@ class GNNLightning(pl.LightningModule):
                     pass
 
             dt = pd.to_datetime(pd.Series(ts_arr).replace(-1, pd.NA), unit='s', utc=True, errors='coerce')
-            insert_pos = 2 if 'init_datetime' in df.columns else 0
             df.insert(insert_pos, 'datetime', dt.dt.strftime('%Y-%m-%dT%H:%M:%SZ').fillna(''))
             df.insert(insert_pos + 1, 'valid_time_unix', ts_arr)
+
+        # Real obs timestamps (inside the target sub-window), if present
+        obs_ts_arr = np.asarray(all_obs_ts, dtype=np.int64)
+        if obs_ts_arr.size == len(df):
+            df.insert(insert_pos + 2, 'obs_time_unix', obs_ts_arr)
 
         # Step/lead metadata so rows can be grouped per forecast hour
         step_arr = np.asarray(all_latent_step, dtype=np.int64)

@@ -30,10 +30,36 @@ INSTRUMENT=${INSTRUMENT:-surface_obs}
 
 # Which experiment to write under predictions/<EXP_NAME>
 # Example: Rand_TenYear_nl16 | Seq_TenYear_nl16
-EXP_NAME=${EXP_NAME:-Rand_TenYear_nl16}
+EXP_NAME=${EXP_NAME:-Seq_TenYear_nl16}
+
+
+# If you want a specific epoch, set CKPT=/path/to/file.ckpt when submitting.
+CKPT=/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/mainBranch/ocelot/gnn_model/checkpoints/Seq_TenYear_nl16/gnn-epoch-epoch=1559-val_loss-val_loss=0.15.ckpt
+
+if [ -z "${CKPT}" ]; then
+  echo "ERROR: CKPT is not set. Provide a full checkpoint path."
+  echo "Example: sbatch --export=ALL,CKPT=/full/path/to/model.ckpt run_pred_eval_gfs.sh"
+  exit 2
+fi
+
+if [ ! -f "${CKPT}" ]; then
+  echo "ERROR: CKPT not found: ${CKPT}"
+  echo "Set CKPT=/path/to/model.ckpt or set EXP_NAME to a checkpoints folder that exists."
+  echo "Available checkpoint folders under ${SCRIPT_DIR}/checkpoints:"
+  ls -1 "${SCRIPT_DIR}/checkpoints" || true
+  exit 2
+fi
 
 # Which lead times to plot (hours)
 FHR_LIST=${FHR_LIST:-"3 6 9 12"}
+
+# Extra CLI args forwarded to evaluations.py (optional)
+# Example:
+#   EVAL_EXTRA_ARGS="--plot_all_fhrs --strict_obs_window"
+EVAL_EXTRA_ARGS=${EVAL_EXTRA_ARGS:-""}
+
+# Default single-lead fhr (used for any plots that still key off --fhr)
+EVAL_FHR_DEFAULT=${EVAL_FHR_DEFAULT:-3}
 
 GFS_ROOT=${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}
 
@@ -48,26 +74,6 @@ PLOT_GFS_DIR=${OUT_ROOT}/figures/gfs_compare/init_${INIT_TIME}
 # - OCELOT_on_mesh vs GFS_on_mesh (GFS interpolated to OCELOT mesh points)
 PLOT_MESH_GFS_DIR=${OUT_ROOT}/figures/ocelot_on_mesh_vs_gfs_on_mesh/init_${INIT_TIME}
 
-# Checkpoint selection:
-# - If CKPT is provided, use it.
-# - Otherwise, try checkpoints/<EXP_NAME>/last.ckpt, else newest *.ckpt.
-CKPT=${CKPT:-""}
-if [ -z "${CKPT}" ]; then
-  CKPT_DIR="${SCRIPT_DIR}/checkpoints/${EXP_NAME}"
-  if [ -f "${CKPT_DIR}/last.ckpt" ]; then
-    CKPT="${CKPT_DIR}/last.ckpt"
-  else
-    CKPT_CAND=$(ls -t "${CKPT_DIR}"/*.ckpt 2>/dev/null | head -n 1 || true)
-    if [ -n "${CKPT_CAND}" ]; then
-      CKPT="${CKPT_CAND}"
-    fi
-  fi
-fi
-
-if [ -z "${CKPT}" ] || [ ! -f "${CKPT}" ]; then
-  echo "ERROR: CKPT not found. Set CKPT=/path/to/model.ckpt or ensure checkpoints/${EXP_NAME}/last.ckpt exists."
-  exit 2
-fi
 
 echo "Running on $(hostname)"
 echo "INIT_TIME=${INIT_TIME}"
@@ -107,13 +113,14 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
     --batch_size 1
 
 echo "==== 2) OCELOT vs Truth plots (per lead hour) ===="
-for fhr in ${FHR_LIST}; do
-  python evaluations.py --mode plots --has_ground_truth \
-    --data_dir "${OBS_DIR}" \
-    --plot_dir "${PLOT_TRUTH_DIR}/fhr${fhr}" \
-    --init_time "${INIT_TIME}" \
-    --fhr "${fhr}"
-done
+python evaluations.py --mode plots --has_ground_truth \
+  --data_dir "${OBS_DIR}" \
+  --plot_dir "${PLOT_TRUTH_DIR}" \
+  --init_time "${INIT_TIME}" \
+  --fhr "${EVAL_FHR_DEFAULT}" \
+  --plot_all_fhrs \
+  --plot_horizon_12h \
+  ${EVAL_EXTRA_ARGS}
 
 echo "==== 2b) Pointwise metrics (pred vs truth) ===="
 python evaluations.py --mode metrics \
