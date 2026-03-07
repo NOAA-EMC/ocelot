@@ -3,6 +3,8 @@
 
 Evaluation utilities for OCELOT weather prediction model.
 
+Author: Azadeh Gholoubi
+
 This file historically focused on plotting diagnostics from CSV artifacts.
 We now also support *pointwise* verification metrics directly from the new
 `val_csv` format that includes init/valid timestamps.
@@ -13,6 +15,9 @@ import glob
 import argparse
 import numpy as np
 import pandas as pd
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_FIG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "figures"))
 
 # Plotting dependencies are optional for metrics-only usage.
 try:
@@ -127,7 +132,7 @@ def parse_args():
     parser.add_argument(
         "--plot_dir",
         type=str,
-        default="figures",
+        default=DEFAULT_FIG_DIR,
         help="Directory to save output plots"
     )
     parser.add_argument(
@@ -515,7 +520,7 @@ def plot_ocelot_target_diff(
     fhr: int | None = None,
     num_channels: int = 1,
     data_dir: str = "val_csv",
-    fig_dir: str = "figures",
+    fig_dir: str = DEFAULT_FIG_DIR,
     units: str | None = None,  # e.g., "K" for ATMS/AMSU-A
     robust_q: float = 99.0,  # robust clipping for Difference panel
     point_size: int = 7,
@@ -723,7 +728,7 @@ def plot_ocelot_target_diff_12h_horizon(
     strict_obs_window: bool = False,
     num_channels: int = 1,
     data_dir: str = "val_csv",
-    fig_dir: str = "figures",
+    fig_dir: str = DEFAULT_FIG_DIR,
     units: str | None = None,
     robust_q: float = 99.0,
     point_size: int = 7,
@@ -944,7 +949,7 @@ def plot_mesh_maps(
     fhr: int | None = None,
     num_channels: int = 1,
     data_dir: str = "val_csv",
-    fig_dir: str = "figures",
+    fig_dir: str = DEFAULT_FIG_DIR,
     units: str | None = None,
     point_size: int = 7,
     projection=ccrs.PlateCarree(),
@@ -1304,7 +1309,7 @@ def plot_radiosonde_profiles_by_pressure_level_horizon(
     horizon_fhrs: list[int] | None = None,
     strict_obs_window: bool = False,
     data_dir: str = "val_csv",
-    fig_dir: str = "figures",
+    fig_dir: str = DEFAULT_FIG_DIR,
     agg="mean",  # or "median"
     min_samples: int = 500,
 ):
@@ -1533,7 +1538,7 @@ def plot_radiosonde_profiles_by_pressure_level(
     init_time: str | None = None,
     fhr: int | None = None,
     data_dir: str = "val_csv",
-    fig_dir: str = "figures",
+    fig_dir: str = DEFAULT_FIG_DIR,
     agg="mean",  # or "median"
     min_samples: int = 500,  # Minimum samples required per level for reliable statistics
 ):
@@ -1740,7 +1745,7 @@ def plot_instrument_maps(
     fhr: int | None = None,
     num_channels: int = 1,
     data_dir: str = "val_csv",
-    fig_dir: str = "figures",
+    fig_dir: str = DEFAULT_FIG_DIR,
     error_metric: str = "auto",  # "auto" | "absolute" | "percent" | "smape"
     drop_small_truth: bool = True,  # for percent/sMAPE
 ):
@@ -2048,7 +2053,7 @@ if __name__ == "__main__":
         INIT_TIME = "2024112500"
         FHR = None               # No forecast hours in training
         DATA_DIR = "val_csv"
-        PLOT_DIR = "figures/val/obs"
+        PLOT_DIR = os.path.join(DEFAULT_FIG_DIR, "val", "obs")
         PLOT_ALL_FHRS = False
         PLOT_HORIZON_12H = True
         STRICT_OBS_WINDOW = False
@@ -2059,7 +2064,7 @@ if __name__ == "__main__":
         # INIT_TIME = "2024112500"
         # FHR = 12
         # DATA_DIR = "val_mesh_csv"
-        # PLOT_DIR = "figures/val/mesh"
+        # PLOT_DIR = os.path.join(DEFAULT_FIG_DIR, "val", "mesh")
         # --- Example[3] Testing mode - Evaluation ---
         # HAS_GROUND_TRUTH = True
         # EPOCH_TO_PLOT = None
@@ -2067,7 +2072,7 @@ if __name__ == "__main__":
         # INIT_TIME = "2025030100"
         # FHR = None
         # DATA_DIR = "predictions/pred_csv/obs-space/"
-        # PLOT_DIR = "figures/test/obs"
+        # PLOT_DIR = os.path.join(DEFAULT_FIG_DIR, "test", "obs")
         # --- Example[4] Testing mode - Inference ---
         # HAS_GROUND_TRUTH = False
         # EPOCH_TO_PLOT = None
@@ -2075,7 +2080,7 @@ if __name__ == "__main__":
         # INIT_TIME = "2025030100"
         # FHR = 12               # Forecast hour: 3, 6, 9, or 12
         # DATA_DIR = "predictions/pred_csv/mesh-grid/"
-        # PLOT_DIR = "figures/test/mesh"
+        # PLOT_DIR = os.path.join(DEFAULT_FIG_DIR, "test", "mesh")
 
     plot_dir = os.path.abspath(PLOT_DIR)
     os.makedirs(plot_dir, exist_ok=True)

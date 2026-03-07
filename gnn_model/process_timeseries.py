@@ -2,7 +2,6 @@ import hashlib
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler
 from timing_utils import timing_resource_decorator
 
 # Maximum number of channels supported for per-channel variable mapping
@@ -12,6 +11,38 @@ MAX_SUPPORTED_CHANNELS = 9
 STANDARD_PRESSURE_LEVELS = np.array([
     1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10
 ])
+
+
+def _stable_conventional_metadata_scale(meta: np.ndarray, meta_keys: list[str]) -> np.ndarray:
+    """Deterministic scaling for conventional (non-satellite) metadata.
+
+    This intentionally avoids per-window fitting (e.g. StandardScaler.fit_transform),
+    so the same physical value (e.g. station height) maps to the same normalized value
+    everywhere.
+    """
+
+    if meta.size == 0:
+        return np.empty((meta.shape[0], 0), dtype=np.float32)
+
+    meta_f = meta.astype(np.float32, copy=True)
+
+    # NaN -> column mean -> 0 fallback
+    col_means = np.nanmean(meta_f, axis=0)
+    col_means = np.where(np.isfinite(col_means), col_means, 0.0).astype(np.float32)
+    meta_f = np.where(np.isnan(meta_f), col_means, meta_f)
+
+    n_cols = meta_f.shape[1]
+    for j in range(n_cols):
+        key = (meta_keys[j] if j < len(meta_keys) else "").lower()
+
+        # Keep values in a roughly O(1) range.
+        if "log_pressure_height" in key:
+            meta_f[:, j] = meta_f[:, j] / 20000.0
+        elif ("height" in key) or ("elev" in key) or ("alt" in key):
+            meta_f[:, j] = meta_f[:, j] / 5000.0
+
+    meta_f = np.nan_to_num(meta_f, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    return meta_f
 
 
 def get_pressure_level_index(pressure_hpa):
@@ -495,6 +526,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             feat_pos = {k: i for i, k in enumerate(feat_keys)}
             n_ch = len(feat_keys)
 
+            # Per-metadata validity masks (used to drop targets that do not have QC-passed metadata)
+            meta_pos = {k: i for i, k in enumerate(meta_keys)}
+            n_meta = len(meta_keys)
+            input_valid_meta = np.ones((input_idx.size, n_meta), dtype=bool) if n_meta else None
+            target_valid_meta_list = [np.ones((idx.size, n_meta), dtype=bool) for idx in target_indices_list] if n_meta else []
+            meta_clip_specs = {}
+
             # Per-channel validity masks (inputs + ALL targets)
             input_valid_ch = np.ones((input_idx.size, n_ch), dtype=bool)
             target_valid_ch_list = [np.ones((idx.size, n_ch), dtype=bool) for idx in target_indices_list]
@@ -513,6 +551,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
                     reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
+                    meta_j = meta_pos.get(var, None) if n_meta else None
                     # Map per-channel variables to channel indices (generic pattern for any instrument)
                     if pos is None and "_ch_" in var:
                         for ch in range(1, MAX_SUPPORTED_CHANNELS + 1):
@@ -526,7 +565,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                         # Apply to inputs
                         in_vals = z[var][input_idx]
-                        if pos is not None:
+                        if meta_j is not None:
+                            # Metadata range QC: either invalidate, or (if clip=True) record a clip spec.
+                            if isinstance(cfg, dict) and bool(cfg.get("clip", False)):
+                                meta_clip_specs[int(meta_j)] = (float(lo), float(hi))
+                            else:
+                                input_valid_meta[:, meta_j] &= (in_vals >= lo) & (in_vals <= hi)
+                        elif pos is not None:
                             input_valid_ch[:, pos] &= (in_vals >= lo) & (in_vals <= hi)
                         else:
                             # accumulate aux for u/v
@@ -540,7 +585,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if target_idx.size == 0:
                                 continue
                             tg_vals = z[var][target_idx]
-                            if pos is not None:
+                            if meta_j is not None:
+                                if not (isinstance(cfg, dict) and bool(cfg.get("clip", False))):
+                                    target_valid_meta_list[step][:, meta_j] &= (tg_vals >= lo) & (tg_vals <= hi)
+                            elif pos is not None:
                                 target_valid_ch_list[step][:, pos] &= (tg_vals >= lo) & (tg_vals <= hi)
                             else:
                                 # accumulate aux for u/v
@@ -553,8 +601,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
-                        # Use qc_strict_flags from config to determine if missing values should be rejected
-                        strict_flags = bool(obs_cfg.get("qc_strict_flags", False))
+                        # Missing QC flags handling:
+                        # - obs_cfg.qc_strict_flags applies instrument-wide
+                        # - cfg.strict_flags can override per variable (useful for metadata like height)
+                        strict_flags = bool(cfg.get("strict_flags", obs_cfg.get("qc_strict_flags", False)))
 
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
@@ -565,7 +615,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         if not strict_flags:
                             keep_in = keep_in | (in_flags < 0)                         # accept missing when not strict
 
-                        if pos is not None:
+                        if meta_j is not None:
+                            input_valid_meta[:, meta_j] &= keep_in
+                        elif pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
                             if var == "windSpeed":
@@ -585,7 +637,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if not strict_flags:
                                 keep_tg = keep_tg | (tg_flags < 0)
 
-                            if pos is not None:
+                            if meta_j is not None:
+                                target_valid_meta_list[step][:, meta_j] &= keep_tg
+                            elif pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
                                 if var == "windSpeed":
@@ -731,6 +785,30 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if target_metadata_raw.size:
                     target_metadata_raw[target_metadata_raw >= FILL_VALUE] = np.nan
 
+            # Apply metadata QC masks: turn failed metadata values into NaN.
+            # This matters most for targets: later we drop rows with any NaN metadata.
+            if n_meta and input_metadata_raw.size and input_valid_meta is not None:
+                input_metadata_raw[~input_valid_meta] = np.nan
+
+            if n_meta and target_metadata_raw_list:
+                for step in range(num_latent_steps):
+                    if step >= len(target_metadata_raw_list):
+                        break
+                    target_metadata_raw = target_metadata_raw_list[step]
+                    if target_metadata_raw.size and step < len(target_valid_meta_list):
+                        target_metadata_raw[~target_valid_meta_list[step]] = np.nan
+
+            # Apply metadata clipping (range + clip=True) after QC/NaN insertion.
+            if meta_clip_specs and n_meta:
+                for j, (lo, hi) in meta_clip_specs.items():
+                    if input_metadata_raw.size:
+                        col = input_metadata_raw[:, j]
+                        input_metadata_raw[:, j] = np.where(np.isfinite(col), np.clip(col, lo, hi), col)
+                    for target_metadata_raw in target_metadata_raw_list:
+                        if target_metadata_raw.size:
+                            col = target_metadata_raw[:, j]
+                            target_metadata_raw[:, j] = np.where(np.isfinite(col), np.clip(col, lo, hi), col)
+
             # -------------------- EXTRA CROSS-VARIABLE QC (following original pattern) --------------------
             rel = obs_cfg.get("qc_relations") or {}
 
@@ -790,9 +868,22 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # -- Pressure vs height --
                     pvh = rel.get("pressure_vs_height") or {}
-                    if pvh.get("enable", False) and "airPressure" in feat_pos and ("height" in meta_keys):
+                    # Allow flexible column names (e.g. airPressure_prepbufr_event_1, height_prepbufr_event_1)
+                    if pvh.get("enable", False):
+                        jP = None
+                        for k in feat_keys:
+                            if "airpressure" in k.lower():
+                                jP = feat_pos.get(k)
+                                break
+
+                        jH = None
+                        for j, mk in enumerate(meta_keys):
+                            if "height" in mk.lower() or "elev" in mk.lower() or "alt" in mk.lower():
+                                jH = j
+                                break
+
+                    if pvh.get("enable", False) and jP is not None and jH is not None:
                         H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
-                        jP, jH = feat_pos["airPressure"], meta_keys.index("height")
                         for feat_arr, meta_arr, vmask in (
                             (input_features_raw, input_metadata_raw, input_valid_ch),
                             (target_features_raw, target_metadata_raw, target_valid_ch)
@@ -808,9 +899,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 if np.any(bad):
                                     vmask[bad, jP] = False
 
-            # Treat 9999 height as missing
-            if "height" in meta_keys:
-                j = meta_keys.index("height")
+            # Treat sentinel height (e.g. 9999 or int32 max) as missing for any height-like metadata key
+            height_cols = [
+                j for j, mk in enumerate(meta_keys)
+                if ("height" in mk.lower() or "elev" in mk.lower() or "alt" in mk.lower())
+            ]
+            for j in height_cols:
                 if input_metadata_raw.size:
                     input_metadata_raw[:, j] = np.where(input_metadata_raw[:, j] >= 9999.0, np.nan, input_metadata_raw[:, j])
                 for target_metadata_raw in target_metadata_raw_list:
@@ -1078,11 +1172,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                 # Input metadata normalization
                 if input_metadata_raw_clean.size:
-                    meta = input_metadata_raw_clean.copy()
-                    col_means = np.nanmean(meta, axis=0)
-                    col_means = np.where(np.isfinite(col_means), col_means, 0.0)
-                    meta = np.where(np.isnan(meta), col_means, meta)
-                    input_metadata_norm = StandardScaler().fit_transform(meta)
+                    input_metadata_norm = _stable_conventional_metadata_scale(
+                        input_metadata_raw_clean,
+                        meta_keys,
+                    )
                 else:
                     input_metadata_norm = np.empty((x_in.shape[0], 0), dtype=np.float32)
 
@@ -1125,7 +1218,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     lon_rad_target = np.radians(target_data['lon'])[:, None]
 
                     if target_data['metadata'].size:
-                        target_metadata_norm = StandardScaler().fit_transform(target_data['metadata'])
+                        target_metadata_norm = _stable_conventional_metadata_scale(
+                            target_data['metadata'],
+                            meta_keys,
+                        )
                     else:
                         target_metadata_norm = np.empty((target_features_final.shape[0], 0), dtype=np.float32)
 

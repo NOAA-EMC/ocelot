@@ -262,7 +262,7 @@ class GNNDataModule(pl.LightningDataModule):
         payload = {
             # Increment when binning semantics / summary structure changes.
             # This forces rebuild instead of reusing an incompatible cached summary.
-            "summary_version": 2,
+            "summary_version": 3,
             "kind": kind,
             "start": str(pd.to_datetime(start_dt)),
             "end": str(pd.to_datetime(end_dt)),

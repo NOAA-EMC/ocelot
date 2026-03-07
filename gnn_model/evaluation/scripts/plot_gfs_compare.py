@@ -3,12 +3,14 @@
 
 Single entrypoint for obs-space comparisons against GFS using *_vs_gfs.csv.
 
+Author: Azadeh Gholoubi
+
 Typical usage (RMSE + maps for multiple lead times):
 
-  python plot_gfs_compare.py \
+    python evaluation/scripts/plot_gfs_compare.py \
     --init_time 2025030100 \
     --data_dir predictions/.../pred_csv/obs-space \
-    --plot_dir predictions/.../figures/gfs_compare/init_2025030100 \
+        --plot_dir evaluation/figures/gfs_compare/init_2025030100 \
     --instrument surface_obs \
     --vars wind_temperature_pressure \
     --chunksize 200000 \

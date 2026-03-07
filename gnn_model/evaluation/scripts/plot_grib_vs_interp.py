@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 """Plot a GRIB-native GFS map vs values interpolated to obs locations.
 
+Author: Azadeh Gholoubi
+
 This is a diagnostic to sanity-check:
 - GFS file selection for a given (init, fhr)
 - GRIB metadata time/step/valid_time
 - spatial interpolation (including longitude seam handling)
 
 Example:
-  conda run -n gnn-env python plot_grib_vs_interp.py \
+    conda run -n gnn-env python evaluation/scripts/plot_grib_vs_interp.py \
     --csv predictions/Rand_TenYear_nl16/pred_csv/obs-space/pred_surface_obs_target_init_2025030100.csv \
     --gfs_root /scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25 \
     --init 2025030100 \

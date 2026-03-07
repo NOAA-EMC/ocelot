@@ -296,6 +296,37 @@ class GNNLightning(pl.LightningModule):
             embedding_dim=self.pressure_level_embed_dim
         )
 
+        # Surface obs: embed target metadata (e.g. station height) for decoder conditioning.
+        # This lets the surface pressure decoder depend explicitly on elevation.
+        self.surface_target_meta_embed_dim = 8
+        self.surface_target_meta_dim = 0
+        self.surface_target_meta_names = []
+        self.surface_target_meta_embedder = None
+        try:
+            for _, instruments in observation_config.items():
+                if isinstance(instruments, dict) and "surface_obs" in instruments:
+                    surface_cfg = instruments.get("surface_obs") or {}
+                    self.surface_target_meta_names = list(surface_cfg.get("metadata", []) or [])
+                    self.surface_target_meta_dim = int(len(self.surface_target_meta_names))
+                    if self.surface_target_meta_dim > 0:
+                        self.surface_target_meta_embedder = make_mlp(
+                            [self.surface_target_meta_dim, self.surface_target_meta_embed_dim]
+                        )
+                    break
+        except Exception:
+            # Keep embedder disabled if config parsing fails; training will surface it.
+            self.surface_target_meta_dim = 0
+            self.surface_target_meta_names = []
+            self.surface_target_meta_embedder = None
+
+        if self.surface_target_meta_embedder is not None:
+            print(
+                f"[GNN MODEL] surface_obs decoder conditioning: ENABLED "
+                f"(meta_dim={self.surface_target_meta_dim}, embed_dim={self.surface_target_meta_embed_dim})"
+            )
+        else:
+            print("[GNN MODEL] surface_obs decoder conditioning: DISABLED")
+
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
@@ -1189,7 +1220,7 @@ class GNNLightning(pl.LightningModule):
                     # Embed viewing geometry information FIRST (before decoder initialization)
                     sa_emb = None
                     pressure_emb = None
-                    pressure_emb = None
+                    surface_meta_emb = None
 
                     if base_type == "ascat_target":
                         scan_angle = data[step_node_type].x  # [N,3] for ASCAT
@@ -1218,6 +1249,19 @@ class GNNLightning(pl.LightningModule):
                         pressure_level_idx = data[step_node_type].pressure_level  # [N]
                         pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
 
+                    # Surface obs: condition on target metadata (elevation) if available
+                    if (
+                        surface_meta_emb is None
+                        and base_type == "surface_obs_target"
+                        and self.surface_target_meta_embedder is not None
+                        and self.surface_target_meta_dim > 0
+                        and hasattr(data[step_node_type], "target_metadata")
+                    ):
+                        tm = data[step_node_type].target_metadata
+                        if tm is not None and tm.numel() > 0 and tm.size(1) > 2:
+                            meta = tm[:, 2:2 + self.surface_target_meta_dim].to(reference_device)
+                            surface_meta_emb = self.surface_target_meta_embedder(meta)
+
                     # Decoder initialization: CONDITION on viewing geometry
                     # Instead of zeros, initialize decoder WITH geometry information
                     if sa_emb is not None:
@@ -1236,6 +1280,13 @@ class GNNLightning(pl.LightningModule):
                             torch.zeros(N, padding_dim, device=reference_device),
                             pressure_emb
                         ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+                    elif surface_meta_emb is not None:
+                        # Surface obs: condition decoder on station metadata (elevation)
+                        padding_dim = self.hidden_dim - self.surface_target_meta_embed_dim
+                        target_features_initial = torch.cat([
+                            torch.zeros(N, padding_dim, device=reference_device),
+                            surface_meta_emb
+                        ], dim=-1)
                     else:
                         # Conventional obs without viewing geometry: use zeros
                         target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
@@ -1954,6 +2005,12 @@ class GNNLightning(pl.LightningModule):
         all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
 
+        # For surface_obs_target, also persist the metadata that the decoder conditions on
+        # (e.g., station height) so we can directly verify pressure error vs height.
+        surface_meta_names = list(getattr(self, "surface_target_meta_names", []) or [])
+        surface_meta_dim = int(getattr(self, "surface_target_meta_dim", 0) or 0)
+        all_surface_meta_cols = [list() for _ in range(surface_meta_dim)] if node_type == "surface_obs_target" and surface_meta_dim > 0 else []
+
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
                 continue
@@ -1978,10 +2035,29 @@ class GNNLightning(pl.LightningModule):
                     lon = target_metadata[:, 1].cpu().numpy()
                     lat_deg = np.degrees(lat)
                     lon_deg = np.degrees(lon)
+
+                    # surface_obs_target: record the conditioned metadata (columns after lat/lon)
+                    if all_surface_meta_cols:
+                        try:
+                            meta = target_metadata[:, 2:2 + surface_meta_dim].detach().cpu().numpy()
+                            if meta.ndim == 1:
+                                meta = meta[:, None]
+                        except Exception:
+                            meta = None
+                        if meta is None or meta.shape[0] != int(y_pred_unnorm.shape[0]):
+                            for j in range(surface_meta_dim):
+                                all_surface_meta_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
+                        else:
+                            for j in range(surface_meta_dim):
+                                all_surface_meta_cols[j].extend(meta[:, j].astype(np.float64).tolist())
                 else:
                     n = y_pred_unnorm.shape[0]
                     lat_deg = np.zeros(n)
                     lon_deg = np.zeros(n)
+
+                    if all_surface_meta_cols:
+                        for j in range(surface_meta_dim):
+                            all_surface_meta_cols[j].extend([float('nan')] * int(n))
 
                 # Per-observation timestamps (epoch seconds) if present
                 if hasattr(batch[step_node_type], 'target_times'):
@@ -2075,6 +2151,15 @@ class GNNLightning(pl.LightningModule):
 
         # Build DataFrame in EXACT same format as standard rollout
         df = pd.DataFrame({"lat": all_lat, "lon": all_lon})
+
+        # Persist surface meta columns (e.g., height) if present.
+        if all_surface_meta_cols and len(all_surface_meta_cols[0]) == len(df):
+            def _safe_meta_name(s: str) -> str:
+                return str(s).strip().replace(" ", "_")
+
+            for j in range(surface_meta_dim):
+                name = surface_meta_names[j] if j < len(surface_meta_names) else f"meta{j}"
+                df[f"meta_{_safe_meta_name(name)}"] = np.asarray(all_surface_meta_cols[j], dtype=np.float64)
 
         # Init time columns (constant per file/batch when available)
         init_time_str = self._extract_init_time_str(batch)

@@ -17,7 +17,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OCELOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
+
+cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
 
 # =====================
 # User-config parameters
@@ -34,19 +37,21 @@ EXP_NAME=${EXP_NAME:-Seq_TenYear_nl16}
 
 
 # If you want a specific epoch, set CKPT=/path/to/file.ckpt when submitting.
-CKPT=/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/mainBranch/ocelot/gnn_model/checkpoints/Seq_TenYear_nl16/gnn-epoch-epoch=1559-val_loss-val_loss=0.15.ckpt
+# Example:
+#   sbatch --export=ALL,CKPT=/full/path/to/model.ckpt evaluation/scripts/run_pred_eval_gfs.sh
+CKPT=${CKPT:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/mainBranch/ocelot/gnn_model/checkpoints/Rand_TenYear_nl16_fixedBugs/last.ckpt}
 
 if [ -z "${CKPT}" ]; then
   echo "ERROR: CKPT is not set. Provide a full checkpoint path."
-  echo "Example: sbatch --export=ALL,CKPT=/full/path/to/model.ckpt run_pred_eval_gfs.sh"
+  echo "Example: sbatch --export=ALL,CKPT=/full/path/to/model.ckpt evaluation/scripts/run_pred_eval_gfs.sh"
   exit 2
 fi
 
 if [ ! -f "${CKPT}" ]; then
   echo "ERROR: CKPT not found: ${CKPT}"
   echo "Set CKPT=/path/to/model.ckpt or set EXP_NAME to a checkpoints folder that exists."
-  echo "Available checkpoint folders under ${SCRIPT_DIR}/checkpoints:"
-  ls -1 "${SCRIPT_DIR}/checkpoints" || true
+  echo "Available checkpoint folders under ${GNN_MODEL_DIR}/checkpoints:"
+  ls -1 "${GNN_MODEL_DIR}/checkpoints" || true
   exit 2
 fi
 
@@ -72,12 +77,19 @@ GFS_TIME_MODE=${GFS_TIME_MODE:-obs_interp}
 OUT_ROOT=${OUT_ROOT:-"predictions/${EXP_NAME}"}
 OBS_DIR=${OUT_ROOT}/pred_csv/obs-space
 MESH_DIR=${OUT_ROOT}/pred_csv/mesh-grid
-PLOT_TRUTH_DIR=${OUT_ROOT}/figures/ocelot_vs_truth/init_${INIT_TIME}
-PLOT_GFS_DIR=${OUT_ROOT}/figures/gfs_compare/init_${INIT_TIME}
+PLOT_ROOT="evaluation/${OUT_ROOT}/figures"
+PLOT_TRUTH_DIR=${PLOT_ROOT}/ocelot_vs_truth/init_${INIT_TIME}
+PLOT_GFS_DIR=${PLOT_ROOT}/gfs_compare/init_${INIT_TIME}
 
 # Mesh-grid plots:
 # - OCELOT_on_mesh vs GFS_on_mesh (GFS interpolated to OCELOT mesh points)
-PLOT_MESH_GFS_DIR=${OUT_ROOT}/figures/ocelot_on_mesh_vs_gfs_on_mesh/init_${INIT_TIME}
+PLOT_MESH_GFS_DIR=${PLOT_ROOT}/ocelot_on_mesh_vs_gfs_on_mesh/init_${INIT_TIME}
+
+EVAL_SCRIPT="evaluation/scripts/evaluations.py"
+COMPARE_TO_GFS_SCRIPT="evaluation/scripts/compare_to_gfs.py"
+PLOT_GFS_COMPARE_SCRIPT="evaluation/scripts/plot_gfs_compare.py"
+COMPARE_MESH_TO_GFS_SCRIPT="evaluation/scripts/compare_mesh_to_gfs.py"
+PLOT_MESH_VS_GFS_MAPS_SCRIPT="evaluation/scripts/plot_mesh_vs_gfs_maps.py"
 
 
 echo "Running on $(hostname)"
@@ -94,7 +106,7 @@ source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 
 # Ensure we run the code from THIS checkout (not NNJA mirror)
-export PYTHONPATH="${SCRIPT_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
+export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
 
 # Derived dates for predict_gnn.py (YYYY-MM-DD)
 # IMPORTANT: end_date must be > start_date, otherwise the datamodule builds zero bins.
@@ -119,7 +131,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
     --batch_size 1
 
 echo "==== 2) OCELOT vs Truth plots (per lead hour) ===="
-python evaluations.py --mode plots --has_ground_truth \
+python "${EVAL_SCRIPT}" --mode plots --has_ground_truth \
   --data_dir "${OBS_DIR}" \
   --plot_dir "${PLOT_TRUTH_DIR}" \
   --init_time "${INIT_TIME}" \
@@ -129,7 +141,7 @@ python evaluations.py --mode plots --has_ground_truth \
   ${EVAL_EXTRA_ARGS}
 
 echo "==== 2b) Pointwise metrics (pred vs truth) ===="
-python evaluations.py --mode metrics \
+python "${EVAL_SCRIPT}" --mode metrics \
   --data_dir "${OBS_DIR}" \
   --metrics_pattern "pred_*init_${INIT_TIME}.csv" \
   --metrics_out "${OUT_ROOT}/metrics_pointwise_init_${INIT_TIME}.csv" \
@@ -146,7 +158,7 @@ if [ ! -f "${OCELOT_CSV}" ]; then
   exit 3
 fi
 
-python compare_to_gfs.py \
+python "${COMPARE_TO_GFS_SCRIPT}" \
   --instrument "${INSTRUMENT}" \
   --ocelot_csv "${OCELOT_CSV}" \
   --gfs_root "${GFS_ROOT}" \
@@ -171,7 +183,7 @@ if non_null==0:
 "
 
 echo "==== 4) Plots: RMSE vs fhr + maps (OCELOT vs Truth vs GFS) ===="
-python plot_gfs_compare.py \
+python "${PLOT_GFS_COMPARE_SCRIPT}" \
   --init_time "${INIT_TIME}" \
   --data_dir "${OBS_DIR}" \
   --plot_dir "${PLOT_GFS_DIR}" \
@@ -194,7 +206,7 @@ if [ -d "${MESH_DIR}" ]; then
         exit 4
       fi
 
-      python compare_mesh_to_gfs.py \
+      python "${COMPARE_MESH_TO_GFS_SCRIPT}" \
         --mesh_csv "${mesh_csv}" \
         --gfs_root "${GFS_ROOT}" \
         --out_csv "${gfs_on_ocelot_mesh_csv}" \
@@ -203,7 +215,7 @@ if [ -d "${MESH_DIR}" ]; then
       # Plot a small set of variables if present.
       mkdir -p "${PLOT_MESH_GFS_DIR}/fhr${fhr}"
       for v in u10 v10 t2m sp; do
-        python plot_mesh_vs_gfs_maps.py \
+        python "${PLOT_MESH_VS_GFS_MAPS_SCRIPT}" \
           --csv "${gfs_on_ocelot_mesh_csv}" \
           --plot_dir "${PLOT_MESH_GFS_DIR}/fhr${fhr}" \
           --var "${v}" \

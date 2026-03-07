@@ -14,9 +14,9 @@
 
 
 #Script to run evaluations for multiple initialization times
-#Submit with: sbatch run_evaluation.sh [START_DATE] [END_DATE]
-#Example: sbatch run_evaluation.sh 2023010100 2023010912
-#Or use defaults: sbatch run_evaluation.sh
+#Submit with: sbatch evaluation/scripts/run_evaluation.sh [START_DATE] [END_DATE]
+#Example: sbatch evaluation/scripts/run_evaluation.sh 2023010100 2023010912
+#Or use defaults: sbatch evaluation/scripts/run_evaluation.sh
 
 #set -e  # Exit on error
 
@@ -26,13 +26,18 @@ echo "Node: $(hostname)"
 echo "Architecture: $(uname -m)"
 echo "================================================"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
+
+cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
+
 # Load Conda environment
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 
 # Add PYTHONPATH
-export NNJA_LOCAL_ROOT=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/nnja-ai
-export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot/gnn_model:/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot:$PYTHONPATH
+export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
 
 # ============================================
 # CONFIGURATION - Set all parameters here
@@ -49,8 +54,8 @@ INSTRUMENT=${INSTRUMENT:-"surface_obs"}
 CHUNKSIZE=${CHUNKSIZE:-"200000"}
 VARS=${VARS:-"wind"}
 
-EVAL_SCRIPT="evaluations.py"
-GFS_COMPARE_SCRIPT="plot_gfs_compare.py"
+EVAL_SCRIPT="evaluation/scripts/evaluations.py"
+GFS_COMPARE_SCRIPT="evaluation/scripts/plot_gfs_compare.py"
 
 # --- Training Mode Parameters ---
 # Leave empty ("") for testing mode, or set for training mode:
@@ -67,7 +72,7 @@ BATCH_IDX_TO_PLOT="0"
 DATA_DIR="val_csv"
 
 # Output directory for plots
-PLOT_DIR="figures"
+PLOT_DIR="evaluation/figures"
 
 # --- Mode Configuration ---
 # Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth

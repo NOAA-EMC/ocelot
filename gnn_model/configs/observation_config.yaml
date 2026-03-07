@@ -208,6 +208,7 @@ observation_config:
           clip: true
           qm_flag_col: heightQuality_event_1
           keep: [1, 2]
+          strict_flags: true
 
       qc_relations:                   # cross-variable checks
         dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)

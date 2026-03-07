@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 """Interpolate GFS onto OCELOT mesh-grid prediction points.
 
+Author: Azadeh Gholoubi
+
 Mesh-grid prediction CSVs are produced when `enable_mesh_pred: true` and should look like:
   <mesh_dir>/<instrument>_init_<YYYYMMDDHH>_f<FFF>.csv
 

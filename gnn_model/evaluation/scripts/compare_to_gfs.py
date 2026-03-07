@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 """Compare Ocelot conventional-observation predictions vs GFS.
 
+Author: Azadeh Gholoubi
+
 Inputs
 ------
 Ocelot CSV must contain at least:
@@ -19,7 +21,7 @@ GFS directory tree must look like:
 
 Example (surface obs for 2025030100)
 -----------------------------------
-conda run -n gnn-env python compare_to_gfs.py \
+conda run -n gnn-env python evaluation/scripts/compare_to_gfs.py \
   --instrument surface_obs \
   --ocelot_csv predictions/pred_csv/obs-space/pred_surface_obs_target_init_2025030100.csv \
   --gfs_root /scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25 \

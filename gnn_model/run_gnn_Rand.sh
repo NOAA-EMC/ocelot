@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --exclude=u22g09,u22g08,u22g10
-#SBATCH -A gpu-emc-ai  # gpu-ai4wp gpu-emc-ai
+#SBATCH -A gpu-ai4wp  # gpu-ai4wp gpu-emc-ai
 #SBATCH -p u1-h100
 #SBATCH -q gpu
 #SBATCH --gres=gpu:h100:2
@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 16:00:00
+#SBATCH -t 48:00:00
 #SBATCH --output=gnn_train_Random_%j.out
 #SBATCH --error=gnn_train_Random_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -99,7 +99,7 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-Rand_TenYear_nl16}"
+RUN_NAME="${RUN_NAME:-Rand_TenYear_nl16_fixedBugs}"
 echo "RUN_NAME=$RUN_NAME"
 
 # Resume behavior:

@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 """Plot mesh-grid OCELOT vs GFS comparisons.
 
+Author: Azadeh Gholoubi
+
 Input CSV is produced by compare_mesh_to_gfs.py and should contain:
 - lat, lon
 - pred_* columns
