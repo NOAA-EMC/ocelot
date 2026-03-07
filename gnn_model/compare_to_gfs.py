@@ -4,7 +4,8 @@
 Inputs
 ------
 Ocelot CSV must contain at least:
-- `datetime` (valid time, ISO8601 UTC)
+- `datetime` (ISO8601 UTC). In this repo this may be a nominal valid time.
+- `obs_time_unix` (seconds since epoch, UTC) is preferred when present and is treated as the per-observation timestamp.
 - `lat`, `lon`
 - for `surface_obs` (any subset; script will compare what exists):
     - winds: `pred_wind_u`, `pred_wind_v`, `true_wind_u`, `true_wind_v`
@@ -26,7 +27,7 @@ conda run -n gnn-env python compare_to_gfs.py \
   --init_mode from_csv \
   --interp nearest
 
-If your prediction CSV does not yet have `datetime`/`init_datetime`, rerun prediction
+If your prediction CSV does not yet have `datetime` and init-time columns (`init_datetime` or `init_time_unix`), rerun prediction
 with the updated `gnn_model.py` in this repo first.
 """
 
@@ -92,6 +93,34 @@ def _round_to_step(hours: float, step_hours: int, tol_hours: float | None = None
         if abs(float(hours) - float(fhr)) > float(tol_hours):
             return -1
     return int(fhr)
+
+
+def _time_brackets(obs_fhr_hours: np.ndarray, step_hours: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return (fhr_lo, fhr_hi, w_hi) for linear time interpolation.
+
+        For each fractional lead hour t, find the bracketing model output times:
+            fhr_lo = floor(t/step)*step
+            fhr_hi = fhr_lo + step
+            w_hi   = (t - fhr_lo) / step
+
+        If t is exactly on an output time, fhr_hi == fhr_lo and w_hi == 0.
+        """
+        step_hours = int(step_hours)
+        obs = np.asarray(obs_fhr_hours, dtype=np.float64)
+
+        f0 = np.floor(obs / float(step_hours)) * float(step_hours)
+        r = obs - f0
+
+        eps = 1e-9
+        on_edge = np.isfinite(r) & (np.abs(r) < eps)
+
+        f1 = f0 + float(step_hours)
+        w = r / float(step_hours)
+
+        f1[on_edge] = f0[on_edge]
+        w[on_edge] = 0.0
+
+        return f0.astype(int), f1.astype(int), w.astype(np.float64)
 
 
 @dataclass(frozen=True)
@@ -202,6 +231,8 @@ def _compute_gfs_keys(
     fhr_step: int,
     cycle_hours: tuple[int, ...],
     fhr_tolerance_hours: float | None,
+    *,
+    gfs_time_mode: str,
 ) -> pd.DataFrame:
     if "datetime" not in df.columns:
         raise ValueError("CSV must include a 'datetime' column")
@@ -211,9 +242,17 @@ def _compute_gfs_keys(
     # inside the target sub-window (e.g., within [init, init+3h)). That is NOT necessarily the nominal
     # forecast valid time for a 3h/6h/... lead.
     #
-    # For robust GFS matching we therefore prefer `lead_hours_nominal` when present, and only fall back
-    # to (datetime - init_datetime) when the nominal lead column is missing.
-    dt_obs = _parse_datetime_utc(df["datetime"])
+    # For robust GFS matching we therefore prefer `lead_hours_nominal` when present.
+    # For per-row observation timestamps, prefer `obs_time_unix` if available (seconds since epoch),
+    # otherwise fall back to parsing the CSV `datetime` column.
+    dt_obs = None
+    if "obs_time_unix" in df.columns:
+        obs_unix = pd.to_numeric(df["obs_time_unix"], errors="coerce")
+        dt_from_unix = pd.to_datetime(obs_unix, unit="s", utc=True, errors="coerce")
+        if dt_from_unix.notna().any():
+            dt_obs = dt_from_unix
+    if dt_obs is None:
+        dt_obs = _parse_datetime_utc(df["datetime"])
     df = df.assign(_obs_dt=dt_obs)
     df = df.loc[df["_obs_dt"].notna()].copy()
 
@@ -249,6 +288,9 @@ def _compute_gfs_keys(
     df["_fhr_raw_source"] = fhr_raw_source
     df["_fhr"] = df["_fhr_raw"].apply(lambda x: _round_to_step(float(x), fhr_step, tol_hours=fhr_tolerance_hours))
 
+    # Per-row observation lead (hours from init). Used for obs-time GFS baselines.
+    df["_obs_fhr"] = (df["_obs_dt"] - df["_init_dt"]).dt.total_seconds() / 3600.0
+
     # Nominal valid time used for GFS matching.
     df["_valid_dt"] = df["_init_dt"] + pd.to_timedelta(df["_fhr"].astype(float), unit="h")
 
@@ -258,7 +300,12 @@ def _compute_gfs_keys(
         delta_h = (df["_obs_dt"] - df["_valid_dt"]).dt.total_seconds().abs() / 3600.0
         med = float(delta_h.median()) if len(delta_h) else 0.0
         p95 = float(delta_h.quantile(0.95)) if len(delta_h) else 0.0
-        if np.isfinite(med) and np.isfinite(p95) and (med > 0.25 or p95 > 1.0):
+        if (
+            str(gfs_time_mode) == "nominal"
+            and np.isfinite(med)
+            and np.isfinite(p95)
+            and (med > 0.25 or p95 > 1.0)
+        ):
             print(
                 "[WARN] CSV 'datetime' appears to be per-observation time, not nominal forecast valid time. "
                 "GFS matching will use init_datetime + fhr (from lead_hours_nominal if present). "
@@ -307,47 +354,123 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
     gfs_t2m_c = np.full(len(df), np.nan, dtype=np.float64)
     gfs_sp_hpa = np.full(len(df), np.nan, dtype=np.float64)
 
-    for (init_dt, fhr), idx in df.groupby(["_init_dt", "_fhr"]).groups.items():
-        key = GfsKey(init=pd.Timestamp(init_dt).tz_convert("UTC"), fhr=int(fhr))
-        path = _gfs_path(gfs_root, key)
-        if not os.path.exists(path):
-            print(f"[WARN] Missing GFS file: {path}")
+    if not all(c in df.columns for c in ["_gfs_fhr0", "_gfs_fhr1", "_gfs_w"]):
+        raise ValueError("Internal error: missing GFS time-bracketing columns (_gfs_fhr0/_gfs_fhr1/_gfs_w)")
+
+    w_all = df["_gfs_w"].to_numpy(dtype=np.float64)
+
+    for (init_dt, fh0, fh1), idx in df.groupby(["_init_dt", "_gfs_fhr0", "_gfs_fhr1"]).groups.items():
+        if int(fh0) < 0 or int(fh1) < 0:
             continue
 
-        ds_u = ds_v = ds_t = ds_sp = None
-        if need_u10:
-            try:
-                ds_u = _open_gfs_height10(path, "10u")
-            except Exception as e:
-                print(f"[WARN] Failed to open GFS 10u: {path} ({e})")
-        if need_v10:
-            try:
-                ds_v = _open_gfs_height10(path, "10v")
-            except Exception as e:
-                print(f"[WARN] Failed to open GFS 10v: {path} ({e})")
-        if need_t2m:
-            try:
-                ds_t = _open_gfs_height2(path, "2t")
-            except Exception as e:
-                print(f"[WARN] Failed to open GFS 2t: {path} ({e})")
-        if need_sp:
-            try:
-                ds_sp = _open_gfs_surface(path, "sp")
-            except Exception as e:
-                print(f"[WARN] Failed to open GFS surface pressure (sp): {path} ({e})")
+        init_ts = pd.Timestamp(init_dt).tz_convert("UTC")
+        path0 = _gfs_path(gfs_root, GfsKey(init=init_ts, fhr=int(fh0)))
+        path1 = _gfs_path(gfs_root, GfsKey(init=init_ts, fhr=int(fh1))) if int(fh1) != int(fh0) else path0
+
+        has0 = os.path.exists(path0)
+        has1 = os.path.exists(path1)
+        if not has0 and not has1:
+            print(f"[WARN] Missing GFS files: {path0} and {path1}")
+            continue
+        if not has0:
+            print(f"[WARN] Missing GFS file: {path0} (falling back to {path1})")
+        if not has1:
+            print(f"[WARN] Missing GFS file: {path1} (falling back to {path0})")
+
+        ds0_u = ds0_v = ds0_t = ds0_sp = None
+        ds1_u = ds1_v = ds1_t = ds1_sp = None
+
+        if has0:
+            if need_u10:
+                try:
+                    ds0_u = _open_gfs_height10(path0, "10u")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS 10u: {path0} ({e})")
+            if need_v10:
+                try:
+                    ds0_v = _open_gfs_height10(path0, "10v")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS 10v: {path0} ({e})")
+            if need_t2m:
+                try:
+                    ds0_t = _open_gfs_height2(path0, "2t")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS 2t: {path0} ({e})")
+            if need_sp:
+                try:
+                    ds0_sp = _open_gfs_surface(path0, "sp")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS surface pressure (sp): {path0} ({e})")
+
+        if has1 and path1 != path0:
+            if need_u10:
+                try:
+                    ds1_u = _open_gfs_height10(path1, "10u")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS 10u: {path1} ({e})")
+            if need_v10:
+                try:
+                    ds1_v = _open_gfs_height10(path1, "10v")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS 10v: {path1} ({e})")
+            if need_t2m:
+                try:
+                    ds1_t = _open_gfs_height2(path1, "2t")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS 2t: {path1} ({e})")
+            if need_sp:
+                try:
+                    ds1_sp = _open_gfs_surface(path1, "sp")
+                except Exception as e:
+                    print(f"[WARN] Failed to open GFS surface pressure (sp): {path1} ({e})")
 
         ii = np.asarray(idx, dtype=np.int64)
         for jj in _iter_index_chunks(ii, chunk_size=chunk_size):
-            if ds_u is not None:
-                gfs_u[jj] = _interp_2d(ds_u, _pick_var_name(ds_u, "u10"), lat[jj], lon360[jj], method=method)
-            if ds_v is not None:
-                gfs_v[jj] = _interp_2d(ds_v, _pick_var_name(ds_v, "v10"), lat[jj], lon360[jj], method=method)
-            if ds_t is not None:
-                tvar = _pick_var_name(ds_t, "t2m")
-                gfs_t2m_c[jj] = _interp_2d(ds_t, tvar, lat[jj], lon360[jj], method=method) - 273.15
-            if ds_sp is not None:
-                spvar = _pick_var_name(ds_sp, "sp")
-                gfs_sp_hpa[jj] = _interp_2d(ds_sp, spvar, lat[jj], lon360[jj], method=method) / 100.0
+            ww = w_all[jj]
+
+            if need_u10:
+                v0 = _interp_2d(ds0_u, _pick_var_name(ds0_u, "u10"), lat[jj], lon360[jj], method=method) if ds0_u is not None else np.full(len(jj), np.nan)
+                v1 = _interp_2d(ds1_u, _pick_var_name(ds1_u, "u10"), lat[jj], lon360[jj], method=method) if ds1_u is not None else v0
+                if ds0_u is None and ds1_u is not None:
+                    v0 = v1
+                gfs_u[jj] = (1.0 - ww) * v0 + ww * v1
+
+            if need_v10:
+                v0 = _interp_2d(ds0_v, _pick_var_name(ds0_v, "v10"), lat[jj], lon360[jj], method=method) if ds0_v is not None else np.full(len(jj), np.nan)
+                v1 = _interp_2d(ds1_v, _pick_var_name(ds1_v, "v10"), lat[jj], lon360[jj], method=method) if ds1_v is not None else v0
+                if ds0_v is None and ds1_v is not None:
+                    v0 = v1
+                gfs_v[jj] = (1.0 - ww) * v0 + ww * v1
+
+            if need_t2m:
+                v0 = (
+                    _interp_2d(ds0_t, _pick_var_name(ds0_t, "t2m"), lat[jj], lon360[jj], method=method) - 273.15
+                    if ds0_t is not None
+                    else np.full(len(jj), np.nan)
+                )
+                v1 = (
+                    _interp_2d(ds1_t, _pick_var_name(ds1_t, "t2m"), lat[jj], lon360[jj], method=method) - 273.15
+                    if ds1_t is not None
+                    else v0
+                )
+                if ds0_t is None and ds1_t is not None:
+                    v0 = v1
+                gfs_t2m_c[jj] = (1.0 - ww) * v0 + ww * v1
+
+            if need_sp:
+                v0 = (
+                    _interp_2d(ds0_sp, _pick_var_name(ds0_sp, "sp"), lat[jj], lon360[jj], method=method) / 100.0
+                    if ds0_sp is not None
+                    else np.full(len(jj), np.nan)
+                )
+                v1 = (
+                    _interp_2d(ds1_sp, _pick_var_name(ds1_sp, "sp"), lat[jj], lon360[jj], method=method) / 100.0
+                    if ds1_sp is not None
+                    else v0
+                )
+                if ds0_sp is None and ds1_sp is not None:
+                    v0 = v1
+                gfs_sp_hpa[jj] = (1.0 - ww) * v0 + ww * v1
 
     out = df.copy()
     out["gfs_u10"] = gfs_u
@@ -402,22 +525,57 @@ def compare_isobaric(
     gfs_v = np.full(len(df), np.nan, dtype=np.float64)
     gfs_t_c = np.full(len(df), np.nan, dtype=np.float64)
 
-    for (init_dt, fhr), idx in df.groupby(["_init_dt", "_fhr"]).groups.items():
-        key = GfsKey(init=pd.Timestamp(init_dt).tz_convert("UTC"), fhr=int(fhr))
-        path = _gfs_path(gfs_root, key)
-        if not os.path.exists(path):
-            print(f"[WARN] Missing GFS file: {path}")
+    if not all(c in df.columns for c in ["_gfs_fhr0", "_gfs_fhr1", "_gfs_w"]):
+        raise ValueError("Internal error: missing GFS time-bracketing columns (_gfs_fhr0/_gfs_fhr1/_gfs_w)")
+
+    w_all = df["_gfs_w"].to_numpy(dtype=np.float64)
+
+    for (init_dt, fh0, fh1), idx in df.groupby(["_init_dt", "_gfs_fhr0", "_gfs_fhr1"]).groups.items():
+        if int(fh0) < 0 or int(fh1) < 0:
             continue
 
-        ds_u = _open_gfs_isobaric(path, "u")
-        ds_v = _open_gfs_isobaric(path, "v")
-        ds_t = _open_gfs_isobaric(path, "t")
+        init_ts = pd.Timestamp(init_dt).tz_convert("UTC")
+        path0 = _gfs_path(gfs_root, GfsKey(init=init_ts, fhr=int(fh0)))
+        path1 = _gfs_path(gfs_root, GfsKey(init=init_ts, fhr=int(fh1))) if int(fh1) != int(fh0) else path0
+
+        has0 = os.path.exists(path0)
+        has1 = os.path.exists(path1)
+        if not has0 and not has1:
+            print(f"[WARN] Missing GFS files: {path0} and {path1}")
+            continue
+
+        ds0_u = ds0_v = ds0_t = None
+        ds1_u = ds1_v = ds1_t = None
+        if has0:
+            ds0_u = _open_gfs_isobaric(path0, "u")
+            ds0_v = _open_gfs_isobaric(path0, "v")
+            ds0_t = _open_gfs_isobaric(path0, "t")
+        if has1 and path1 != path0:
+            ds1_u = _open_gfs_isobaric(path1, "u")
+            ds1_v = _open_gfs_isobaric(path1, "v")
+            ds1_t = _open_gfs_isobaric(path1, "t")
 
         ii = np.asarray(idx, dtype=np.int64)
         for jj in _iter_index_chunks(ii, chunk_size=chunk_size):
-            gfs_u[jj] = _interp_isobaric(ds_u, "u", p[jj], lat[jj], lon360[jj], method=method)
-            gfs_v[jj] = _interp_isobaric(ds_v, "v", p[jj], lat[jj], lon360[jj], method=method)
-            gfs_t_c[jj] = _interp_isobaric(ds_t, "t", p[jj], lat[jj], lon360[jj], method=method) - 273.15
+            ww = w_all[jj]
+
+            u0 = _interp_isobaric(ds0_u, "u", p[jj], lat[jj], lon360[jj], method=method) if ds0_u is not None else np.full(len(jj), np.nan)
+            u1 = _interp_isobaric(ds1_u, "u", p[jj], lat[jj], lon360[jj], method=method) if ds1_u is not None else u0
+            if ds0_u is None and ds1_u is not None:
+                u0 = u1
+            gfs_u[jj] = (1.0 - ww) * u0 + ww * u1
+
+            v0 = _interp_isobaric(ds0_v, "v", p[jj], lat[jj], lon360[jj], method=method) if ds0_v is not None else np.full(len(jj), np.nan)
+            v1 = _interp_isobaric(ds1_v, "v", p[jj], lat[jj], lon360[jj], method=method) if ds1_v is not None else v0
+            if ds0_v is None and ds1_v is not None:
+                v0 = v1
+            gfs_v[jj] = (1.0 - ww) * v0 + ww * v1
+
+            t0 = (_interp_isobaric(ds0_t, "t", p[jj], lat[jj], lon360[jj], method=method) - 273.15) if ds0_t is not None else np.full(len(jj), np.nan)
+            t1 = (_interp_isobaric(ds1_t, "t", p[jj], lat[jj], lon360[jj], method=method) - 273.15) if ds1_t is not None else t0
+            if ds0_t is None and ds1_t is not None:
+                t0 = t1
+            gfs_t_c[jj] = (1.0 - ww) * t0 + ww * t1
 
     out = df.copy()
     out["gfs_u"] = gfs_u
@@ -465,6 +623,17 @@ def main() -> int:
     ap.add_argument("--cycle_hours", default="0,6,12,18", help="Comma-separated cycle hours for infer_from_valid")
     ap.add_argument("--interp", default="nearest", choices=["nearest", "linear"], help="Spatial/vertical interpolation")
     ap.add_argument(
+        "--gfs_time_mode",
+        default="nominal",
+        choices=["nominal", "obs_interp"],
+        help=(
+            "How to choose the GFS valid time for each row. "
+            "nominal uses init_datetime + fhr (bucket end). "
+            "obs_interp linearly interpolates GFS in time to each row's observation timestamp "
+            "(prefers CSV 'obs_time_unix' when present; falls back to parsing 'datetime')."
+        ),
+    )
+    ap.add_argument(
         "--chunk_size",
         type=int,
         default=10_000,
@@ -498,7 +667,23 @@ def main() -> int:
         fhr_step=int(args.fhr_step),
         cycle_hours=cycle_hours,
         fhr_tolerance_hours=tol,
+        gfs_time_mode=str(args.gfs_time_mode),
     )
+
+    # Compute time-bracketing fhrs + weights for GFS. In nominal mode, these collapse to a single file.
+    if str(args.gfs_time_mode) == "obs_interp":
+        f0, f1, w1 = _time_brackets(df["_obs_fhr"].to_numpy(dtype=np.float64), step_hours=int(args.fhr_step))
+        df["_gfs_fhr0"] = f0
+        df["_gfs_fhr1"] = f1
+        df["_gfs_w"] = w1
+        df["_gfs_valid_dt0"] = df["_init_dt"] + pd.to_timedelta(df["_gfs_fhr0"].astype(float), unit="h")
+        df["_gfs_valid_dt1"] = df["_init_dt"] + pd.to_timedelta(df["_gfs_fhr1"].astype(float), unit="h")
+    else:
+        df["_gfs_fhr0"] = df["_fhr"].astype(int)
+        df["_gfs_fhr1"] = df["_fhr"].astype(int)
+        df["_gfs_w"] = 0.0
+        df["_gfs_valid_dt0"] = df["_valid_dt"]
+        df["_gfs_valid_dt1"] = df["_valid_dt"]
 
     if args.instrument == "surface_obs":
         out = compare_surface_obs(df, gfs_root=args.gfs_root, method=args.interp, chunk_size=int(args.chunk_size))
@@ -524,14 +709,43 @@ def main() -> int:
         raise AssertionError(args.instrument)
 
     out["init_datetime_used"] = out["_init_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    out["valid_datetime_used"] = out["_valid_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if str(args.gfs_time_mode) == "obs_interp" and "_obs_dt" in out.columns:
+        out["valid_datetime_used"] = out["_obs_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        out["valid_datetime_used"] = out["_valid_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     out["fhr_used"] = out["_fhr"].astype(int)
+    out["gfs_time_mode"] = str(args.gfs_time_mode)
+    if "_gfs_fhr0" in out.columns:
+        out["gfs_fhr_lo"] = out["_gfs_fhr0"].astype(int)
+        out["gfs_fhr_hi"] = out["_gfs_fhr1"].astype(int)
+        out["gfs_time_weight_hi"] = pd.to_numeric(out["_gfs_w"], errors="coerce")
+    if "_gfs_valid_dt0" in out.columns:
+        out["gfs_valid_datetime_lo"] = out["_gfs_valid_dt0"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        out["gfs_valid_datetime_hi"] = out["_gfs_valid_dt1"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Keep the original per-row datetime around for debugging (often this is observation time).
     if "_obs_dt" in out.columns:
         out["obs_datetime_from_csv"] = out["_obs_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    out = out.drop(columns=[c for c in ["_init_dt", "_valid_dt", "_obs_dt"] if c in out.columns])
+    out = out.drop(
+        columns=[
+            c
+            for c in [
+                "_init_dt",
+                "_valid_dt",
+                "_obs_dt",
+                "_obs_fhr",
+                "_fhr_raw",
+                "_fhr_raw_source",
+                "_gfs_fhr0",
+                "_gfs_fhr1",
+                "_gfs_w",
+                "_gfs_valid_dt0",
+                "_gfs_valid_dt1",
+            ]
+            if c in out.columns
+        ]
+    )
 
     os.makedirs(os.path.dirname(args.out_csv) or ".", exist_ok=True)
     out.to_csv(args.out_csv, index=False)

@@ -63,6 +63,11 @@ EVAL_FHR_DEFAULT=${EVAL_FHR_DEFAULT:-3}
 
 GFS_ROOT=${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}
 
+# How to sample GFS in time when building *_vs_gfs.csv:
+# - nominal: use init + fhr (bucket end)
+# - obs_interp: time-interpolate GFS to each row's observation time (recommended)
+GFS_TIME_MODE=${GFS_TIME_MODE:-obs_interp}
+
 # Outputs
 OUT_ROOT=${OUT_ROOT:-"predictions/${EXP_NAME}"}
 OBS_DIR=${OUT_ROOT}/pred_csv/obs-space
@@ -82,6 +87,7 @@ echo "EXP_NAME=${EXP_NAME}"
 echo "CKPT=${CKPT}"
 echo "OUT_ROOT=${OUT_ROOT}"
 echo "GFS_ROOT=${GFS_ROOT}"
+echo "GFS_TIME_MODE=${GFS_TIME_MODE}"
 
 # Conda
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
@@ -147,6 +153,7 @@ python compare_to_gfs.py \
   --out_csv "${OUT_VS_GFS}" \
   --init_mode from_csv \
   --interp nearest \
+  --gfs_time_mode "${GFS_TIME_MODE}" \
   --chunk_size 200000
 
 echo "==== 3b) Sanity-check GFS coverage (fail fast if missing) ===="
@@ -199,7 +206,8 @@ if [ -d "${MESH_DIR}" ]; then
         python plot_mesh_vs_gfs_maps.py \
           --csv "${gfs_on_ocelot_mesh_csv}" \
           --plot_dir "${PLOT_MESH_GFS_DIR}/fhr${fhr}" \
-          --var "${v}" || true
+          --var "${v}" \
+          --gfs_root "${GFS_ROOT}" || true
       done
     else
       echo "[WARN] Mesh-grid CSV not found for fhr=${fhr}: ${mesh_csv}"
