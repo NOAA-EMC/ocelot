@@ -296,6 +296,7 @@ class GNNDataModule(pl.LightningDataModule):
             )
             # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
             # Fall back to lexicographic ordering if parsing fails.
+
             def _bin_sort_key(name: str):
                 try:
                     if name.startswith('bin'):

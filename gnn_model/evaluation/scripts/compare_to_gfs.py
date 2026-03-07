@@ -98,31 +98,31 @@ def _round_to_step(hours: float, step_hours: int, tol_hours: float | None = None
 
 
 def _time_brackets(obs_fhr_hours: np.ndarray, step_hours: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return (fhr_lo, fhr_hi, w_hi) for linear time interpolation.
+    """Return (fhr_lo, fhr_hi, w_hi) for linear time interpolation.
 
-        For each fractional lead hour t, find the bracketing model output times:
-            fhr_lo = floor(t/step)*step
-            fhr_hi = fhr_lo + step
-            w_hi   = (t - fhr_lo) / step
+    For each fractional lead hour t, find the bracketing model output times:
+        fhr_lo = floor(t/step)*step
+        fhr_hi = fhr_lo + step
+        w_hi   = (t - fhr_lo) / step
 
-        If t is exactly on an output time, fhr_hi == fhr_lo and w_hi == 0.
-        """
-        step_hours = int(step_hours)
-        obs = np.asarray(obs_fhr_hours, dtype=np.float64)
+    If t is exactly on an output time, fhr_hi == fhr_lo and w_hi == 0.
+    """
+    step_hours = int(step_hours)
+    obs = np.asarray(obs_fhr_hours, dtype=np.float64)
 
-        f0 = np.floor(obs / float(step_hours)) * float(step_hours)
-        r = obs - f0
+    f0 = np.floor(obs / float(step_hours)) * float(step_hours)
+    r = obs - f0
 
-        eps = 1e-9
-        on_edge = np.isfinite(r) & (np.abs(r) < eps)
+    eps = 1e-9
+    on_edge = np.isfinite(r) & (np.abs(r) < eps)
 
-        f1 = f0 + float(step_hours)
-        w = r / float(step_hours)
+    f1 = f0 + float(step_hours)
+    w = r / float(step_hours)
 
-        f1[on_edge] = f0[on_edge]
-        w[on_edge] = 0.0
+    f1[on_edge] = f0[on_edge]
+    w[on_edge] = 0.0
 
-        return f0.astype(int), f1.astype(int), w.astype(np.float64)
+    return f0.astype(int), f1.astype(int), w.astype(np.float64)
 
 
 @dataclass(frozen=True)
@@ -431,15 +431,31 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
             ww = w_all[jj]
 
             if need_u10:
-                v0 = _interp_2d(ds0_u, _pick_var_name(ds0_u, "u10"), lat[jj], lon360[jj], method=method) if ds0_u is not None else np.full(len(jj), np.nan)
-                v1 = _interp_2d(ds1_u, _pick_var_name(ds1_u, "u10"), lat[jj], lon360[jj], method=method) if ds1_u is not None else v0
+                v0 = (
+                    _interp_2d(ds0_u, _pick_var_name(ds0_u, "u10"), lat[jj], lon360[jj], method=method)
+                    if ds0_u is not None
+                    else np.full(len(jj), np.nan)
+                )
+                v1 = (
+                    _interp_2d(ds1_u, _pick_var_name(ds1_u, "u10"), lat[jj], lon360[jj], method=method)
+                    if ds1_u is not None
+                    else v0
+                )
                 if ds0_u is None and ds1_u is not None:
                     v0 = v1
                 gfs_u[jj] = (1.0 - ww) * v0 + ww * v1
 
             if need_v10:
-                v0 = _interp_2d(ds0_v, _pick_var_name(ds0_v, "v10"), lat[jj], lon360[jj], method=method) if ds0_v is not None else np.full(len(jj), np.nan)
-                v1 = _interp_2d(ds1_v, _pick_var_name(ds1_v, "v10"), lat[jj], lon360[jj], method=method) if ds1_v is not None else v0
+                v0 = (
+                    _interp_2d(ds0_v, _pick_var_name(ds0_v, "v10"), lat[jj], lon360[jj], method=method)
+                    if ds0_v is not None
+                    else np.full(len(jj), np.nan)
+                )
+                v1 = (
+                    _interp_2d(ds1_v, _pick_var_name(ds1_v, "v10"), lat[jj], lon360[jj], method=method)
+                    if ds1_v is not None
+                    else v0
+                )
                 if ds0_v is None and ds1_v is not None:
                     v0 = v1
                 gfs_v[jj] = (1.0 - ww) * v0 + ww * v1

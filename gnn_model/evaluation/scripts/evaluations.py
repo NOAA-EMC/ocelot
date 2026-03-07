@@ -2266,7 +2266,16 @@ if __name__ == "__main__":
 
         # AVHRR reflectance/albedo: omit units or add as needed
         for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir)
+            plot_ocelot_target_diff(
+                "avhrr",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                fhr_i,
+                num_channels=3,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+            )
         if PLOT_HORIZON_12H:
             plot_ocelot_target_diff_12h_horizon(
                 "avhrr",
@@ -2282,7 +2291,16 @@ if __name__ == "__main__":
             )
         # Surface obs and snow cover: omit units or add as needed
         for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
+            plot_ocelot_target_diff(
+                "surface_obs",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                fhr_i,
+                num_channels=6,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+            )
         if PLOT_HORIZON_12H:
             plot_ocelot_target_diff_12h_horizon(
                 "surface_obs",
@@ -2298,7 +2316,16 @@ if __name__ == "__main__":
             )
 
         for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("snow_cover", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i, num_channels=2, data_dir=DATA_DIR, fig_dir=plot_dir)
+            plot_ocelot_target_diff(
+                "snow_cover",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                fhr_i,
+                num_channels=2,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+            )
         if PLOT_HORIZON_12H:
             plot_ocelot_target_diff_12h_horizon(
                 "snow_cover",
