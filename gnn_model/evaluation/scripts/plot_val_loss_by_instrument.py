@@ -7,13 +7,14 @@ last non-NaN value for each metric within each epoch.
 
 Usage:
     # Single file
-    python plot_val_loss_by_instrument.py --metrics logs/<run>/version_0/metrics.csv
+    # (from gnn_model/)
+    python evaluation/scripts/plot_val_loss_by_instrument.py --metrics logs/<run>/version_0/metrics.csv
 
     # All versions (resubmits) via glob
-    python plot_val_loss_by_instrument.py --metrics 'logs/<run>/version_*/metrics.csv'
+    python evaluation/scripts/plot_val_loss_by_instrument.py --metrics 'logs/<run>/version_*/metrics.csv'
 
     # Or pass the run directory and it will auto-discover version_*/metrics.csv
-    python plot_val_loss_by_instrument.py --metrics logs/<run>/
+    python evaluation/scripts/plot_val_loss_by_instrument.py --metrics logs/<run>/
 
 Outputs:
   - PNG file (default: alongside metrics.csv)
