@@ -310,10 +310,21 @@ class GNNDataModule(pl.LightningDataModule):
 
         if not is_ddp:
             if os.path.exists(cache_path):
-                obj = torch.load(cache_path)
-                return obj["data_summary"], obj["bin_names"]
+                try:
+                    obj = torch.load(cache_path)
+                    return obj["data_summary"], obj["bin_names"]
+                except Exception as e:
+                    if verbose:
+                        print(f"[DM.cache] WARNING: failed to load cache {cache_path}: {e}; rebuilding")
+                    try:
+                        os.remove(cache_path)
+                    except OSError:
+                        pass
             data_summary, bin_names = _build()
-            torch.save({"data_summary": data_summary, "bin_names": bin_names}, cache_path)
+            built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+            tmp = f"{cache_path}.tmp.{os.getpid()}"
+            torch.save(built_obj, tmp)
+            os.replace(tmp, cache_path)
             return data_summary, bin_names
 
         built_obj = None

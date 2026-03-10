@@ -200,7 +200,7 @@ observation_config:
         windSpeed:
           range: [0, 100]               # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
         windDirection:
-          range: [0, 6.28]               # radians; full circle 0-2π
+          range: [0, 6.2832]               # radians; full circle 0-2π
 
         # Metadata QC
         height_prepbufr_event_1:

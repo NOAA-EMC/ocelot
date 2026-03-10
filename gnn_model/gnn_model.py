@@ -1969,10 +1969,6 @@ class GNNLightning(pl.LightningModule):
                 # Ensure UTC-ish formatting (drop tz conversion here; upstream should be UTC)
                 return ts.strftime('%Y%m%d%H')
 
-            # Handle datetime object directly
-            elif isinstance(ts, datetime):
-                return ts.strftime('%Y%m%d%H')
-
             print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
             return 'unknown'
 
