@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 48:00:00
+#SBATCH -t 01:00:00
 #SBATCH --output=gnn_train_Random_%j.out
 #SBATCH --error=gnn_train_Random_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -142,7 +142,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	"${RESUME_ARGS[@]}" \
 	--mesh_type fixed \
 	--sampling_mode random \
-	--cfg_path configs/observation_config_random_sat30.yaml \
+	--cfg_path configs/observation_config.yaml \
 	--data_path /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7 \
 	--train_start_date 2015-01-01 \
 	--train_end_date 2024-01-01 \
