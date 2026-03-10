@@ -7,7 +7,7 @@ pipeline:
       avhrr: 100
       # amsua: 3   
       # ascat: 2
-      cris_pca: 2
+      cris_pca: 1
     conventional:
       _default: 1
       surface_obs: 1
@@ -136,8 +136,8 @@ observation_config:
       metadata: [sensorZenithAngle, solarZenithAngle]
       input_dim: 19
       target_dim: 10
-      encoder_hidden_layers: 2
-      decoder_hidden_layers: 2
+      encoder_hidden_layers: 3
+      decoder_hidden_layers: 3
 
     ascat:
       sat_ids: [3]  # MetOp satellite IDs
