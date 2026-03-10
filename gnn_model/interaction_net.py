@@ -198,3 +198,6 @@ class SplitMLPs(nn.Module):
             mlp(chunk_input) for mlp, chunk_input in zip(self.mlps, chunks)
         ]
         return torch.cat(chunk_outputs, dim=-2)
+    
+class InteractionNetCodec(InteractionNet):
+    pass

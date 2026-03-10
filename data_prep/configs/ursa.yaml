@@ -120,7 +120,7 @@ data types:
 
   - name: ascat
     type: tank
-    num_tasks: 16
+    num_tasks: 4
     batch_days: 30
     mapping: bufr_ascat.py
     paths:

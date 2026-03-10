@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
-#SBATCH -A gpu-emc-ai
+#SBATCH -A gpu-ai4wp
 #SBATCH -p u1-h100
 #SBATCH -q gpu
 #SBATCH --gres=gpu:h100:2

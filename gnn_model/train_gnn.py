@@ -11,7 +11,7 @@ import lightning.pytorch as pl
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
-from lightning.pytorch.strategies import DDPStrategy
+from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
 
 from callbacks import ResampleDataCallback, SequentialDataCallback
 from gnn_datamodule import GNNDataModule
@@ -20,6 +20,13 @@ from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
 from ckpt_utils import find_latest_checkpoint
 from datetime import timedelta
+
+from interaction_net import InteractionNetCodec
+from attn_bipartite import BipartiteGAT
+from processor import Processor
+from interaction_hierarchical_processor import HierarchicalProcessor
+from processor_transformer import SlidingWindowTransformerProcessor
+from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 
 
 torch.set_float32_matmul_precision("medium")
@@ -161,6 +168,11 @@ def main():
 
     start_time = time.time()
 
+    decoder_type = "gat"  # gat or "interaction"
+    encoder_type = "gat"  # gat or "interaction"
+    processor_type = "sliding_transformer"  # sliding_transformer or "interaction"
+
+
     # === INSTANTIATE MODEL & DATA MODULE ===
     model = GNNLightning(
         observation_config=observation_config,
@@ -179,7 +191,7 @@ def main():
         latent_step_hours=latent_step_hours,
         feature_stats=feature_stats,
         # Model options
-        processor_type="sliding_transformer",   # sliding_transformer or "interaction"
+        processor_type=processor_type,   # sliding_transformer or "interaction"
         processor_window=4,     # default: 12h / 3h = 4
         processor_depth=4,
         processor_heads=4,
@@ -187,8 +199,8 @@ def main():
         # Dropout settings
         node_dropout=0.03,      # Slight node dropout for Phase 2 regularization
         # Encoder/decoder choices
-        encoder_type="gat",    # gat or "interaction"
-        decoder_type="gat",    # or "interaction"
+        encoder_type=encoder_type,    # gat or "interaction"
+        decoder_type=decoder_type,    # or "interaction"
         encoder_layers=2,
         decoder_layers=2,
         encoder_heads=4,
@@ -248,13 +260,41 @@ def main():
         ),
     ]
 
-    strategy = DDPStrategy(
-        process_group_backend="nccl",
-        broadcast_buffers=False,
-        find_unused_parameters=False,  # Changed from True - improves performance
-        gradient_as_bucket_view=True,
-        timeout=timedelta(hours=1),    # Increase timeout to 1 hour for checkpoints
-    )
+    # strategy = DDPStrategy(
+    #     process_group_backend="nccl",
+    #     broadcast_buffers=False,
+    #     find_unused_parameters=False,  # Changed from True - improves performance
+    #     gradient_as_bucket_view=True,
+    #     timeout=timedelta(hours=1),    # Increase timeout to 1 hour for checkpoints
+    # )
+
+    # Make FSDP strategy
+    # Make a list of blocks to wrap with FSDP
+    fsdpBlocks : list = []
+    fsdpBlocks.append(BipartiteGAT) if encoder_type == "gat" else fsdpBlocks.append(InteractionNetCodec) 
+    fsdpBlocks.append(BipartiteGAT) if decoder_type == "gat" else fsdpBlocks.append(InteractionNetCodec)
+
+    if mesh_type == "hierarchical":
+        if processor_type == "sliding_transformer":
+            fsdpBlocks.append(HierarchicalSlidingWindowTransformer)
+        else:
+            fsdpBlocks.append(HierarchicalProcessor)
+    else:
+        if processor_type == "sliding_transformer":
+            fsdpBlocks.append(SlidingWindowTransformerProcessor)
+        else:
+            fsdpBlocks.append(Processor)
+
+    fsdpBlocks = set(fsdpBlocks)
+    strategy = FSDPStrategy(process_group_backend="nccl",
+                            auto_wrap_policy=fsdpBlocks,
+                            activation_checkpointing_policy=fsdpBlocks,
+                            sharding_strategy="FULL_SHARD",
+                            state_dict_type="sharded",
+                            # cpu_offload=True
+                            )
+
+
 
     trainer_kwargs = {
         "max_epochs": max_epochs,

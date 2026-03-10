@@ -15,7 +15,7 @@ import numpy as np
 from processor import Processor
 from interaction_hierarchical_processor import HierarchicalProcessor
 from utils import make_mlp
-from interaction_net import InteractionNet
+from interaction_net import InteractionNetCodec
 from create_mesh_graph_global import create_mesh
 from torch_geometric.data import HeteroData
 from typing import Dict, Tuple, List
@@ -331,7 +331,7 @@ class GNNLightning(pl.LightningModule):
                         edge_dim=enc_edge_dim,   # <- use edge_attr exactly like InteractionNet path
                     )
                 else:
-                    self.observation_encoders[enc_key] = InteractionNet(
+                    self.observation_encoders[enc_key] = InteractionNetCodec(
                         edge_index=None,
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
@@ -354,7 +354,7 @@ class GNNLightning(pl.LightningModule):
                         edge_dim=dec_edge_dim,
                     )
                 else:
-                    self.observation_decoders[dec_key] = InteractionNet(
+                    self.observation_decoders[dec_key] = InteractionNetCodec(
                         edge_index=None,
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
