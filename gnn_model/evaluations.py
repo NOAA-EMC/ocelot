@@ -866,7 +866,7 @@ if __name__ == "__main__":
     plot_ocelot_target_diff("seviri", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
 
     plot_ocelot_target_diff("cris_pca", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=10, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-    
+
     # AVHRR reflectance/albedo: omit units or add as needed
     plot_ocelot_target_diff("avhrr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir)
     # Surface obs and snow cover: omit units or add as needed
