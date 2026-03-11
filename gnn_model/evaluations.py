@@ -825,7 +825,7 @@ def plot_instrument_maps(
 
 # ----------------- main -----------------
 if __name__ == "__main__":
-    EPOCH_TO_PLOT = 159
+    EPOCH_TO_PLOT = 70
     BATCH_IDX_TO_PLOT = 0
     DATA_DIR = "val_csv"
 
@@ -841,20 +841,6 @@ if __name__ == "__main__":
         fig_dir=plot_dir,
     )
 
-    # Plot aircraft profiles by categorical pressure level (similar to radiosonde)
-    # Use lower min_samples threshold for aircraft due to sparser data distribution
-    plot_radiosonde_profiles_by_pressure_level(
-        "aircraft",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        min_samples=1000,  # Exclude very sparse levels (e.g., 150 hPa with N=240)
-    )
-
-    # add the OCELOT | Target | Difference + RMSE figures
-    # Aircraft conventional observations (temperature, humidity, winds)
-    plot_ocelot_target_diff("aircraft", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=4, data_dir=DATA_DIR, fig_dir=plot_dir, units="various")
 
     # ASCAT backscatter: add units for sigma0
     plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
@@ -884,17 +870,6 @@ if __name__ == "__main__":
         drop_small_truth=True,
     )
 
-    # Aircraft: similar to radiosonde with 4 features (T, q, u, v)
-    plot_instrument_maps(
-        "aircraft",
-        EPOCH_TO_PLOT,
-        BATCH_IDX_TO_PLOT,
-        num_channels=4,
-        data_dir=DATA_DIR,
-        fig_dir=plot_dir,
-        error_metric="auto",  # ABS for temperature and winds
-        drop_small_truth=True,
-    )
 
     # ASCAT backscatter: use absolute error for sigma0 measurements
     plot_instrument_maps(
