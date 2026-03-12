@@ -124,6 +124,9 @@ class GNNLightning(pl.LightningModule):
         val_csv_every_n_epochs: int = 1,
         val_csv_max_rows: int | None = None,
         val_csv_sample_seed: int = 0,
+        scan_angle_conditioning: str = "project",  # "pad" | "project"
+        pressure_level_conditioning: str = "project",  # "pad" | "project"
+        surface_meta_conditioning: str = "project",  # "pad" | "project"
         **kwargs,
     ):
         """
@@ -163,6 +166,24 @@ class GNNLightning(pl.LightningModule):
         self.val_csv_every_n_epochs = int(val_csv_every_n_epochs)
         self.val_csv_max_rows = int(val_csv_max_rows) if val_csv_max_rows is not None else None
         self.val_csv_sample_seed = int(val_csv_sample_seed)
+
+        self.scan_angle_conditioning = str(scan_angle_conditioning)
+        if self.scan_angle_conditioning not in ("pad", "project"):
+            raise ValueError(
+                f"scan_angle_conditioning must be 'pad' or 'project' (got: {self.scan_angle_conditioning!r})"
+            )
+
+        self.pressure_level_conditioning = str(pressure_level_conditioning)
+        if self.pressure_level_conditioning not in ("pad", "project"):
+            raise ValueError(
+                f"pressure_level_conditioning must be 'pad' or 'project' (got: {self.pressure_level_conditioning!r})"
+            )
+
+        self.surface_meta_conditioning = str(surface_meta_conditioning)
+        if self.surface_meta_conditioning not in ("pad", "project"):
+            raise ValueError(
+                f"surface_meta_conditioning must be 'pad' or 'project' (got: {self.surface_meta_conditioning!r})"
+            )
 
         self.observation_config = observation_config
 
@@ -289,12 +310,25 @@ class GNNLightning(pl.LightningModule):
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
 
+        # Optional: project scan-angle embedding across the full hidden_dim so it can't be confined
+        # to a small trailing slice of the receiver representation.
+        if self.scan_angle_conditioning == "project":
+            self.scan_angle_projector = nn.Linear(self.scan_angle_embed_dim, self.hidden_dim)
+        else:
+            self.scan_angle_projector = None
+
         # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
         self.pressure_level_embed_dim = 8
         self.pressure_level_embedder = nn.Embedding(
             num_embeddings=16,  # 16 standard pressure levels
             embedding_dim=self.pressure_level_embed_dim
         )
+
+        # Optional: project pressure-level embedding across the full hidden_dim.
+        if self.pressure_level_conditioning == "project":
+            self.pressure_level_projector = nn.Linear(self.pressure_level_embed_dim, self.hidden_dim)
+        else:
+            self.pressure_level_projector = None
 
         # Surface obs: embed target metadata (e.g. station height) for decoder conditioning.
         # This lets the surface pressure decoder depend explicitly on elevation.
@@ -318,6 +352,12 @@ class GNNLightning(pl.LightningModule):
             self.surface_target_meta_dim = 0
             self.surface_target_meta_names = []
             self.surface_target_meta_embedder = None
+
+        # Optional: project surface metadata embedding across the full hidden_dim.
+        if self.surface_meta_conditioning == "project":
+            self.surface_meta_projector = nn.Linear(self.surface_target_meta_embed_dim, self.hidden_dim)
+        else:
+            self.surface_meta_projector = None
 
         if self.surface_target_meta_embedder is not None:
             print(
@@ -1266,27 +1306,36 @@ class GNNLightning(pl.LightningModule):
                     # Instead of zeros, initialize decoder WITH geometry information
                     if sa_emb is not None:
                         # Satellite: condition decoder on scan angle (viewing zenith angle)
-                        # Concatenate scan embedding with zeros to reach hidden_dim
-                        padding_dim = self.hidden_dim - self.scan_angle_embed_dim
-                        target_features_initial = torch.cat([
-                            torch.zeros(N, padding_dim, device=reference_device),
-                            sa_emb
-                        ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
+                        if self.scan_angle_projector is not None:
+                            target_features_initial = self.scan_angle_projector(sa_emb)
+                        else:
+                            # Backward-compatible behavior: scan info only in the last dims.
+                            padding_dim = self.hidden_dim - self.scan_angle_embed_dim
+                            target_features_initial = torch.cat([
+                                torch.zeros(N, padding_dim, device=reference_device),
+                                sa_emb
+                            ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
                     elif pressure_emb is not None:
                         # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
                         # Make prediction explicitly depend on geometry
-                        padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-                        target_features_initial = torch.cat([
-                            torch.zeros(N, padding_dim, device=reference_device),
-                            pressure_emb
-                        ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+                        if self.pressure_level_projector is not None:
+                            target_features_initial = self.pressure_level_projector(pressure_emb)
+                        else:
+                            padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                            target_features_initial = torch.cat([
+                                torch.zeros(N, padding_dim, device=reference_device),
+                                pressure_emb
+                            ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
                     elif surface_meta_emb is not None:
                         # Surface obs: condition decoder on station metadata (elevation)
-                        padding_dim = self.hidden_dim - self.surface_target_meta_embed_dim
-                        target_features_initial = torch.cat([
-                            torch.zeros(N, padding_dim, device=reference_device),
-                            surface_meta_emb
-                        ], dim=-1)
+                        if self.surface_meta_projector is not None:
+                            target_features_initial = self.surface_meta_projector(surface_meta_emb)
+                        else:
+                            padding_dim = self.hidden_dim - self.surface_target_meta_embed_dim
+                            target_features_initial = torch.cat([
+                                torch.zeros(N, padding_dim, device=reference_device),
+                                surface_meta_emb
+                            ], dim=-1)
                     else:
                         # Conventional obs without viewing geometry: use zeros
                         target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
@@ -2001,6 +2050,16 @@ class GNNLightning(pl.LightningModule):
         all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
 
+        # Persist scan-angle conditioning inputs for satellite-style targets.
+        # For these node types, batch[step_node_type].x stores scan angle(s).
+        scan_angle_expected_dim = 0
+        if node_type == "ascat_target":
+            scan_angle_expected_dim = 3
+        elif node_type in ("atms_target", "amsua_target", "avhrr_target"):
+            scan_angle_expected_dim = 1
+
+        all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
+
         # For surface_obs_target, also persist the metadata that the decoder conditions on
         # (e.g., station height) so we can directly verify pressure error vs height.
         surface_meta_names = list(getattr(self, "surface_target_meta_names", []) or [])
@@ -2080,6 +2139,28 @@ class GNNLightning(pl.LightningModule):
                     pressure_level_idx = batch[step_node_type].pressure_level.cpu().numpy()
                 else:
                     pressure_level_idx = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int32)
+
+                # Scan-angle export for satellite-style targets.
+                if all_scan_angle_cols:
+                    try:
+                        sa = getattr(batch[step_node_type], "x", None)
+                        if sa is None:
+                            raise ValueError("missing x")
+                        sa_np = sa.detach().cpu().numpy()
+                        sa_np = np.asarray(sa_np)
+                        if sa_np.ndim == 1:
+                            sa_np = sa_np[:, None]
+                        if sa_np.shape[0] != int(y_pred_unnorm.shape[0]):
+                            raise ValueError(f"row mismatch: x has {sa_np.shape[0]} rows, preds have {int(y_pred_unnorm.shape[0])}")
+                        # Use the first expected columns; pad with NaN if fewer are present.
+                        for j in range(scan_angle_expected_dim):
+                            if j < sa_np.shape[1]:
+                                all_scan_angle_cols[j].extend(sa_np[:, j].astype(np.float64).tolist())
+                            else:
+                                all_scan_angle_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
+                    except Exception:
+                        for j in range(scan_angle_expected_dim):
+                            all_scan_angle_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
             else:
                 n = y_pred_unnorm.shape[0]
                 lat_deg = np.zeros(n)
@@ -2088,6 +2169,10 @@ class GNNLightning(pl.LightningModule):
                 obs_ts = np.full(n, -1, dtype=np.int64)
                 pressure_hpa = np.full(n, np.nan)
                 pressure_level_idx = np.full(n, -1, dtype=np.int32)
+
+                if all_scan_angle_cols:
+                    for j in range(scan_angle_expected_dim):
+                        all_scan_angle_cols[j].extend([float('nan')] * int(n))
 
             # Collect data from this step
             all_lat.extend(lat_deg)
@@ -2156,6 +2241,11 @@ class GNNLightning(pl.LightningModule):
             for j in range(surface_meta_dim):
                 name = surface_meta_names[j] if j < len(surface_meta_names) else f"meta{j}"
                 df[f"meta_{_safe_meta_name(name)}"] = np.asarray(all_surface_meta_cols[j], dtype=np.float64)
+
+        # Scan-angle columns (when applicable)
+        if all_scan_angle_cols and len(all_scan_angle_cols[0]) == len(df):
+            for j in range(scan_angle_expected_dim):
+                df[f"scan_angle_{j}"] = np.asarray(all_scan_angle_cols[j], dtype=np.float64)
 
         # Init time columns (constant per file/batch when available)
         init_time_str = self._extract_init_time_str(batch)
@@ -2424,11 +2514,14 @@ class GNNLightning(pl.LightningModule):
         if base_inst in ['radiosonde', 'aircraft']:
             fixed_idx = torch.full((N,), self.mesh_pressure_level_idx, dtype=torch.long, device=device)
             pressure_emb = self.pressure_level_embedder(fixed_idx)  # [N, 8]
-            padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-            rec_rep = torch.cat([
-                torch.zeros(N, padding_dim, device=device),
-                pressure_emb
-            ], dim=-1)  # [N, hidden_dim]
+            if self.pressure_level_projector is not None:
+                rec_rep = self.pressure_level_projector(pressure_emb)
+            else:
+                padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                rec_rep = torch.cat([
+                    torch.zeros(N, padding_dim, device=device),
+                    pressure_emb
+                ], dim=-1)  # [N, hidden_dim]
 
             print(f"[MESH PRED] Decoding {inst_name} conditioned on pressure level "
                   f"{self.mesh_pressure_level_idx} "

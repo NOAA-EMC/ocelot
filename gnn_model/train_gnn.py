@@ -121,6 +121,42 @@ def main():
     parser.add_argument("--huber_delta", type=float, default=0.1)
 
     parser.add_argument(
+        "--scan_angle_conditioning",
+        type=str,
+        default="project",
+        choices=["pad", "project"],
+        help=(
+            "How to inject scan-angle into decoder receiver init for satellite targets. "
+            "'pad' keeps scan embedding in the last 8 dims (backward compatible); "
+            "'project' spreads it across hidden_dim via a learned linear projection."
+        ),
+    )
+
+    parser.add_argument(
+        "--pressure_level_conditioning",
+        type=str,
+        default="project",
+        choices=["pad", "project"],
+        help=(
+            "How to inject pressure-level embedding into decoder receiver init for aircraft/radiosonde targets. "
+            "'pad' keeps pressure embedding in the last 8 dims; "
+            "'project' spreads it across hidden_dim via a learned linear projection."
+        ),
+    )
+
+    parser.add_argument(
+        "--surface_meta_conditioning",
+        type=str,
+        default="project",
+        choices=["pad", "project"],
+        help=(
+            "How to inject surface station metadata embedding (e.g., elevation) into decoder receiver init for surface_obs_target. "
+            "'pad' keeps metadata embedding in the last 8 dims; "
+            "'project' spreads it across hidden_dim via a learned linear projection."
+        ),
+    )
+
+    parser.add_argument(
         "--cfg_path",
         type=str,
         default="configs/observation_config.yaml",
@@ -397,6 +433,9 @@ def main():
         val_csv_every_n_epochs=int(args.val_csv_every_n_epochs),
         val_csv_max_rows=(int(args.val_csv_max_rows) if args.val_csv_max_rows is not None else None),
         val_csv_sample_seed=int(args.val_csv_sample_seed),
+        scan_angle_conditioning=str(args.scan_angle_conditioning),
+        pressure_level_conditioning=str(args.pressure_level_conditioning),
+        surface_meta_conditioning=str(args.surface_meta_conditioning),
     )
 
     if resume_path and args.load_weights_only:
