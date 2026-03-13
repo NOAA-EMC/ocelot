@@ -14,9 +14,9 @@
 
 
 #Script to run evaluations for multiple initialization times
-#Submit with: sbatch run_evaluation.sh [START_DATE] [END_DATE]
-#Example: sbatch run_evaluation.sh 2023010100 2023010912
-#Or use defaults: sbatch run_evaluation.sh
+#Submit with: sbatch evaluation/scripts/run_evaluation.sh [START_DATE] [END_DATE]
+#Example: sbatch evaluation/scripts/run_evaluation.sh 2023010100 2023010912
+#Or use defaults: sbatch evaluation/scripts/run_evaluation.sh
 
 #set -e  # Exit on error
 
@@ -26,19 +26,36 @@ echo "Node: $(hostname)"
 echo "Architecture: $(uname -m)"
 echo "================================================"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
+
+cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
+
 # Load Conda environment
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 
 # Add PYTHONPATH
-export NNJA_LOCAL_ROOT=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/nnja-ai
-export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot/gnn_model:/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot:$PYTHONPATH
+export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
 
 # ============================================
 # CONFIGURATION - Set all parameters here
 # ============================================
 
-EVAL_SCRIPT="evaluations.py"
+# MODE:
+#   standard    -> runs evaluations.py (pred vs truth)
+#   gfs_compare -> runs plot_gfs_compare.py (pred/truth vs GFS from *_vs_gfs.csv)
+MODE=${MODE:-"standard"}
+
+# For MODE=gfs_compare
+# Valid: surface_obs | radiosonde | aircraft
+INSTRUMENT=${INSTRUMENT:-"surface_obs"}
+CHUNKSIZE=${CHUNKSIZE:-"200000"}
+VARS=${VARS:-"wind"}
+
+EVAL_SCRIPT="evaluation/scripts/evaluations.py"
+GFS_COMPARE_SCRIPT="evaluation/scripts/plot_gfs_compare.py"
 
 # --- Training Mode Parameters ---
 # Leave empty ("") for testing mode, or set for training mode:
@@ -55,7 +72,7 @@ BATCH_IDX_TO_PLOT="0"
 DATA_DIR="val_csv"
 
 # Output directory for plots
-PLOT_DIR="figures"
+PLOT_DIR="evaluation/figures"
 
 # --- Mode Configuration ---
 # Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth
@@ -73,10 +90,17 @@ FHR_LIST=("")
 
 # ============================================
 
-# Check if evaluation script exists
-if [ ! -f "$EVAL_SCRIPT" ]; then
-    echo "Error: $EVAL_SCRIPT not found!"
-    exit 1
+# Check required script exists
+if [ "$MODE" == "gfs_compare" ]; then
+    if [ ! -f "$GFS_COMPARE_SCRIPT" ]; then
+        echo "Error: $GFS_COMPARE_SCRIPT not found!"
+        exit 1
+    fi
+else
+    if [ ! -f "$EVAL_SCRIPT" ]; then
+        echo "Error: $EVAL_SCRIPT not found!"
+        exit 1
+    fi
 fi
 
 # Validate date format (YYYYMMDDHH)
@@ -98,6 +122,12 @@ echo "  Forecast hours: ${FHR_LIST[@]}"
 echo "  Data directory: $DATA_DIR"
 echo "  Plot directory: $PLOT_DIR"
 echo "  Has ground truth?: $HAS_GROUND_TRUTH"
+echo "  Mode: $MODE"
+if [ "$MODE" == "gfs_compare" ]; then
+    echo "  Instrument: $INSTRUMENT"
+    echo "  Chunksize: $CHUNKSIZE"
+    echo "  Vars: $VARS"
+fi
 
 # Fixed: Added spaces inside [ ] brackets
 if [ -n "$EPOCH_TO_PLOT" ]; then
@@ -149,15 +179,20 @@ do
         fi
 
         # Build Python command
-        # Fixed: Removed spaces around =
-        CMD="python $EVAL_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR"
+        if [ "$MODE" == "gfs_compare" ]; then
+            # Plots RMSE vs forecast hour from *_vs_gfs.csv
+            CMD="python $GFS_COMPARE_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR --instrument $INSTRUMENT --vars $VARS --chunksize $CHUNKSIZE"
+        else
+            # Standard evaluation plots (pred vs truth)
+            CMD="python $EVAL_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR"
+        fi
 
-        if [ -n "$FHR" ]; then
+        if [ -n "$FHR" ] && [ "$MODE" != "gfs_compare" ]; then
             CMD="$CMD --fhr $FHR"
         fi
 
         # Fixed: Comparison for strings usually needs == and HAS_GROUND_TRUTH was set to "true" earlier
-        if [ "$HAS_GROUND_TRUTH" == "true" ]; then
+        if [ "$HAS_GROUND_TRUTH" == "true" ] && [ "$MODE" != "gfs_compare" ]; then
             CMD="$CMD --has_ground_truth"
         fi
 

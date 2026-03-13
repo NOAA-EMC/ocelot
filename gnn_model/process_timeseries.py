@@ -2,7 +2,6 @@ import hashlib
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler
 from timing_utils import timing_resource_decorator
 
 # Maximum number of channels supported for per-channel variable mapping
@@ -12,6 +11,38 @@ MAX_SUPPORTED_CHANNELS = 9
 STANDARD_PRESSURE_LEVELS = np.array([
     1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10
 ])
+
+
+def _stable_conventional_metadata_scale(meta: np.ndarray, meta_keys: list[str]) -> np.ndarray:
+    """Deterministic scaling for conventional (non-satellite) metadata.
+
+    This intentionally avoids per-window fitting (e.g. StandardScaler.fit_transform),
+    so the same physical value (e.g. station height) maps to the same normalized value
+    everywhere.
+    """
+
+    if meta.size == 0:
+        return np.empty((meta.shape[0], 0), dtype=np.float32)
+
+    meta_f = meta.astype(np.float32, copy=True)
+
+    # NaN -> column mean -> 0 fallback
+    col_means = np.nanmean(meta_f, axis=0)
+    col_means = np.where(np.isfinite(col_means), col_means, 0.0).astype(np.float32)
+    meta_f = np.where(np.isnan(meta_f), col_means, meta_f)
+
+    n_cols = meta_f.shape[1]
+    for j in range(n_cols):
+        key = (meta_keys[j] if j < len(meta_keys) else "").lower()
+
+        # Keep values in a roughly O(1) range.
+        if "log_pressure_height" in key:
+            meta_f[:, j] = meta_f[:, j] / 20000.0
+        elif ("height" in key) or ("elev" in key) or ("alt" in key):
+            meta_f[:, j] = meta_f[:, j] / 5000.0
+
+    meta_f = np.nan_to_num(meta_f, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    return meta_f
 
 
 def get_pressure_level_index(pressure_hpa):
@@ -110,6 +141,50 @@ def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str, default_
     return max(1, stride), mode
 
 
+def _sampled_non_decreasing(time_arr, n_checks: int = 16) -> bool:
+    """Heuristic check that `time_arr` is non-decreasing.
+
+    Only samples a small number of points to avoid scanning the full array.
+    This is a safety guard before using binary search on Zarr-backed arrays.
+    """
+    try:
+        n = len(time_arr)
+        if n <= 1:
+            return True
+        n_checks = max(4, int(n_checks))
+        idxs = np.unique(np.linspace(0, n - 1, num=n_checks, dtype=np.int64))
+        vals = np.asarray([time_arr[int(i)] for i in idxs], dtype=np.int64)
+        return bool(np.all(vals[1:] >= vals[:-1]))
+    except Exception:
+        return False
+
+
+def _zarr_bisect_left(arr, x: int) -> int:
+    """Binary-search left bound on an indexable array-like (supports scalar __getitem__)."""
+    lo, hi = 0, len(arr)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        v = int(arr[mid])
+        if v < x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _zarr_bisect_right(arr, x: int) -> int:
+    """Binary-search right bound on an indexable array-like (supports scalar __getitem__)."""
+    lo, hi = 0, len(arr)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        v = int(arr[mid])
+        if v <= x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 @timing_resource_decorator
 def organize_bins_times(
     z_dict,
@@ -154,7 +229,8 @@ def organize_bins_times(
     target_hours = int(window_size[:-1])
     num_latent_steps = target_hours // latent_step_hours
     sub_window_freq = f"{latent_step_hours}h"
-    print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
+    if verbose:
+        print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
     t0 = int(start_date.timestamp())
     t1 = int(end_date.timestamp())
@@ -170,46 +246,87 @@ def organize_bins_times(
             n_total = len(time_arr)
             chunk = getattr(time_arr, "chunks", (2_000_000,))[0]  # safe default if not chunked
 
-            idx_parts = []
-            if obs_type == "satellite":
-                conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
-                # Handle different satellite ID field names
-                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
-                for i0 in range(0, n_total, chunk):
-                    i1 = min(i0 + chunk, n_total)
-                    t = time_arr[i0:i1]
-                    m_time = (t >= t0) & (t < t1)
-                    if not m_time.any():
+            # Fast path: if time is (likely) sorted, use binary-search bounds (O(log N)).
+            # This avoids scanning the entire time array for multi-year runs.
+            idx_all = None
+            fast_bounds = None  # (left,right) for contiguous slices
+            try_fast = _sampled_non_decreasing(time_arr)
+            if try_fast:
+                left = _zarr_bisect_left(time_arr, t0)
+                right = _zarr_bisect_left(time_arr, t1)  # exclusive upper bound
+
+                if right <= left:
+                    if verbose:
+                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
+                    continue
+
+                if obs_type == "satellite":
+                    conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                    sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
+                    sats = z[sat_id_field][left:right]
+                    m = np.isin(sats, conf_sat_ids)
+                    if not np.any(m):
+                        if verbose:
+                            print(f"No observations for {obs_type}.{key} in {start_date} → {end_date} (sat filter)")
                         continue
-                    sats = z[sat_id_field][i0:i1]
-                    m = m_time & np.isin(sats, conf_sat_ids)
-                    if m.any():
-                        idx_parts.append(np.flatnonzero(m) + i0)
-            else:
-                for i0 in range(0, n_total, chunk):
-                    i1 = min(i0 + chunk, n_total)
-                    t = time_arr[i0:i1]
-                    m_time = (t >= t0) & (t < t1)
-                    if m_time.any():
-                        idx_parts.append(np.flatnonzero(m_time) + i0)
+                    idx_all = (np.arange(left, right, dtype=np.int64))[m]
+                else:
+                    idx_all = np.arange(left, right, dtype=np.int64)
+                    fast_bounds = (left, right)
 
-            if not idx_parts:
-                if verbose:
-                    print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
-                continue
+            # Fallback: chunked scan (safe for unsorted arrays)
+            if idx_all is None:
+                idx_parts = []
+                if obs_type == "satellite":
+                    conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                    # Handle different satellite ID field names
+                    sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
+                    for i0 in range(0, n_total, chunk):
+                        i1 = min(i0 + chunk, n_total)
+                        t = time_arr[i0:i1]
+                        m_time = (t >= t0) & (t < t1)
+                        if not m_time.any():
+                            continue
+                        sats = z[sat_id_field][i0:i1]
+                        m = m_time & np.isin(sats, conf_sat_ids)
+                        if m.any():
+                            idx_parts.append(np.flatnonzero(m) + i0)
+                else:
+                    for i0 in range(0, n_total, chunk):
+                        i1 = min(i0 + chunk, n_total)
+                        t = time_arr[i0:i1]
+                        m_time = (t >= t0) & (t < t1)
+                        if m_time.any():
+                            idx_parts.append(np.flatnonzero(m_time) + i0)
 
-            idx_all = np.concatenate(idx_parts)
+                if not idx_parts:
+                    if verbose:
+                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
+                    continue
+
+                idx_all = np.concatenate(idx_parts)
 
             # --- Sort by zar_time (or time) with minimal copies ---
-            if "zar_time" in z:
-                zar = z["zar_time"][idx_all]
+            if fast_bounds is not None:
+                left, right = fast_bounds
+                if "zar_time" in z:
+                    zar = z["zar_time"][left:right]
+                else:
+                    zar = time_arr[left:right]
+                order = np.argsort(zar, kind="stable")
+                idx_all = (np.arange(left, right, dtype=np.int64))[order]
+                time_vals = time_arr[left:right]
+                time_ts = pd.to_datetime(time_vals[order], unit="s", utc=True)
             else:
-                zar = time_arr[idx_all]
-            order = np.argsort(zar, kind="stable")
-            idx_all = idx_all[order]
+                if "zar_time" in z:
+                    zar = z["zar_time"][idx_all]
+                else:
+                    zar = time_arr[idx_all]
+                order = np.argsort(zar, kind="stable")
+                idx_all = idx_all[order]
+                time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
 
             # --- Build window labels without a big DataFrame ---
-            time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
             win = time_ts.floor(window_size)  # tz-aware
 
             # unique ordered windows + integer codes for each row's window
@@ -286,7 +403,20 @@ def organize_bins_times(
                 if require_targets and any(t.size == 0 for t in target_indices_list):
                     continue
 
-                bin_name = f"bin{bi+1}"
+                # IMPORTANT: Bin names must be globally time-aligned across instruments.
+                # Using per-instrument sequential numbering (bin1, bin2, ...) causes different
+                # instruments' windows to be mixed under the same bin name, which breaks
+                # init/valid/obs time semantics in downstream CSVs and plots.
+                #
+                # We therefore name bins by the *forecast init* (start of the target window).
+                # This makes bin keys consistent across instruments even when some instruments
+                # have missing windows.
+                if require_targets:
+                    init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
+                else:
+                    # In inference mode there is no target window; use input window start.
+                    init_key = pd.to_datetime(t_in, utc=True).strftime('%Y%m%d%H')
+                bin_name = f"bin{init_key}"
                 data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
                     "input_time": t_in,
                     "input_time_index": input_indices,
@@ -298,8 +428,11 @@ def organize_bins_times(
             if verbose:
                 total_bins = sum(
                     1
-                    for _ in range(n_bins)
-                    if f"bin{_+1}" in data_summary and obs_type in data_summary[f"bin{_+1}"] and key in data_summary[f"bin{_+1}"][obs_type]
+                    for _bin_name, _bin_dict in (data_summary or {}).items()
+                    if isinstance(_bin_dict, dict)
+                    and obs_type in _bin_dict
+                    and isinstance(_bin_dict.get(obs_type), dict)
+                    and key in _bin_dict[obs_type]
                 )
                 print(f"Created {total_bins} bins (pairs of input-target) for {obs_type}.{key}.")
 
@@ -393,6 +526,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             feat_pos = {k: i for i, k in enumerate(feat_keys)}
             n_ch = len(feat_keys)
 
+            # Per-metadata validity masks (used to drop targets that do not have QC-passed metadata)
+            meta_pos = {k: i for i, k in enumerate(meta_keys)}
+            n_meta = len(meta_keys)
+            input_valid_meta = np.ones((input_idx.size, n_meta), dtype=bool) if n_meta else None
+            target_valid_meta_list = [np.ones((idx.size, n_meta), dtype=bool) for idx in target_indices_list] if n_meta else []
+            meta_clip_specs = {}
+
             # Per-channel validity masks (inputs + ALL targets)
             input_valid_ch = np.ones((input_idx.size, n_ch), dtype=bool)
             target_valid_ch_list = [np.ones((idx.size, n_ch), dtype=bool) for idx in target_indices_list]
@@ -411,6 +551,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
                     reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
                     pos = feat_pos.get(var, None)
+                    meta_j = meta_pos.get(var, None) if n_meta else None
                     # Map per-channel variables to channel indices (generic pattern for any instrument)
                     if pos is None and "_ch_" in var:
                         for ch in range(1, MAX_SUPPORTED_CHANNELS + 1):
@@ -424,7 +565,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                         # Apply to inputs
                         in_vals = z[var][input_idx]
-                        if pos is not None:
+                        if meta_j is not None:
+                            # Metadata range QC: either invalidate, or (if clip=True) record a clip spec.
+                            if isinstance(cfg, dict) and bool(cfg.get("clip", False)):
+                                meta_clip_specs[int(meta_j)] = (float(lo), float(hi))
+                            else:
+                                input_valid_meta[:, meta_j] &= (in_vals >= lo) & (in_vals <= hi)
+                        elif pos is not None:
                             input_valid_ch[:, pos] &= (in_vals >= lo) & (in_vals <= hi)
                         else:
                             # accumulate aux for u/v
@@ -438,7 +585,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if target_idx.size == 0:
                                 continue
                             tg_vals = z[var][target_idx]
-                            if pos is not None:
+                            if meta_j is not None:
+                                if not (isinstance(cfg, dict) and bool(cfg.get("clip", False))):
+                                    target_valid_meta_list[step][:, meta_j] &= (tg_vals >= lo) & (tg_vals <= hi)
+                            elif pos is not None:
                                 target_valid_ch_list[step][:, pos] &= (tg_vals >= lo) & (tg_vals <= hi)
                             else:
                                 # accumulate aux for u/v
@@ -451,8 +601,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
-                        # Use qc_strict_flags from config to determine if missing values should be rejected
-                        strict_flags = bool(obs_cfg.get("qc_strict_flags", False))
+                        # Missing QC flags handling:
+                        # - obs_cfg.qc_strict_flags applies instrument-wide
+                        # - cfg.strict_flags can override per variable (useful for metadata like height)
+                        strict_flags = bool(cfg.get("strict_flags", obs_cfg.get("qc_strict_flags", False)))
 
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
@@ -463,7 +615,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         if not strict_flags:
                             keep_in = keep_in | (in_flags < 0)                         # accept missing when not strict
 
-                        if pos is not None:
+                        if meta_j is not None:
+                            input_valid_meta[:, meta_j] &= keep_in
+                        elif pos is not None:
                             input_valid_ch[:, pos] &= keep_in
                         else:
                             if var == "windSpeed":
@@ -483,7 +637,9 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                             if not strict_flags:
                                 keep_tg = keep_tg | (tg_flags < 0)
 
-                            if pos is not None:
+                            if meta_j is not None:
+                                target_valid_meta_list[step][:, meta_j] &= keep_tg
+                            elif pos is not None:
                                 target_valid_ch_list[step][:, pos] &= keep_tg
                             else:
                                 if var == "windSpeed":
@@ -524,7 +680,11 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if name in ("wind_u", "wind_v") and ("windSpeed" in arrs and "windDirection" in arrs):
                     ws = arrs["windSpeed"][idx].astype(np.float32)
                     wd = arrs["windDirection"][idx].astype(np.float32)
-                    wd_rad = wd if np.nanmax(wd) <= (2 * np.pi + 0.1) else wd * (np.pi / 180.0)
+                    # windDirection is expected to be in radians for the current Zarrs.
+                    # Keep it in radians everywhere (no degrees detection/conversion).
+                    FILL_VALUE = 3.402823e38
+                    ws = np.where(ws >= FILL_VALUE, np.nan, ws)
+                    wd_rad = np.where(wd >= FILL_VALUE, np.nan, wd)
                     u = -ws * np.sin(wd_rad)
                     v = -ws * np.cos(wd_rad)
                     return u if name == "wind_u" else v
@@ -625,6 +785,30 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 if target_metadata_raw.size:
                     target_metadata_raw[target_metadata_raw >= FILL_VALUE] = np.nan
 
+            # Apply metadata QC masks: turn failed metadata values into NaN.
+            # This matters most for targets: later we drop rows with any NaN metadata.
+            if n_meta and input_metadata_raw.size and input_valid_meta is not None:
+                input_metadata_raw[~input_valid_meta] = np.nan
+
+            if n_meta and target_metadata_raw_list:
+                for step in range(num_latent_steps):
+                    if step >= len(target_metadata_raw_list):
+                        break
+                    target_metadata_raw = target_metadata_raw_list[step]
+                    if target_metadata_raw.size and step < len(target_valid_meta_list):
+                        target_metadata_raw[~target_valid_meta_list[step]] = np.nan
+
+            # Apply metadata clipping (range + clip=True) after QC/NaN insertion.
+            if meta_clip_specs and n_meta:
+                for j, (lo, hi) in meta_clip_specs.items():
+                    if input_metadata_raw.size:
+                        col = input_metadata_raw[:, j]
+                        input_metadata_raw[:, j] = np.where(np.isfinite(col), np.clip(col, lo, hi), col)
+                    for target_metadata_raw in target_metadata_raw_list:
+                        if target_metadata_raw.size:
+                            col = target_metadata_raw[:, j]
+                            target_metadata_raw[:, j] = np.where(np.isfinite(col), np.clip(col, lo, hi), col)
+
             # -------------------- EXTRA CROSS-VARIABLE QC (following original pattern) --------------------
             rel = obs_cfg.get("qc_relations") or {}
 
@@ -684,9 +868,22 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     # -- Pressure vs height --
                     pvh = rel.get("pressure_vs_height") or {}
-                    if pvh.get("enable", False) and "airPressure" in feat_pos and ("height" in meta_keys):
+                    # Allow flexible column names (e.g. airPressure_prepbufr_event_1, height_prepbufr_event_1)
+                    if pvh.get("enable", False):
+                        jP = None
+                        for k in feat_keys:
+                            if "airpressure" in k.lower():
+                                jP = feat_pos.get(k)
+                                break
+
+                        jH = None
+                        for j, mk in enumerate(meta_keys):
+                            if "height" in mk.lower() or "elev" in mk.lower() or "alt" in mk.lower():
+                                jH = j
+                                break
+
+                    if pvh.get("enable", False) and jP is not None and jH is not None:
                         H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
-                        jP, jH = feat_pos["airPressure"], meta_keys.index("height")
                         for feat_arr, meta_arr, vmask in (
                             (input_features_raw, input_metadata_raw, input_valid_ch),
                             (target_features_raw, target_metadata_raw, target_valid_ch)
@@ -702,9 +899,12 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                                 if np.any(bad):
                                     vmask[bad, jP] = False
 
-            # Treat 9999 height as missing
-            if "height" in meta_keys:
-                j = meta_keys.index("height")
+            # Treat sentinel height (e.g. 9999 or int32 max) as missing for any height-like metadata key
+            height_cols = [
+                j for j, mk in enumerate(meta_keys)
+                if ("height" in mk.lower() or "elev" in mk.lower() or "alt" in mk.lower())
+            ]
+            for j in height_cols:
                 if input_metadata_raw.size:
                     input_metadata_raw[:, j] = np.where(input_metadata_raw[:, j] >= 9999.0, np.nan, input_metadata_raw[:, j])
                 for target_metadata_raw in target_metadata_raw_list:
@@ -911,6 +1111,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 target_channel_mask_list = []
                 target_lat_deg_list = []
                 target_lon_deg_list = []
+                target_time_unix_list = []
 
                 for step in range(num_latent_steps):
                     target_data = target_data_cleaned[step]
@@ -923,6 +1124,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
+                        target_time_unix_list.append(np.array([], dtype=np.int64))
                         continue
 
                     # Target normalization
@@ -956,6 +1158,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask_list.append(torch.tensor(target_channel_mask, dtype=torch.bool))
                     target_lat_deg_list.append(target_data['lat'])
                     target_lon_deg_list.append(target_data['lon'])
+                    target_time_unix_list.append(np.asarray(target_data.get('times', []), dtype=np.int64))
 
             else:
                 # Conventional processing
@@ -969,11 +1172,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                 # Input metadata normalization
                 if input_metadata_raw_clean.size:
-                    meta = input_metadata_raw_clean.copy()
-                    col_means = np.nanmean(meta, axis=0)
-                    col_means = np.where(np.isfinite(col_means), col_means, 0.0)
-                    meta = np.where(np.isnan(meta), col_means, meta)
-                    input_metadata_norm = StandardScaler().fit_transform(meta)
+                    input_metadata_norm = _stable_conventional_metadata_scale(
+                        input_metadata_raw_clean,
+                        meta_keys,
+                    )
                 else:
                     input_metadata_norm = np.empty((x_in.shape[0], 0), dtype=np.float32)
 
@@ -990,6 +1192,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 target_channel_mask_list = []
                 target_lat_deg_list = []
                 target_lon_deg_list = []
+                target_time_unix_list = []
 
                 for step in range(num_latent_steps):
                     target_data = target_data_cleaned[step]
@@ -1001,6 +1204,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
                         target_lon_deg_list.append(np.array([], dtype=np.float32))
+                        target_time_unix_list.append(np.array([], dtype=np.int64))
                         continue
 
                     # Target normalization with clipping (conventional style)
@@ -1014,7 +1218,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     lon_rad_target = np.radians(target_data['lon'])[:, None]
 
                     if target_data['metadata'].size:
-                        target_metadata_norm = StandardScaler().fit_transform(target_data['metadata'])
+                        target_metadata_norm = _stable_conventional_metadata_scale(
+                            target_data['metadata'],
+                            meta_keys,
+                        )
                     else:
                         target_metadata_norm = np.empty((target_features_final.shape[0], 0), dtype=np.float32)
 
@@ -1027,6 +1234,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     target_channel_mask_list.append(torch.tensor(target_channel_mask, dtype=torch.bool))
                     target_lat_deg_list.append(target_data['lat'])
                     target_lon_deg_list.append(target_data['lon'])
+                    target_time_unix_list.append(np.asarray(target_data.get('times', []), dtype=np.int64))
 
             # -------------------- Store final results --------------------
             data_summary_bin["input_features_final"] = torch.tensor(input_features_final, dtype=torch.float32)
@@ -1067,6 +1275,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                 "target_channel_mask_list": target_channel_mask_list,
                 "target_lat_deg_list": target_lat_deg_list,
                 "target_lon_deg_list": target_lon_deg_list,
+                "target_time_unix_list": target_time_unix_list,
                 "target_pressure_hpa_list": target_pressure_hpa_list
             })
 
