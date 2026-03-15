@@ -43,6 +43,13 @@ def main():
         help="The data sampling strategy ('random' or 'sequential').",
     )
     parser.add_argument(
+        "--parallelization_strategy",
+        type=str,
+        default="domain",
+        choices=["time", "domain"],
+        help="DDP work split strategy: 'time' keeps per-rank time slicing, 'domain' splits each frame by geography.",
+    )
+    parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
@@ -140,7 +147,7 @@ def main():
     mesh_resolution = 6
     mesh_type = args.mesh_type  # Options: "fixed" (GraphCast merged multiscale), "hierarchical" (U-Net latent)
     mesh_levels = args.mesh_levels  # Number of mesh levels to use (only for hierarchical mode)
-    hidden_dim = 128
+    hidden_dim = 256
     num_layers = 10
     lr = 5e-4
     max_epochs = 160
@@ -215,6 +222,7 @@ def main():
         train_end=initial_end_date,
         val_start=initial_val_start_date,
         val_end=initial_val_end_date,
+        domain_parallel=(args.parallelization_strategy == "domain"),
     )
 
     # Let Lightning handle setup() per rank at the correct time
@@ -270,9 +278,12 @@ def main():
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,   # IMPORTANT for resampling
         "check_val_every_n_epoch": 1,
+        "use_distributed_sampler": (args.parallelization_strategy != "domain"),
     }
 
-    if args.sampling_mode == "random":
+    if args.parallelization_strategy == "domain":
+        print("Using DOMAIN parallelization mode. Disabled epoch time-resampling callbacks.")
+    elif args.sampling_mode == "random":
         print("Using RANDOM sampling mode.")
         callbacks.append(
             ResampleDataCallback(
