@@ -333,8 +333,9 @@ class GNNDataModule(pl.LightningDataModule):
 
     @staticmethod
     def _filter_node_store(node_store, keep_idx: torch.Tensor):
+        old_num_nodes = int(node_store.num_nodes)
         for key, value in list(node_store.items()):
-            if torch.is_tensor(value) and value.dim() > 0 and value.size(0) == node_store.num_nodes:
+            if torch.is_tensor(value) and value.dim() > 0 and value.size(0) == old_num_nodes:
                 node_store[key] = value[keep_idx]
         node_store.num_nodes = int(keep_idx.numel())
 
