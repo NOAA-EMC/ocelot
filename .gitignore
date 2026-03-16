@@ -17,3 +17,23 @@ __pycache__/
 .venv/
 venv/
 
+# OCELOT / GNN generated artifacts
+gnn_model/.summary_cache/
+gnn_model/checkpoints/
+gnn_model/logs/
+gnn_model/predictions/
+gnn_model/predictions_*/
+gnn_model/predictions*/
+gnn_model/val_csv/
+gnn_model/val_mesh_csv/
+gnn_model/evaluation/figures/
+gnn_model/evaluation/predictions/
+gnn_model/evaluation/predictions_*/
+gnn_model/evaluation/predictions*/
+
+# Slurm logs dropped in-tree
+gnn_model/*.out
+gnn_model/*.err
+gnn_model/pred_eval_gfs_*.out
+gnn_model/pred_eval_gfs_*.err
+

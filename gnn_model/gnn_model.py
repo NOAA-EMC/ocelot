@@ -92,6 +92,7 @@ class GNNLightning(pl.LightningModule):
         lr=1e-4,
         instrument_weights=None,
         channel_weights=None,
+        huber_delta: float = 0.1,
         verbose=False,
         detect_anomaly=False,
         max_rollout_steps=1,
@@ -111,6 +112,21 @@ class GNNLightning(pl.LightningModule):
         decoder_layers: int = 2,
         encoder_dropout: float = 0.0,
         decoder_dropout: float = 0.0,
+        weight_decay: float = 1e-5,
+        lr_schedule: str = "plateau",  # "plateau" | "cosine_warmup"
+        warmup_pct: float = 0.05,
+        warmup_start_factor: float = 0.01,
+        min_lr: float = 1e-6,
+        # Validation CSV (diagnostic) outputs
+        val_csv_enabled: bool = True,
+        val_csv_out_dir: str = "val_csv",
+        val_csv_num_batches: int = 1,
+        val_csv_every_n_epochs: int = 1,
+        val_csv_max_rows: int | None = None,
+        val_csv_sample_seed: int = 0,
+        scan_angle_conditioning: str = "project",  # "pad" | "project"
+        pressure_level_conditioning: str = "project",  # "pad" | "project"
+        surface_meta_conditioning: str = "project",  # "pad" | "project"
         **kwargs,
     ):
         """
@@ -123,16 +139,51 @@ class GNNLightning(pl.LightningModule):
         lr (float, optional): Learning rate for the optimizer (default: 1e-4).
         """
         super().__init__()
+
+        # Normalize to int so Lightning hparams merge is stable across module/datamodule.
+        latent_step_hours = int(latent_step_hours)
         self.verbose = verbose
         self.detect_anomaly = detect_anomaly
         self.feature_stats = feature_stats
         self.save_hyperparameters()
         self.lr = lr
+        self.weight_decay = float(weight_decay)
+        self.huber_delta = float(huber_delta)
+        self.lr_schedule = str(lr_schedule)
+        self.warmup_pct = float(warmup_pct)
+        self.warmup_start_factor = float(warmup_start_factor)
+        self.min_lr = float(min_lr)
         self.instrument_weights = instrument_weights or {}
         self.channel_weights = channel_weights or {}
         self.max_rollout_steps = max_rollout_steps
         self.rollout_schedule = rollout_schedule
         self.latent_step_hours = latent_step_hours
+
+        # Diagnostic validation CSV controls
+        self.val_csv_enabled = bool(val_csv_enabled)
+        self.val_csv_out_dir = str(val_csv_out_dir)
+        self.val_csv_num_batches = int(val_csv_num_batches)
+        self.val_csv_every_n_epochs = int(val_csv_every_n_epochs)
+        self.val_csv_max_rows = int(val_csv_max_rows) if val_csv_max_rows is not None else None
+        self.val_csv_sample_seed = int(val_csv_sample_seed)
+
+        self.scan_angle_conditioning = str(scan_angle_conditioning)
+        if self.scan_angle_conditioning not in ("pad", "project"):
+            raise ValueError(
+                f"scan_angle_conditioning must be 'pad' or 'project' (got: {self.scan_angle_conditioning!r})"
+            )
+
+        self.pressure_level_conditioning = str(pressure_level_conditioning)
+        if self.pressure_level_conditioning not in ("pad", "project"):
+            raise ValueError(
+                f"pressure_level_conditioning must be 'pad' or 'project' (got: {self.pressure_level_conditioning!r})"
+            )
+
+        self.surface_meta_conditioning = str(surface_meta_conditioning)
+        if self.surface_meta_conditioning not in ("pad", "project"):
+            raise ValueError(
+                f"surface_meta_conditioning must be 'pad' or 'project' (got: {self.surface_meta_conditioning!r})"
+            )
 
         self.observation_config = observation_config
 
@@ -259,12 +310,62 @@ class GNNLightning(pl.LightningModule):
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
 
+        # Optional: project scan-angle embedding across the full hidden_dim so it can't be confined
+        # to a small trailing slice of the receiver representation.
+        if self.scan_angle_conditioning == "project":
+            self.scan_angle_projector = nn.Linear(self.scan_angle_embed_dim, self.hidden_dim)
+        else:
+            self.scan_angle_projector = None
+
         # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
         self.pressure_level_embed_dim = 8
         self.pressure_level_embedder = nn.Embedding(
             num_embeddings=16,  # 16 standard pressure levels
             embedding_dim=self.pressure_level_embed_dim
         )
+
+        # Optional: project pressure-level embedding across the full hidden_dim.
+        if self.pressure_level_conditioning == "project":
+            self.pressure_level_projector = nn.Linear(self.pressure_level_embed_dim, self.hidden_dim)
+        else:
+            self.pressure_level_projector = None
+
+        # Surface obs: embed target metadata (e.g. station height) for decoder conditioning.
+        # This lets the surface pressure decoder depend explicitly on elevation.
+        self.surface_target_meta_embed_dim = 8
+        self.surface_target_meta_dim = 0
+        self.surface_target_meta_names = []
+        self.surface_target_meta_embedder = None
+        try:
+            for _, instruments in observation_config.items():
+                if isinstance(instruments, dict) and "surface_obs" in instruments:
+                    surface_cfg = instruments.get("surface_obs") or {}
+                    self.surface_target_meta_names = list(surface_cfg.get("metadata", []) or [])
+                    self.surface_target_meta_dim = int(len(self.surface_target_meta_names))
+                    if self.surface_target_meta_dim > 0:
+                        self.surface_target_meta_embedder = make_mlp(
+                            [self.surface_target_meta_dim, self.surface_target_meta_embed_dim]
+                        )
+                    break
+        except Exception:
+            # Keep embedder disabled if config parsing fails; training will surface it.
+            self.surface_target_meta_dim = 0
+            self.surface_target_meta_names = []
+            self.surface_target_meta_embedder = None
+
+        # Optional: project surface metadata embedding across the full hidden_dim.
+        if self.surface_meta_conditioning == "project":
+            self.surface_meta_projector = nn.Linear(self.surface_target_meta_embed_dim, self.hidden_dim)
+        else:
+            self.surface_meta_projector = None
+
+        if self.surface_target_meta_embedder is not None:
+            print(
+                f"[GNN MODEL] surface_obs decoder conditioning: ENABLED "
+                f"(meta_dim={self.surface_target_meta_dim}, embed_dim={self.surface_target_meta_embed_dim})"
+            )
+        else:
+            print("[GNN MODEL] surface_obs decoder conditioning: DISABLED")
 
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
@@ -472,16 +573,27 @@ class GNNLightning(pl.LightningModule):
         """
         import numpy as np
 
-        print(f"[MESH PRED] Loading pre-computed edges from {edges_file}...")
+        # Many SLURM jobs run from a different working directory than this module.
+        # If a relative path was provided, also try resolving it next to this file.
+        edges_path = edges_file
+        if not os.path.isabs(edges_path):
+            here = os.path.dirname(os.path.abspath(__file__))
+            candidate = os.path.join(here, edges_path)
+            if os.path.exists(candidate):
+                edges_path = candidate
 
-        if not os.path.exists(edges_file):
+        print(f"[MESH PRED] Loading pre-computed edges from {edges_path}...")
+
+        if not os.path.exists(edges_path):
             raise FileNotFoundError(
-                f"Mesh prediction edges file not found: {edges_file}\n"
-                f"Please run: python precompute_mesh_edges.py --config configs/mesh_config.yaml"
+                "Mesh prediction edges file not found.\n"
+                f"  Requested: {edges_file}\n"
+                f"  Tried:     {edges_path}\n"
+                "Please run: python precompute_mesh_edges.py --config configs/mesh_config.yaml"
             )
 
         # Load pre-computed data
-        data = np.load(edges_file)
+        data = np.load(edges_path)
 
         # Get coordinates (same for all instruments)
         mesh_lats = data['lats']
@@ -1148,7 +1260,7 @@ class GNNLightning(pl.LightningModule):
                     # Embed viewing geometry information FIRST (before decoder initialization)
                     sa_emb = None
                     pressure_emb = None
-                    pressure_emb = None
+                    surface_meta_emb = None
 
                     if base_type == "ascat_target":
                         scan_angle = data[step_node_type].x  # [N,3] for ASCAT
@@ -1160,31 +1272,70 @@ class GNNLightning(pl.LightningModule):
                         # Diagnostic: verify scan angle varies
                         if base_type == "atms_target" and self.global_step % 200 == 0:
                             sa = data[step_node_type].x
-                            print(f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={sa.mean().item():.4f}, "
-                                  f"std={sa.std().item():.4f}, min={sa.min().item():.4f}, max={sa.max().item():.4f}")
+                            if sa.numel() == 0:
+                                print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
+                            else:
+                                sa_f = sa.float()
+                                mean_v = sa_f.mean().item()
+                                std_v = sa_f.std(unbiased=False).item()
+                                min_v = sa_f.min().item()
+                                max_v = sa_f.max().item()
+                                print(
+                                    f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={mean_v:.4f}, "
+                                    f"std={std_v:.4f}, min={min_v:.4f}, max={max_v:.4f}"
+                                )
                     elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
                         # For radiosonde and aircraft: condition on pressure level (vertical geometry)
                         pressure_level_idx = data[step_node_type].pressure_level  # [N]
                         pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
 
+                    # Surface obs: condition on target metadata (elevation) if available
+                    if (
+                        surface_meta_emb is None
+                        and base_type == "surface_obs_target"
+                        and self.surface_target_meta_embedder is not None
+                        and self.surface_target_meta_dim > 0
+                        and hasattr(data[step_node_type], "target_metadata")
+                    ):
+                        tm = data[step_node_type].target_metadata
+                        if tm is not None and tm.numel() > 0 and tm.size(1) > 2:
+                            meta = tm[:, 2:2 + self.surface_target_meta_dim].to(reference_device)
+                            surface_meta_emb = self.surface_target_meta_embedder(meta)
+
                     # Decoder initialization: CONDITION on viewing geometry
                     # Instead of zeros, initialize decoder WITH geometry information
                     if sa_emb is not None:
                         # Satellite: condition decoder on scan angle (viewing zenith angle)
-                        # Concatenate scan embedding with zeros to reach hidden_dim
-                        padding_dim = self.hidden_dim - self.scan_angle_embed_dim
-                        target_features_initial = torch.cat([
-                            torch.zeros(N, padding_dim, device=reference_device),
-                            sa_emb
-                        ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
+                        if self.scan_angle_projector is not None:
+                            target_features_initial = self.scan_angle_projector(sa_emb)
+                        else:
+                            # Backward-compatible behavior: scan info only in the last dims.
+                            padding_dim = self.hidden_dim - self.scan_angle_embed_dim
+                            target_features_initial = torch.cat([
+                                torch.zeros(N, padding_dim, device=reference_device),
+                                sa_emb
+                            ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
                     elif pressure_emb is not None:
                         # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
                         # Make prediction explicitly depend on geometry
-                        padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-                        target_features_initial = torch.cat([
-                            torch.zeros(N, padding_dim, device=reference_device),
-                            pressure_emb
-                        ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+                        if self.pressure_level_projector is not None:
+                            target_features_initial = self.pressure_level_projector(pressure_emb)
+                        else:
+                            padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                            target_features_initial = torch.cat([
+                                torch.zeros(N, padding_dim, device=reference_device),
+                                pressure_emb
+                            ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+                    elif surface_meta_emb is not None:
+                        # Surface obs: condition decoder on station metadata (elevation)
+                        if self.surface_meta_projector is not None:
+                            target_features_initial = self.surface_meta_projector(surface_meta_emb)
+                        else:
+                            padding_dim = self.hidden_dim - self.surface_target_meta_embed_dim
+                            target_features_initial = torch.cat([
+                                torch.zeros(N, padding_dim, device=reference_device),
+                                surface_meta_emb
+                            ], dim=-1)
                     else:
                         # Conventional obs without viewing geometry: use zeros
                         target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
@@ -1440,7 +1591,7 @@ class GNNLightning(pl.LightningModule):
                     y_true,
                     instrument_ids=instrument_ids,
                     channel_weights=self.channel_weights,  # dict keyed by int ids
-                    delta=0.1,
+                    delta=self.huber_delta,
                     rebalancing=True,
                     valid_mask=valid_mask,
                 )
@@ -1572,7 +1723,7 @@ class GNNLightning(pl.LightningModule):
                     y_true,
                     instrument_ids=instrument_ids,
                     channel_weights=self.channel_weights,
-                    delta=0.1,
+                    delta=self.huber_delta,
                     rebalancing=True,
                     valid_mask=valid_mask,
                 )
@@ -1639,10 +1790,12 @@ class GNNLightning(pl.LightningModule):
                 if (
                     self.trainer.is_global_zero  # only main process
                     and step == 0  # only concatenate latent rollout once
-                    and batch_idx == 0  # only first batch
+                    and self.val_csv_enabled
+                    and batch_idx < max(1, self.val_csv_num_batches)
+                    and (self.current_epoch % max(1, self.val_csv_every_n_epochs) == 0)
                 ):
                     # --- CSV save block ---
-                    out_dir = "val_csv"
+                    out_dir = self.val_csv_out_dir
                     os.makedirs(out_dir, exist_ok=True)
 
                     # LATENT ROLLOUT: Concatenate all steps into standard format
@@ -1798,21 +1951,53 @@ class GNNLightning(pl.LightningModule):
         if batch is None:
             return 'unknown'
 
-        # Try input_time first
+        # Prefer forecast init (start of target window) when available.
+        # `GNNDataModule` attaches:
+        # - init_time: start of the target window (forecast init / cycle time)
+        # - input_time: start of the input window
         ts = None
-        if hasattr(batch, 'input_time') and batch.input_time is not None:
-            # Handle if input_time is a list/tuple - take the first element
-            if isinstance(batch.input_time, (list, tuple)):
-                ts = batch.input_time[0] if len(batch.input_time) > 0 else None
-            else:
-                ts = batch.input_time
 
-        # Fallback to batch.time if input_time not available
-        elif hasattr(batch, 'time') and batch.time is not None:
-            if isinstance(batch.time, (list, tuple)):
-                ts = batch.time[0] if len(batch.time) > 0 else None
-            else:
-                ts = batch.time
+        def _pick_attr(name: str):
+            if not hasattr(batch, name):
+                return None
+            v = getattr(batch, name)
+            if v is None:
+                return None
+            if isinstance(v, (list, tuple)):
+                return v[0] if len(v) > 0 else None
+            # Treat scalar tensors and numeric sentinels as missing.
+            if hasattr(v, 'item'):
+                try:
+                    vv = v.item()
+                    if isinstance(vv, (int, float)) and float(vv) < 0:
+                        return None
+                    return vv
+                except Exception:
+                    return v
+            if isinstance(v, (int, float)) and float(v) < 0:
+                return None
+            return v
+
+        init_ts = _pick_attr('init_time')
+        input_ts = _pick_attr('input_time')
+        time_ts = _pick_attr('time')
+
+        if init_ts is not None:
+            ts = init_ts
+        elif input_ts is not None:
+            # In inference mode the datamodule may not populate init_time (no targets).
+            # In our binning logic, input_time is the *start* of the input window, so
+            # forecast init ≈ input_time + data_window_hours.
+            try:
+                window_h = self.hparams.get('data_window_hours', None)
+                if window_h is not None and isinstance(window_h, (int, float)):
+                    ts = float(input_ts) + float(window_h) * 3600.0
+                else:
+                    ts = input_ts
+            except Exception:
+                ts = input_ts
+        else:
+            ts = time_ts
 
         # Now convert ts to string based on its type
         if ts is None:
@@ -1823,23 +2008,18 @@ class GNNLightning(pl.LightningModule):
             if isinstance(ts, pd.Timestamp):
                 return ts.strftime('%Y%m%d%H')
 
-            # Handle Unix timestamp (float/int)
-            elif isinstance(ts, (int, float)):
-                dt = datetime.fromtimestamp(ts)
-                return dt.strftime('%Y%m%d%H')
-
-            # Handle tensor (PyTorch/numpy with .item() method)
-            elif hasattr(ts, 'item'):
-                dt = datetime.fromtimestamp(ts.item())
+            # Handle Unix timestamp (float/int) as UTC
+            if isinstance(ts, (int, float)):
+                dt = datetime.utcfromtimestamp(float(ts))
                 return dt.strftime('%Y%m%d%H')
 
             # Handle datetime object directly
-            elif isinstance(ts, datetime):
+            if isinstance(ts, datetime):
+                # Ensure UTC-ish formatting (drop tz conversion here; upstream should be UTC)
                 return ts.strftime('%Y%m%d%H')
 
-            else:
-                print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
-                return 'unknown'
+            print(f"[INIT_TIME] Warning: Unsupported time type: {type(ts)}")
+            return 'unknown'
 
         except Exception as e:
             print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
@@ -1860,11 +2040,31 @@ class GNNLightning(pl.LightningModule):
         # Collect all observations from all steps
         all_lat = []
         all_lon = []
+        all_ts = []  # per-observation valid times (unix seconds); -1 if missing
+        all_obs_ts = []  # per-observation observation times (unix seconds) inside 3h window; -1 if missing
+        all_latent_step = []
+        all_lead_hours_nominal = []
         all_pred = []
         all_true = []
         all_mask = []
         all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
+
+        # Persist scan-angle conditioning inputs for satellite-style targets.
+        # For these node types, batch[step_node_type].x stores scan angle(s).
+        scan_angle_expected_dim = 0
+        if node_type == "ascat_target":
+            scan_angle_expected_dim = 3
+        elif node_type in ("atms_target", "amsua_target", "avhrr_target"):
+            scan_angle_expected_dim = 1
+
+        all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
+
+        # For surface_obs_target, also persist the metadata that the decoder conditions on
+        # (e.g., station height) so we can directly verify pressure error vs height.
+        surface_meta_names = list(getattr(self, "surface_target_meta_names", []) or [])
+        surface_meta_dim = int(getattr(self, "surface_target_meta_dim", 0) or 0)
+        all_surface_meta_cols = [list() for _ in range(surface_meta_dim)] if node_type == "surface_obs_target" and surface_meta_dim > 0 else []
 
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
@@ -1890,10 +2090,43 @@ class GNNLightning(pl.LightningModule):
                     lon = target_metadata[:, 1].cpu().numpy()
                     lat_deg = np.degrees(lat)
                     lon_deg = np.degrees(lon)
+
+                    # surface_obs_target: record the conditioned metadata (columns after lat/lon)
+                    if all_surface_meta_cols:
+                        try:
+                            meta = target_metadata[:, 2:2 + surface_meta_dim].detach().cpu().numpy()
+                            if meta.ndim == 1:
+                                meta = meta[:, None]
+                        except Exception:
+                            meta = None
+                        if meta is None or meta.shape[0] != int(y_pred_unnorm.shape[0]):
+                            for j in range(surface_meta_dim):
+                                all_surface_meta_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
+                        else:
+                            for j in range(surface_meta_dim):
+                                all_surface_meta_cols[j].extend(meta[:, j].astype(np.float64).tolist())
                 else:
                     n = y_pred_unnorm.shape[0]
                     lat_deg = np.zeros(n)
                     lon_deg = np.zeros(n)
+
+                    if all_surface_meta_cols:
+                        for j in range(surface_meta_dim):
+                            all_surface_meta_cols[j].extend([float('nan')] * int(n))
+
+                # Per-observation timestamps (epoch seconds) if present
+                if hasattr(batch[step_node_type], 'target_times'):
+                    ts = batch[step_node_type].target_times.detach().cpu().numpy()
+                    ts = np.asarray(ts, dtype=np.int64)
+                else:
+                    ts = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int64)
+
+                # Per-observation real obs time (epoch seconds) if present
+                if hasattr(batch[step_node_type], 'obs_time_unix'):
+                    obs_ts = batch[step_node_type].obs_time_unix.detach().cpu().numpy()
+                    obs_ts = np.asarray(obs_ts, dtype=np.int64)
+                else:
+                    obs_ts = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int64)
 
                 # Get pressure data if available (for radiosonde and aircraft)
                 if hasattr(batch[step_node_type], 'target_pressure_hpa'):
@@ -1906,16 +2139,53 @@ class GNNLightning(pl.LightningModule):
                     pressure_level_idx = batch[step_node_type].pressure_level.cpu().numpy()
                 else:
                     pressure_level_idx = np.full(y_pred_unnorm.shape[0], -1, dtype=np.int32)
+
+                # Scan-angle export for satellite-style targets.
+                if all_scan_angle_cols:
+                    try:
+                        sa = getattr(batch[step_node_type], "x", None)
+                        if sa is None:
+                            raise ValueError("missing x")
+                        sa_np = sa.detach().cpu().numpy()
+                        sa_np = np.asarray(sa_np)
+                        if sa_np.ndim == 1:
+                            sa_np = sa_np[:, None]
+                        if sa_np.shape[0] != int(y_pred_unnorm.shape[0]):
+                            raise ValueError(f"row mismatch: x has {sa_np.shape[0]} rows, preds have {int(y_pred_unnorm.shape[0])}")
+                        # Use the first expected columns; pad with NaN if fewer are present.
+                        for j in range(scan_angle_expected_dim):
+                            if j < sa_np.shape[1]:
+                                all_scan_angle_cols[j].extend(sa_np[:, j].astype(np.float64).tolist())
+                            else:
+                                all_scan_angle_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
+                    except Exception:
+                        for j in range(scan_angle_expected_dim):
+                            all_scan_angle_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
             else:
                 n = y_pred_unnorm.shape[0]
                 lat_deg = np.zeros(n)
                 lon_deg = np.zeros(n)
+                ts = np.full(n, -1, dtype=np.int64)
+                obs_ts = np.full(n, -1, dtype=np.int64)
                 pressure_hpa = np.full(n, np.nan)
                 pressure_level_idx = np.full(n, -1, dtype=np.int32)
+
+                if all_scan_angle_cols:
+                    for j in range(scan_angle_expected_dim):
+                        all_scan_angle_cols[j].extend([float('nan')] * int(n))
 
             # Collect data from this step
             all_lat.extend(lat_deg)
             all_lon.extend(lon_deg)
+            all_ts.extend(ts.tolist())
+            all_obs_ts.extend(obs_ts.tolist())
+            all_latent_step.extend([int(step)] * int(len(ts)))
+            lead_nom = np.nan
+            try:
+                lead_nom = float(step + 1) * float(self.latent_step_hours)
+            except Exception:
+                lead_nom = np.nan
+            all_lead_hours_nominal.extend([lead_nom] * int(len(ts)))
             all_pred.append(y_pred_unnorm.detach().cpu().numpy())
             all_true.append(y_true_unnorm.detach().cpu().numpy())
             all_pressure.extend(pressure_hpa)
@@ -1962,6 +2232,68 @@ class GNNLightning(pl.LightningModule):
 
         # Build DataFrame in EXACT same format as standard rollout
         df = pd.DataFrame({"lat": all_lat, "lon": all_lon})
+
+        # Persist surface meta columns (e.g., height) if present.
+        if all_surface_meta_cols and len(all_surface_meta_cols[0]) == len(df):
+            def _safe_meta_name(s: str) -> str:
+                return str(s).strip().replace(" ", "_")
+
+            for j in range(surface_meta_dim):
+                name = surface_meta_names[j] if j < len(surface_meta_names) else f"meta{j}"
+                df[f"meta_{_safe_meta_name(name)}"] = np.asarray(all_surface_meta_cols[j], dtype=np.float64)
+
+        # Scan-angle columns (when applicable)
+        if all_scan_angle_cols and len(all_scan_angle_cols[0]) == len(df):
+            for j in range(scan_angle_expected_dim):
+                df[f"scan_angle_{j}"] = np.asarray(all_scan_angle_cols[j], dtype=np.float64)
+
+        # Init time columns (constant per file/batch when available)
+        init_time_str = self._extract_init_time_str(batch)
+        init_dt_str = ""
+        init_unix = -1
+        if init_time_str not in (None, '', 'unknown'):
+            try:
+                init_dt = pd.to_datetime(init_time_str, format='%Y%m%d%H', utc=True)
+                init_dt_str = init_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                init_unix = int(init_dt.timestamp())
+            except Exception:
+                init_dt_str = ""
+                init_unix = -1
+
+        if init_dt_str:
+            df.insert(0, 'init_datetime', init_dt_str)
+            df.insert(1, 'init_time_unix', init_unix)
+
+        insert_pos = 2 if 'init_datetime' in df.columns else 0
+
+        # Per-observation valid times (if present)
+        ts_arr = np.asarray(all_ts, dtype=np.int64)
+        if ts_arr.size == len(df):
+            # Fallback: if per-observation times are missing/invalid, compute valid time from init + nominal lead.
+            if init_unix >= 0:
+                try:
+                    lead_seconds = (np.asarray(all_lead_hours_nominal, dtype=np.float64) * 3600.0).round().astype(np.int64)
+                    computed_ts = init_unix + lead_seconds
+                    ts_arr = np.where(ts_arr >= 0, ts_arr, computed_ts)
+                except Exception:
+                    pass
+
+            dt = pd.to_datetime(pd.Series(ts_arr).replace(-1, pd.NA), unit='s', utc=True, errors='coerce')
+            df.insert(insert_pos, 'datetime', dt.dt.strftime('%Y-%m-%dT%H:%M:%SZ').fillna(''))
+            df.insert(insert_pos + 1, 'valid_time_unix', ts_arr)
+
+        # Real obs timestamps (inside the target sub-window), if present
+        obs_ts_arr = np.asarray(all_obs_ts, dtype=np.int64)
+        if obs_ts_arr.size == len(df):
+            df.insert(insert_pos + 2, 'obs_time_unix', obs_ts_arr)
+
+        # Step/lead metadata so rows can be grouped per forecast hour
+        step_arr = np.asarray(all_latent_step, dtype=np.int64)
+        if step_arr.size == len(df):
+            df['latent_step'] = step_arr
+        lead_arr = np.asarray(all_lead_hours_nominal, dtype=np.float64)
+        if lead_arr.size == len(df):
+            df['lead_hours_nominal'] = lead_arr
 
         for i, fname in enumerate(feats):
             col = _safe_col_name(fname)
@@ -2020,8 +2352,19 @@ class GNNLightning(pl.LightningModule):
             if len(valid_levels) > 0:
                 print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
 
-        # Extract init time for filename
-        init_time_str = self._extract_init_time_str(batch)
+        # Optional subsampling to bound I/O and file size (validation diagnostics)
+        if mode != 'predict' and self.val_csv_max_rows is not None and len(df) > self.val_csv_max_rows:
+            try:
+                node_seed = abs(hash(str(node_type))) % 1000003
+                seed = (
+                    int(self.val_csv_sample_seed)
+                    + int(self.current_epoch) * 1000003
+                    + int(batch_idx) * 9176
+                    + int(node_seed)
+                ) % (2**32 - 1)
+                df = df.sample(n=int(self.val_csv_max_rows), random_state=int(seed))
+            except Exception:
+                pass
 
         # Save with appropriate filename based on mode
         if mode == 'predict':
@@ -2087,6 +2430,7 @@ class GNNLightning(pl.LightningModule):
                 pred_np = pred_unnorm.detach().cpu().numpy()
 
                 df = pd.DataFrame({
+                    'mesh_idx': np.arange(len(mesh_lats), dtype=np.int64),
                     'lat': mesh_lats,
                     'lon': mesh_lons,
                 })
@@ -2170,11 +2514,14 @@ class GNNLightning(pl.LightningModule):
         if base_inst in ['radiosonde', 'aircraft']:
             fixed_idx = torch.full((N,), self.mesh_pressure_level_idx, dtype=torch.long, device=device)
             pressure_emb = self.pressure_level_embedder(fixed_idx)  # [N, 8]
-            padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-            rec_rep = torch.cat([
-                torch.zeros(N, padding_dim, device=device),
-                pressure_emb
-            ], dim=-1)  # [N, hidden_dim]
+            if self.pressure_level_projector is not None:
+                rec_rep = self.pressure_level_projector(pressure_emb)
+            else:
+                padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                rec_rep = torch.cat([
+                    torch.zeros(N, padding_dim, device=device),
+                    pressure_emb
+                ], dim=-1)  # [N, hidden_dim]
 
             print(f"[MESH PRED] Decoding {inst_name} conditioned on pressure level "
                   f"{self.mesh_pressure_level_idx} "
@@ -2366,23 +2713,65 @@ class GNNLightning(pl.LightningModule):
                 print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-5)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
-        # This scheduler monitors the validation loss and reduces the LR when it plateaus
+        # TenYearTrain-style schedule: warmup + cosine decay (robust to noisy validation)
+        if self.lr_schedule == "cosine_warmup":
+            max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 328
+            warmup_epochs = max(1, int(self.warmup_pct * max_epochs))
+            warmup_epochs = min(warmup_epochs, max(1, max_epochs - 1))
+
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max_epochs - warmup_epochs,
+                eta_min=self.min_lr,
+            )
+
+            from torch.optim.lr_scheduler import LinearLR, SequentialLR
+
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=self.warmup_start_factor,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+
+            combined_scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, scheduler],
+                milestones=[warmup_epochs],
+            )
+
+            if self.trainer.is_global_zero:
+                print("[LR Schedule] Cosine decay with warmup")
+                print(f"  Warmup epochs: {warmup_epochs} ({self.warmup_start_factor}×lr → 1.0×lr)")
+                print(f"  Cosine decay: {max_epochs - warmup_epochs} epochs (lr → {self.min_lr})")
+                print(f"  Total epochs: {max_epochs}")
+
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": combined_scheduler,
+                    "interval": "epoch",
+                    "frequency": 1,
+                },
+            }
+
+        # Default: validation-loss plateau schedule (existing behavior)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode="min",  # Reduce LR when the monitored metric has stopped decreasing
-            factor=0.5,  # new_lr = lr * factor (conservative decay; lower factor is more aggressive)
-            patience=3,  # Number of epochs with no improvement after which LR will be reduced
-            verbose=True,  # Print a message when the LR is changed
-            min_lr=1e-6,  # safeguard against vanishing lr
+            mode="min",
+            factor=0.5,
+            patience=3,
+            verbose=True,
+            min_lr=self.min_lr,
         )
 
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",  # The metric to monitor
+                "monitor": "val_loss",
                 "interval": "epoch",
                 "frequency": 1,
             },
