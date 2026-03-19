@@ -396,4 +396,3 @@ feature_stats:  # Statistics for the features used in the model (with FULL QC fi
     bt_clear_ch_6 : [259.72,  6.67]
     bt_clear_ch_7 : [287.38,  8.72]
     bt_clear_ch_8 : [264.54, 10.17]
-    bt_clear_ch_9 : [290.17,  8.95]
