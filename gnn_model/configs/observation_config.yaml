@@ -188,17 +188,17 @@ observation_config:
         airPressure_prepbufr_event_1:
           range: [300, 1100]            # hPa; physically reasonable surface pressure range
           qm_flag_col: airPressureQuality_event_1
-          keep: [1,2]
+          keep: [0,1,2]
         airTemperature:
           range: [-90, 60]              # Celsius; physically reasonable surface temperature range
           qm_flag_col: airTemperatureQuality_event_1
-          keep: [1,2,4,9]
+          keep: [0,1,2,4,9]
         dewPointTemperature:
           range: [-100, 50]             # Celsius; physically reasonable (Td ≤ T, can be very dry)
           qm_flag_col: dewPointTemperatureQuality_event_1
           keep: [1,2,4,9]
         windSpeed:
-          range: [0, 100]               # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
+          range: [0, 150]               # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
         windDirection:
           range: [0, 6.2832]               # radians; full circle 0-2π
 
@@ -238,7 +238,7 @@ observation_config:
         airPressure:
           range: [1, 1100]              # hPa; physically reasonable (surface to high altitude)
           qm_flag_col: airPressureQuality
-          keep: [1, 2]
+          keep: [0, 1, 2]
         airTemperature:
           range: [-90, 50]              # Celsius; physically reasonable atmospheric range
           qm_flag_col: airTemperatureQuality
@@ -252,7 +252,7 @@ observation_config:
           qm_flag_col: windQuality
           keep: [2]                     # Keep only good flag 2
         windDirection:
-          range: [0, 6.28]              # radians; full circle 0-2π
+          range: [0, 6.2832]              # radians; full circle 0-2π
           qm_flag_col: windQuality
           keep: [2]                     # Keep only good flag 2
 
