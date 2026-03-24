@@ -27,7 +27,7 @@ from utils import make_mlp
 from interaction_net import InteractionNet
 from create_mesh_graph_global import create_mesh
 from torch_geometric.data import HeteroData
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 from torch_geometric.utils import scatter
 from loss import weighted_huber_loss
 from processor_transformer import SlidingWindowTransformerProcessor
@@ -582,7 +582,7 @@ class GNNLightning(pl.LightningModule):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
-    def _coerce_edge_attr_dim(self, edge_attr: torch.Tensor, dim: int) -> torch.Tensor:
+    def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
         if edge_attr is None:
             return edge_attr
         if edge_attr.dim() == 1:

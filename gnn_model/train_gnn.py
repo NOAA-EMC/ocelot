@@ -148,8 +148,8 @@ def main():
         "--disable_bipartite_edge_attr",
         action="store_true",
         help=(
-            "Disable using computed obs↔mesh / mesh↔target spatial edge_attr features. "
-            "If enabled (default), raw edge_attr (e.g., 4-dim GraphCast-style) is fed into GAT encoders/decoders."
+            "By default, computed obs↔mesh / mesh↔target spatial edge_attr features are fed into "
+            "the GAT encoders/decoders. Set this flag to disable those features and force zero edge_attr instead."
         ),
     )
     parser.add_argument(

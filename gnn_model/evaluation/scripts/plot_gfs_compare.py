@@ -346,7 +346,6 @@ def _masked_preview_stats(chunk: pd.DataFrame, vs: VarSpec) -> dict:
 
 
 def _sanity_check_units(csv_path: str, varspecs: list[VarSpec], chunksize: int) -> None:
-    preview = pd.read_csv(csv_path, nrows=1)
     needed: set[str] = set()
     for vs in varspecs:
         needed.update([vs.truth, vs.gfs])
@@ -354,6 +353,7 @@ def _sanity_check_units(csv_path: str, varspecs: list[VarSpec], chunksize: int) 
             needed.add(vs.mask)
 
     try:
+        preview = pd.read_csv(csv_path, nrows=1)
         usecols = [c for c in needed if c in preview.columns]
         if not usecols:
             return

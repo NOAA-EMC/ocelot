@@ -82,7 +82,8 @@ class SpatialMixBlock(nn.Module):
         # columns are normalized spatial features (typically 4 dims: dist + relative xyz).
         # We turn the full feature vector into a bounded positive weight and compute
         # a weighted-mean aggregation.
-        # (No learned parameters here to keep checkpoint compatibility.)
+        # The edge-weighting rule itself is parameter-free; the aggregated message
+        # is then processed by the learned MLP below before the residual update.
         self.distance_scale: float = 4.0
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
