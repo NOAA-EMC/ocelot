@@ -346,6 +346,7 @@ def _masked_preview_stats(chunk: pd.DataFrame, vs: VarSpec) -> dict:
 
 
 def _sanity_check_units(csv_path: str, varspecs: list[VarSpec], chunksize: int) -> None:
+    preview = pd.read_csv(csv_path, nrows=1)
     needed: set[str] = set()
     for vs in varspecs:
         needed.update([vs.truth, vs.gfs])
@@ -353,7 +354,6 @@ def _sanity_check_units(csv_path: str, varspecs: list[VarSpec], chunksize: int) 
             needed.add(vs.mask)
 
     try:
-        preview = pd.read_csv(csv_path, nrows=1)
         usecols = [c for c in needed if c in preview.columns]
         if not usecols:
             return
@@ -384,6 +384,7 @@ def compute_rmse_by_fhr(
     varspecs: list[VarSpec],
     chunksize: int,
 ) -> pd.DataFrame:
+    preview = pd.read_csv(csv_path, nrows=1)
     base_cols = ["fhr_used", "lead_hours_nominal"]
     needed_cols: set[str] = set(base_cols)
     for vs in varspecs:
@@ -391,7 +392,6 @@ def compute_rmse_by_fhr(
         if vs.mask:
             needed_cols.add(vs.mask)
 
-    preview = pd.read_csv(csv_path, nrows=1)
     usecols = [c for c in needed_cols if c in preview.columns]
 
     sumsq: dict[tuple[int, str], float] = {}
@@ -498,10 +498,10 @@ def _mapspecs_for(instrument: str, which: str) -> list[MapSpec]:
             out.append(
                 MapSpec(
                     "sp",
-                    "pred_airPressure_prepbufr_event_1",
-                    "true_airPressure_prepbufr_event_1",
+                    "pred_pressureMeanSeaLevel_prepbufr",
+                    "true_pressureMeanSeaLevel_prepbufr",
                     "gfs_sp_hPa",
-                    "mask_airPressure_prepbufr_event_1",
+                    "mask_pressureMeanSeaLevel_prepbufr",
                     "hPa",
                 )
             )
@@ -785,10 +785,10 @@ def _varspecs_for(instrument: str, which: str) -> tuple[list[VarSpec], dict[str,
             varspecs.append(
                 VarSpec(
                     "sp",
-                    "pred_airPressure_prepbufr_event_1",
-                    "true_airPressure_prepbufr_event_1",
+                    "pred_pressureMeanSeaLevel_prepbufr",
+                    "true_pressureMeanSeaLevel_prepbufr",
                     "gfs_sp_hPa",
-                    "mask_airPressure_prepbufr_event_1",
+                    "mask_pressureMeanSeaLevel_prepbufr",
                 )
             )
         units_by_name: dict[str, str | None] = {"u10": "m/s", "v10": "m/s", "t2m": "°C", "sp": "hPa"}
