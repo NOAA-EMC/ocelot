@@ -494,9 +494,11 @@ def get_bipartite_graph_spatial_features(
     )
     if senders_node_lat.dtype != common_dtype:
         senders_node_lat = senders_node_lat.astype(common_dtype)
+    if senders_node_lon.dtype != common_dtype:
         senders_node_lon = senders_node_lon.astype(common_dtype)
     if receivers_node_lat.dtype != common_dtype:
         receivers_node_lat = receivers_node_lat.astype(common_dtype)
+    if receivers_node_lon.dtype != common_dtype:
         receivers_node_lon = receivers_node_lon.astype(common_dtype)
     dtype = common_dtype
 
