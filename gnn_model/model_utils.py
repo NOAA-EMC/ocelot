@@ -482,22 +482,22 @@ def get_bipartite_graph_spatial_features(
     #    assert receivers_node_lat.dtype == dtype, (
     # Make sure all latitude/longitude arrays share a common floating dtype
     # instead of failing with an assert when dtypes differ across inputs.
-      common_dtype = np.result_type(
-      senders_node_lat.dtype,
-      senders_node_lon.dtype,
-      receivers_node_lat.dtype,
-      receivers_node_lon.dtype,
+    common_dtype = np.result_type(
+        senders_node_lat.dtype,
+        senders_node_lon.dtype,
+        receivers_node_lat.dtype,
+        receivers_node_lon.dtype,
     )
     if senders_node_lat.dtype != common_dtype:
-      senders_node_lat = senders_node_lat.astype(common_dtype)
-      senders_node_lon = senders_node_lon.astype(common_dtype)
+        senders_node_lat = senders_node_lat.astype(common_dtype)
+        senders_node_lon = senders_node_lon.astype(common_dtype)
     if receivers_node_lat.dtype != common_dtype:
-      receivers_node_lat = receivers_node_lat.astype(common_dtype)
-      receivers_node_lon = receivers_node_lon.astype(common_dtype)
+        receivers_node_lat = receivers_node_lat.astype(common_dtype)
+        receivers_node_lon = receivers_node_lon.astype(common_dtype)
     dtype = common_dtype
 
     senders_node_phi, senders_node_theta = lat_lon_deg_to_spherical(
-      senders_node_lat, senders_node_lon
+        senders_node_lat, senders_node_lon
     )
     receivers_node_phi, receivers_node_theta = lat_lon_deg_to_spherical(
         receivers_node_lat, receivers_node_lon
