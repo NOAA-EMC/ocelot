@@ -145,6 +145,23 @@ def main():
     )
 
     parser.add_argument(
+        "--disable_bipartite_edge_attr",
+        action="store_true",
+        help=(
+            "By default, computed obs↔mesh / mesh↔target spatial edge_attr features are fed into "
+            "the GAT encoders/decoders. Set this flag to disable those features and force zero edge_attr instead."
+        ),
+    )
+    parser.add_argument(
+        "--bipartite_edge_attr_dim",
+        type=int,
+        default=4,
+        help=(
+            "Input dimension of bipartite spatial edge_attr features produced by obs_mesh_conn. "
+            "With current GraphCast-style features this is typically 4 (distance + relative position xyz)."
+        ),
+    )
+    parser.add_argument(
         "--surface_meta_conditioning",
         type=str,
         default="project",
@@ -435,6 +452,8 @@ def main():
         val_csv_sample_seed=int(args.val_csv_sample_seed),
         scan_angle_conditioning=str(args.scan_angle_conditioning),
         pressure_level_conditioning=str(args.pressure_level_conditioning),
+        use_bipartite_edge_attr=(not args.disable_bipartite_edge_attr),
+        bipartite_edge_attr_dim=int(args.bipartite_edge_attr_dim),
         surface_meta_conditioning=str(args.surface_meta_conditioning),
     )
 

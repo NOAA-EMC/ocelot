@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH -t 48:00:00
 #SBATCH --output=gnn_train_Random_%j.out
 #SBATCH --error=gnn_train_Random_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -99,7 +99,7 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-Rand_TenYear_nl16_fixedBugs}"
+RUN_NAME="${RUN_NAME:-Rand_TenYear_edge_awareSpatialMixing}"
 echo "RUN_NAME=$RUN_NAME"
 
 # Resume behavior:
@@ -141,6 +141,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--run_name "$RUN_NAME" \
 	"${RESUME_ARGS[@]}" \
 	--mesh_type fixed \
+	--scan_angle_conditioning project \
 	--sampling_mode random \
 	--cfg_path configs/observation_config.yaml \
 	--data_path /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7 \
@@ -149,10 +150,10 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--val_start_date 2024-01-01 \
 	--val_end_date 2025-01-01 \
 	--train_window_days 12 \
-	--val_window_days 8 \
+	--val_window_days 12 \
 	--val_mode sequential \
-	--val_stride_days 8 \
-	--val_update_every_n_epochs 20 \
+	--val_stride_days 12 \
+	--val_update_every_n_epochs 50 \
 	--num_layers 16 \
 	--lr 1.5e-4 \
 	--weight_decay 1e-4 \
@@ -169,7 +170,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--disable_early_stopping \
 	--val_csv_out_dir "val_csv/${RUN_NAME}" \
 	--val_csv_num_batches 3 \
-	--val_csv_every_n_epochs 20 \
+	--val_csv_every_n_epochs 10 \
 	--val_csv_max_rows 50000 \
 	--val_csv_sample_seed 12345
 
