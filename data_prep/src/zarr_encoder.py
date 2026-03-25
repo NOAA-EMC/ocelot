@@ -155,6 +155,8 @@ class Encoder(bufr.encoders.EncoderBase):
             _, var_name = self._split_source_str(var['name'])
 
             if var_name.lower() == 'datetime' or var_name.lower() == 'time':
+                root.time.attrs['units'] = var['units']
+                root.time.attrs['long_name'] = var['longName']
                 continue  # Skip the time variable as it is a dimension
 
             if var["source"].split('/')[-1] not in container.list():

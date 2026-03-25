@@ -28,7 +28,6 @@ bufr:
       transforms:
         - scale: 0.01  # Convert from Pa to hPa
 
-
     airTemperature:
       query: "*/TMDB"  # Dry bulb temperature
       transforms:
@@ -53,6 +52,8 @@ bufr:
     windDirection:
       query: "[*/WDIR, */WNDSQ4/WDIR]"
       type: float
+      transforms:
+        - scale: 0.0174533  # Convert degrees to radians
 
     height_bufr:
       query: "[*/SELV, */HSMSL]" #, */HSAWS, */HSAWS[1]]"  # Height above ground level
@@ -92,12 +93,17 @@ bufr:
       - name: "airTemperature"
         source: variables/airTemperature
         longName: "Air Temperature at Station Level"
-        units: "Celsius"
+        units: "C"
 
       - name: "dewPointTemperature"
         source: variables/dewPointTemperature
         longName: "Dew Point Temperature at Station Level"
-        units: "Celsius"
+        units: "C"
+
+      - name: "airTemperature"
+        source: variables/airTemperature
+        longName: "Air Temperature at Station Level"
+        units: "C"
 
       - name: "airTemperature"
         source: variables/airTemperature
@@ -122,4 +128,4 @@ bufr:
       - name: "height_bufr"
         source: variables/height_bufr
         longName: "Height Above Ground Level"
-        units: "meters"
+        units: "m"

@@ -92,10 +92,10 @@ encoder:
     - name: "albedo"
       source: variables/albedo
       longName: "Albedo"
-      units: ""
+      units: "%"
 
     - name: "brightnessTemperature"
       source: variables/brightnessTemperature
       longName: "Brightness Temperature"
-      units: ""
+      units: "K"
 

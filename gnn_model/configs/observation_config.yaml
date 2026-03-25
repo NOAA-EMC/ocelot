@@ -8,6 +8,10 @@ pipeline:
       # amsua: 3   
       # ascat: 2
       cris_pca: 1
+      # Give weak/rare instruments more samples
+      # seviri: 20
+      # ascat: 10
+      # ssmis: 20
     conventional:
       _default: 1
       surface_obs: 1
@@ -45,9 +49,9 @@ channel_weights:
   atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
   amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
   avhrr: [1.0, 1.0, 1.0]
-  surface_obs: [0.5, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (5): pressure, temp, dewpoint, wind_u, wind_v
+  surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (5): pressure, temp, dewpoint, wind_u, wind_v
   radiosonde: [1.0, 1.0, 1.0, 1.0]
-  aircraft: [1.0, 1.0, 1.0, 1.0]
+  aircraft: [1.0, 1.0, 1.0]
   ascat: [1.0, 1.0, 1.0]
   ssmis: [
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
@@ -72,7 +76,7 @@ observation_config:
                  bt_channel_16, bt_channel_17, bt_channel_18, bt_channel_19, bt_channel_20,
                  bt_channel_21, bt_channel_22]
       metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
-      input_dim: 32
+      input_dim: 34
       target_dim: 22
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
@@ -84,7 +88,7 @@ observation_config:
                 bt_channel_6, bt_channel_7, bt_channel_8, bt_channel_9, bt_channel_10,
                 bt_channel_11, bt_channel_12, bt_channel_13, bt_channel_14, bt_channel_15]
       metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
-      input_dim: 25
+      input_dim: 30
       target_dim: 15
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
@@ -98,7 +102,7 @@ observation_config:
                  bt_ch_16, bt_ch_17, bt_ch_18, bt_ch_19, bt_ch_20,
                  bt_ch_21, bt_ch_22, bt_ch_23, bt_ch_24]
       metadata: [sensorScanPosition, satelliteAscendingFlag]
-      input_dim: 33
+      input_dim: 34
       target_dim: 24
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
@@ -112,7 +116,7 @@ observation_config:
                  bt_clear_ch_8, bt_clear_ch_9, bt_clear_ch_10, bt_clear_ch_11
                 ]
       metadata: [satelliteZenithAngle, solarZenithAngle]
-      input_dim: 25
+      input_dim: 27
       target_dim: 16
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
@@ -122,7 +126,7 @@ observation_config:
       scan_angle_channels: 1  # Number of scan angle dimensions
       features: [brightnessTemperature_ch_50, brightnessTemperature_ch_51, brightnessTemperature_ch_52]
       metadata: [satelliteZenithAngle, solarZenithAngle]
-      input_dim: 12
+      input_dim: 16
       target_dim: 3
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
@@ -140,72 +144,88 @@ observation_config:
       decoder_hidden_layers: 3
 
     ascat:
-      sat_ids: [3]  # MetOp satellite IDs
+      sat_ids: [3, 4, 5]  # MetOp satellite IDs (v7 has satelliteIdentifier in {3,4,5})
       scan_angle_channels: 3  # ASCAT has 3 beams, each with its own scan angle
       features: [backscatter_ch_1, backscatter_ch_2, backscatter_ch_3]  # fore, mid, aft beams
       metadata: [radarIncidenceAngle_ch_1, radarIncidenceAngle_ch_2, radarIncidenceAngle_ch_3,
                  antennaBeamAzimuthAngle_ch_1, antennaBeamAzimuthAngle_ch_2, antennaBeamAzimuthAngle_ch_3]  # angles for each channel (beam IDs are implicit in channel order)
-      input_dim: 16   # 7 (geo/time) + 6 (metadata) + 3 (features)
+      input_dim: 19   # 7 (geo/time) + 6 (metadata) + 3 (features) + 3 (sat_id)
       target_dim: 3   # 3 backscatter channels
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_strict_flags: true     # ensure missing flags are rejected
       qc_filters:
-        # QC filters: Based on empirical data analysis (1M samples)
-        # ascatSigma0Usability: 0=usable (96-99% of data), 1=good (1-4%), 2147483647=missing
-        # Both 0 and 1 contain valid backscatter data matching feature_stats means
         backscatter_ch_1:
-          range: [-55.0, 3.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.8, -2.3]; allow +0.7 dB buffer
+          range: [-55.0, 3.0]
           qm_flag_col: ascatSigma0Usability_ch_1
           keep: [0]
         backscatter_ch_2:
-          range: [-55.0, 5.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-35.6, -0.6]; retain wet-snow spikes
+          range: [-55.0, 5.0]
           qm_flag_col: ascatSigma0Usability_ch_2
           keep: [0]
         backscatter_ch_3:
-          range: [-55.0, 3.2]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.6, -2.4]
+          range: [-55.0, 3.2]
           qm_flag_col: ascatSigma0Usability_ch_3
           keep: [0]
+    
+        radarIncidenceAngle_ch_1:
+          range: [20.0, 70.0]
+          clip: true
+        radarIncidenceAngle_ch_2:
+          range: [20.0, 70.0]
+          clip: true
+        radarIncidenceAngle_ch_3:
+          range: [20.0, 70.0]
+          clip: true
+        antennaBeamAzimuthAngle_ch_1:
+          range: [0.0, 360.0]
+          clip: true
+        antennaBeamAzimuthAngle_ch_2:
+          range: [0.0, 360.0]
+          clip: true
+        antennaBeamAzimuthAngle_ch_3:
+          range: [0.0, 360.0]
+          clip: true
 
   conventional:
     surface_obs:
       source: zarr
       zarr_name: raw_surface_obs
-      # height maps to height_prepbufr_event_1 in the Zarr file
-      # Using airPressure_prepbufr_event_1 (station pressure) instead of pressureMeanSeaLevel_pb
-      # because pressureMeanSeaLevel_pb appears to be all missing values (3.4e38)
-      features: [airPressure_prepbufr_event_1, airTemperature, dewPointTemperature, wind_u, wind_v]
+      # Surface obs use sea-level pressure.
+      features: [pressureMeanSeaLevel_prepbufr, airTemperature, dewPointTemperature, wind_u, wind_v]
       metadata: [height_prepbufr_event_1]
       input_dim: 13                      # 7 (geo/time enc) + 1 meta + 5 feats
       target_dim: 5
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_filters:
-        airPressure_prepbufr_event_1:
-          range: [300, 1100]            # hPa; physically reasonable surface pressure range
-          qm_flag_col: airPressureQuality_event_1
-          keep: [1,2]
+        pressureMeanSeaLevel_prepbufr:
+          range: [800, 1100]            # hPa; physically reasonable sea-level pressure range
         airTemperature:
           range: [-90, 60]              # Celsius; physically reasonable surface temperature range
           qm_flag_col: airTemperatureQuality_event_1
-          keep: [1,2,4,9]
+          keep: [0,1,2,4,9]
         dewPointTemperature:
           range: [-100, 50]             # Celsius; physically reasonable (Td ≤ T, can be very dry)
           qm_flag_col: dewPointTemperatureQuality_event_1
           keep: [1,2,4,9]
         windSpeed:
-          range: [0, 100]               # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
+          range: [0, 150]               # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
         windDirection:
-          range: [0, 360]               # degrees (NOTE: zarr metadata incorrectly says "radians")
+          range: [0, 6.2832]               # radians; full circle 0-2π
+
+        # Metadata QC
+        height_prepbufr_event_1:
+          range: [-500, 9000]           # meters; clip mild errors, treat 9999+ as missing in code
+          clip: true
+          qm_flag_col: heightQuality_event_1
+          keep: [1, 2]
+          strict_flags: true
 
       qc_relations:                   # cross-variable checks
         dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)
         max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
         rh_from_td_consistency_pct: 25  # %pts; invalidate RH if |RH - RH*| > 25
-        pressure_vs_height:
-          enable: true
-          tolerance_hpa: 100          # |p - p_exp(height)| ≤ 100 hPa
-          scale_height_m: 8000
 
     radiosonde:
       source: zarr
@@ -226,13 +246,13 @@ observation_config:
         airPressure:
           range: [1, 1100]              # hPa; physically reasonable (surface to high altitude)
           qm_flag_col: airPressureQuality
-          keep: [1, 2]
+          keep: [0, 1, 2]
         airTemperature:
           range: [-90, 50]              # Celsius; physically reasonable atmospheric range
           qm_flag_col: airTemperatureQuality
           reject: [13, 14, 15]          # Reject bad flags
         dewPointTemperature:
-          range: [-120, 40]             # Celsius; physically reasonable (very dry stratosphere to humid surface)
+          range: [-120, 50]             # Celsius; physically reasonable (very dry stratosphere to humid surface)
           qm_flag_col: dewPointTemperatureQuality
           reject: [13, 14, 15]          # Reject bad flags
         windSpeed:
@@ -240,7 +260,7 @@ observation_config:
           qm_flag_col: windQuality
           keep: [2]                     # Keep only good flag 2
         windDirection:
-          range: [0, 6.28]              # radians; full circle 0-2π
+          range: [0, 6.2832]              # radians; full circle 0-2π
           qm_flag_col: windQuality
           keep: [2]                     # Keep only good flag 2
 
@@ -248,12 +268,12 @@ observation_config:
       source: zarr
       zarr_name: aircraft
       # NOTE: Similar to radiosonde - airPressure used as vertical coordinate
-      # Aircraft measures: Temperature, Wind components, and Humidity
-      # UNITS: airTemperature=°C, airPressure=hPa, specificHumidity=kg/kg, windU/windV=m/s
-      features: [airTemperature, specificHumidity, windU, windV]
+      # Aircraft measures: Temperature and Wind components
+      # UNITS: airTemperature=°C, airPressure=hPa, windU/windV=m/s
+      features: [airTemperature, windU, windV]
       metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
-      input_dim: 12                    # 7 (geo/time enc) + 1 meta + 4 feats [+8 pressure embedding added by model]
-      target_dim: 4                    # Predict T, q, u, v
+      input_dim: 11                    # 7 (geo/time enc) + 1 meta + 3 feats [+8 pressure embedding added by model]
+      target_dim: 3                    # Predict T, u, v
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
       qc_filters:
@@ -266,22 +286,18 @@ observation_config:
           range: [-90, 50]               # Celsius; physically reasonable for atmospheric temperature
           qm_flag_col: airTemperatureQuality
           keep: [0, 1, 2]
-        specificHumidity:
-          range: [0.0, 0.040]            # kg/kg; physically reasonable (max ~35 g/kg at 40°C)
-          qm_flag_col: specificHumidityQuality
-          reject: [3, 9, 13, 14, 15]     # Reject doubtful/bad flags
         windU:
-          range: [-100, 100]             # m/s; physically reasonable (jet stream winds)
+          range: [-150, 150]             # m/s; physically reasonable bound (rare extremes can exceed 100 m/s)
           qm_flag_col: windQuality
           keep: [0, 1, 2]
         windV:
-          range: [-100, 100]             # m/s; physically reasonable (jet stream winds)
+          range: [-150, 150]             # m/s; physically reasonable bound (rare extremes can exceed 100 m/s)
           qm_flag_col: windQuality
           keep: [0, 1, 2]
 
 feature_stats:  # Statistics for the features used in the model (with FULL QC filtering applied)
   surface_obs:
-    airPressure_prepbufr_event_1: [985.30, 49.97]       # hPa (station pressure); 2020-2024: 602M valid samples (95.8% pass QC)
+    pressureMeanSeaLevel_prepbufr: [1014.39, 13.63]       # hPa
     airTemperature: [13.99, 12.14]                # Celsius; 2020-2024: 545M valid samples (87.2% pass QC)
     dewPointTemperature: [7.94, 11.47]            # Celsius; 2020-2024: 485M valid samples (77.7% pass QC)
     wind_u: [0.03, 3.30]                          # m/s (u-component, computed from windSpeed/windDirection)
@@ -297,7 +313,6 @@ feature_stats:  # Statistics for the features used in the model (with FULL QC fi
   aircraft:
     airPressure: [505.53, 274.24]            # hPa (not in features, used as metadata for log_pressure_height)
     airTemperature: [-18.56, 27.68]          # Celsius; 2020-2024: ~91% pass QC (flags 0,1,2)
-    specificHumidity: [0.0038, 0.0043]       # kg/kg; 2020-2024: ~6% pass QC (sparse data!)
     windU: [11.28, 15.43]                    # m/s; 2020-2024: ~92% pass QC (flags 0,1,2)
     windV: [0.27, 11.46]                     # m/s; 2020-2024: ~92% pass QC (flags 0,1,2)
 
@@ -373,23 +388,6 @@ feature_stats:  # Statistics for the features used in the model (with FULL QC fi
     bt_ch_7 : [217.33,   6.51]
     bt_ch_8 : [250.04,   35.18]
     bt_ch_9 : [257.22,  22.09]
-  seviri:
-    bt_all_ch_10  : [99.96, 277.3 ]
-    bt_all_ch_11  : [99.96, 258.43]
-    bt_all_ch_4   : [99.95, 282.76]
-    bt_all_ch_5   : [99.96, 237.52]
-    bt_all_ch_6   : [99.96, 254.45]
-    bt_all_ch_7   : [99.96, 276.94]
-    bt_all_ch_8   : [99.96, 257.69]
-    bt_all_ch_9   : [99.96, 278.99]
-    bt_clear_ch_10: [73.44, 288.78]
-    bt_clear_ch_11: [73.44, 265.8 ]
-    bt_clear_ch_4 : [73.44, 290.5 ]
-    bt_clear_ch_5 : [73.44, 240.42]
-    bt_clear_ch_6 : [73.44, 259.62]
-    bt_clear_ch_7 : [73.44, 287.69]
-    bt_clear_ch_8 : [73.44, 264.72]
-    bt_clear_ch_9 : [73.44, 290.49]
   cris_pca:
     global_pc_score_PC_1:  [2766.046, 9542.266]   
     global_pc_score_PC_2:  [26.432 ,  1223.621]   
@@ -401,3 +399,20 @@ feature_stats:  # Statistics for the features used in the model (with FULL QC fi
     global_pc_score_PC_8:  [4.131  ,  226.219 ]   
     global_pc_score_PC_9:  [1.732  ,  186.408 ] 
     global_pc_score_PC_10: [1.882  ,  135.888 ] 
+  seviri:
+    bt_all_ch_10  : [276.59, 20.07]
+    bt_all_ch_11  : [257.99, 14.21]
+    bt_all_ch_4   : [280.87, 17.44]
+    bt_all_ch_5   : [237.38,  9.03]
+    bt_all_ch_6   : [254.14, 12.27]
+    bt_all_ch_7   : [276.28, 18.76]
+    bt_all_ch_8   : [257.31, 14.28]
+    bt_all_ch_9   : [278.26, 19.92]
+    bt_clear_ch_10: [288.54,  8.77]
+    bt_clear_ch_11: [265.76,  6.91]
+    bt_clear_ch_4 : [289.44, 10.47]
+    bt_clear_ch_5 : [240.56,  6.74]
+    bt_clear_ch_6 : [259.72,  6.67]
+    bt_clear_ch_7 : [287.38,  8.72]
+    bt_clear_ch_8 : [264.54, 10.17]
+    bt_clear_ch_9 : [290.17,  8.95]

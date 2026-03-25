@@ -1,6 +1,19 @@
+"""Lightning data loading and graph-building utilities for Ocelot GNN training.
+
+This module prepares time-binned observation samples, converts them into
+heterogeneous graph inputs, and manages train, validation, and prediction data
+pipelines through a PyTorch Lightning data module.
+
+Author: Azadeh Gholoubi
+"""
+
 import os
+import json
+import hashlib
+import time
 import importlib
 import lightning.pytorch as pl
+import numpy as np
 import pandas as pd
 import torch
 import torch.distributed as dist
@@ -9,8 +22,6 @@ from zarr.storage import LRUStoreCache
 from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
-
-from nnja_adapter import build_zlike_from_df
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
 
@@ -18,8 +29,30 @@ from create_mesh_graph_global import obs_mesh_conn
 LAT_LON_COLUMNS = 2
 
 
+def _to_unix_seconds(t):
+    """Best-effort conversion of a pandas/py datetime-like to unix seconds (UTC)."""
+    if t is None:
+        return None
+    try:
+        ts = pd.Timestamp(t)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return int(ts.timestamp())
+    except Exception:
+        try:
+            return int(t)
+        except Exception:
+            return None
+
+
 def _t32(x):
     return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
+
+
+def _t64(x):
+    return x.long() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.long)
 
 
 # -------------------------
@@ -34,7 +67,9 @@ class BinDataset(Dataset):
         create_graph_fn,
         observation_config,
         feature_stats=None,
+        require_targets=True,
         tag="TRAIN",
+        verbose: bool = False,
     ):
         self.bin_names = list(bin_names) if bin_names is not None else []
         self.data_summary = data_summary
@@ -42,7 +77,9 @@ class BinDataset(Dataset):
         self.create_graph_fn = create_graph_fn
         self.observation_config = observation_config
         self.feature_stats = feature_stats
+        self.require_targets = require_targets
         self.tag = tag
+        self.verbose = bool(verbose)
 
     def __len__(self):
         return len(self.bin_names)
@@ -50,7 +87,8 @@ class BinDataset(Dataset):
     def __getitem__(self, idx):
         bin_name = self.bin_names[idx]
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
+        if self.verbose and rank == 0 and idx == 0:
+            print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
         try:
             out = extract_features(
                 self.z,
@@ -58,10 +96,44 @@ class BinDataset(Dataset):
                 bin_name,
                 self.observation_config,
                 feature_stats=self.feature_stats,
+                require_targets=self.require_targets,
             )
             bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
             graph_data.bin_name = bin_name
+
+            # Attach bin-level timing metadata for downstream diagnostics (e.g., val_csv outputs).
+            # - init_time: start of the target window (forecast init / cycle time)
+            # - input_time: start of the input window
+            init_time_unix = None
+            input_time_unix = None
+            try:
+                for _obs_type, inst_dict in (bin_data or {}).items():
+                    if not isinstance(inst_dict, dict):
+                        continue
+                    for _inst_name, data_summary_bin in inst_dict.items():
+                        if not isinstance(data_summary_bin, dict):
+                            continue
+
+                        if input_time_unix is None and "input_time" in data_summary_bin:
+                            input_time_unix = _to_unix_seconds(data_summary_bin.get("input_time"))
+
+                        if init_time_unix is None:
+                            target_times = data_summary_bin.get("target_times")
+                            if isinstance(target_times, (list, tuple)) and len(target_times) > 0:
+                                init_time_unix = _to_unix_seconds(target_times[0])
+
+                        if init_time_unix is not None and input_time_unix is not None:
+                            raise StopIteration
+            except StopIteration:
+                pass
+            except Exception:
+                init_time_unix = None
+                input_time_unix = None
+
+            graph_data.init_time = _t64(int(init_time_unix) if init_time_unix is not None else -1)
+            graph_data.input_time = _t64(int(input_time_unix) if input_time_unix is not None else -1)
+
             return graph_data
         except Exception as e:
             print(f"[Rank {rank}] [{self.tag}] ERROR processing {bin_name}: {e}")
@@ -85,10 +157,42 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours=12,       # latent rollout support
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
+        cache_val_windows: bool = False,
+        val_cache_max_entries: int = 16,
+        prediction_mode=False,
+        require_targets=None,
+        verbose: bool = False,
         **kwargs,
     ):
         super().__init__()
+
+        # Normalize to int so Lightning hparams merge is stable across module/datamodule.
+        latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
         self.save_hyperparameters()
+        self.prediction_mode = bool(prediction_mode)
+
+        # If require_targets not specified, default based on prediction_mode
+        # prediction_mode=True → require_targets=False (inference)
+        # prediction_mode=False → require_targets=True (training/validation)
+        if require_targets is None:
+            self.require_targets = not prediction_mode
+        else:
+            self.require_targets = require_targets
+        print(f"[DataModule] prediction_mode={prediction_mode}, require_targets={self.require_targets}")
+
+        # Optional cache for validation summaries keyed by (val_start,val_end)
+        self._cache_val_windows = bool(cache_val_windows)
+        self._val_cache_max_entries = int(val_cache_max_entries)
+        self._val_cache: dict[tuple[pd.Timestamp, pd.Timestamp], tuple[dict, list[str]]] = {}
+        self._val_cache_lru: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+
+        # On-disk cache for expensive summary builds (DDP-safe)
+        submit_dir = os.environ.get("SLURM_SUBMIT_DIR") or os.getcwd()
+        job_id = os.environ.get("SLURM_JOB_ID")
+        self._summary_cache_dir = os.path.join(submit_dir, ".summary_cache", job_id or "local")
+
+        # Keep as hparam for downstream access
+        self.hparams.verbose = bool(verbose)
 
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
@@ -122,8 +226,16 @@ class GNNDataModule(pl.LightningDataModule):
         self.hparams.val_start = pd.to_datetime(kwargs.get("val_start", default_val_start))
         self.hparams.val_end = pd.to_datetime(kwargs.get("val_end", default_val_end))
 
-        # Validate no overlap between train and validation windows to prevent data leakage
-        if self.hparams.train_end > self.hparams.val_start:
+        # In prediction mode, use all data (no split)
+        if prediction_mode:
+            self.hparams.train_start = pd.to_datetime(start_date)
+            self.hparams.train_end = pd.to_datetime(end_date)
+            self.hparams.val_start = pd.to_datetime(start_date)
+            self.hparams.val_end = pd.to_datetime(end_date)
+            print(f"[DataModule] Prediction mode: Using entire date range {start_date} to {end_date}")
+
+        # Validate no overlap between train and validation windows to prevent data leakage (training mode only)
+        if not prediction_mode and self.hparams.train_end > self.hparams.val_start:
             raise ValueError(
                 f"Data leakage detected! Training window ({self.hparams.train_start} to {self.hparams.train_end}) "
                 f"overlaps with validation window ({self.hparams.val_start} to {self.hparams.val_end}). "
@@ -134,8 +246,11 @@ class GNNDataModule(pl.LightningDataModule):
         train_days = (self.hparams.train_end - self.hparams.train_start).days
         val_days = (self.hparams.val_end - self.hparams.val_start).days
         total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
-        print(f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days/total_days*100:.1f}%), "
-              f"Val: {val_days} days ({val_days/total_days*100:.1f}%)")
+        denom_days = total_days if total_days != 0 else 1
+        print(
+            f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days / denom_days * 100:.1f}%), "
+            f"Val: {val_days} days ({val_days / denom_days * 100:.1f}%)"
+        )
         print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
         print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
 
@@ -144,10 +259,112 @@ class GNNDataModule(pl.LightningDataModule):
             window_hours = int(self.hparams.window_size.replace('h', ''))
             self.hparams.latent_step_hours = window_hours
 
+    def _ddp_info(self) -> tuple[bool, int]:
+        is_ddp = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
+        rank = dist.get_rank() if is_ddp else 0
+        return is_ddp, int(rank)
+
+    def _is_verbose(self) -> bool:
+        return bool(getattr(self.hparams, "verbose", False))
+
+    def _summary_cache_path(self, kind: str, start_dt, end_dt, require_targets: bool) -> str:
+        payload = {
+            # Increment when binning semantics / summary structure changes.
+            # This forces rebuild instead of reusing an incompatible cached summary.
+            "summary_version": 3,
+            "kind": kind,
+            "start": str(pd.to_datetime(start_dt)),
+            "end": str(pd.to_datetime(end_dt)),
+            "window_size": str(getattr(self.hparams, "window_size", "")),
+            "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
+            "require_targets": bool(require_targets),
+            "observation_config": getattr(self.hparams, "observation_config", None),
+            "pipeline": getattr(self.hparams, "pipeline", None),
+        }
+        s = json.dumps(payload, sort_keys=True, default=str)
+        h = hashlib.blake2b(s.encode("utf-8"), digest_size=16).hexdigest()
+        os.makedirs(self._summary_cache_dir, exist_ok=True)
+        return os.path.join(self._summary_cache_dir, f"{kind}_{h}.pt")
+
+    def _load_or_build_summary(self, kind: str, start_dt, end_dt, require_targets: bool) -> tuple[dict, list[str]]:
+        is_ddp, rank = self._ddp_info()
+        cache_path = self._summary_cache_path(kind, start_dt, end_dt, require_targets=require_targets)
+        verbose = self._is_verbose()
+
+        def _build() -> tuple[dict, list[str]]:
+            data_summary = organize_bins_times(
+                self.z,
+                start_dt,
+                end_dt,
+                self.hparams.observation_config,
+                pipeline_cfg=self.hparams.pipeline,
+                window_size=self.hparams.window_size,
+                latent_step_hours=self.hparams.latent_step_hours,
+                require_targets=require_targets,
+                verbose=False,
+            )
+            # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
+            # Fall back to lexicographic ordering if parsing fails.
+
+            def _bin_sort_key(name: str):
+                try:
+                    if name.startswith('bin'):
+                        return int(name[3:])
+                    return int(name)
+                except Exception:
+                    return name
+
+            bin_names = sorted(data_summary.keys(), key=_bin_sort_key)
+            return data_summary, bin_names
+
+        if not is_ddp:
+            if os.path.exists(cache_path):
+                try:
+                    obj = torch.load(cache_path)
+                    return obj["data_summary"], obj["bin_names"]
+                except Exception as e:
+                    if verbose:
+                        print(f"[DM.cache] WARNING: failed to load cache {cache_path}: {e}; rebuilding")
+                    try:
+                        os.remove(cache_path)
+                    except OSError:
+                        pass
+            data_summary, bin_names = _build()
+            built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+            tmp = f"{cache_path}.tmp.{os.getpid()}"
+            torch.save(built_obj, tmp)
+            os.replace(tmp, cache_path)
+            return data_summary, bin_names
+
+        built_obj = None
+        if rank == 0:
+            if os.path.exists(cache_path):
+                built_obj = torch.load(cache_path)
+            else:
+                if verbose:
+                    print(f"[DM.cache] building {kind} summary -> {cache_path}")
+                data_summary, bin_names = _build()
+                built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+                tmp = f"{cache_path}.tmp.{os.getpid()}"
+                torch.save(built_obj, tmp)
+                os.replace(tmp, cache_path)
+
+        dist.barrier()
+
+        if rank == 0:
+            return built_obj["data_summary"], built_obj["bin_names"]
+
+        for _ in range(120):
+            if os.path.exists(cache_path):
+                break
+            time.sleep(0.25)
+        obj = torch.load(cache_path)
+        return obj["data_summary"], obj["bin_names"]
+
     # ------------- Setup / Zarr open -------------
 
     def setup(self, stage=None):
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        _, rank = self._ddp_info()
 
         # Open Zarrs once
         if self.z is None:
@@ -194,32 +411,11 @@ class GNNDataModule(pl.LightningDataModule):
                             if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
                                 print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
 
-                    elif src == "nnja":
-                        loader_path = inst_cfg["dataframe_loader"]
-                        mod_name, fn_name = loader_path.rsplit(".", 1)
-                        load_fn = getattr(importlib.import_module(mod_name), fn_name)
-
-                        need = list(inst_cfg["var_map"].values())
-                        need += [
-                            inst_cfg.get("lat_col", "LAT"),
-                            inst_cfg.get("lon_col", "LON"),
-                            inst_cfg.get("time_col", "OBS_TIMESTAMP"),
-                        ]
-
-                        df = load_fn(
-                            start_date=self.hparams.start_date,  # initial window used for first setup
-                            end_date=self.hparams.end_date,
-                            columns=need,
-                        )
-                        self.z[obs_type][inst_name] = build_zlike_from_df(
-                            df,
-                            var_map=inst_cfg["var_map"],
-                            lat_col=inst_cfg.get("lat_col", "LAT"),
-                            lon_col=inst_cfg.get("lon_col", "LON"),
-                            time_col=inst_cfg.get("time_col", "OBS_TIMESTAMP"),
-                        )
                     else:
-                        raise ValueError(f"Unknown source '{src}' for {inst_name}")
+                        raise ValueError(
+                            f"Unknown source '{src}' for {inst_name}. "
+                            "NNJA support has been removed from this repo; use src='zarr'."
+                        )
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -241,34 +437,36 @@ class GNNDataModule(pl.LightningDataModule):
 
     # ------------- Summary (re)builders -------------
     def _rebuild_train_summary(self):
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        self.train_data_summary = organize_bins_times(
-            self.z,
+        _, rank = self._ddp_info()
+        self.train_data_summary, self.train_bin_names = self._load_or_build_summary(
+            "train",
             self.hparams.train_start,
             self.hparams.train_end,
-            self.hparams.observation_config,
-            pipeline_cfg=self.hparams.pipeline,
-            window_size=self.hparams.window_size,
-            latent_step_hours=self.hparams.latent_step_hours,
+            require_targets=True,
         )
-        self.train_bin_names = sorted(self.train_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
         print(
             f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
             f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
         )
 
     def _rebuild_val_summary(self):
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        self.val_data_summary = organize_bins_times(
-            self.z,
-            self.hparams.val_start,
-            self.hparams.val_end,
-            self.hparams.observation_config,
-            pipeline_cfg=self.hparams.pipeline,
-            window_size=self.hparams.window_size,
-            latent_step_hours=self.hparams.latent_step_hours,
-        )
-        self.val_bin_names = sorted(self.val_data_summary.keys(), key=lambda x: int(x.replace("bin", "")))
+        _, rank = self._ddp_info()
+        key = (pd.to_datetime(self.hparams.val_start), pd.to_datetime(self.hparams.val_end))
+        if self._cache_val_windows and key in self._val_cache:
+            self.val_data_summary, self.val_bin_names = self._val_cache[key]
+        else:
+            self.val_data_summary, self.val_bin_names = self._load_or_build_summary(
+                "val",
+                self.hparams.val_start,
+                self.hparams.val_end,
+                require_targets=self.require_targets,
+            )
+            if self._cache_val_windows:
+                self._val_cache[key] = (self.val_data_summary, self.val_bin_names)
+                self._val_cache_lru.append(key)
+                while len(self._val_cache_lru) > self._val_cache_max_entries:
+                    old = self._val_cache_lru.pop(0)
+                    self._val_cache.pop(old, None)
         print(
             f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
             f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"
@@ -300,7 +498,8 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
+        # Keep mesh edge_attr in fp16 to reduce device memory footprint under AMP.
+        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
         reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
         data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
@@ -350,6 +549,11 @@ class GNNDataModule(pl.LightningDataModule):
             if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
                 grid_lat_deg = inst_dict["input_lat_deg"]
                 grid_lon_deg = inst_dict["input_lon_deg"]
+
+                # Keep lat/lon on the observation nodes (used by FSOI matching)
+                data[node_type_input].lat = _t32(grid_lat_deg)
+                data[node_type_input].lon = _t32(grid_lon_deg)
+
                 edge_index_encoder, edge_attr_encoder = obs_mesh_conn(
                     grid_lat_deg,
                     grid_lon_deg,
@@ -359,7 +563,7 @@ class GNNDataModule(pl.LightningDataModule):
                     o2m=True,
                 )
                 data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
-                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder
+                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder.to(torch.float16)
 
         # Handle target features for each latent step
         if "target_features_final_list" not in inst_dict:
@@ -390,6 +594,7 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
                 data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
+                data[node_type_target].obs_time_unix = torch.empty((0,), dtype=torch.long)
                 continue
 
             keep_np = keep_t.cpu().numpy()
@@ -399,7 +604,8 @@ class GNNDataModule(pl.LightningDataModule):
             mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
             data[node_type_target].y = _t32(y_t)
-            data[node_type_target].target_channel_mask = _t32(mask_t)
+            # IMPORTANT: keep as bool to avoid massive memory blow-ups for satellite targets.
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
 
             # Metadata
             if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
@@ -439,6 +645,16 @@ class GNNDataModule(pl.LightningDataModule):
                 pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
                 data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
 
+            # Per-observation timestamps (unix seconds) for verifying within-window spread
+            if "target_time_unix_list" in inst_dict and step < len(inst_dict["target_time_unix_list"]):
+                obs_unix = inst_dict["target_time_unix_list"][step]
+                obs_unix = np.asarray(obs_unix, dtype=np.int64)
+                if obs_unix.size:
+                    obs_unix = obs_unix[keep_np]
+                data[node_type_target].obs_time_unix = _t64(torch.tensor(obs_unix, dtype=torch.long))
+            else:
+                data[node_type_target].obs_time_unix = torch.full((y_t.shape[0],), -1, dtype=torch.long)
+
             # Store pressure level index for radiosonde and aircraft (if available)
             if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
                 pressure_level_idx = inst_dict["target_pressure_level_list"][step][keep_t]
@@ -456,6 +672,10 @@ class GNNDataModule(pl.LightningDataModule):
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
                 target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
 
+                # Keep lat/lon on the target nodes (used by FSOI matching)
+                data[node_type_target].lat = _t32(target_lat_deg)
+                data[node_type_target].lon = _t32(target_lon_deg)
+
                 if len(target_lat_deg) > 0:
                     edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
                         target_lat_deg,
@@ -466,15 +686,17 @@ class GNNDataModule(pl.LightningDataModule):
                         o2m=False,
                     )
                     data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
         # Create empty input node
         node_type_input = f"{inst_name}_input"
         data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+        data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
+        data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
-        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 4), dtype=torch.float32)
 
         # Create empty target nodes for all latent steps
         for step in range(num_latent_steps):
@@ -490,9 +712,11 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
-            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
+            data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
+            data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
 
     # ------------- DataLoaders -------------
     def _worker_init(self, worker_id):
@@ -512,6 +736,7 @@ class GNNDataModule(pl.LightningDataModule):
             self._create_graph_structure,
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
+            require_targets=True,  # Training always requires targets
             tag="TRAIN",
         )
         loader = PyGDataLoader(
@@ -537,6 +762,7 @@ class GNNDataModule(pl.LightningDataModule):
             self._create_graph_structure,
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
+            require_targets=True,  # Validation requires targets for comparison
             tag="VAL",
         )
         loader = PyGDataLoader(
@@ -551,3 +777,76 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
               f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
         return loader
+
+    def predict_dataloader(self):
+        """Create dataloader for prediction/inference mode."""
+        print("\n[PREDICT] Setting up prediction dataloader")
+
+        # Use val_data_summary for prediction
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            print("[PREDICT] Building prediction data summary...")
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            print("[WARN] No bins found for prediction!")
+            return None
+
+        # Create dataset
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            require_targets=self.require_targets,  # Use datamodule's require_targets setting
+            tag="PREDICT",
+        )
+
+        # Create dataloader
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
+            num_workers=1,  # Single worker for sequential processing
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
+
+        print(f"[PREDICT] Dataloader created: {len(self.val_bin_names)} bins")
+        print(f"[PREDICT] require_targets={self.require_targets}")
+
+        return loader
+
+    def fsoi_dataloader(self):
+        """Deterministic dataloader for FSOI.
+
+        Uses the same bin ordering as prediction, but enforces batch_size=1.
+        """
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            return None
+
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            require_targets=self.require_targets,
+            tag="FSOI",
+        )
+
+        return PyGDataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )

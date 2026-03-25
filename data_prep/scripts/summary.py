@@ -22,13 +22,15 @@ def summarize_zarr(path: str, max_obs: int) -> str:
     root = zarr.open(path, mode="r")
     rows: List[List[str]] = [[
         "Variable",
+        "Units",
         "Total",
         "Good",
-        "Percent",
+        "Good %",
+        "Bad",
         "Min",
         "Mean",
         "Max",
-        "std",
+        "StDev",
     ]]
 
     for var_name in root.array_keys():
@@ -37,6 +39,16 @@ def summarize_zarr(path: str, max_obs: int) -> str:
         else:
             arr = root[var_name][:max_obs]
 
+        if "units" in root[var_name].attrs.keys():
+            units = str(root[var_name].attrs['units'])
+        else:
+            units = str("")
+            print(f"{str(root[var_name])} has no attribute 'units'. Units will be blank")
+
+        if arr.dtype.kind in {"U", "S", "O"}:
+            missing_strings = {"", None}
+            arr = (~np.isin(arr, list(missing_strings))).astype(int)
+
         total = arr.size
         missing = bufr.get_missing_value(arr.dtype)
         good_mask = arr != missing
@@ -44,23 +56,26 @@ def summarize_zarr(path: str, max_obs: int) -> str:
             good_mask &= ~np.isnan(arr)
         good = arr[good_mask]
         good_count = int(good.size)
+        bad_count = total - good_count
         if good_count:
             mn = np.min(good)
             mean = np.mean(good)
             mx = np.max(good)
-            std = np.std(good)
+            stdev = np.std(good)
         else:
-            mn = mean = mx = std = float("nan")
+            mn = mean = mx = stdev = float("nan")
         pct = 100.0 * good_count / total if total else 0.0
         rows.append([
             var_name,
+            units,
             f"{total}",
             f"{good_count}",
             f"{pct:.1f}%",
+            f"{bad_count}",
             f"{mn:.3f}",
             f"{mean:.3f}",
             f"{mx:.3f}",
-            f"{std:.3f}",
+            f"{stdev:.3f}",
         ])
 
     table = _format_table(rows)
