@@ -153,15 +153,13 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--val_window_days 12 \
 	--val_mode sequential \
 	--val_stride_days 12 \
-	--val_update_every_n_epochs 50 \
-	--num_layers 16 \
+	--val_update_every_n_epochs 30 \
 	--lr 1.5e-4 \
 	--weight_decay 1e-4 \
 	--processor_dropout 0.1 \
 	--node_dropout 0.05 \
 	--encoder_dropout 0.1 \
 	--decoder_dropout 0.1 \
-	--conv_weight_mult 3.0 \
 	--huber_delta 0.5 \
 	--seed 12345 \
 	--max_epochs  3280\
@@ -170,7 +168,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--disable_early_stopping \
 	--val_csv_out_dir "val_csv/${RUN_NAME}" \
 	--val_csv_num_batches 3 \
-	--val_csv_every_n_epochs 10 \
+	--val_csv_every_n_epochs 30 \
 	--val_csv_max_rows 50000 \
 	--val_csv_sample_seed 12345
 
