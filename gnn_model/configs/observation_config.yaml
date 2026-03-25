@@ -7,6 +7,7 @@ pipeline:
       avhrr: 100
       # amsua: 3   
       # ascat: 2
+      cris_pca: 1
       # Give weak/rare instruments more samples
       # seviri: 20
       # ascat: 10
@@ -24,6 +25,7 @@ pipeline:
         amsua: random
         avhrr: random
         ascat: random   # ASCAT sampling mode
+        cris_pca: random
       conventional:
         _default: random
     #   snow_cover: none    # ignore subsampling for snow_cover
@@ -40,6 +42,7 @@ instrument_weights:
   # snow_cover: 1.0
   ssmis: 1.0
   seviri: 1.0
+  cris_pca: 1.0
 
 
 channel_weights:
@@ -59,6 +62,7 @@ channel_weights:
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0
     ]
+  cris_pca: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
 observation_config:
@@ -126,6 +130,18 @@ observation_config:
       target_dim: 3
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+
+    cris_pca:
+      sat_ids: [225, ]
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [global_pc_score_PC_1, global_pc_score_PC_2, global_pc_score_PC_3, global_pc_score_PC_4, 
+                 global_pc_score_PC_5, global_pc_score_PC_6, global_pc_score_PC_7, 
+                 global_pc_score_PC_8, global_pc_score_PC_9, global_pc_score_PC_10]
+      metadata: [sensorZenithAngle, solarZenithAngle]
+      input_dim: 19
+      target_dim: 10
+      encoder_hidden_layers: 3
+      decoder_hidden_layers: 3
 
     ascat:
       sat_ids: [3, 4, 5]  # MetOp satellite IDs (v7 has satelliteIdentifier in {3,4,5})
@@ -372,6 +388,17 @@ feature_stats:  # Statistics for the features used in the model (with FULL QC fi
     bt_ch_7 : [217.33,   6.51]
     bt_ch_8 : [250.04,   35.18]
     bt_ch_9 : [257.22,  22.09]
+  cris_pca:
+    global_pc_score_PC_1:  [2766.046, 9542.266]   
+    global_pc_score_PC_2:  [26.432 ,  1223.621]   
+    global_pc_score_PC_3:  [103.793,  702.201 ]   
+    global_pc_score_PC_4:  [31.302 ,  606.326 ]   
+    global_pc_score_PC_5:  [48.051 ,  506.067 ]   
+    global_pc_score_PC_6:  [-3.433 ,  351.318 ]   
+    global_pc_score_PC_7:  [-22.427,  305.146 ]   
+    global_pc_score_PC_8:  [4.131  ,  226.219 ]   
+    global_pc_score_PC_9:  [1.732  ,  186.408 ] 
+    global_pc_score_PC_10: [1.882  ,  135.888 ] 
   seviri:
     bt_all_ch_10  : [276.59, 20.07]
     bt_all_ch_11  : [257.99, 14.21]
