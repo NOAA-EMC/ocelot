@@ -115,7 +115,6 @@ def main():
 
     # Model hyperparameters (overridable)
     parser.add_argument("--hidden_dim", type=int, default=192)
-    parser.add_argument("--num_layers", type=int, default=10)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--huber_delta", type=float, default=0.1)
@@ -161,18 +160,6 @@ def main():
             "With current GraphCast-style features this is typically 4 (distance + relative position xyz)."
         ),
     )
-    parser.add_argument(
-        "--surface_meta_conditioning",
-        type=str,
-        default="project",
-        choices=["pad", "project"],
-        help=(
-            "How to inject surface station metadata embedding (e.g., elevation) into decoder receiver init for surface_obs_target. "
-            "'pad' keeps metadata embedding in the last 8 dims; "
-            "'project' spreads it across hidden_dim via a learned linear projection."
-        ),
-    )
-
     parser.add_argument(
         "--cfg_path",
         type=str,
@@ -370,7 +357,7 @@ def main():
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
     hidden_dim = int(args.hidden_dim)
-    num_layers = int(args.num_layers)
+    num_layers = 10
     lr = float(args.lr)
     weight_decay = float(args.weight_decay)
     huber_delta = float(args.huber_delta)
@@ -454,7 +441,6 @@ def main():
         pressure_level_conditioning=str(args.pressure_level_conditioning),
         use_bipartite_edge_attr=(not args.disable_bipartite_edge_attr),
         bipartite_edge_attr_dim=int(args.bipartite_edge_attr_dim),
-        surface_meta_conditioning=str(args.surface_meta_conditioning),
     )
 
     if resume_path and args.load_weights_only:
