@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
-#SBATCH -A gpu-emc-ai
+#SBATCH -A gpu-ai4wp
 #SBATCH -p u1-h100
 #SBATCH -q gpu
 #SBATCH --gres=gpu:h100:2
@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 08:00:00
+#SBATCH -t 02:00:00
 #SBATCH --output=gnn_train_%j.out
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -67,8 +67,10 @@ nvidia-smi
 #   - L1→L0 conditioning provides gradient supervision to coarse level
 # ============================================================================
 
+cd /scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/src/ocelot/gnn_model
+
 # Launch training (env is propagated to ranks)
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python /scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/src/ocelot/gnn_model/train_gnn.py --max_epochs=4 --parallelization_strategy=domain
 
 # HIERARCHICAL MODE
 # Resume training from the latest checkpoint in hierarchical mode

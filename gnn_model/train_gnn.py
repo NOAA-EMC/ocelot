@@ -623,7 +623,13 @@ def main():
         torch.cuda.synchronize()
 
     ckpt_path_for_fit = None if (resume_path and args.load_weights_only) else resume_path
-    trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    # trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+
+    torch.cuda.memory._record_memory_history()
+    try:
+        trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    finally:
+        torch.cuda.memory._dump_snapshot(f"gnn_profile_rank_{rank_env}.pickle")
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")
