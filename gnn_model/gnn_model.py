@@ -1,3 +1,12 @@
+"""Core Lightning model for Ocelot graph neural network training and inference.
+
+This module defines the end-to-end GNN model, including observation encoders,
+latent mesh processors, target decoders, rollout logic, losses, and diagnostic
+output utilities used during training, validation, and prediction.
+
+Author: Azadeh Gholoubi
+"""
+
 import lightning.pytorch as pl
 import os
 import time
@@ -18,7 +27,7 @@ from utils import make_mlp
 from interaction_net import InteractionNet
 from create_mesh_graph_global import create_mesh
 from torch_geometric.data import HeteroData
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 from torch_geometric.utils import scatter
 from loss import weighted_huber_loss
 from processor_transformer import SlidingWindowTransformerProcessor
@@ -61,6 +70,8 @@ def _canonical_variable_name(feature_name: str) -> str:
         # Pressure
         "airpressure": "pressure",
         "airpressure_prepbufr_event_1": "pressure",
+        "pressuremeansealevel_pb": "pressure",
+        "pressuremeansealevel_prepbufr": "pressure",
     }
 
     return mapping.get(key, feature_name)
@@ -126,7 +137,8 @@ class GNNLightning(pl.LightningModule):
         val_csv_sample_seed: int = 0,
         scan_angle_conditioning: str = "project",  # "pad" | "project"
         pressure_level_conditioning: str = "project",  # "pad" | "project"
-        surface_meta_conditioning: str = "project",  # "pad" | "project"
+        use_bipartite_edge_attr: bool = True,
+        bipartite_edge_attr_dim: int = 4,
         **kwargs,
     ):
         """
@@ -179,13 +191,10 @@ class GNNLightning(pl.LightningModule):
                 f"pressure_level_conditioning must be 'pad' or 'project' (got: {self.pressure_level_conditioning!r})"
             )
 
-        self.surface_meta_conditioning = str(surface_meta_conditioning)
-        if self.surface_meta_conditioning not in ("pad", "project"):
-            raise ValueError(
-                f"surface_meta_conditioning must be 'pad' or 'project' (got: {self.surface_meta_conditioning!r})"
-            )
-
         self.observation_config = observation_config
+
+        self.use_bipartite_edge_attr = bool(use_bipartite_edge_attr)
+        self.bipartite_edge_attr_dim = int(bipartite_edge_attr_dim)
 
         # Backward compatibility: older checkpoints may not have mesh_config in hparams.
         # Lightning will pass mesh_config=None in that case.
@@ -241,6 +250,12 @@ class GNNLightning(pl.LightningModule):
         self.mesh_type = mesh_type
         self.mesh_levels = mesh_levels
 
+        # bipartite GATs consume the computed spatial edge_attr
+        # directly, with edge_dim=bipartite_edge_attr_dim (GraphCast-style features are 4-dim).
+        if self.bipartite_edge_attr_dim <= 0:
+            raise ValueError(
+                f"bipartite_edge_attr_dim must be > 0 (got: {self.bipartite_edge_attr_dim})"
+            )
         print(f"\n{'='*70}")
         print(f"[GNN MODEL] Initializing with configuration:")
         print(f"  - Mesh type: {mesh_type}")
@@ -330,43 +345,6 @@ class GNNLightning(pl.LightningModule):
         else:
             self.pressure_level_projector = None
 
-        # Surface obs: embed target metadata (e.g. station height) for decoder conditioning.
-        # This lets the surface pressure decoder depend explicitly on elevation.
-        self.surface_target_meta_embed_dim = 8
-        self.surface_target_meta_dim = 0
-        self.surface_target_meta_names = []
-        self.surface_target_meta_embedder = None
-        try:
-            for _, instruments in observation_config.items():
-                if isinstance(instruments, dict) and "surface_obs" in instruments:
-                    surface_cfg = instruments.get("surface_obs") or {}
-                    self.surface_target_meta_names = list(surface_cfg.get("metadata", []) or [])
-                    self.surface_target_meta_dim = int(len(self.surface_target_meta_names))
-                    if self.surface_target_meta_dim > 0:
-                        self.surface_target_meta_embedder = make_mlp(
-                            [self.surface_target_meta_dim, self.surface_target_meta_embed_dim]
-                        )
-                    break
-        except Exception:
-            # Keep embedder disabled if config parsing fails; training will surface it.
-            self.surface_target_meta_dim = 0
-            self.surface_target_meta_names = []
-            self.surface_target_meta_embedder = None
-
-        # Optional: project surface metadata embedding across the full hidden_dim.
-        if self.surface_meta_conditioning == "project":
-            self.surface_meta_projector = nn.Linear(self.surface_target_meta_embed_dim, self.hidden_dim)
-        else:
-            self.surface_meta_projector = None
-
-        if self.surface_target_meta_embedder is not None:
-            print(
-                f"[GNN MODEL] surface_obs decoder conditioning: ENABLED "
-                f"(meta_dim={self.surface_target_meta_dim}, embed_dim={self.surface_target_meta_embed_dim})"
-            )
-        else:
-            print("[GNN MODEL] surface_obs decoder conditioning: DISABLED")
-
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
@@ -421,7 +399,7 @@ class GNNLightning(pl.LightningModule):
                 enc_key = self._edge_key(edge_type_tuple_enc)
 
                 if encoder_type == "gat":
-                    enc_edge_dim = hidden_dim   # <- match the zeros you already pass in forward
+                    enc_edge_dim = self.bipartite_edge_attr_dim
                     self.observation_encoders[enc_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
@@ -429,7 +407,7 @@ class GNNLightning(pl.LightningModule):
                         layers=encoder_layers,
                         heads=encoder_heads,
                         dropout=encoder_dropout,
-                        edge_dim=enc_edge_dim,   # <- use edge_attr exactly like InteractionNet path
+                        edge_dim=enc_edge_dim,
                     )
                 else:
                     self.observation_encoders[enc_key] = InteractionNet(
@@ -444,7 +422,7 @@ class GNNLightning(pl.LightningModule):
                 dec_key = self._edge_key(edge_type_tuple_dec)
 
                 if decoder_type == "gat":
-                    dec_edge_dim = hidden_dim   # <- same idea for decoder
+                    dec_edge_dim = self.bipartite_edge_attr_dim
                     self.observation_decoders[dec_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
@@ -561,6 +539,107 @@ class GNNLightning(pl.LightningModule):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
+    def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
+        if edge_attr is None:
+            return edge_attr
+        if edge_attr.dim() == 1:
+            edge_attr = edge_attr.unsqueeze(-1)
+        if edge_attr.size(-1) == dim:
+            return edge_attr
+        if edge_attr.size(-1) < dim:
+            pad = dim - edge_attr.size(-1)
+            return torch.cat(
+                [
+                    edge_attr,
+                    torch.zeros(
+                        edge_attr.size(0),
+                        pad,
+                        device=edge_attr.device,
+                        dtype=edge_attr.dtype,
+                    ),
+                ],
+                dim=-1,
+            )
+        return edge_attr[:, :dim]
+
+    def _edge_features(
+        self,
+        data: HeteroData,
+        edge_type,
+        edge_index: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
+        E = int(edge_index.size(1))
+
+        # Debug printing: show whether we used real edge_attr or fell back to zeros.
+        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
+        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
+            if not getattr(self, "verbose", False):
+                return
+            if hasattr(self, "trainer") and (not getattr(self.trainer, "is_global_zero", True)):
+                return
+            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
+                self._edge_attr_debug_seen = set()
+            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
+            if key in self._edge_attr_debug_seen:
+                return
+            self._edge_attr_debug_seen.add(key)
+
+            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
+            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
+                try:
+                    t = edge_rep_tensor.detach()
+                    mean_v = t.mean().item()
+                    std_v = t.std(unbiased=False).item()
+                    min_v = t.min().item()
+                    max_v = t.max().item()
+                    msg += (
+                        f" edge_attr_shape={tuple(t.shape)} "
+                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
+                    )
+                except Exception:
+                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
+            print(msg)
+
+        if not self.use_bipartite_edge_attr:
+            _maybe_print("disabled")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        edge_rep = None
+        try:
+            if "edge_attr" in data[edge_type]:
+                edge_rep = data[edge_type].edge_attr
+        except Exception:
+            edge_rep = None
+
+        if edge_rep is None:
+            _maybe_print("missing")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if torch.is_tensor(edge_rep) and edge_rep.numel() == 0:
+            _maybe_print("empty")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if not torch.is_tensor(edge_rep):
+            _maybe_print("non_tensor")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if edge_rep.size(0) != E:
+            _maybe_print(f"edge_count_mismatch(edge_attr={int(edge_rep.size(0))})")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        edge_rep = edge_rep.to(device=device, dtype=dtype)
+        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.bipartite_edge_attr_dim)
+
+        if edge_rep.size(-1) != self.bipartite_edge_attr_dim:
+            _maybe_print(f"dim_mismatch(edge_attr={int(edge_rep.size(-1))})", edge_rep)
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        _maybe_print("ok", edge_rep)
+        return edge_rep
+
     def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
         """
         Load pre-computed mesh prediction edges from file.
@@ -625,7 +704,7 @@ class GNNLightning(pl.LightningModule):
             # Store on CPU - will move to device when used
             mesh_pred_edges[inst_name] = {
                 'edge_index': edge_index,  # CPU tensor (no .to(device))
-                'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim)),  # CPU
+                'edge_attr': torch.zeros((edge_index.size(1), self.bipartite_edge_attr_dim)),  # CPU
                 'lats': torch.from_numpy(mesh_lats).float(),  # CPU
                 'lons': torch.from_numpy(mesh_lons).float(),  # CPU
                 'num_nodes': num_nodes
@@ -716,6 +795,8 @@ class GNNLightning(pl.LightningModule):
             print(*args, **kwargs)
 
     def on_fit_start(self):
+        # Reset one-time debug cache each run.
+        self._edge_attr_debug_seen = set()
         if getattr(self, "detect_anomaly", False):
             # enable once per run, not every batch
             torch.autograd.set_detect_anomaly(True)
@@ -892,15 +973,17 @@ class GNNLightning(pl.LightningModule):
                 obs_features = embedded_features[src_type]
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
                 device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device
-                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=device)
 
                 encoder = self.observation_encoders[self._edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
-                use_edge_attr = getattr(encoder, "expects_edge_attr", False)  # set on init, see below
-                edge_rep = None
-                if use_edge_attr:
-                    edge_rep = data[edge_type].edge_attr if "edge_attr" in data[edge_type] else None
+                edge_features = self._edge_features(
+                    data=data,
+                    edge_type=edge_type,
+                    edge_index=edge_index,
+                    device=device,
+                    dtype=obs_features.dtype,
+                )
 
                 # --- Debugging ---
                 self.debug(f"\n[ENC] edge type: {edge_type}")
@@ -908,8 +991,6 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"  edge_index {edge_index.shape}")
                 # --- End Debugging ---
 
-                # Use computed edge_rep if available, otherwise fall back to zero edge_attr
-                edge_features = edge_rep if edge_rep is not None else edge_attr
                 encoded_mesh_features = encoder(
                     send_rep=obs_features,
                     rec_rep=encoded_mesh_features,
@@ -1028,10 +1109,20 @@ class GNNLightning(pl.LightningModule):
                     print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
 
                     # Process through hierarchical transformer
+                    mesh_edge_index_list = [
+                        getattr(self, f"mesh_edge_index_level_{lvl}")
+                        for lvl in range(self.num_mesh_levels)
+                    ]
+                    mesh_edge_attr_list = [
+                        getattr(self, f"mesh_edge_attr_level_{lvl}")
+                        for lvl in range(self.num_mesh_levels)
+                    ]
                     processed_levels = self.swt(
                         mesh_features_list,
                         up_edge_index_list,
-                        down_edge_index_list
+                        down_edge_index_list,
+                        mesh_edge_index_list=mesh_edge_index_list,
+                        mesh_edge_attr_list=mesh_edge_attr_list,
                     )
 
                     print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
@@ -1090,7 +1181,11 @@ class GNNLightning(pl.LightningModule):
                 else:
                     # Single-level transformer for fixed mesh
                     print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
-                    current_mesh_features = self.swt(current_mesh_features)
+                    current_mesh_features = self.swt(
+                        current_mesh_features,
+                        mesh_edge_index=data[("mesh", "to", "mesh")].edge_index,
+                        mesh_edge_attr=data[("mesh", "to", "mesh")].edge_attr,
+                    )
             elif self.is_hierarchical and self.processor_type == "interaction":
                 # Hierarchical processor with InteractionNet: process across multiple mesh levels
                 # Prepare mesh features for all levels (replicate for batch)
@@ -1260,8 +1355,6 @@ class GNNLightning(pl.LightningModule):
                     # Embed viewing geometry information FIRST (before decoder initialization)
                     sa_emb = None
                     pressure_emb = None
-                    surface_meta_emb = None
-
                     if base_type == "ascat_target":
                         scan_angle = data[step_node_type].x  # [N,3] for ASCAT
                         sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
@@ -1289,19 +1382,6 @@ class GNNLightning(pl.LightningModule):
                         pressure_level_idx = data[step_node_type].pressure_level  # [N]
                         pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
 
-                    # Surface obs: condition on target metadata (elevation) if available
-                    if (
-                        surface_meta_emb is None
-                        and base_type == "surface_obs_target"
-                        and self.surface_target_meta_embedder is not None
-                        and self.surface_target_meta_dim > 0
-                        and hasattr(data[step_node_type], "target_metadata")
-                    ):
-                        tm = data[step_node_type].target_metadata
-                        if tm is not None and tm.numel() > 0 and tm.size(1) > 2:
-                            meta = tm[:, 2:2 + self.surface_target_meta_dim].to(reference_device)
-                            surface_meta_emb = self.surface_target_meta_embedder(meta)
-
                     # Decoder initialization: CONDITION on viewing geometry
                     # Instead of zeros, initialize decoder WITH geometry information
                     if sa_emb is not None:
@@ -1326,21 +1406,17 @@ class GNNLightning(pl.LightningModule):
                                 torch.zeros(N, padding_dim, device=reference_device),
                                 pressure_emb
                             ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
-                    elif surface_meta_emb is not None:
-                        # Surface obs: condition decoder on station metadata (elevation)
-                        if self.surface_meta_projector is not None:
-                            target_features_initial = self.surface_meta_projector(surface_meta_emb)
-                        else:
-                            padding_dim = self.hidden_dim - self.surface_target_meta_embed_dim
-                            target_features_initial = torch.cat([
-                                torch.zeros(N, padding_dim, device=reference_device),
-                                surface_meta_emb
-                            ], dim=-1)
                     else:
                         # Conventional obs without viewing geometry: use zeros
                         target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
 
-                    edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
+                    edge_attr = self._edge_features(
+                        data=data,
+                        edge_type=step_edge_type,
+                        edge_index=step_edge_index,
+                        device=reference_device,
+                        dtype=mesh_features_processed.dtype,
+                    )
 
                     # Decoder now receives GEOMETRY-CONDITIONED initialization
                     # This ensures the model CANNOT make predictions without knowing viewing geometry
@@ -2060,12 +2136,6 @@ class GNNLightning(pl.LightningModule):
 
         all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
 
-        # For surface_obs_target, also persist the metadata that the decoder conditions on
-        # (e.g., station height) so we can directly verify pressure error vs height.
-        surface_meta_names = list(getattr(self, "surface_target_meta_names", []) or [])
-        surface_meta_dim = int(getattr(self, "surface_target_meta_dim", 0) or 0)
-        all_surface_meta_cols = [list() for _ in range(surface_meta_dim)] if node_type == "surface_obs_target" and surface_meta_dim > 0 else []
-
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
                 continue
@@ -2091,28 +2161,10 @@ class GNNLightning(pl.LightningModule):
                     lat_deg = np.degrees(lat)
                     lon_deg = np.degrees(lon)
 
-                    # surface_obs_target: record the conditioned metadata (columns after lat/lon)
-                    if all_surface_meta_cols:
-                        try:
-                            meta = target_metadata[:, 2:2 + surface_meta_dim].detach().cpu().numpy()
-                            if meta.ndim == 1:
-                                meta = meta[:, None]
-                        except Exception:
-                            meta = None
-                        if meta is None or meta.shape[0] != int(y_pred_unnorm.shape[0]):
-                            for j in range(surface_meta_dim):
-                                all_surface_meta_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
-                        else:
-                            for j in range(surface_meta_dim):
-                                all_surface_meta_cols[j].extend(meta[:, j].astype(np.float64).tolist())
                 else:
                     n = y_pred_unnorm.shape[0]
                     lat_deg = np.zeros(n)
                     lon_deg = np.zeros(n)
-
-                    if all_surface_meta_cols:
-                        for j in range(surface_meta_dim):
-                            all_surface_meta_cols[j].extend([float('nan')] * int(n))
 
                 # Per-observation timestamps (epoch seconds) if present
                 if hasattr(batch[step_node_type], 'target_times'):
@@ -2232,15 +2284,6 @@ class GNNLightning(pl.LightningModule):
 
         # Build DataFrame in EXACT same format as standard rollout
         df = pd.DataFrame({"lat": all_lat, "lon": all_lon})
-
-        # Persist surface meta columns (e.g., height) if present.
-        if all_surface_meta_cols and len(all_surface_meta_cols[0]) == len(df):
-            def _safe_meta_name(s: str) -> str:
-                return str(s).strip().replace(" ", "_")
-
-            for j in range(surface_meta_dim):
-                name = surface_meta_names[j] if j < len(surface_meta_names) else f"meta{j}"
-                df[f"meta_{_safe_meta_name(name)}"] = np.asarray(all_surface_meta_cols[j], dtype=np.float64)
 
         # Scan-angle columns (when applicable)
         if all_scan_angle_cols and len(all_scan_angle_cols[0]) == len(df):

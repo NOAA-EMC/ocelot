@@ -1,3 +1,12 @@
+"""Lightning data loading and graph-building utilities for Ocelot GNN training.
+
+This module prepares time-binned observation samples, converts them into
+heterogeneous graph inputs, and manages train, validation, and prediction data
+pipelines through a PyTorch Lightning data module.
+
+Author: Azadeh Gholoubi
+"""
+
 import os
 import json
 import hashlib
@@ -620,7 +629,8 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
+        # Keep mesh edge_attr in fp16 to reduce device memory footprint under AMP.
+        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
         reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
         data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
@@ -687,7 +697,7 @@ class GNNDataModule(pl.LightningDataModule):
                     o2m=True,
                 )
                 data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
-                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder
+                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder.to(torch.float16)
 
         # Handle target features for each latent step
         if "target_features_final_list" not in inst_dict:
@@ -728,7 +738,8 @@ class GNNDataModule(pl.LightningDataModule):
             mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
             data[node_type_target].y = _t32(y_t)
-            data[node_type_target].target_channel_mask = _t32(mask_t)
+            # IMPORTANT: keep as bool to avoid massive memory blow-ups for satellite targets.
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
 
             # Metadata
             if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
@@ -809,7 +820,7 @@ class GNNDataModule(pl.LightningDataModule):
                         o2m=False,
                     )
                     data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
@@ -819,7 +830,7 @@ class GNNDataModule(pl.LightningDataModule):
         data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
         data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
-        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 4), dtype=torch.float32)
 
         # Create empty target nodes for all latent steps
         for step in range(num_latent_steps):
@@ -835,7 +846,7 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
-            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
             data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
