@@ -1,0 +1,94 @@
+observation:
+  dim_path_map:
+    location: "*"
+    npc_global: "*/NPCGLOBAL"
+
+  variable_map:
+    - source: lat
+      name: latitude
+    - source: lon
+      name: longitude
+    - source: sat_azi
+      name: sensorAzimuthAngle
+    - source: sol_zen
+      name: solarZenithAngle
+    - source: sat_zen
+      name: sensorZenithAngle
+
+  global_pc_score_slice: [0, 24]  # [start, end) for npc_global dimension start from 0, end is exclusive
+
+  subsample:
+    enabled: True        # set false to disable subsampling
+    method: random      # "every_n" or "random"
+    n: 17                # used by every_n (keep every n-th)
+    p: 0.05       # optional probability for random (default 1/n)
+    seed: 0              # RNG seed for deterministic random sampling
+
+  write_netcdf:
+    enabled: False       # set true to write the preprocessed Dataset to a netCDF
+    path: "cris_pca_out.nc"
+    mode: "w"            # netCDF write mode ("w" or "a")
+
+encoder:
+  categories:
+    - name: cris_pca
+
+  globals:
+    - name: source
+      type: string
+      value: "CrIS PCA netCDF (test)"
+
+  variables:
+    - name: latitude
+      source: latitude
+      longName: "Latitude"
+      units: "degree_north"
+      range: [-90.0, 90.0]
+
+    - name: longitude
+      source: longitude
+      longName: "Longitude"
+      units: "degree_east"
+      range: [-180.0, 180.0]
+
+    - name: time
+      source: time
+      longName: "Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: timestamp
+      source: time
+      longName: "Time"
+      units: "seconds since 1970-01-01T00:00:00Z"
+
+    - name: scan_position
+      source: scan_position
+      longName: "Scan position"
+      units: "1"
+
+    - name: satelliteId
+      source: satelliteId
+      longName: "Satellite ID"
+      units: "1"
+
+    - name: "solarZenithAngle"
+      source: solarZenithAngle
+      longName: "Solar Zenith Angle"
+      units: "degree"
+      range: [0, 180]
+
+    - name: "sensorZenithAngle"
+      source: sensorZenithAngle
+      longName: "Sensor Zenith Angle"
+      units: "degree"
+      range: [0, 90]
+
+    - name: "sensorAzimuthAngle"
+      source: sensorAzimuthAngle
+      longName: "Sensor Azimuth Angle"
+      units: "degree"
+
+    - name: global_pc_score
+      source: global_pc_score
+      longName: "Global PC score"
+      units: "1"
