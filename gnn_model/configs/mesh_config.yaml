@@ -8,11 +8,11 @@ enable_mesh_pred: false  # Master switch: controls whether mesh grid outputs are
 
 variables:
   surface_obs:
-    - airPressure_prepbufr_event_1  # p
-    - airTemperature    # temp
-    - wind_u            # u
-    - wind_v            # v
-    - relativeHumidity  # q
+    - pressureMeanSeaLevel_prepbufr  # p
+    - airTemperature                 # temp
+    - dewPointTemperature            # dewpoint
+    - wind_u                         # u
+    - wind_v                         # v
 
   radiosonde:
     - airPressure       # p

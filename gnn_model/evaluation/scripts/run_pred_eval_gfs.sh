@@ -194,6 +194,21 @@ python "${PLOT_GFS_COMPARE_SCRIPT}" \
 
 echo "==== 5) Mesh-grid: interpolate GFS onto OCELOT mesh grid (same points) ===="
 if [ -d "${MESH_DIR}" ]; then
+  shopt -s nullglob
+  mesh_matches=("${MESH_DIR}/${INSTRUMENT}_init_${INIT_TIME}_f"*.csv)
+  filtered_matches=()
+  for mesh_path in "${mesh_matches[@]}"; do
+    case "${mesh_path}" in
+      *_gfs_on_ocelot_mesh.csv) ;;
+      *) filtered_matches+=("${mesh_path}") ;;
+    esac
+  done
+  shopt -u nullglob
+
+  if [ ${#filtered_matches[@]} -eq 0 ]; then
+    echo "[INFO] No mesh-grid prediction CSVs found for instrument=${INSTRUMENT} init=${INIT_TIME}; skipping step 5."
+    echo "[INFO] Mesh-grid files are only produced when prediction runs with enable_mesh_pred: true."
+  else
   # Mesh-grid outputs are one file per fhr: <instrument>_init_<INIT>_f<FFF>.csv
   for fhr in ${FHR_LIST}; do
     mesh_csv="${MESH_DIR}/${INSTRUMENT}_init_${INIT_TIME}_f$(printf '%03d' ${fhr}).csv"
@@ -225,6 +240,7 @@ if [ -d "${MESH_DIR}" ]; then
       echo "[WARN] Mesh-grid CSV not found for fhr=${fhr}: ${mesh_csv}"
     fi
   done
+  fi
 else
   echo "[WARN] Mesh-grid directory not found: ${MESH_DIR}"
 fi

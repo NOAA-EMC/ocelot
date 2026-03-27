@@ -50,6 +50,13 @@ def main():
         help="The data sampling strategy ('random' or 'sequential').",
     )
     parser.add_argument(
+        "--parallelization_strategy",
+        type=str,
+        default="domain",
+        choices=["time", "domain"],
+        help="DDP work split strategy: 'time' keeps per-rank time slicing, 'domain' splits each frame by geography.",
+    )
+    parser.add_argument(
         "--switch_to_sequential_after_epochs",
         type=int,
         default=None,
@@ -115,7 +122,6 @@ def main():
 
     # Model hyperparameters (overridable)
     parser.add_argument("--hidden_dim", type=int, default=192)
-    parser.add_argument("--num_layers", type=int, default=10)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--huber_delta", type=float, default=0.1)
@@ -145,17 +151,22 @@ def main():
     )
 
     parser.add_argument(
-        "--surface_meta_conditioning",
-        type=str,
-        default="project",
-        choices=["pad", "project"],
+        "--disable_bipartite_edge_attr",
+        action="store_true",
         help=(
-            "How to inject surface station metadata embedding (e.g., elevation) into decoder receiver init for surface_obs_target. "
-            "'pad' keeps metadata embedding in the last 8 dims; "
-            "'project' spreads it across hidden_dim via a learned linear projection."
+            "By default, computed obs↔mesh / mesh↔target spatial edge_attr features are fed into "
+            "the GAT encoders/decoders. Set this flag to disable those features and force zero edge_attr instead."
         ),
     )
-
+    parser.add_argument(
+        "--bipartite_edge_attr_dim",
+        type=int,
+        default=4,
+        help=(
+            "Input dimension of bipartite spatial edge_attr features produced by obs_mesh_conn. "
+            "With current GraphCast-style features this is typically 4 (distance + relative position xyz)."
+        ),
+    )
     parser.add_argument(
         "--cfg_path",
         type=str,
@@ -353,7 +364,7 @@ def main():
     # --- HYPERPARAMETERS ---
     mesh_resolution = 6
     hidden_dim = int(args.hidden_dim)
-    num_layers = int(args.num_layers)
+    num_layers = 10
     lr = float(args.lr)
     weight_decay = float(args.weight_decay)
     huber_delta = float(args.huber_delta)
@@ -435,7 +446,8 @@ def main():
         val_csv_sample_seed=int(args.val_csv_sample_seed),
         scan_angle_conditioning=str(args.scan_angle_conditioning),
         pressure_level_conditioning=str(args.pressure_level_conditioning),
-        surface_meta_conditioning=str(args.surface_meta_conditioning),
+        use_bipartite_edge_attr=(not args.disable_bipartite_edge_attr),
+        bipartite_edge_attr_dim=int(args.bipartite_edge_attr_dim),
     )
 
     if resume_path and args.load_weights_only:
@@ -472,6 +484,7 @@ def main():
         train_end=initial_end_date,
         val_start=initial_val_start_date,
         val_end=initial_val_end_date,
+        domain_parallel=(args.parallelization_strategy == "domain"),
     )
 
     setup_end_time = time.time()
@@ -610,7 +623,13 @@ def main():
         torch.cuda.synchronize()
 
     ckpt_path_for_fit = None if (resume_path and args.load_weights_only) else resume_path
-    trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    # trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+
+    torch.cuda.memory._record_memory_history()
+    try:
+        trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    finally:
+        torch.cuda.memory._dump_snapshot(f"gnn_profile_rank_{rank_env}.pickle")
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")

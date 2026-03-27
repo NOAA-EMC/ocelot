@@ -1,8 +1,18 @@
+"""Lightning data loading and graph-building utilities for Ocelot GNN training.
+
+This module prepares time-binned observation samples, converts them into
+heterogeneous graph inputs, and manages train, validation, and prediction data
+pipelines through a PyTorch Lightning data module.
+
+Author: Azadeh Gholoubi
+"""
+
 import os
 import json
 import hashlib
 import time
 import importlib
+import math
 import lightning.pytorch as pl
 import numpy as np
 import pandas as pd
@@ -187,6 +197,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
+        self.domain_parallel = bool(kwargs.get("domain_parallel", False))
 
         # Zarr handles (stable across window changes)
         self.z = None
@@ -244,6 +255,7 @@ class GNNDataModule(pl.LightningDataModule):
         )
         print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
         print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
+        print(f"[DataModule] domain_parallel={self.domain_parallel}")
 
         # Ensure latent_step_hours has a valid value
         if self.hparams.latent_step_hours is None:
@@ -426,6 +438,134 @@ class GNNDataModule(pl.LightningDataModule):
             # callbacks can narrow them by changing windows and triggering reload.
             pass
 
+    def _current_rank_world(self):
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank(), dist.get_world_size()
+        return 0, 1
+
+    def _domain_bounds(self, rank: int, world_size: int):
+        mesh_pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
+        lat = mesh_pos[:, 0]
+        lon = mesh_pos[:, 1]
+
+        n_lat = int(math.floor(math.sqrt(world_size)))
+        while n_lat > 1 and world_size % n_lat != 0:
+            n_lat -= 1
+        n_lon = max(1, world_size // n_lat)
+
+        block = min(rank, n_lat * n_lon - 1)
+        lat_idx = block // n_lon
+        lon_idx = block % n_lon
+
+        lat_edges = torch.linspace(lat.min(), lat.max(), n_lat + 1, device=lat.device)
+        lon_edges = torch.linspace(lon.min(), lon.max(), n_lon + 1, device=lon.device)
+        return lat_edges, lon_edges, lat_idx, lon_idx
+
+    def _mesh_mask_for_rank(self, mesh_pos: torch.Tensor, rank: int, world_size: int) -> torch.Tensor:
+        lat_edges, lon_edges, lat_idx, lon_idx = self._domain_bounds(rank, world_size)
+        lat = mesh_pos[:, 0]
+        lon = mesh_pos[:, 1]
+
+        lat_lo = lat_edges[lat_idx]
+        lat_hi = lat_edges[lat_idx + 1]
+        lon_lo = lon_edges[lon_idx]
+        lon_hi = lon_edges[lon_idx + 1]
+
+        lat_in = (lat >= lat_lo) & ((lat <= lat_hi) if lat_idx == len(lat_edges) - 2 else (lat < lat_hi))
+        lon_in = (lon >= lon_lo) & ((lon <= lon_hi) if lon_idx == len(lon_edges) - 2 else (lon < lon_hi))
+        mask = lat_in & lon_in
+
+        # Guarantee at least one node per rank for pathological edge cases
+        if mask.sum() == 0:
+            center_lat = (lat_lo + lat_hi) * 0.5
+            center_lon = (lon_lo + lon_hi) * 0.5
+            dist2 = (lat - center_lat) ** 2 + (lon - center_lon) ** 2
+            mask[torch.argmin(dist2)] = True
+        return mask
+
+    @staticmethod
+    def _filter_node_store(node_store, keep_idx: torch.Tensor):
+        old_num_nodes = int(node_store.num_nodes)
+        for key, value in list(node_store.items()):
+            if torch.is_tensor(value) and value.dim() > 0 and value.size(0) == old_num_nodes:
+                node_store[key] = value[keep_idx]
+        node_store.num_nodes = int(keep_idx.numel())
+
+    def _apply_domain_partition(self, data: HeteroData) -> HeteroData:
+        rank, world_size = self._current_rank_world()
+        if world_size <= 1:
+            return data
+
+        mesh_pos = data["mesh"].pos
+        mesh_keep_mask = self._mesh_mask_for_rank(mesh_pos, rank=rank, world_size=world_size)
+        mesh_keep_idx = torch.where(mesh_keep_mask)[0]
+
+        old_num_mesh = int(data["mesh"].num_nodes)
+        old_to_new = torch.full((old_num_mesh,), -1, dtype=torch.long, device=mesh_keep_idx.device)
+        old_to_new[mesh_keep_idx] = torch.arange(mesh_keep_idx.numel(), dtype=torch.long, device=mesh_keep_idx.device)
+
+        # Mesh node features
+        self._filter_node_store(data["mesh"], mesh_keep_idx)
+
+        # Mesh -> Mesh edges
+        mesh_edge = data["mesh", "to", "mesh"]
+        edge_idx = mesh_edge.edge_index
+        keep_e = mesh_keep_mask[edge_idx[0]] & mesh_keep_mask[edge_idx[1]]
+        edge_idx = edge_idx[:, keep_e]
+        mesh_edge.edge_index = torch.stack([old_to_new[edge_idx[0]], old_to_new[edge_idx[1]]], dim=0)
+        if "edge_attr" in mesh_edge:
+            mesh_edge.edge_attr = mesh_edge.edge_attr[keep_e]
+
+        # Observation input nodes (obs -> mesh)
+        for node_type in data.node_types:
+            if not node_type.endswith("_input"):
+                continue
+            edge_type = (node_type, "to", "mesh")
+            if edge_type not in data.edge_types:
+                continue
+            edge_store = data[edge_type]
+            old_obs_num = int(data[node_type].num_nodes)
+            edge_idx = edge_store.edge_index
+            keep_e = mesh_keep_mask[edge_idx[1]]
+            edge_idx = edge_idx[:, keep_e]
+            obs_keep = torch.unique(edge_idx[0])
+            self._filter_node_store(data[node_type], obs_keep)
+            obs_old_to_new = torch.full((old_obs_num,), -1, dtype=torch.long, device=edge_idx.device)
+            if obs_keep.numel() > 0:
+                obs_old_to_new[obs_keep] = torch.arange(obs_keep.numel(), dtype=torch.long, device=edge_idx.device)
+            if edge_idx.numel() > 0:
+                edge_store.edge_index = torch.stack([obs_old_to_new[edge_idx[0]], old_to_new[edge_idx[1]]], dim=0)
+            else:
+                edge_store.edge_index = torch.empty((2, 0), dtype=torch.long, device=edge_idx.device)
+            if "edge_attr" in edge_store:
+                edge_store.edge_attr = edge_store.edge_attr[keep_e]
+
+        # Target nodes (mesh -> target)
+        for node_type in data.node_types:
+            if "_target_step" not in node_type:
+                continue
+            edge_type = ("mesh", "to", node_type)
+            if edge_type not in data.edge_types:
+                continue
+            edge_store = data[edge_type]
+            old_tgt_num = int(data[node_type].num_nodes)
+            edge_idx = edge_store.edge_index
+            keep_e = mesh_keep_mask[edge_idx[0]]
+            edge_idx = edge_idx[:, keep_e]
+            tgt_keep = torch.unique(edge_idx[1])
+            self._filter_node_store(data[node_type], tgt_keep)
+            tgt_old_to_new = torch.full((old_tgt_num,), -1, dtype=torch.long, device=edge_idx.device)
+            if tgt_keep.numel() > 0:
+                tgt_old_to_new[tgt_keep] = torch.arange(tgt_keep.numel(), dtype=torch.long, device=edge_idx.device)
+            if edge_idx.numel() > 0:
+                edge_store.edge_index = torch.stack([old_to_new[edge_idx[0]], tgt_old_to_new[edge_idx[1]]], dim=0)
+            else:
+                edge_store.edge_index = torch.empty((2, 0), dtype=torch.long, device=edge_idx.device)
+            if "edge_attr" in edge_store:
+                edge_store.edge_attr = edge_store.edge_attr[keep_e]
+
+        return data
+
     # ------------- Summary (re)builders -------------
     def _rebuild_train_summary(self):
         _, rank = self._ddp_info()
@@ -489,7 +629,8 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
+        # Keep mesh edge_attr in fp16 to reduce device memory footprint under AMP.
+        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
         reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
         data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
@@ -514,6 +655,9 @@ class GNNDataModule(pl.LightningDataModule):
                 else:
                     # MISSING INSTRUMENT: Create empty nodes with same structure as present instruments
                     self._create_empty_latent_nodes(data, inst_name, inst_cfg, num_latent_steps)
+
+        if self.domain_parallel:
+            data = self._apply_domain_partition(data)
 
         return data
 
@@ -553,7 +697,7 @@ class GNNDataModule(pl.LightningDataModule):
                     o2m=True,
                 )
                 data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
-                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder
+                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder.to(torch.float16)
 
         # Handle target features for each latent step
         if "target_features_final_list" not in inst_dict:
@@ -594,7 +738,8 @@ class GNNDataModule(pl.LightningDataModule):
             mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
             data[node_type_target].y = _t32(y_t)
-            data[node_type_target].target_channel_mask = _t32(mask_t)
+            # IMPORTANT: keep as bool to avoid massive memory blow-ups for satellite targets.
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
 
             # Metadata
             if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
@@ -675,7 +820,7 @@ class GNNDataModule(pl.LightningDataModule):
                         o2m=False,
                     )
                     data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
@@ -685,7 +830,7 @@ class GNNDataModule(pl.LightningDataModule):
         data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
         data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
-        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 4), dtype=torch.float32)
 
         # Create empty target nodes for all latent steps
         for step in range(num_latent_steps):
@@ -701,7 +846,7 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
-            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
             data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
