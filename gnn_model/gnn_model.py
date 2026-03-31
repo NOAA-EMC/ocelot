@@ -2131,7 +2131,7 @@ class GNNLightning(pl.LightningModule):
         scan_angle_expected_dim = 0
         if node_type == "ascat_target":
             scan_angle_expected_dim = 3
-        elif node_type in ("atms_target", "amsua_target", "avhrr_target"):
+        elif node_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target"):
             scan_angle_expected_dim = 1
 
         all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
