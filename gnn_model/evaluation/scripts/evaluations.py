@@ -2213,7 +2213,7 @@ if __name__ == "__main__":
                 units="K",
             )
 
-         # brightness temperature instruments (add units to annotate RMSE like your sample)
+        # brightness temperature instruments (add units to annotate RMSE like your sample)
         for fhr_i in fhrs_to_plot:
             plot_ocelot_target_diff("cris_pca", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
                                     num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
