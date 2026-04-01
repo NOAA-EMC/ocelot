@@ -33,7 +33,6 @@ encoder:
     - name: ch
       paths: 
         - "*/RPSEQ7{1-11}"
-        - "*/RPSEQ10{1-11}"
 
   variables:
     # MetaData

@@ -36,8 +36,7 @@ bufr:
 encoder:
   dimensions:
     - name: ch
-      paths: 
-        - "*/RPSEQ7{1-11}"
+      paths:
         - "*/RPSEQ10{1-11}"
         
   variables:
