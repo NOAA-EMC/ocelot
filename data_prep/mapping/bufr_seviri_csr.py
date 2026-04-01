@@ -6,6 +6,7 @@ from bufr.obs_builder import ObsBuilder, add_main_functions, map_path
 
 SevCsrMapPath = map_path('bufr_sevcsr.yaml')
 
+
 class SeviriCsrBuilder(ObsBuilder):
     def __init__(self):
         super().__init__(SevCsrMapPath, log_name=os.path.basename(__file__))
