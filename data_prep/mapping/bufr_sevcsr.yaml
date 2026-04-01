@@ -25,7 +25,7 @@ bufr:
     solarZenithAngle:
       query: "*/SOZA"
 
-    bt_clear:
+    bt:
       query: "*/RPSEQ7{1-11}/TMBRST"
 
 encoder:
@@ -66,13 +66,8 @@ encoder:
       longName: "Satellite Zenith Angle"
       units: "degree"
 
-    - name: "bt_all"
-      source: variables/bt_all
-      longName: "Brightness Temperature"
-      units: "K"
-
-    - name: "bt_clear"
-      source: variables/bt_clear
+    - name: "bt"
+      source: variables/bt
       longName: "Brightness Temperature"
       units: "K"
 
