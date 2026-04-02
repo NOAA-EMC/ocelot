@@ -104,8 +104,8 @@ data types:
   - name: seviri_csr
     memory: 256G
     type: tank
-    num_tasks: 4
-    batch_days: 30
+    num_tasks: 2
+    batch_days: 15
     mapping: bufr_seviri_csr.py
     paths:
       - 00/atmos/gdas.t00z.sevcsr.tm00.bufr_d
