@@ -329,9 +329,16 @@ def organize_bins_times(
             # --- Build window labels without a big DataFrame ---
             win = time_ts.floor(window_size)  # tz-aware
 
+            if win.isna().any():
+                continue
+
+            # keep only valid windows
+            valid_mask = win.notna()
+            win_valid = win[valid_mask]
+
             # unique ordered windows + integer codes for each row's window
-            uniq_win = pd.Index(win).unique().sort_values()
-            codes = pd.Categorical(win, categories=uniq_win, ordered=True).codes
+            uniq_win = pd.Index(win_valid).unique().sort_values()
+            codes = pd.Categorical(win_valid, categories=uniq_win, ordered=True).codes
 
             if require_targets:
                 n_bins = len(uniq_win) - 1
