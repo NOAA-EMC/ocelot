@@ -2535,5 +2535,3 @@ if __name__ == "__main__":
             error_metric="percent",
             drop_small_truth=False,
         )
-
-
