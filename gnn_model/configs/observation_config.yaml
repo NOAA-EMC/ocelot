@@ -9,7 +9,6 @@ pipeline:
       # ascat: 2
       cris_pca: 1
       # Give weak/rare instruments more samples
-      # seviri: 20
       # ascat: 10
       # ssmis: 20
     conventional:
@@ -26,6 +25,8 @@ pipeline:
         avhrr: random
         ascat: random   # ASCAT sampling mode
         cris_pca: random
+        seviri_asr: random
+        seviri_csr: random
       conventional:
         _default: random
     #   snow_cover: none    # ignore subsampling for snow_cover
@@ -41,7 +42,8 @@ instrument_weights:
   aircraft: 1.0
   # snow_cover: 1.0
   ssmis: 1.0
-  seviri: 1.0
+  seviri_asr: 1.0
+  seviri_csr: 1.0
   cris_pca: 1.0
 
 
@@ -58,10 +60,9 @@ channel_weights:
     1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
     1.0, 1.0, 1.0, 1.0
     ]
-  seviri: [
-    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
-    1.0, 1.0, 1.0, 1.0, 1.0, 1.0
-    ]
+  seviri_asr: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  seviri_csr: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
   cris_pca: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
@@ -107,17 +108,23 @@ observation_config:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
-    seviri:
+    seviri_asr:
       sat_ids: [56, 57]  # Meteosat-11
       scan_angle_channels: 1  # Number of scan angle dimensions
-      features: [bt_all_ch_4, bt_all_ch_5, bt_all_ch_6, bt_all_ch_7, 
-                 bt_all_ch_8, bt_all_ch_9, bt_all_ch_10, bt_all_ch_11,
-                 bt_clear_ch_4, bt_clear_ch_5, bt_clear_ch_6, bt_clear_ch_7,
-                 bt_clear_ch_8, bt_clear_ch_9, bt_clear_ch_10, bt_clear_ch_11
-                ]
+      features:  [bt_ch_4, bt_ch_5, bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10, bt_ch_11]
       metadata: [satelliteZenithAngle, solarZenithAngle]
-      input_dim: 27
-      target_dim: 16
+      input_dim: 17
+      target_dim: 8
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+
+    seviri_csr:
+      sat_ids: [56, 57]  # Meteosat-11
+      scan_angle_channels: 1  # Number of scan angle dimensions
+      features: [bt_ch_4, bt_ch_5, bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10, bt_ch_11]
+      metadata: [satelliteZenithAngle, solarZenithAngle]
+      input_dim: 17
+      target_dim: 8
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
@@ -399,20 +406,22 @@ feature_stats:  # Statistics for the features used in the model (with FULL QC fi
     global_pc_score_PC_8:  [4.131  ,  226.219 ]   
     global_pc_score_PC_9:  [1.732  ,  186.408 ] 
     global_pc_score_PC_10: [1.882  ,  135.888 ] 
-  seviri:
-    bt_all_ch_10  : [276.59, 20.07]
-    bt_all_ch_11  : [257.99, 14.21]
-    bt_all_ch_4   : [280.87, 17.44]
-    bt_all_ch_5   : [237.38,  9.03]
-    bt_all_ch_6   : [254.14, 12.27]
-    bt_all_ch_7   : [276.28, 18.76]
-    bt_all_ch_8   : [257.31, 14.28]
-    bt_all_ch_9   : [278.26, 19.92]
-    bt_clear_ch_10: [288.54,  8.77]
-    bt_clear_ch_11: [265.76,  6.91]
-    bt_clear_ch_4 : [289.44, 10.47]
-    bt_clear_ch_5 : [240.56,  6.74]
-    bt_clear_ch_6 : [259.72,  6.67]
-    bt_clear_ch_7 : [287.38,  8.72]
-    bt_clear_ch_8 : [264.54, 10.17]
-    bt_clear_ch_9 : [290.17,  8.95]
+  seviri_asr:
+    bt_ch_10  : [276.59, 20.07]
+    bt_ch_11  : [257.99, 14.21]
+    bt_ch_4   : [280.87, 17.44]
+    bt_ch_5   : [237.38,  9.03]
+    bt_ch_6   : [254.14, 12.27]
+    bt_ch_7   : [276.28, 18.76]
+    bt_ch_8   : [257.31, 14.28]
+    bt_ch_9   : [278.26, 19.92]
+  seviri_csr:
+    bt_ch_10: [288.54,  8.77]
+    bt_ch_11: [265.76,  6.91]
+    bt_ch_4 : [289.44, 10.47]
+    bt_ch_5 : [240.56,  6.74]
+    bt_ch_6 : [259.72,  6.67]
+    bt_ch_7 : [287.38,  8.72]
+    bt_ch_8 : [264.54, 10.17]
+    bt_ch_9 : [290.17,  8.95]
+

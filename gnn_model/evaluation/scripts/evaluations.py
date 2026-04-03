@@ -2266,11 +2266,28 @@ if __name__ == "__main__":
             )
 
         for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("seviri", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+            plot_ocelot_target_diff("seviri_asr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
                                     num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
         if PLOT_HORIZON_12H:
             plot_ocelot_target_diff_12h_horizon(
-                "seviri",
+                "seviri_asr",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                horizon_fhrs=HORIZON_FHRS,
+                strict_obs_window=STRICT_OBS_WINDOW,
+                num_channels=16,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                units="K",
+            )
+
+        for fhr_i in fhrs_to_plot:
+            plot_ocelot_target_diff("seviri_csr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+                                    num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+        if PLOT_HORIZON_12H:
+            plot_ocelot_target_diff_12h_horizon(
+                "seviri_csr",
                 EPOCH_TO_PLOT,
                 BATCH_IDX_TO_PLOT,
                 INIT_TIME,
@@ -2494,7 +2511,7 @@ if __name__ == "__main__":
         )
 
         plot_instrument_maps(
-            "seviri",
+            "seviri_asr",
             EPOCH_TO_PLOT,
             BATCH_IDX_TO_PLOT,
             INIT_TIME,
@@ -2505,3 +2522,18 @@ if __name__ == "__main__":
             error_metric="percent",
             drop_small_truth=False,
         )
+
+        plot_instrument_maps(
+            "seviri_csr",
+            EPOCH_TO_PLOT,
+            BATCH_IDX_TO_PLOT,
+            INIT_TIME,
+            FHR,
+            num_channels=16,
+            data_dir=DATA_DIR,
+            fig_dir=plot_dir,
+            error_metric="percent",
+            drop_small_truth=False,
+        )
+
+
