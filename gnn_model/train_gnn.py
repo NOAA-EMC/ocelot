@@ -50,6 +50,13 @@ def main():
         help="The data sampling strategy ('random' or 'sequential').",
     )
     parser.add_argument(
+        "--parallelization_strategy",
+        type=str,
+        default="domain",
+        choices=["time", "domain"],
+        help="DDP work split strategy: 'time' keeps per-rank time slicing, 'domain' splits each frame by geography.",
+    )
+    parser.add_argument(
         "--switch_to_sequential_after_epochs",
         type=int,
         default=None,
@@ -477,6 +484,7 @@ def main():
         train_end=initial_end_date,
         val_start=initial_val_start_date,
         val_end=initial_val_end_date,
+        domain_parallel=(args.parallelization_strategy == "domain"),
     )
 
     setup_end_time = time.time()
@@ -615,7 +623,13 @@ def main():
         torch.cuda.synchronize()
 
     ckpt_path_for_fit = None if (resume_path and args.load_weights_only) else resume_path
-    trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    # trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+
+    torch.cuda.memory._record_memory_history()
+    try:
+        trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    finally:
+        torch.cuda.memory._dump_snapshot(f"gnn_profile_rank_{rank_env}.pickle")
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")
