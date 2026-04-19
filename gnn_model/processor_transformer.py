@@ -7,7 +7,7 @@ Author: Azadeh Gholoubi
 """
 
 from collections import deque
-from typing import List, Optional
+from typing import Callable, List, Optional
 import torch
 import torch.nn as nn
 import math
@@ -76,7 +76,7 @@ class SpatialMixBlock(nn.Module):
       edge_attr: [E] or [E, F] (optional)
     """
 
-    def __init__(self, hidden_dim: int, dropout: float = 0.0):
+    def __init__(self, hidden_dim: int, dropout: float = 0.0, edge_chunk_size: int = 16384):
         super().__init__()
         # When `edge_attr` comes from GraphCast-style spatial features, the first
         # columns are normalized spatial features (typically 4 dims: dist + relative xyz).
@@ -85,6 +85,7 @@ class SpatialMixBlock(nn.Module):
         # The edge-weighting rule itself is parameter-free; the aggregated message
         # is then processed by the learned MLP below before the residual update.
         self.distance_scale: float = 4.0
+        self.edge_chunk_size = max(1, int(edge_chunk_size))
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
@@ -93,11 +94,17 @@ class SpatialMixBlock(nn.Module):
         self.norm = nn.LayerNorm(hidden_dim)
         self.drop = nn.Dropout(dropout)
 
+    def _edge_ranges(self, num_edges: int):
+        for start in range(0, int(num_edges), self.edge_chunk_size):
+            yield start, min(start + self.edge_chunk_size, int(num_edges))
+
     def forward(
         self,
         x: torch.Tensor,
         edge_index: Optional[torch.Tensor],
         edge_attr: Optional[torch.Tensor] = None,
+        owned_node_count: Optional[int] = None,
+        halo_exchange: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> torch.Tensor:
         if edge_index is None:
             return x
@@ -109,42 +116,55 @@ class SpatialMixBlock(nn.Module):
         dst = edge_index[1]
 
         N = int(x.size(0))
+        owned_nodes = N if owned_node_count is None else int(owned_node_count)
         device = x.device
         dtype = x.dtype
 
         if edge_attr is None:
             # Aggregate: mean of neighbor source features into dst nodes.
-            agg = torch.zeros((N, x.size(1)), device=device, dtype=dtype)
-            agg.index_add_(0, dst, x[src])
-
-            deg = torch.zeros((N,), device=device, dtype=dtype)
-            deg.index_add_(0, dst, torch.ones((dst.numel(),), device=device, dtype=dtype))
+            agg = torch.zeros((owned_nodes, x.size(1)), device=device, dtype=dtype)
+            deg = torch.zeros((owned_nodes,), device=device, dtype=dtype)
+            for start, end in self._edge_ranges(dst.numel()):
+                src_chunk = src[start:end]
+                dst_chunk = dst[start:end]
+                agg.index_add_(0, dst_chunk, x.index_select(0, src_chunk))
+                deg.index_add_(0, dst_chunk, torch.ones((dst_chunk.numel(),), device=device, dtype=dtype))
             agg = agg / deg.clamp(min=1).unsqueeze(-1)
         else:
             # Edge-aware aggregate: weighted mean of neighbor source features.
             # - If edge_attr is [E] or [E,1]: treat as precomputed positive weights.
             # - Else: use the full edge feature vector (all columns) to compute weights.
-            if edge_attr.dim() == 1:
-                w = edge_attr
-            elif edge_attr.dim() == 2 and edge_attr.size(1) == 1:
-                w = edge_attr[:, 0]
-            else:
-                # Compute in fp32 for stability under AMP/fp16.
-                feat = edge_attr.to(device=device, dtype=torch.float32)
-                feat_norm = torch.sqrt((feat * feat).sum(dim=1) + 1e-12)
-                w = torch.exp(-float(self.distance_scale) * feat_norm).to(dtype=dtype)
+            agg = torch.zeros((owned_nodes, x.size(1)), device=device, dtype=dtype)
+            wsum = torch.zeros((owned_nodes,), device=device, dtype=dtype)
+            for start, end in self._edge_ranges(dst.numel()):
+                src_chunk = src[start:end]
+                dst_chunk = dst[start:end]
+                edge_attr_chunk = edge_attr[start:end]
 
-            w = w.to(device=device, dtype=dtype).clamp(min=0)
+                if edge_attr_chunk.dim() == 1:
+                    w_chunk = edge_attr_chunk
+                elif edge_attr_chunk.dim() == 2 and edge_attr_chunk.size(1) == 1:
+                    w_chunk = edge_attr_chunk[:, 0]
+                else:
+                    # Compute in fp32 for stability under AMP/fp16.
+                    feat = edge_attr_chunk.to(device=device, dtype=torch.float32)
+                    feat_norm = torch.sqrt((feat * feat).sum(dim=1) + 1e-12)
+                    w_chunk = torch.exp(-float(self.distance_scale) * feat_norm).to(dtype=dtype)
 
-            agg = torch.zeros((N, x.size(1)), device=device, dtype=dtype)
-            agg.index_add_(0, dst, x[src] * w.unsqueeze(-1))
-
-            wsum = torch.zeros((N,), device=device, dtype=dtype)
-            wsum.index_add_(0, dst, w)
+                w_chunk = w_chunk.to(device=device, dtype=dtype).clamp(min=0)
+                src_features = x.index_select(0, src_chunk)
+                agg.index_add_(0, dst_chunk, src_features * w_chunk.unsqueeze(-1))
+                wsum.index_add_(0, dst_chunk, w_chunk)
             agg = agg / wsum.clamp(min=1e-6).unsqueeze(-1)
 
         msg = self.mlp(agg)
-        return self.norm(x + self.drop(msg))
+        if owned_nodes == N:
+            updated = self.norm(x + self.drop(msg))
+            return halo_exchange(updated) if halo_exchange is not None else updated
+
+        updated_owned = self.norm(x[:owned_nodes] + self.drop(msg))
+        updated = torch.cat([updated_owned, x[owned_nodes:]], dim=0)
+        return halo_exchange(updated) if halo_exchange is not None else updated
 
 
 class SlidingWindowTransformerProcessor(nn.Module):
@@ -160,16 +180,22 @@ class SlidingWindowTransformerProcessor(nn.Module):
                  num_heads: int = 4,
                  dropout: float = 0.0,
                  use_causal_mask: bool = True,
-                 spatial_mixing_steps: int = 1):
+                 spatial_mixing_steps: int = 1,
+                 spatial_edge_chunk_size: int = 16384):
         super().__init__()
         self.window = window
         self.use_causal_mask = use_causal_mask
         self.spatial_mixing_steps = int(spatial_mixing_steps)
+        self.spatial_edge_chunk_size = max(1, int(spatial_edge_chunk_size))
         self.blocks = nn.ModuleList([
             TemporalBlock(hidden_dim, num_heads, dropout) for _ in range(depth)
         ])
         self.posenc = TemporalPositionalEncoding(hidden_dim, max_len=window)
-        self.spatial_mix = SpatialMixBlock(hidden_dim, dropout=dropout)
+        self.spatial_mix = SpatialMixBlock(
+            hidden_dim,
+            dropout=dropout,
+            edge_chunk_size=self.spatial_edge_chunk_size,
+        )
         self.register_buffer("_dummy", torch.empty(0))  # for device inference
         self.cache: deque[torch.Tensor] = deque(maxlen=window)
 
@@ -189,6 +215,8 @@ class SlidingWindowTransformerProcessor(nn.Module):
         x_mesh: torch.Tensor,
         mesh_edge_index: Optional[torch.Tensor] = None,
         mesh_edge_attr: Optional[torch.Tensor] = None,
+        owned_node_count: Optional[int] = None,
+        halo_exchange: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> torch.Tensor:
         """
         x_mesh: [N_mesh, H] current latent mesh state
@@ -222,7 +250,13 @@ class SlidingWindowTransformerProcessor(nn.Module):
                 for t in range(x_seq.size(1)):
                     xt = x_seq[:, t, :]
                     for _ in range(self.spatial_mixing_steps):
-                        xt = self.spatial_mix(xt, mesh_edge_index, mesh_edge_attr)
+                        xt = self.spatial_mix(
+                            xt,
+                            mesh_edge_index,
+                            mesh_edge_attr,
+                            owned_node_count=owned_node_count,
+                            halo_exchange=halo_exchange,
+                        )
                     mixed.append(xt)
                 x_seq = torch.stack(mixed, dim=1)
 

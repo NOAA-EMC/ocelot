@@ -20,10 +20,12 @@ import torch.distributed as dist
 import zarr
 from zarr.storage import LRUStoreCache
 from torch.utils.data import Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
+from domain_sharding import DomainGraphSharder, get_rank_world_size
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
@@ -162,6 +164,15 @@ class GNNDataModule(pl.LightningDataModule):
         prediction_mode=False,
         require_targets=None,
         verbose: bool = False,
+        parallelization_strategy: str = "replicated",
+        domain_halo_hops: int = 1,
+        data_loader_seed: int = 0,
+        zarr_cache_max_size_bytes: int = 64 * 1024 * 1024,
+        train_num_workers: int = 2,
+        val_num_workers: int = 1,
+        predict_num_workers: int = 1,
+        dataloader_prefetch_factor: int = 1,
+        pin_memory: bool | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -193,9 +204,19 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Keep as hparam for downstream access
         self.hparams.verbose = bool(verbose)
+        self.hparams.pin_memory = torch.cuda.is_available() if pin_memory is None else bool(pin_memory)
+        self.hparams.zarr_cache_max_size_bytes = int(zarr_cache_max_size_bytes)
+        self.hparams.train_num_workers = max(0, int(train_num_workers))
+        self.hparams.val_num_workers = max(0, int(val_num_workers))
+        self.hparams.predict_num_workers = max(0, int(predict_num_workers))
+        self.hparams.dataloader_prefetch_factor = max(1, int(dataloader_prefetch_factor))
 
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
+        self.parallelization_strategy = str(parallelization_strategy)
+        self.domain_halo_hops = int(domain_halo_hops)
+        self.data_loader_seed = int(data_loader_seed)
+        self.domain_sharder: DomainGraphSharder | None = None
 
         # Zarr handles (stable across window changes)
         self.z = None
@@ -366,6 +387,8 @@ class GNNDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         _, rank = self._ddp_info()
 
+        self._ensure_domain_sharder()
+
         # Open Zarrs once
         if self.z is None:
             self.z = {}
@@ -396,8 +419,12 @@ class GNNDataModule(pl.LightningDataModule):
                         if not os.path.isdir(zarr_path):
                             raise FileNotFoundError(f"Zarr not found: {zarr_path}")
 
-                        # Use LRU cache; ensure int for max_size
-                        store = LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=int(2e9))
+                        # Keep the per-process Zarr cache conservative; this code runs once per rank
+                        # and dataloader workers can multiply the effective host-memory footprint.
+                        store = LRUStoreCache(
+                            zarr.DirectoryStore(zarr_path),
+                            max_size=int(self.hparams.zarr_cache_max_size_bytes),
+                        )
                         self.z[obs_type][inst_name] = zarr.open(store, mode="r")
 
                         if rank == 0:
@@ -525,7 +552,39 @@ class GNNDataModule(pl.LightningDataModule):
                     # MISSING INSTRUMENT: Create empty nodes with same structure as present instruments
                     self._create_empty_latent_nodes(data, inst_name, inst_cfg, num_latent_steps)
 
+        if self.domain_sharder is not None and self.domain_sharder.is_enabled:
+            # Slice the global hetero-graph down to this rank's owned mesh,
+            # halo mesh, local targets, and any boundary observations needed.
+            data = self.domain_sharder.shard_graph(data)
+
         return data
+
+    def _ensure_domain_sharder(self):
+        if self.parallelization_strategy != "domain" or self.domain_sharder is not None:
+            return
+
+        rank, world_size = get_rank_world_size()
+        mesh_x = _t32(self.mesh_structure["mesh_features_torch"][0])
+        mesh_pos = _t32(self.mesh_structure["mesh_lat_lon_torch"][0])
+        mesh_edge_index = _t64(self.mesh_structure["m2m_edge_index_torch"][0])
+        mesh_edge_attr = _t32(self.mesh_structure["m2m_features_torch"][0]).to(torch.float16)
+
+        self.domain_sharder = DomainGraphSharder(
+            mesh_x=mesh_x,
+            mesh_pos=mesh_pos,
+            mesh_edge_index=mesh_edge_index,
+            mesh_edge_attr=mesh_edge_attr,
+            rank=rank,
+            world_size=world_size,
+            halo_hops=self.domain_halo_hops,
+        )
+
+        if rank == 0:
+            spec = self.domain_sharder.spec
+            print(
+                "[DataModule] Domain sharding enabled: "
+                f"world_size={world_size}, owned_nodes={spec.owned_node_count}, halo_nodes={spec.halo_node_count}"
+            )
 
     def _create_latent_nodes(self, data, inst_name, inst_dict, num_latent_steps):
         """Create nodes for instrument with data in latent mode."""
@@ -728,7 +787,24 @@ class GNNDataModule(pl.LightningDataModule):
             f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
         )
 
+    def _loader_kwargs(self, num_workers: int) -> dict:
+        kwargs = {
+            "num_workers": int(num_workers),
+            "pin_memory": bool(self.hparams.pin_memory),
+            "persistent_workers": False,
+        }
+        if num_workers > 0:
+            kwargs["worker_init_fn"] = self._worker_init
+            kwargs["prefetch_factor"] = int(self.hparams.dataloader_prefetch_factor)
+        return kwargs
+
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        if hasattr(batch, "to"):
+            return batch.to(device)
+        return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
     def train_dataloader(self):
+        self._ensure_domain_sharder()
         ds = BinDataset(
             self.train_bin_names,
             self.train_data_summary,
@@ -739,14 +815,26 @@ class GNNDataModule(pl.LightningDataModule):
             require_targets=True,  # Training always requires targets
             tag="TRAIN",
         )
+
+        is_dist = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
+        use_domain = bool(self.domain_sharder is not None and self.domain_sharder.is_enabled)
+        sampler = None
+        shuffle = True
+        generator = None
+        if use_domain:
+            generator = torch.Generator()
+            generator.manual_seed(self.data_loader_seed + self._train_version)
+        elif is_dist:
+            sampler = DistributedSampler(ds, shuffle=True)
+            shuffle = False
+
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True,
-            persistent_workers=False,   # safer while debugging stale refs
-            worker_init_fn=self._worker_init,
+            shuffle=shuffle,
+            sampler=sampler,
+            generator=generator,
+            **self._loader_kwargs(self.hparams.train_num_workers),
         )
         print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
               f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
@@ -755,6 +843,7 @@ class GNNDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         if not self.val_bin_names:
             return None
+        self._ensure_domain_sharder()
         ds = BinDataset(
             self.val_bin_names,
             self.val_data_summary,
@@ -765,14 +854,19 @@ class GNNDataModule(pl.LightningDataModule):
             require_targets=True,  # Validation requires targets for comparison
             tag="VAL",
         )
+
+        is_dist = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
+        use_domain = bool(self.domain_sharder is not None and self.domain_sharder.is_enabled)
+        sampler = None
+        if is_dist and not use_domain:
+            sampler = DistributedSampler(ds, shuffle=False)
+
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
-            num_workers=4,
-            pin_memory=True,
-            persistent_workers=False,
-            worker_init_fn=self._worker_init,
+            sampler=sampler,
+            **self._loader_kwargs(self.hparams.val_num_workers),
         )
         print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
               f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
@@ -781,6 +875,7 @@ class GNNDataModule(pl.LightningDataModule):
     def predict_dataloader(self):
         """Create dataloader for prediction/inference mode."""
         print("\n[PREDICT] Setting up prediction dataloader")
+        self._ensure_domain_sharder()
 
         # Use val_data_summary for prediction
         if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
@@ -808,10 +903,7 @@ class GNNDataModule(pl.LightningDataModule):
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
-            num_workers=1,  # Single worker for sequential processing
-            pin_memory=True,
-            persistent_workers=False,
-            worker_init_fn=self._worker_init,
+            **self._loader_kwargs(self.hparams.predict_num_workers),
         )
 
         print(f"[PREDICT] Dataloader created: {len(self.val_bin_names)} bins")
@@ -826,6 +918,8 @@ class GNNDataModule(pl.LightningDataModule):
         """
         if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
             self._rebuild_val_summary()
+
+        self._ensure_domain_sharder()
 
         if not self.val_bin_names:
             return None
@@ -845,8 +939,5 @@ class GNNDataModule(pl.LightningDataModule):
             ds,
             batch_size=1,
             shuffle=False,
-            num_workers=1,
-            pin_memory=True,
-            persistent_workers=False,
-            worker_init_fn=self._worker_init,
+            **self._loader_kwargs(self.hparams.predict_num_workers),
         )

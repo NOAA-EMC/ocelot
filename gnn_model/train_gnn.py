@@ -161,6 +161,35 @@ def main():
         ),
     )
     parser.add_argument(
+        "--encoder_dst_chunk_size",
+        type=int,
+        default=None,
+        help="Optional destination-node chunk size for encoder bipartite GAT layers.",
+    )
+    parser.add_argument(
+        "--encoder_dst_chunk_threshold",
+        type=int,
+        default=20000,
+        help="Enable encoder bipartite chunking when destination node count reaches this threshold.",
+    )
+    parser.add_argument(
+        "--decoder_dst_chunk_size",
+        type=int,
+        default=2048,
+        help="Destination-node chunk size for decoder bipartite GAT layers.",
+    )
+    parser.add_argument(
+        "--decoder_dst_chunk_threshold",
+        type=int,
+        default=2048,
+        help="Enable decoder bipartite chunking when destination node count reaches this threshold.",
+    )
+    parser.add_argument(
+        "--disable_bipartite_activation_checkpointing",
+        action="store_true",
+        help="Disable activation checkpointing inside bipartite GAT layers.",
+    )
+    parser.add_argument(
         "--cfg_path",
         type=str,
         default="configs/observation_config.yaml",
@@ -176,6 +205,12 @@ def main():
 
     # Regularization knobs
     parser.add_argument("--processor_dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--spatial_edge_chunk_size",
+        type=int,
+        default=16384,
+        help="Edge chunk size used by the sliding-window transformer's spatial mixer.",
+    )
     parser.add_argument("--node_dropout", type=float, default=0.03)
     parser.add_argument("--encoder_dropout", type=float, default=0.1)
     parser.add_argument("--decoder_dropout", type=float, default=0.1)
@@ -192,6 +227,22 @@ def main():
         choices=["fixed", "hierarchical"],
     )
     parser.add_argument("--mesh_levels", type=int, default=4)
+    parser.add_argument(
+        "--parallelization_strategy",
+        type=str,
+        default="replicated",
+        choices=["replicated", "domain"],
+        help=(
+            "How to parallelize the graph state across ranks. 'replicated' keeps the current full-graph path; "
+            "'domain' partitions the mesh per rank and exchanges halo states at the shard boundary."
+        ),
+    )
+    parser.add_argument(
+        "--domain_halo_hops",
+        type=int,
+        default=1,
+        help="Number of mesh hops to include in each rank's halo when --parallelization_strategy domain.",
+    )
 
     # Determinism and sequential stride
     parser.add_argument("--seed", type=int, default=None)
@@ -238,6 +289,46 @@ def main():
 
     parser.add_argument("--cache_val_windows", action="store_true")
     parser.add_argument("--val_cache_max_entries", type=int, default=16)
+    parser.add_argument(
+        "--zarr_cache_max_size_bytes",
+        type=int,
+        default=64 * 1024 * 1024,
+        help="Per-process Zarr LRU cache size in bytes. Lower this if dataloader workers are OOM-killed.",
+    )
+    parser.add_argument(
+        "--train_num_workers",
+        type=int,
+        default=2,
+        help="Number of PyG dataloader workers for training.",
+    )
+    parser.add_argument(
+        "--val_num_workers",
+        type=int,
+        default=1,
+        help="Number of PyG dataloader workers for validation.",
+    )
+    parser.add_argument(
+        "--predict_num_workers",
+        type=int,
+        default=1,
+        help="Number of PyG dataloader workers for prediction and FSOI.",
+    )
+    parser.add_argument(
+        "--dataloader_prefetch_factor",
+        type=int,
+        default=1,
+        help="Prefetch factor for dataloaders with worker processes.",
+    )
+    parser.add_argument(
+        "--disable_pin_memory",
+        action="store_true",
+        help="Disable DataLoader pin_memory if host-memory pressure is high.",
+    )
+    parser.add_argument(
+        "--capture_cuda_memory_snapshot",
+        action="store_true",
+        help="Capture CUDA memory history and dump a snapshot after training for debugging.",
+    )
 
     # Validation CSV artifacts
     parser.add_argument("--disable_val_csv", action="store_true")
@@ -422,6 +513,7 @@ def main():
         processor_depth=4,
         processor_heads=4,
         processor_dropout=float(args.processor_dropout),
+        spatial_edge_chunk_size=int(args.spatial_edge_chunk_size),
         node_dropout=float(args.node_dropout),
         encoder_type="gat",
         decoder_type="gat",
@@ -441,6 +533,13 @@ def main():
         pressure_level_conditioning=str(args.pressure_level_conditioning),
         use_bipartite_edge_attr=(not args.disable_bipartite_edge_attr),
         bipartite_edge_attr_dim=int(args.bipartite_edge_attr_dim),
+        encoder_dst_chunk_size=(int(args.encoder_dst_chunk_size) if args.encoder_dst_chunk_size is not None else None),
+        encoder_dst_chunk_threshold=int(args.encoder_dst_chunk_threshold),
+        decoder_dst_chunk_size=(int(args.decoder_dst_chunk_size) if args.decoder_dst_chunk_size is not None else None),
+        decoder_dst_chunk_threshold=int(args.decoder_dst_chunk_threshold),
+        bipartite_activation_checkpointing=(not args.disable_bipartite_activation_checkpointing),
+        parallelization_strategy=str(args.parallelization_strategy),
+        domain_halo_hops=int(args.domain_halo_hops),
     )
 
     if resume_path and args.load_weights_only:
@@ -472,6 +571,15 @@ def main():
         cache_val_windows=bool(args.cache_val_windows),
         val_cache_max_entries=int(args.val_cache_max_entries),
         prediction_mode=False,
+        parallelization_strategy=str(args.parallelization_strategy),
+        domain_halo_hops=int(args.domain_halo_hops),
+        data_loader_seed=base_seed,
+        zarr_cache_max_size_bytes=int(args.zarr_cache_max_size_bytes),
+        train_num_workers=int(args.train_num_workers),
+        val_num_workers=int(args.val_num_workers),
+        predict_num_workers=int(args.predict_num_workers),
+        dataloader_prefetch_factor=int(args.dataloader_prefetch_factor),
+        pin_memory=(not args.disable_pin_memory),
         # epoch-0 windows
         train_start=initial_start_date,
         train_end=initial_end_date,
@@ -542,6 +650,7 @@ def main():
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,
         "check_val_every_n_epoch": 1,
+        "use_distributed_sampler": False,
     }
 
     if args.limit_train_batches is not None:
@@ -616,6 +725,15 @@ def main():
 
     ckpt_path_for_fit = None if (resume_path and args.load_weights_only) else resume_path
     trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+
+    # if args.capture_cuda_memory_snapshot and torch.cuda.is_available():
+    #     torch.cuda.memory._record_memory_history()
+    #     try:
+    #         trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    #     finally:
+    #         torch.cuda.memory._dump_snapshot(f"gnn_profile_rank_{rank_env}.pickle")
+    # else:
+    #     trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end_time) / 60:.2f} minutes")

@@ -13,6 +13,7 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from torch.distributed import is_initialized
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -115,6 +116,7 @@ class GNNLightning(pl.LightningModule):
         processor_depth: int = 2,
         processor_heads: int = 4,
         processor_dropout: float = 0.0,
+        spatial_edge_chunk_size: int = 16384,
         encoder_type: str = "interaction",     # "interaction" | "gat"
         decoder_type: str = "interaction",     # "interaction" | "gat"
         encoder_heads: int = 4,
@@ -139,6 +141,13 @@ class GNNLightning(pl.LightningModule):
         pressure_level_conditioning: str = "project",  # "pad" | "project"
         use_bipartite_edge_attr: bool = True,
         bipartite_edge_attr_dim: int = 4,
+        encoder_dst_chunk_size: int | None = None,
+        encoder_dst_chunk_threshold: int = 20000,
+        decoder_dst_chunk_size: int | None = 2048,
+        decoder_dst_chunk_threshold: int = 2048,
+        bipartite_activation_checkpointing: bool = True,
+        parallelization_strategy: str = "replicated",
+        domain_halo_hops: int = 1,
         **kwargs,
     ):
         """
@@ -192,9 +201,26 @@ class GNNLightning(pl.LightningModule):
             )
 
         self.observation_config = observation_config
+        self.parallelization_strategy = str(parallelization_strategy)
+        if self.parallelization_strategy not in ("replicated", "domain"):
+            raise ValueError(
+                "parallelization_strategy must be 'replicated' or 'domain' "
+                f"(got: {self.parallelization_strategy!r})"
+            )
+        self.domain_halo_hops = int(domain_halo_hops)
+        self.is_domain_parallel = self.parallelization_strategy == "domain"
+        self._domain_parallel_initialized = False
+        self._domain_owned_node_count: int | None = None
+        self._halo_exchange = None
 
         self.use_bipartite_edge_attr = bool(use_bipartite_edge_attr)
         self.bipartite_edge_attr_dim = int(bipartite_edge_attr_dim)
+        self.spatial_edge_chunk_size = max(1, int(spatial_edge_chunk_size))
+        self.encoder_dst_chunk_size = None if encoder_dst_chunk_size is None else int(encoder_dst_chunk_size)
+        self.encoder_dst_chunk_threshold = int(encoder_dst_chunk_threshold)
+        self.decoder_dst_chunk_size = None if decoder_dst_chunk_size is None else int(decoder_dst_chunk_size)
+        self.decoder_dst_chunk_threshold = int(decoder_dst_chunk_threshold)
+        self.bipartite_activation_checkpointing = bool(bipartite_activation_checkpointing)
 
         # Backward compatibility: older checkpoints may not have mesh_config in hparams.
         # Lightning will pass mesh_config=None in that case.
@@ -249,6 +275,13 @@ class GNNLightning(pl.LightningModule):
         self.hidden_dim = hidden_dim
         self.mesh_type = mesh_type
         self.mesh_levels = mesh_levels
+
+        if self.is_domain_parallel and self.mesh_type != "fixed":
+            raise ValueError("Domain sharding currently supports fixed mesh mode only.")
+        if self.is_domain_parallel and processor_type != "sliding_transformer":
+            raise ValueError(
+                "Domain sharding currently supports the sliding_transformer processor only."
+            )
 
         # bipartite GATs consume the computed spatial edge_attr
         # directly, with edge_dim=bipartite_edge_attr_dim (GraphCast-style features are 4-dim).
@@ -377,6 +410,7 @@ class GNNLightning(pl.LightningModule):
                     num_heads=processor_heads,
                     dropout=processor_dropout,
                     use_causal_mask=True,
+                    spatial_edge_chunk_size=self.spatial_edge_chunk_size,
                 )
         elif self.processor_type == "interaction":
             pass  # processor will be built later
@@ -408,6 +442,9 @@ class GNNLightning(pl.LightningModule):
                         heads=encoder_heads,
                         dropout=encoder_dropout,
                         edge_dim=enc_edge_dim,
+                        dst_chunk_size=self.encoder_dst_chunk_size,
+                        dst_chunk_threshold=self.encoder_dst_chunk_threshold,
+                        use_activation_checkpointing=self.bipartite_activation_checkpointing,
                     )
                 else:
                     self.observation_encoders[enc_key] = InteractionNet(
@@ -431,6 +468,9 @@ class GNNLightning(pl.LightningModule):
                         heads=decoder_heads,
                         dropout=decoder_dropout,
                         edge_dim=dec_edge_dim,
+                        dst_chunk_size=self.decoder_dst_chunk_size,
+                        dst_chunk_threshold=self.decoder_dst_chunk_threshold,
+                        use_activation_checkpointing=self.bipartite_activation_checkpointing,
                     )
                 else:
                     self.observation_decoders[dec_key] = InteractionNet(
@@ -532,12 +572,6 @@ class GNNLightning(pl.LightningModule):
                     self.register_buffer(f"mesh_down_edge_index_{i}", _as_i64(down_ei))
                 for i, down_feat in enumerate(mesh_down_features_list):
                     self.register_buffer(f"mesh_down_edge_attr_{i}", _as_f32(down_feat))
-
-    def transfer_batch_to_device(self, batch, device, dataloader_idx):
-        # PyG Data/HeteroData implements .to()
-        if hasattr(batch, "to"):
-            return batch.to(device)
-        return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
     def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
         if edge_attr is None:
@@ -794,6 +828,61 @@ class GNNLightning(pl.LightningModule):
         if getattr(self, "verbose", False) and (not hasattr(self, "trainer") or self.trainer.is_global_zero):
             print(*args, **kwargs)
 
+    def _ensure_domain_parallel_ready(self):
+        if not self.is_domain_parallel or self._domain_parallel_initialized:
+            return
+
+        if not hasattr(self, "trainer") or self.trainer is None:
+            return
+
+        datamodule = getattr(self.trainer, "datamodule", None)
+        sharder = getattr(datamodule, "domain_sharder", None)
+        if sharder is None:
+            raise RuntimeError(
+                "Domain sharding was requested, but the datamodule has not built a domain sharder."
+            )
+
+        spec = sharder.spec
+        local_global_ids = spec.local_global_ids.to(device=self.mesh_x.device, dtype=torch.long)
+
+        if int(self.mesh_x.size(0)) != int(local_global_ids.numel()):
+            self.mesh_x = self.mesh_x.index_select(0, local_global_ids)
+
+        self.mesh_edge_index = spec.local_mesh_edge_index.to(
+            device=self.mesh_edge_index.device,
+            dtype=self.mesh_edge_index.dtype,
+        )
+        self.mesh_edge_attr = spec.local_mesh_edge_attr.to(
+            device=self.mesh_edge_attr.device,
+            dtype=self.mesh_edge_attr.dtype,
+        )
+        self._domain_owned_node_count = int(spec.owned_node_count)
+        self._halo_exchange = sharder.build_halo_exchange(device=self.mesh_x.device)
+        self._domain_parallel_initialized = True
+
+    def _loss_for_backward(self, total_loss: torch.Tensor, local_count: int) -> torch.Tensor:
+        if not self.is_domain_parallel or not dist.is_available() or not dist.is_initialized():
+            if local_count > 0:
+                return total_loss / float(local_count)
+            return total_loss * 0.0
+
+        count_tensor = total_loss.detach().new_tensor(float(local_count))
+        dist.all_reduce(count_tensor, op=dist.ReduceOp.SUM)
+        scale = total_loss.new_tensor(float(dist.get_world_size())) / count_tensor.clamp(min=1.0)
+        return total_loss * scale
+
+    def _loss_for_logging(self, total_loss: torch.Tensor, local_count: int) -> torch.Tensor:
+        if not self.is_domain_parallel or not dist.is_available() or not dist.is_initialized():
+            if local_count > 0:
+                return total_loss.detach() / float(local_count)
+            return total_loss.detach() * 0.0
+
+        total_tensor = total_loss.detach().clone()
+        count_tensor = total_tensor.new_tensor(float(local_count))
+        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(count_tensor, op=dist.ReduceOp.SUM)
+        return total_tensor / count_tensor.clamp(min=1.0)
+
     def on_fit_start(self):
         # Reset one-time debug cache each run.
         self._edge_attr_debug_seen = set()
@@ -830,7 +919,14 @@ class GNNLightning(pl.LightningModule):
         opts = self.optimizers()
         opt = opts[0] if isinstance(opts, (list, tuple)) else opts
         current_lr = opt.param_groups[0]["lr"]
-        self.log("learning_rate", current_lr, prog_bar=False, on_epoch=True, on_step=False)
+        self.log(
+            "learning_rate",
+            current_lr,
+            prog_bar=False,
+            on_epoch=True,
+            on_step=False,
+            sync_dist=not self.is_domain_parallel,
+        )
 
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()
@@ -919,17 +1015,25 @@ class GNNLightning(pl.LightningModule):
         return tensor * std_vec + mean_vec
 
     def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
+        self._ensure_domain_parallel_ready()
 
         num_graphs = data.num_graphs
         num_mesh_nodes = self.mesh_x.shape[0]
 
         # Inject and batch static mesh data
         # For hierarchical mode, we use the finest mesh level for encoding/decoding
-        data["mesh"].x = self.mesh_x.repeat(num_graphs, 1)
-        data["mesh", "to", "mesh"].edge_attr = self.mesh_edge_attr.repeat(num_graphs, 1)
+        if self.is_domain_parallel:
+            if num_graphs != 1:
+                raise ValueError("Domain-sharded execution expects batch_size=1 per rank.")
+            data["mesh"].x = self.mesh_x
+            data["mesh", "to", "mesh"].edge_attr = self.mesh_edge_attr
+            data["mesh", "to", "mesh"].edge_index = self.mesh_edge_index
+        else:
+            data["mesh"].x = self.mesh_x.repeat(num_graphs, 1)
+            data["mesh", "to", "mesh"].edge_attr = self.mesh_edge_attr.repeat(num_graphs, 1)
 
-        edge_indices = [self.mesh_edge_index + i * num_mesh_nodes for i in range(num_graphs)]
-        data["mesh", "to", "mesh"].edge_index = torch.cat(edge_indices, dim=1)
+            edge_indices = [self.mesh_edge_index + i * num_mesh_nodes for i in range(num_graphs)]
+            data["mesh", "to", "mesh"].edge_index = torch.cat(edge_indices, dim=1)
 
         # --------------------------------------------------------------------
         # STAGE 1: EMBED (Initial feature projection for all input nodes)
@@ -965,6 +1069,13 @@ class GNNLightning(pl.LightningModule):
         # STAGE 2: ENCODE (Pass information from observations TO the mesh)
         # --------------------------------------------------------------------
         encoded_mesh_features = embedded_features["mesh"]
+        owned_mesh_features = encoded_mesh_features
+        owned_node_count = None
+        if self.is_domain_parallel:
+            # Only owned mesh nodes are updated locally during encoding; halo
+            # nodes are refreshed from their owner rank after the encoder stage.
+            owned_node_count = int(data["mesh"].owned_node_count.item())
+            owned_mesh_features = encoded_mesh_features[:owned_node_count]
 
         for edge_type, edge_index in data.edge_index_dict.items():
             src_type, _, dst_type = edge_type
@@ -987,15 +1098,31 @@ class GNNLightning(pl.LightningModule):
 
                 # --- Debugging ---
                 self.debug(f"\n[ENC] edge type: {edge_type}")
-                self.debug(f"  send_rep (obs) {obs_features.shape} | rec_rep (mesh) {encoded_mesh_features.shape}")
+                rec_mesh = owned_mesh_features if self.is_domain_parallel else encoded_mesh_features
+                self.debug(f"  send_rep (obs) {obs_features.shape} | rec_rep (mesh) {rec_mesh.shape}")
                 self.debug(f"  edge_index {edge_index.shape}")
                 # --- End Debugging ---
 
-                encoded_mesh_features = encoder(
+                updated_mesh_features = encoder(
                     send_rep=obs_features,
-                    rec_rep=encoded_mesh_features,
+                    rec_rep=owned_mesh_features if self.is_domain_parallel else encoded_mesh_features,
                     edge_rep=edge_features,
                 )
+
+                if self.is_domain_parallel:
+                    owned_mesh_features = updated_mesh_features
+                else:
+                    encoded_mesh_features = updated_mesh_features
+
+        if self.is_domain_parallel:
+            encoded_mesh_features = torch.cat(
+                [owned_mesh_features, encoded_mesh_features[owned_node_count:]],
+                dim=0,
+            )
+            if self._halo_exchange is not None:
+                # Synchronize boundary state before temporal rollout so every
+                # rank starts the processor with current halo features.
+                encoded_mesh_features = self._halo_exchange.exchange(encoded_mesh_features)
 
         # --------------------------------------------------------------------
         # STAGE 3: PREPARE FOR PROCESSOR
@@ -1042,6 +1169,7 @@ class GNNLightning(pl.LightningModule):
         """
 
         # Get latent step information
+        num_graphs = data.num_graphs
         step_info = self._get_latent_step_info(data)
         num_latent_steps = step_info["num_steps"]
         step_mapping = step_info["step_mapping"]
@@ -1185,6 +1313,8 @@ class GNNLightning(pl.LightningModule):
                         current_mesh_features,
                         mesh_edge_index=data[("mesh", "to", "mesh")].edge_index,
                         mesh_edge_attr=data[("mesh", "to", "mesh")].edge_attr,
+                        owned_node_count=self._domain_owned_node_count,
+                        halo_exchange=(self._halo_exchange.exchange if self._halo_exchange is not None else None),
                     )
             elif self.is_hierarchical and self.processor_type == "interaction":
                 # Hierarchical processor with InteractionNet: process across multiple mesh levels
@@ -1687,9 +1817,9 @@ class GNNLightning(pl.LightningModule):
         dummy_loss = 0.0
         for param in self.parameters():
             dummy_loss += param.sum() * 0.0
-        # Average the loss over all observation types that had predictions
-        avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
-        avg_loss = avg_loss + dummy_loss
+        backward_loss = self._loss_for_backward(total_loss, num_predictions)
+        logged_loss = self._loss_for_logging(total_loss, num_predictions)
+        avg_loss = backward_loss + dummy_loss
 
         # Log rollout steps appropriately
         step_info = self._get_latent_step_info(batch)
@@ -1699,16 +1829,16 @@ class GNNLightning(pl.LightningModule):
 
         self.log(
             "train_loss",
-            avg_loss,
+            logged_loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=not self.is_domain_parallel,
             batch_size=1,
         )
         self.log("rollout_steps", float(latent_rollout_steps), on_step=True, sync_dist=False)
         if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[TRAIN] Epoch {self.current_epoch} - train_loss: {avg_loss.cpu().item():.6f}")
+            print(f"[TRAIN] Epoch {self.current_epoch} - train_loss: {logged_loss.cpu().item():.6f}")
 
         return avg_loss
 
@@ -1817,12 +1947,11 @@ class GNNLightning(pl.LightningModule):
                 self.log(
                     f"val_loss_{node_type}",
                     weighted_loss.detach(),
-                    sync_dist=False,
+                    sync_dist=not self.is_domain_parallel,
                     on_epoch=True,
                     batch_size=1,
                     prog_bar=False,
                     logger=True,
-                    rank_zero_only=True,
                 )
 
                 # --- Metrics Calculation ---
@@ -1953,14 +2082,14 @@ class GNNLightning(pl.LightningModule):
                     plt.close()
 
         # --- Final loss calculation for the entire validation step ---
-        avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
+        avg_loss = self._loss_for_logging(total_loss, num_predictions)
 
         self.log(
             "val_loss",
             avg_loss,
             on_epoch=True,
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=not self.is_domain_parallel,
             batch_size=1,
         )
         if self.trainer.is_global_zero:

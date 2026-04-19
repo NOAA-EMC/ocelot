@@ -2,9 +2,9 @@ pipeline:
   subsample:
     seed: 12345
     satellite:         
-      _default: 30    # default for any unspecified instrument
+      _default: 1    # default for any unspecified instrument
       # atms: 6         # keep every N-th sample (stride); stride or keep ~1/N of samples uniformly (random)
-      avhrr: 100
+      avhrr: 5
       # amsua: 3   
       # ascat: 2
       # Give weak/rare instruments more samples
