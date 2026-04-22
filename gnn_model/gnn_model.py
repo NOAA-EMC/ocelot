@@ -1358,8 +1358,8 @@ class GNNLightning(pl.LightningModule):
                     if base_type == "ascat_target":
                         scan_angle = data[step_node_type].x  # [N,3] for ASCAT
                         sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
-                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
-                        scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR
+                    elif base_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
+                        scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR/CrIS-PCA
                         sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
 
                         # Diagnostic: verify scan angle varies
@@ -2131,7 +2131,7 @@ class GNNLightning(pl.LightningModule):
         scan_angle_expected_dim = 0
         if node_type == "ascat_target":
             scan_angle_expected_dim = 3
-        elif node_type in ("atms_target", "amsua_target", "avhrr_target"):
+        elif node_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
             scan_angle_expected_dim = 1
 
         all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
