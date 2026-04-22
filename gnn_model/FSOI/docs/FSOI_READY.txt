@@ -2,6 +2,8 @@
 ║                     ✅ FSOI TESTS PASSED - READY TO RUN                     ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 
+Author: Azadeh Gholoubi
+
 📊 TEST RESULTS (6/6 PASSED)
 ──────────────────────────────────────────────────────────────────────────────
   ✓ Config Loading          - FSOI & observation configs OK

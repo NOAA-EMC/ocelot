@@ -7,6 +7,7 @@ pipelines through a PyTorch Lightning data module.
 Author: Azadeh Gholoubi
 """
 
+import glob
 import os
 import json
 import hashlib
@@ -27,6 +28,30 @@ from create_mesh_graph_global import obs_mesh_conn
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
+
+
+def _resolve_zarr_path(data_path: str, zname: str, start_date: str) -> tuple[str, bool]:
+    base_name = zname[:-5] if zname.endswith(".zarr") else zname
+    direct_candidates = [os.path.join(data_path, zname if zname.endswith(".zarr") else f"{zname}.zarr")]
+
+    year = str(start_date).split("-")[0]
+    year_tagged_path = os.path.join(data_path, f"{base_name}_{year}.zarr")
+    direct_candidates.append(year_tagged_path)
+
+    for candidate in direct_candidates:
+        if os.path.isdir(candidate):
+            return candidate, False
+
+    matches = sorted(glob.glob(os.path.join(data_path, f"{base_name}_*.zarr")))
+    available_matches = [path for path in matches if os.path.isdir(path)]
+    if len(available_matches) == 1:
+        return available_matches[0], True
+
+    available_match_names = sorted(os.path.basename(path) for path in available_matches)
+    raise FileNotFoundError(
+        f"Zarr not found for '{zname}' under {data_path}. "
+        f"Available matches: {available_match_names or 'none'}"
+    )
 
 
 def _to_unix_seconds(t):
@@ -380,18 +405,16 @@ class GNNDataModule(pl.LightningDataModule):
                             zarr_path = zarr_dir
                         else:
                             zname = inst_cfg.get("zarr_name", inst_name)
-                            if not zname.endswith(".zarr"):
-                                # Try without year tag first (for v5 data or when the zarr_name field already includes the year)
-                                zarr_path_test = os.path.join(self.hparams.data_path, f"{zname}.zarr")
-
-                                if os.path.isdir(zarr_path_test):
-                                    zname += ".zarr"
-                                else:
-                                    # Add year tag for v6 data (extracted from start_date)
-                                    year = self.hparams.start_date.split('-')[0]
-                                    zname += f"_{year}.zarr"
-
-                            zarr_path = os.path.join(self.hparams.data_path, zname)
+                            zarr_path, used_fallback = _resolve_zarr_path(
+                                self.hparams.data_path,
+                                zname,
+                                self.hparams.start_date,
+                            )
+                            if used_fallback and rank == 0:
+                                print(
+                                    f"[ZARR] {obs_type}/{inst_name} requested year {self.hparams.start_date} "
+                                    f"not found; using available store {zarr_path}"
+                                )
 
                         if not os.path.isdir(zarr_path):
                             raise FileNotFoundError(f"Zarr not found: {zarr_path}")
@@ -706,7 +729,8 @@ class GNNDataModule(pl.LightningDataModule):
             obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
             scan_angle_dim = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
             data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
-            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS  # lat/lon + metadata columns
+            # lat/lon + instrument metadata + appended target time features
+            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS + 5
             data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)

@@ -13,6 +13,8 @@ This script:
 Usage:
     python FSOI/fsoi_inference.py --checkpoint path/to/model.ckpt --config FSOI/configs/fsoi_config.yaml
     python FSOI/fsoi_inference.py --checkpoint checkpoints/ --config FSOI/configs/fsoi_config.yaml
+
+Author: Azadeh Gholoubi
 """
 
 import argparse
@@ -300,6 +302,8 @@ def compute_fsoi_for_pair(
             'amsua': 30000,
             'ssmis': 30000,
             'seviri': 30000,
+            'seviri_asr': 30000,
+            'seviri_csr': 30000,
         }
         max_decoder_nodes = {**default_caps, **max_decoder_nodes_cfg}
 

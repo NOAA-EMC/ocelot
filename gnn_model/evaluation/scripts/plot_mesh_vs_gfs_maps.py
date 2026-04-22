@@ -28,6 +28,36 @@ import numpy as np
 import pandas as pd
 
 
+def _surface_pressure_pred_col(df: pd.DataFrame) -> str | None:
+    for col in (
+        "pred_airPressure_prepbufr_event_1",
+        "pred_airPressure",
+        "pred_pressureMeanSeaLevel_prepbufr",
+    ):
+        if col in df.columns:
+            return col
+    return None
+
+
+def _open_gfs_mean_sea_pressure(path: str):
+    import cfgrib
+
+    errors: list[str] = []
+    for short_name in ("prmsl", "msl"):
+        try:
+            return cfgrib.open_dataset(
+                path,
+                indexpath="",
+                filter_by_keys={"typeOfLevel": "meanSea", "shortName": short_name},
+            )
+        except Exception as exc:
+            errors.append(f"{short_name}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        "Could not open GFS mean sea-level pressure (meanSea/prmsl or meanSea/msl). "
+        + " | ".join(errors)
+    )
+
+
 _CARTOPY_FEATURES_WARNED = False
 
 
@@ -166,7 +196,7 @@ def _gfs_path(gfs_root: str, init_ymdh: str, fhr: int) -> str:
     return os.path.join(str(gfs_root), ymd, f"gfs.{ymd}.t{hh}z.pgrb2.0p25.f{int(fhr):03d}")
 
 
-def _open_gfs(path: str, var: str):
+def _open_gfs(path: str, var: str, *, level_hpa: int | None = None):
     import cfgrib
 
     if var == "u10":
@@ -188,10 +218,15 @@ def _open_gfs(path: str, var: str):
             filter_by_keys={"typeOfLevel": "heightAboveGround", "level": 2, "shortName": "2t"},
         )
     if var == "sp":
+        return _open_gfs_mean_sea_pressure(path)
+    if var in {"u", "v", "temp"}:
+        if level_hpa is None:
+            raise ValueError("isobaric plotting requires level_hpa")
+        short = {"u": "u", "v": "v", "temp": "t"}[var]
         return cfgrib.open_dataset(
             path,
             indexpath="",
-            filter_by_keys={"typeOfLevel": "surface", "shortName": "sp"},
+            filter_by_keys={"typeOfLevel": "isobaricInhPa", "level": int(level_hpa), "shortName": short},
         )
     raise ValueError(f"Unsupported var={var!r}")
 
@@ -227,6 +262,7 @@ def plot_gfs_native_vs_mesh_interp(
     out_png: str,
     point_size: int,
     grid_stride: int,
+    level_hpa: int | None = None,
 ):
     import cartopy.crs as ccrs
     import matplotlib
@@ -238,8 +274,8 @@ def plot_gfs_native_vs_mesh_interp(
     if not os.path.exists(gfs_path):
         raise FileNotFoundError(f"Missing GFS file: {gfs_path}")
 
-    ds = _open_gfs(gfs_path, var=var)
-    ds_var = {"u10": "u10", "v10": "v10", "t2m": "t2m", "sp": "sp"}[var]
+    ds = _open_gfs(gfs_path, var=var, level_hpa=level_hpa)
+    ds_var = {"u10": "u10", "v10": "v10", "t2m": "t2m", "sp": "prmsl", "u": "u", "v": "v", "temp": "t"}[var]
     if ds_var not in ds:
         # cfgrib sometimes exposes a single unknown var name; fall back to that.
         keys = list(getattr(ds, "data_vars", {}).keys())
@@ -251,7 +287,7 @@ def plot_gfs_native_vs_mesh_interp(
     glat = np.asarray(ds["latitude"].values, dtype=np.float64)
     glon = np.asarray(ds["longitude"].values, dtype=np.float64)
 
-    if var == "t2m":
+    if var in {"t2m", "temp"}:
         field = field - 273.15
     elif var == "sp":
         field = field / 100.0
@@ -361,7 +397,7 @@ def main() -> int:
         ),
     )
     ap.add_argument("--plot_dir", required=True)
-    ap.add_argument("--var", required=True, choices=["u10", "v10", "t2m", "sp"])
+    ap.add_argument("--var", required=True, choices=["u10", "v10", "t2m", "sp", "u", "v", "temp"])
     ap.add_argument("--point_size", type=int, default=5)
     ap.add_argument(
         "--gfs_root",
@@ -385,11 +421,30 @@ def main() -> int:
         pred_col, gfs_col, units = "pred_wind_v", "gfs_v10", "m/s"
     elif args.var == "t2m":
         pred_col, gfs_col, units = "pred_airTemperature", "gfs_t2m_C", "°C"
-    else:
-        pred_col = "pred_airPressure_prepbufr_event_1" if "pred_airPressure_prepbufr_event_1" in df.columns else "pred_airPressure"
-        gfs_col, units = "gfs_sp_hPa", "hPa"
+    elif args.var == "sp":
+        pred_col = _surface_pressure_pred_col(df)
+        gfs_col, units = "gfs_mslp_hPa", "hPa"
+    elif args.var == "u":
+        pred_col, gfs_col, units = "pred_wind_u", "gfs_u", "m/s"
+    elif args.var == "v":
+        pred_col, gfs_col, units = "pred_wind_v", "gfs_v", "m/s"
+    else:  # temp
+        pred_col, gfs_col, units = "pred_airTemperature", "gfs_airTemperature_C", "°C"
 
-    if pred_col not in df.columns or gfs_col not in df.columns:
+    level_tag = ""
+    level_hpa = None
+    if "pressure_level_label" in df.columns and df["pressure_level_label"].notna().any():
+        level_tag = str(df["pressure_level_label"].dropna().iloc[0])
+    elif "pressure_hPa" in df.columns and pd.to_numeric(df["pressure_hPa"], errors="coerce").notna().any():
+        level_hpa = int(round(float(pd.to_numeric(df["pressure_hPa"], errors="coerce").dropna().iloc[0])))
+        level_tag = f"{level_hpa}hPa"
+    if level_hpa is None and level_tag.endswith("hPa"):
+        try:
+            level_hpa = int(level_tag.replace("hPa", ""))
+        except Exception:
+            level_hpa = None
+
+    if pred_col is None or pred_col not in df.columns or gfs_col not in df.columns:
         raise SystemExit(f"Missing columns for {args.var}: need {pred_col} and {gfs_col}")
 
     pred = pd.to_numeric(df[pred_col], errors="coerce").to_numpy(dtype=np.float64)
@@ -397,13 +452,17 @@ def main() -> int:
     valid = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(pred) & np.isfinite(gfs)
     lon, lat, pred, gfs = lon[valid], lat[valid], pred[valid], gfs[valid]
 
-    title = f"mesh-grid {args.var} • OCELOT_on_mesh vs GFS_on_mesh"
-    out_png = os.path.join(args.plot_dir, f"mesh_OCELOT_on_mesh_vs_GFS_on_mesh_{args.var}.png")
+    lvl = f" • {level_tag}" if level_tag else ""
+    title = f"mesh-grid {args.var}{lvl} • OCELOT_on_mesh vs GFS_on_mesh"
+    out_png = os.path.join(args.plot_dir, f"mesh_OCELOT_on_mesh_vs_GFS_on_mesh_{args.var}{('_'+level_tag) if level_tag else ''}.png")
     plot_tripanel(lon, lat, pred, gfs, title, out_png, units=units, point_size=int(args.point_size))
 
     if args.gfs_root:
         init_ymdh, fhr = _infer_init_fhr(df, csv_path=str(args.csv))
-        out_png2 = os.path.join(args.plot_dir, f"mesh_GFS_native_vs_GFS_on_mesh_{args.var}_init_{init_ymdh}_f{int(fhr):03d}.png")
+        out_png2 = os.path.join(
+            args.plot_dir,
+            f"mesh_GFS_native_vs_GFS_on_mesh_{args.var}{('_'+level_tag) if level_tag else ''}_init_{init_ymdh}_f{int(fhr):03d}.png",
+        )
         plot_gfs_native_vs_mesh_interp(
             lon=lon,
             lat=lat,
@@ -417,6 +476,7 @@ def main() -> int:
             out_png=str(out_png2),
             point_size=int(args.point_size),
             grid_stride=int(args.grid_stride),
+            level_hpa=level_hpa,
         )
     return 0
 

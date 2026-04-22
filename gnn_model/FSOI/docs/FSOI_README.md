@@ -1,5 +1,7 @@
 # FSOI (Forecast Sensitivity to Observations Impact) for OCELOT
 
+Author: Azadeh Gholoubi
+
 ## Overview
 
 This implementation provides **FSOI** (Forecast Sensitivity to Observations Impact) diagnostics for the OCELOT GNN weather forecasting model. FSOI is a post-training, inference-time diagnostic that uses gradients with respect to inputs (not weights) to attribute forecast error to individual observations.

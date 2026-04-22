@@ -108,6 +108,16 @@ def main():
     with open('configs/mesh_config.yaml', 'r') as f:
         mesh_config = yaml.safe_load(f)
 
+    # Optional runtime override for mesh pressure level without editing repo config.
+    _mesh_idx_env = os.environ.get("MESH_PRESSURE_LEVEL_IDX", "").strip()
+    if _mesh_idx_env != "":
+        try:
+            mesh_config = dict(mesh_config or {})
+            mesh_config["mesh_pressure_level_idx"] = int(_mesh_idx_env)
+            print(f"[MESH CONFIG] Overriding mesh_pressure_level_idx via env: {mesh_config['mesh_pressure_level_idx']}")
+        except Exception as exc:
+            raise ValueError(f"Invalid MESH_PRESSURE_LEVEL_IDX={_mesh_idx_env!r}: {exc}")
+
     pipeline_cfg = _raw_cfg.get("pipeline", {})
 
     # Data path

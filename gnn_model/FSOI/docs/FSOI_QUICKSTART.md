@@ -1,5 +1,7 @@
 # FSOI Quick Start Guide
 
+Author: Azadeh Gholoubi
+
 ## What You Need
 
 1. Trained OCELOT model checkpoint (`.ckpt` file)

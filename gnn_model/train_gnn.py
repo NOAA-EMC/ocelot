@@ -25,6 +25,25 @@ from weight_utils import load_weights_from_yaml
 torch.set_float32_matmul_precision("medium")
 
 
+class DelayedEarlyStopping(EarlyStopping):
+    def __init__(self, *args, start_epoch: int = 0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.start_epoch = int(start_epoch)
+
+    def _delay_active(self, trainer) -> bool:
+        return int(trainer.current_epoch) < self.start_epoch
+
+    def on_validation_end(self, trainer, pl_module):
+        if self._delay_active(trainer):
+            return
+        return super().on_validation_end(trainer, pl_module)
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if self._delay_active(trainer):
+            return
+        return super().on_train_epoch_end(trainer, pl_module)
+
+
 def _load_mesh_config(mesh_cfg_path: str = "configs/mesh_config.yaml") -> dict:
     try:
         with open(mesh_cfg_path, "r") as f:
@@ -118,6 +137,19 @@ def main():
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--huber_delta", type=float, default=0.1)
+    parser.add_argument("--loss_type", type=str, default="huber", choices=["huber", "mse"])
+
+    # LR schedule (handled in GNNLightning.configure_optimizers)
+    parser.add_argument(
+        "--lr_schedule",
+        type=str,
+        default="plateau",
+        choices=["plateau", "cosine_warmup"],
+        help="Learning-rate schedule: ReduceLROnPlateau or warmup+cosine decay.",
+    )
+    parser.add_argument("--warmup_pct", type=float, default=0.05)
+    parser.add_argument("--warmup_start_factor", type=float, default=0.01)
+    parser.add_argument("--min_lr", type=float, default=1e-6)
 
     parser.add_argument(
         "--scan_angle_conditioning",
@@ -183,6 +215,15 @@ def main():
     # Windowing / latent rollout
     parser.add_argument("--data_window_hours", type=int, default=12)
     parser.add_argument("--latent_step_hours", type=int, default=3)
+    parser.add_argument(
+        "--spatial_mixing_steps",
+        type=int,
+        default=1,
+        help=(
+            "Number of explicit mesh-neighbor spatial mixing steps to apply after each temporal "
+            "transformer block. Use 0 for a transformer-only ablation."
+        ),
+    )
 
     # Mesh config
     parser.add_argument(
@@ -250,6 +291,7 @@ def main():
     # Early stopping
     parser.add_argument("--es_patience", type=int, default=None)
     parser.add_argument("--es_min_delta", type=float, default=None)
+    parser.add_argument("--es_start_epoch", type=int, default=0)
     parser.add_argument("--disable_early_stopping", action="store_true")
 
     args = parser.parse_args()
@@ -361,6 +403,7 @@ def main():
     lr = float(args.lr)
     weight_decay = float(args.weight_decay)
     huber_delta = float(args.huber_delta)
+    loss_type = str(args.loss_type)
     max_epochs = int(args.max_epochs) if args.max_epochs is not None else 100
     batch_size = 1
 
@@ -407,6 +450,11 @@ def main():
         lr=lr,
         weight_decay=weight_decay,
         huber_delta=huber_delta,
+        loss_type=loss_type,
+        lr_schedule=str(args.lr_schedule),
+        warmup_pct=float(args.warmup_pct),
+        warmup_start_factor=float(args.warmup_start_factor),
+        min_lr=float(args.min_lr),
         instrument_weights=instrument_weights,
         channel_weights=channel_weights,
         mesh_resolution=mesh_resolution,
@@ -421,6 +469,7 @@ def main():
         processor_window=processor_window,
         processor_depth=4,
         processor_heads=4,
+        spatial_mixing_steps=int(args.spatial_mixing_steps),
         processor_dropout=float(args.processor_dropout),
         node_dropout=float(args.node_dropout),
         encoder_type="gat",
@@ -490,6 +539,7 @@ def main():
 
     es_patience = int(args.es_patience) if args.es_patience is not None else 25
     es_min_delta = float(args.es_min_delta) if args.es_min_delta is not None else 1e-5
+    es_start_epoch = max(0, int(args.es_start_epoch))
 
     callbacks = [
         ModelCheckpoint(
@@ -508,11 +558,12 @@ def main():
         print("[INFO] EarlyStopping disabled (--disable_early_stopping).")
     else:
         callbacks.append(
-            EarlyStopping(
+            DelayedEarlyStopping(
                 monitor="val_loss",
                 patience=es_patience,
                 mode="min",
                 min_delta=es_min_delta,
+                start_epoch=es_start_epoch,
                 verbose=True,
                 check_finite=True,
                 check_on_train_epoch_end=False,
