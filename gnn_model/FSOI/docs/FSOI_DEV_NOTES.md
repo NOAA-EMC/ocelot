@@ -1,3 +1,5 @@
+Author: Azadeh Gholoubi
+
 ## Current repo layout
 
 Run commands from the `gnn_model/` directory.

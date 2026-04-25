@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Plot per-instrument val_loss curves from Lightning CSVLogger metrics.csv.
 
+Author: Azadeh Gholoubi
+
 This repo logs metrics at different times within an epoch, so a single epoch can
 span multiple rows. This script reconstructs an "epoch snapshot" by taking the
 last non-NaN value for each metric within each epoch.
@@ -23,14 +25,54 @@ Outputs:
 
 from __future__ import annotations
 
+import os
+import sys
 import argparse
 from pathlib import Path
-import os
 import re
 from glob import glob
 
 import numpy as np
 import pandas as pd
+
+
+def _reexec_under_micromamba_if_needed() -> None:
+    """Re-exec this script under the stable micromamba env if needed.
+
+    This lets you run the script even if your current `python` points to a broken
+    or incomplete environment.
+    """
+
+    if os.environ.get("OCELOT_SKIP_MICROMAMBA_REEXEC") == "1":
+        return
+    if os.environ.get("OCELOT_IN_MICROMAMBA") == "1":
+        return
+
+    env_home = os.environ.get(
+        "OCELOT_ENV_HOME",
+        "/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env",
+    )
+    mm = os.environ.get(
+        "OCELOT_MM",
+        os.path.join(env_home, "micromamba", "bin", "micromamba"),
+    )
+    root_prefix = os.environ.get(
+        "MAMBA_ROOT_PREFIX",
+        os.path.join(env_home, "micromamba_root"),
+    )
+    env_name = os.environ.get("OCELOT_ENV_NAME", "ocelot-cu121")
+
+    if not (os.path.exists(mm) and os.access(mm, os.X_OK)):
+        return
+
+    new_env = os.environ.copy()
+    new_env["MAMBA_ROOT_PREFIX"] = root_prefix
+    new_env["OCELOT_IN_MICROMAMBA"] = "1"
+    cmd = [mm, "run", "-n", env_name, "python"] + sys.argv
+    os.execvpe(mm, cmd, new_env)
+
+
+_reexec_under_micromamba_if_needed()
 
 
 def _last_valid_per_epoch(df: pd.DataFrame, metric: str) -> pd.Series:

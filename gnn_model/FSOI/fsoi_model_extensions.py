@@ -4,6 +4,8 @@ FSOI Model Extensions - Add background prediction capability to GNNLightning.
 This module extends the GNN model with methods needed for FSOI:
 1. predict_at_targets: Predict observations at specified target locations
 2. freeze_for_inference: Prepare model for gradient computation w.r.t. inputs
+
+Author: Azadeh Gholoubi
 """
 
 import torch

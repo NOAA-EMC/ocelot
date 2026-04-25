@@ -10,9 +10,10 @@ Ocelot CSV must contain at least:
 - `obs_time_unix` (seconds since epoch, UTC) is preferred when present and is treated as the per-observation timestamp.
 - `lat`, `lon`
 - for `surface_obs` (any subset; script will compare what exists):
-    - winds: `pred_wind_u`, `pred_wind_v`, `true_wind_u`, `true_wind_v`
-    - temperature: `pred_airTemperature`, `true_airTemperature` (°C)
-    - pressure: `pred_airPressure_prepbufr_event_1`, `true_airPressure_prepbufr_event_1` (hPa)
+        - winds: `pred_wind_u`, `pred_wind_v`, `true_wind_u`, `true_wind_v`
+        - temperature: `pred_airTemperature`, `true_airTemperature` (°C)
+        - pressure: `pred_pressureMeanSeaLevel_prepbufr`, `true_pressureMeanSeaLevel_prepbufr` (hPa)
+            or legacy `pred_airPressure_prepbufr_event_1`, `true_airPressure_prepbufr_event_1`
 - for `radiosonde`: `pressure_hPa`, `pred_wind_u/v`, `true_wind_u/v`, optional `pred_airTemperature`
 - for `aircraft`: `pressure_hPa`, `pred_windU/V`, `true_windU/V`, optional `pred_airTemperature`
 
@@ -45,6 +46,20 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+
+
+def _surface_pressure_cols(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    for base in [
+        "pressureMeanSeaLevel_prepbufr",
+        "airPressure_prepbufr_event_1",
+        "airPressure",
+        "pressure",
+    ]:
+        pred = f"pred_{base}"
+        truth = f"true_{base}"
+        if pred in df.columns and truth in df.columns:
+            return pred, truth
+    return None, None
 
 
 def _parse_datetime_utc(series: pd.Series) -> pd.Series:
@@ -171,6 +186,26 @@ def _open_gfs_surface(path: str, short_name: str):
     )
 
 
+@lru_cache(maxsize=32)
+def _open_gfs_mean_sea(path: str):
+    import cfgrib
+
+    errors: list[str] = []
+    for short_name in ("prmsl", "msl"):
+        try:
+            return cfgrib.open_dataset(
+                path,
+                indexpath="",
+                filter_by_keys={"typeOfLevel": "meanSea", "shortName": short_name},
+            )
+        except Exception as exc:
+            errors.append(f"{short_name}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        "Could not open GFS mean sea-level pressure (meanSea/prmsl or meanSea/msl). "
+        + " | ".join(errors)
+    )
+
+
 @lru_cache(maxsize=16)
 def _open_gfs_isobaric(path: str, short_name: str):
     import cfgrib
@@ -225,6 +260,50 @@ def _load_ocelot_csvs(patterns: Iterable[str]) -> pd.DataFrame:
         df["_source_csv"] = p
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
+
+
+def _filter_pressure_levels(
+    df: pd.DataFrame,
+    *,
+    pressure_level_idx: int | None = None,
+    pressure_level_label: str | None = None,
+    pressure_hpa: float | None = None,
+    pressure_hpa_tol: float = 25.0,
+) -> pd.DataFrame:
+    selectors: list[str] = []
+    mask = pd.Series(True, index=df.index)
+
+    if pressure_level_idx is not None:
+        if "pressure_level_idx" not in df.columns:
+            raise ValueError("Requested --pressure_level_idx but CSV is missing pressure_level_idx")
+        idx = pd.to_numeric(df["pressure_level_idx"], errors="coerce")
+        mask &= idx.eq(int(pressure_level_idx))
+        selectors.append(f"pressure_level_idx={int(pressure_level_idx)}")
+
+    if pressure_level_label is not None:
+        if "pressure_level_label" not in df.columns:
+            raise ValueError("Requested --pressure_level_label but CSV is missing pressure_level_label")
+        label = df["pressure_level_label"].astype(str).str.strip().str.lower()
+        want = str(pressure_level_label).strip().lower()
+        mask &= label.eq(want)
+        selectors.append(f"pressure_level_label={pressure_level_label}")
+
+    if pressure_hpa is not None:
+        if "pressure_hPa" not in df.columns:
+            raise ValueError("Requested --pressure_hpa but CSV is missing pressure_hPa")
+        p = pd.to_numeric(df["pressure_hPa"], errors="coerce")
+        tol = float(pressure_hpa_tol)
+        mask &= p.notna() & (np.abs(p - float(pressure_hpa)) <= tol)
+        selectors.append(f"pressure_hPa≈{float(pressure_hpa):g}±{tol:g}")
+
+    if not selectors:
+        return df
+
+    out = df.loc[mask].copy().reset_index(drop=True)
+    print(f"[INFO] Applied pressure filter ({', '.join(selectors)}): kept {len(out)}/{len(df)} rows")
+    if out.empty:
+        raise ValueError(f"Pressure-level filter removed all rows ({', '.join(selectors)})")
+    return out
 
 
 def _compute_gfs_keys(
@@ -343,10 +422,8 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
     need_u10 = any(c in df.columns for c in ["pred_wind_u", "true_wind_u"])
     need_v10 = any(c in df.columns for c in ["pred_wind_v", "true_wind_v"])
     need_t2m = any(c in df.columns for c in ["pred_airTemperature", "true_airTemperature"])
-    need_sp = any(
-        c in df.columns
-        for c in ["pred_airPressure_prepbufr_event_1", "true_airPressure_prepbufr_event_1", "pred_airPressure", "true_airPressure"]
-    )
+    p_pred_col, p_true_col = _surface_pressure_cols(df)
+    need_sp = (p_pred_col is not None) and (p_true_col is not None)
 
     lat = df["lat"].to_numpy(dtype=np.float64)
     lon360 = _lon_to_360(df["lon"].to_numpy(dtype=np.float64))
@@ -354,14 +431,16 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
     gfs_u = np.full(len(df), np.nan, dtype=np.float64)
     gfs_v = np.full(len(df), np.nan, dtype=np.float64)
     gfs_t2m_c = np.full(len(df), np.nan, dtype=np.float64)
-    gfs_sp_hpa = np.full(len(df), np.nan, dtype=np.float64)
+    gfs_mslp_hpa = np.full(len(df), np.nan, dtype=np.float64)
 
     if not all(c in df.columns for c in ["_gfs_fhr0", "_gfs_fhr1", "_gfs_w"]):
         raise ValueError("Internal error: missing GFS time-bracketing columns (_gfs_fhr0/_gfs_fhr1/_gfs_w)")
 
     w_all = df["_gfs_w"].to_numpy(dtype=np.float64)
 
-    for (init_dt, fh0, fh1), idx in df.groupby(["_init_dt", "_gfs_fhr0", "_gfs_fhr1"]).groups.items():
+    groups = df.groupby(["_init_dt", "_gfs_fhr0", "_gfs_fhr1"]).groups
+    total_groups = len(groups)
+    for group_num, ((init_dt, fh0, fh1), idx) in enumerate(groups.items(), start=1):
         if int(fh0) < 0 or int(fh1) < 0:
             continue
 
@@ -374,6 +453,11 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
         if not has0 and not has1:
             print(f"[WARN] Missing GFS files: {path0} and {path1}")
             continue
+        if group_num == 1 or group_num == total_groups or (group_num % 10 == 0):
+            print(
+                f"[compare_to_gfs] surface_obs group {group_num}/{total_groups}: "
+                f"init={init_ts.strftime('%Y%m%d%H')} fhr_lo={int(fh0):03d} fhr_hi={int(fh1):03d} rows={len(idx)}"
+            )
         if not has0:
             print(f"[WARN] Missing GFS file: {path0} (falling back to {path1})")
         if not has1:
@@ -400,9 +484,9 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
                     print(f"[WARN] Failed to open GFS 2t: {path0} ({e})")
             if need_sp:
                 try:
-                    ds0_sp = _open_gfs_surface(path0, "sp")
+                    ds0_sp = _open_gfs_mean_sea(path0)
                 except Exception as e:
-                    print(f"[WARN] Failed to open GFS surface pressure (sp): {path0} ({e})")
+                    print(f"[WARN] Failed to open GFS mean sea-level pressure (prmsl/msl): {path0} ({e})")
 
         if has1 and path1 != path0:
             if need_u10:
@@ -422,9 +506,9 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
                     print(f"[WARN] Failed to open GFS 2t: {path1} ({e})")
             if need_sp:
                 try:
-                    ds1_sp = _open_gfs_surface(path1, "sp")
+                    ds1_sp = _open_gfs_mean_sea(path1)
                 except Exception as e:
-                    print(f"[WARN] Failed to open GFS surface pressure (sp): {path1} ({e})")
+                    print(f"[WARN] Failed to open GFS mean sea-level pressure (prmsl/msl): {path1} ({e})")
 
         ii = np.asarray(idx, dtype=np.int64)
         for jj in _iter_index_chunks(ii, chunk_size=chunk_size):
@@ -482,19 +566,19 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
                     else np.full(len(jj), np.nan)
                 )
                 v1 = (
-                    _interp_2d(ds1_sp, _pick_var_name(ds1_sp, "sp"), lat[jj], lon360[jj], method=method) / 100.0
+                    _interp_2d(ds1_sp, _pick_var_name(ds1_sp, "prmsl"), lat[jj], lon360[jj], method=method) / 100.0
                     if ds1_sp is not None
                     else v0
                 )
                 if ds0_sp is None and ds1_sp is not None:
                     v0 = v1
-                gfs_sp_hpa[jj] = (1.0 - ww) * v0 + ww * v1
+                gfs_mslp_hpa[jj] = (1.0 - ww) * v0 + ww * v1
 
     out = df.copy()
     out["gfs_u10"] = gfs_u
     out["gfs_v10"] = gfs_v
     out["gfs_t2m_C"] = gfs_t2m_c
-    out["gfs_sp_hPa"] = gfs_sp_hpa
+    out["gfs_mslp_hPa"] = gfs_mslp_hpa
 
     if "pred_wind_u" in out.columns and "true_wind_u" in out.columns:
         out["ocelot_minus_gfs_u10_pred"] = out["pred_wind_u"] - out["gfs_u10"]
@@ -508,18 +592,12 @@ def compare_surface_obs(df: pd.DataFrame, gfs_root: str, method: str, chunk_size
         out["ocelot_minus_gfs_t2m_pred"] = out["pred_airTemperature"] - out["gfs_t2m_C"]
         out["truth_minus_gfs_t2m"] = out["true_airTemperature"] - out["gfs_t2m_C"]
 
-    # Station pressure in the conv CSV is in hPa; GFS sp is in Pa.
-    p_pred_col = None
-    p_true_col = None
-    for base in ["airPressure_prepbufr_event_1", "airPressure", "pressure"]:
-        if f"pred_{base}" in out.columns and f"true_{base}" in out.columns:
-            p_pred_col = f"pred_{base}"
-            p_true_col = f"true_{base}"
-            break
+    # Surface-observation pressure in the conv CSV is in hPa; GFS mean sea-level pressure is in Pa.
+    p_pred_col, p_true_col = _surface_pressure_cols(out)
 
     if p_pred_col is not None:
-        out["ocelot_minus_gfs_sp_pred"] = out[p_pred_col] - out["gfs_sp_hPa"]
-        out["truth_minus_gfs_sp"] = out[p_true_col] - out["gfs_sp_hPa"]
+        out["ocelot_minus_gfs_sp_pred"] = out[p_pred_col] - out["gfs_mslp_hPa"]
+        out["truth_minus_gfs_sp"] = out[p_true_col] - out["gfs_mslp_hPa"]
 
     return out
 
@@ -548,7 +626,9 @@ def compare_isobaric(
 
     w_all = df["_gfs_w"].to_numpy(dtype=np.float64)
 
-    for (init_dt, fh0, fh1), idx in df.groupby(["_init_dt", "_gfs_fhr0", "_gfs_fhr1"]).groups.items():
+    groups = df.groupby(["_init_dt", "_gfs_fhr0", "_gfs_fhr1"]).groups
+    total_groups = len(groups)
+    for group_num, ((init_dt, fh0, fh1), idx) in enumerate(groups.items(), start=1):
         if int(fh0) < 0 or int(fh1) < 0:
             continue
 
@@ -561,6 +641,15 @@ def compare_isobaric(
         if not has0 and not has1:
             print(f"[WARN] Missing GFS files: {path0} and {path1}")
             continue
+        p_group = p[np.asarray(idx, dtype=np.int64)]
+        p_min = float(np.nanmin(p_group)) if len(p_group) else float("nan")
+        p_max = float(np.nanmax(p_group)) if len(p_group) else float("nan")
+        if group_num == 1 or group_num == total_groups or (group_num % 10 == 0):
+            print(
+                f"[compare_to_gfs] isobaric group {group_num}/{total_groups}: "
+                f"init={init_ts.strftime('%Y%m%d%H')} fhr_lo={int(fh0):03d} fhr_hi={int(fh1):03d} "
+                f"rows={len(idx)} pressure_hPa=[{p_min:.1f},{p_max:.1f}]"
+            )
 
         ds0_u = ds0_v = ds0_t = None
         ds1_u = ds1_v = ds1_t = None
@@ -657,6 +746,15 @@ def main() -> int:
         default=10_000,
         help="Process points in chunks to reduce memory (esp. isobaric interpolation).",
     )
+    ap.add_argument("--pressure_level_idx", type=int, default=None, help="Optional exact filter on pressure_level_idx before GFS comparison")
+    ap.add_argument("--pressure_level_label", default=None, help="Optional exact filter on pressure_level_label before GFS comparison")
+    ap.add_argument("--pressure_hpa", type=float, default=None, help="Optional pressure_hPa center for filtering before GFS comparison")
+    ap.add_argument(
+        "--pressure_hpa_tol",
+        type=float,
+        default=25.0,
+        help="Tolerance for --pressure_hpa filtering (default: 25 hPa)",
+    )
     ap.add_argument(
         "--allow_login",
         action="store_true",
@@ -679,6 +777,13 @@ def main() -> int:
         tol = None
 
     df = _load_ocelot_csvs(args.ocelot_csv)
+    df = _filter_pressure_levels(
+        df,
+        pressure_level_idx=args.pressure_level_idx,
+        pressure_level_label=args.pressure_level_label,
+        pressure_hpa=args.pressure_hpa,
+        pressure_hpa_tol=float(args.pressure_hpa_tol),
+    )
     df = _compute_gfs_keys(
         df,
         init_mode=args.init_mode,

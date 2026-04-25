@@ -27,9 +27,17 @@ echo "Running on H100 nodes..."
 echo "Node: $(hostname)"
 echo "Architecture: $(uname -m)"
 
-# Load Conda environment
-source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
-conda activate gnn-env
+# Use the clean micromamba environment (does not depend on conda).
+OCELOT_ENV_HOME="${OCELOT_ENV_HOME:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env}"
+MM="${MM:-${OCELOT_ENV_HOME}/micromamba/bin/micromamba}"
+export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-${OCELOT_ENV_HOME}/micromamba_root}"
+OCELOT_ENV_NAME="${OCELOT_ENV_NAME:-ocelot-cu121}"
+
+if [[ ! -x "${MM}" ]]; then
+	echo "ERROR: micromamba not found/executable at: ${MM}"
+	echo "Create it via: cd ${OCELOT_ENV_HOME} && ./create_env.sh ${OCELOT_ENV_NAME}"
+	exit 2
+fi
 
 # PYTHONPATH
 # export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
@@ -137,7 +145,7 @@ if [[ "$RESUME_FROM_LATEST" == "1" ]]; then
 fi
 
 
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores "${MM}" run -n "${OCELOT_ENV_NAME}" python train_gnn.py \
 	--run_name "$RUN_NAME" \
 	"${RESUME_ARGS[@]}" \
 	--mesh_type fixed \

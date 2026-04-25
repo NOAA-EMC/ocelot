@@ -7,6 +7,8 @@ This module provides utilities for:
 - Computing gradients (adjoints)
 - Aggregating FSOI results
 - Validation and diagnostics
+
+Author: Azadeh Gholoubi
 """
 
 import torch
@@ -1510,6 +1512,8 @@ def validate_gradients(
         'airs',
         'ssmis',
         'seviri',
+        'seviri_asr',
+        'seviri_csr',
         'avhrr',
         'ascat',
     ]

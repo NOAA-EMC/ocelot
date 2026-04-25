@@ -500,7 +500,7 @@ def _mapspecs_for(instrument: str, which: str) -> list[MapSpec]:
                     "sp",
                     "pred_pressureMeanSeaLevel_prepbufr",
                     "true_pressureMeanSeaLevel_prepbufr",
-                    "gfs_sp_hPa",
+                    "gfs_mslp_hPa",
                     "mask_pressureMeanSeaLevel_prepbufr",
                     "hPa",
                 )
@@ -533,11 +533,15 @@ def _collect_points_for_fhr(
     fhr: int,
     spec: MapSpec,
     chunksize: int,
+    level_hpa: float | None = None,
+    level_tol_hpa: float = 25.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     preview = pd.read_csv(csv_path, nrows=1)
     needed = ["lon", "lat", spec.pred_col, spec.truth_col, spec.gfs_col]
     if spec.mask_col:
         needed.append(spec.mask_col)
+    if level_hpa is not None:
+        needed.append("pressure_hPa")
     base_cols = [c for c in ["fhr_used", "lead_hours_nominal"] if c in preview.columns]
     usecols = [c for c in (needed + base_cols) if c in preview.columns]
 
@@ -553,12 +557,28 @@ def _collect_points_for_fhr(
 
     fhr_target = float(fhr)
 
+    if level_hpa is not None and "pressure_hPa" not in preview.columns:
+        raise ValueError(
+            "--levels requested but CSV is missing pressure_hPa (required for radiosonde/aircraft level plots)"
+        )
+
     for chunk in _iter_chunks(csv_path, usecols=usecols, chunksize=chunksize):
         fhrs = _get_fhr_series(chunk)
         fhrs = pd.to_numeric(fhrs.round(), errors="coerce")
         sel = fhrs.notna() & np.isclose(fhrs.to_numpy(dtype=float, na_value=np.nan), fhr_target)
         if not sel.any():
             continue
+
+        if level_hpa is not None:
+            p = pd.to_numeric(chunk.loc[sel, "pressure_hPa"], errors="coerce")
+            lvl_ok = p.notna() & (np.abs(p.to_numpy(dtype=float, na_value=np.nan) - float(level_hpa)) <= float(level_tol_hpa))
+            if not lvl_ok.any():
+                continue
+            # Refine sel to only level-matching rows
+            sel_idx = chunk.index[sel]
+            sel = sel_idx[lvl_ok.to_numpy(dtype=bool)]
+        else:
+            sel = chunk.index[sel]
 
         lon = pd.to_numeric(chunk.loc[sel, "lon"], errors="coerce")
         lat = pd.to_numeric(chunk.loc[sel, "lat"], errors="coerce")
@@ -601,54 +621,18 @@ def _collect_points_for_fhr(
 _CARTOPY_FEATURES_WARNED = False
 
 
-def _cartopy_natural_earth_cached(scale: str = "110m") -> bool:
-    mode = os.environ.get("OCELOT_CARTOPY_FEATURES", "auto").strip().lower()
-    if mode in {"0", "false", "no", "off"}:
-        return False
-    if mode in {"1", "true", "yes", "on"}:
-        return True
-
-    try:
-        from cartopy import config as cartopy_config
-
-        data_dir = cartopy_config.get("pre_existing_data_dir") or cartopy_config.get("data_dir")
-        if not data_dir:
-            return False
-        base = Path(str(data_dir)).expanduser() / "shapefiles" / "natural_earth"
-
-        needed = [
-            base / "physical" / f"ne_{scale}_land.shp",
-            base / "physical" / f"ne_{scale}_coastline.shp",
-            base / "cultural" / f"ne_{scale}_admin_0_boundary_lines_land.shp",
-        ]
-        for shp in needed:
-            if not (shp.exists() and shp.with_suffix(".dbf").exists() and shp.with_suffix(".shx").exists()):
-                return False
-        return True
-    except Exception:
-        return False
-
-
 def _add_land(ax):
     global _CARTOPY_FEATURES_WARNED
-
-    if not _cartopy_natural_earth_cached(scale="110m"):
-        if not _CARTOPY_FEATURES_WARNED:
-            _CARTOPY_FEATURES_WARNED = True
-            print(
-                "[WARN] Cartopy NaturalEarth shapefiles not found locally; skipping coastlines/land/borders "
-                "to avoid network downloads on offline nodes. "
-                "(Set OCELOT_CARTOPY_FEATURES=1 to force, or pre-populate the Cartopy data cache.)"
-            )
-        return
 
     try:
         import cartopy.feature as cfeature
 
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.6)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.4)
-        ax.add_feature(cfeature.LAND, facecolor="lightgray", alpha=0.25)
-    except Exception:
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, alpha=0.8)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, alpha=0.6)
+    except Exception as exc:
+        if not _CARTOPY_FEATURES_WARNED:
+            _CARTOPY_FEATURES_WARNED = True
+            print(f"[WARN] Could not add coastlines/borders to GFS compare maps: {exc}")
         return
 
 
@@ -787,7 +771,7 @@ def _varspecs_for(instrument: str, which: str) -> tuple[list[VarSpec], dict[str,
                     "sp",
                     "pred_pressureMeanSeaLevel_prepbufr",
                     "true_pressureMeanSeaLevel_prepbufr",
-                    "gfs_sp_hPa",
+                    "gfs_mslp_hPa",
                     "mask_pressureMeanSeaLevel_prepbufr",
                 )
             )
@@ -907,6 +891,8 @@ def _run_maps(
     chunksize: int,
     fhrs: list[int],
     point_size: int,
+    levels_hpa: list[float] | None = None,
+    level_tol_hpa: float = 25.0,
 ) -> None:
     _require_plotting()
 
@@ -915,68 +901,88 @@ def _run_maps(
         print(f"[WARN] No variables selected for instrument={instrument} vars={which}")
         return
 
+    levels_hpa = list(levels_hpa or [])
+    do_levels = bool(levels_hpa) and instrument in ("radiosonde", "aircraft")
+
     for fhr in fhrs:
-        fhr_dir = os.path.join(plot_dir, f"fhr{int(fhr)}")
-        os.makedirs(fhr_dir, exist_ok=True)
+        if do_levels:
+            iter_levels: list[float | None] = levels_hpa
+        else:
+            iter_levels = [None]
 
-        for spec in specs:
-            lon, lat, pred, truth, gfs = _collect_points_for_fhr(
-                csv_path=csv_path,
-                fhr=int(fhr),
-                spec=spec,
-                chunksize=int(chunksize),
-            )
+        for level in iter_levels:
+            if level is None:
+                fhr_dir = os.path.join(plot_dir, f"fhr{int(fhr)}")
+                title_suffix = f"fhr {int(fhr):d}"
+                fname_level = ""
+            else:
+                level_tag = f"{int(round(float(level)))}hPa"
+                fhr_dir = os.path.join(plot_dir, f"level_{level_tag}", f"fhr{int(fhr)}")
+                title_suffix = f"fhr {int(fhr):d} • p≈{level_tag}"
+                fname_level = f"_p{level_tag}"
 
-            title = f"{instrument} {spec.name} • init {init_time} • fhr {int(fhr):d}"
-            out_png = os.path.join(
-                fhr_dir,
-                f"{instrument}_Ocelot_Truth_GFS_{spec.name}_init_{init_time}_fhr{int(fhr):03d}.png",
-            )
-            plot_tripanel_map(
-                lon=lon,
-                lat=lat,
-                pred=pred,
-                truth=truth,
-                gfs=gfs,
-                title=title,
-                out_png=out_png,
-                units=spec.units,
-                point_size=int(point_size),
-            )
+            os.makedirs(fhr_dir, exist_ok=True)
 
-            out_png_ot = os.path.join(
-                fhr_dir,
-                f"{instrument}_Ocelot_Truth_Diff_{spec.name}_init_{init_time}_fhr{int(fhr):03d}.png",
-            )
-            plot_tripanel_diff(
-                lon=lon,
-                lat=lat,
-                a=pred,
-                b=truth,
-                label_a="OCELOT",
-                label_b="Truth",
-                title=title,
-                out_png=out_png_ot,
-                units=spec.units,
-                point_size=int(point_size),
-            )
+            for spec in specs:
+                lon, lat, pred, truth, gfs = _collect_points_for_fhr(
+                    csv_path=csv_path,
+                    fhr=int(fhr),
+                    spec=spec,
+                    chunksize=int(chunksize),
+                    level_hpa=(float(level) if level is not None else None),
+                    level_tol_hpa=float(level_tol_hpa),
+                )
 
-            out_png_gt = os.path.join(
-                fhr_dir,
-                f"{instrument}_GFS_Truth_Diff_{spec.name}_init_{init_time}_fhr{int(fhr):03d}.png",
-            )
-            plot_tripanel_diff(
-                lon=lon,
-                lat=lat,
-                a=gfs,
-                b=truth,
-                label_a="GFS",
-                label_b="Truth",
-                title=title,
-                out_png=out_png_gt,
-                units=spec.units,
-                point_size=int(point_size),
-            )
+                title = f"{instrument} {spec.name} • init {init_time} • {title_suffix}"
+                out_png = os.path.join(
+                    fhr_dir,
+                    f"{instrument}_Ocelot_Truth_GFS_{spec.name}_init_{init_time}_fhr{int(fhr):03d}{fname_level}.png",
+                )
+                plot_tripanel_map(
+                    lon=lon,
+                    lat=lat,
+                    pred=pred,
+                    truth=truth,
+                    gfs=gfs,
+                    title=title,
+                    out_png=out_png,
+                    units=spec.units,
+                    point_size=int(point_size),
+                )
+
+                out_png_ot = os.path.join(
+                    fhr_dir,
+                    f"{instrument}_Ocelot_Truth_Diff_{spec.name}_init_{init_time}_fhr{int(fhr):03d}{fname_level}.png",
+                )
+                plot_tripanel_diff(
+                    lon=lon,
+                    lat=lat,
+                    a=pred,
+                    b=truth,
+                    label_a="OCELOT",
+                    label_b="Truth",
+                    title=title,
+                    out_png=out_png_ot,
+                    units=spec.units,
+                    point_size=int(point_size),
+                )
+
+                out_png_gt = os.path.join(
+                    fhr_dir,
+                    f"{instrument}_GFS_Truth_Diff_{spec.name}_init_{init_time}_fhr{int(fhr):03d}{fname_level}.png",
+                )
+                plot_tripanel_diff(
+                    lon=lon,
+                    lat=lat,
+                    a=gfs,
+                    b=truth,
+                    label_a="GFS",
+                    label_b="Truth",
+                    title=title,
+                    out_png=out_png_gt,
+                    units=spec.units,
+                    point_size=int(point_size),
+                )
 
 
 def main() -> int:
@@ -1014,6 +1020,22 @@ def main() -> int:
     ap.add_argument("--maps", action="store_true", help="Generate per-fhr map panels under plot_dir/fhr*/")
     ap.add_argument("--fhr", type=int, default=None, help="Single forecast hour (maps)")
     ap.add_argument("--fhrs", type=int, nargs="*", default=None, help="Forecast hours list (maps)")
+    ap.add_argument(
+        "--levels",
+        type=float,
+        nargs="*",
+        default=None,
+        help=(
+            "Pressure levels in hPa for radiosonde/aircraft map plots (e.g., --levels 850 500 200). "
+            "If set, maps are generated per level using rows with |pressure_hPa-level|<=level_tol_hpa."
+        ),
+    )
+    ap.add_argument(
+        "--level_tol_hpa",
+        type=float,
+        default=25.0,
+        help="Tolerance (hPa) when selecting rows for a given --levels pressure (default: 25).",
+    )
     ap.add_argument("--point_size", type=int, default=7)
     ap.add_argument(
         "--skip_extra_eval",
@@ -1063,6 +1085,8 @@ def main() -> int:
             chunksize=int(args.chunksize),
             fhrs=fhrs,
             point_size=int(args.point_size),
+            levels_hpa=(list(args.levels) if args.levels else None),
+            level_tol_hpa=float(args.level_tol_hpa),
         )
 
     if (not want_rmse) and (not (args.maps or fhrs)):

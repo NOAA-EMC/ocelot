@@ -13,6 +13,8 @@ Run this BEFORE full FSOI inference to catch issues early.
 Usage:
     python test_fsoi.py --checkpoint path/to/model.ckpt
     python test_fsoi.py --checkpoint path/to/checkpoint_dir/
+
+Author: Azadeh Gholoubi
 """
 
 import argparse
