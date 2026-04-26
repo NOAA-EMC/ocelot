@@ -196,6 +196,7 @@ class MeshPartitionSpec:
     local_mesh_edge_index: torch.Tensor
     local_mesh_edge_attr: torch.Tensor
     all_send_global_ids_by_rank: list[torch.Tensor]
+    send_global_ids_by_dst: list[torch.Tensor]
     recv_global_ids_by_owner: Dict[int, torch.Tensor]
 
     @property
@@ -208,68 +209,109 @@ class MeshPartitionSpec:
 
 
 class HaloExchange:
-    """Boundary-only halo exchange that preserves autograd through the gather."""
+    """Boundary-only halo exchange that preserves autograd through the gather.
 
-    def __init__(self, spec: MeshPartitionSpec, device: torch.device):
+    Uses ``all_to_all_single`` so that each rank only sends/receives the exact
+    number of boundary nodes its peers need (no padding to ``max_send_count``).
+    """
+
+    def __init__(self, spec: MeshPartitionSpec, device: torch.device, group=None):
         self.spec = spec
         self.device = device
+        self.group = group
         self.rank = int(spec.rank)
         self.world_size = int(spec.world_size)
         self.owned_node_count = int(spec.owned_node_count)
         self.halo_node_count = int(spec.halo_node_count)
 
-        self.send_global_ids = spec.send_global_ids.to(device=device, dtype=torch.long)
-        self.send_local_indices = spec.global_to_local.index_select(0, spec.send_global_ids).to(
-            device=device,
-            dtype=torch.long,
-        )
-        self.send_counts = [int(ids.numel()) for ids in spec.all_send_global_ids_by_rank]
-        self.max_send_count = max(self.send_counts) if self.send_counts else 0
-
-        recv_positions_by_owner: Dict[int, torch.Tensor] = {}
-        for owner, recv_ids in spec.recv_global_ids_by_owner.items():
-            if recv_ids.numel() == 0:
+        # Per-destination local indices to send (concatenated in dst order).
+        send_local_chunks: list[torch.Tensor] = []
+        send_split_sizes: list[int] = []
+        for dst_rank in range(self.world_size):
+            ids = spec.send_global_ids_by_dst[dst_rank]
+            if ids.numel() == 0 or dst_rank == self.rank:
+                send_split_sizes.append(0)
                 continue
-            owner_send_ids = spec.all_send_global_ids_by_rank[owner]
-            position_map = {int(global_id): idx for idx, global_id in enumerate(owner_send_ids.tolist())}
-            positions = [position_map[int(global_id)] for global_id in recv_ids.tolist()]
-            recv_positions_by_owner[owner] = torch.as_tensor(
-                positions,
-                device=device,
-                dtype=torch.long,
+            local_idx = spec.global_to_local.index_select(0, ids).to(
+                device=device, dtype=torch.long
             )
-        self.recv_positions_by_owner = recv_positions_by_owner
+            send_local_chunks.append(local_idx)
+            send_split_sizes.append(int(local_idx.numel()))
+
+        if send_local_chunks:
+            self.send_local_indices = torch.cat(send_local_chunks, dim=0)
+        else:
+            self.send_local_indices = torch.empty((0,), device=device, dtype=torch.long)
+        self.send_split_sizes = send_split_sizes
+
+        # Recv counts (in owner order) and total recv length.  Halo nodes in
+        # ``local_global_ids`` are arranged as: owned, then for each owner != self
+        # in ascending order, that owner's halo block.  This matches the
+        # ``all_to_all_single`` output layout exactly.
+        recv_split_sizes: list[int] = []
+        for owner in range(self.world_size):
+            if owner == self.rank:
+                recv_split_sizes.append(0)
+                continue
+            ids = spec.recv_global_ids_by_owner.get(owner)
+            recv_split_sizes.append(0 if ids is None else int(ids.numel()))
+        self.recv_split_sizes = recv_split_sizes
+        self.total_recv = int(sum(recv_split_sizes))
 
     def exchange(self, local_state: torch.Tensor) -> torch.Tensor:
         if (
             self.world_size <= 1
-            or self.halo_node_count == 0
             or not dist.is_available()
             or not dist.is_initialized()
         ):
             return local_state
 
-        send_buffer = local_state.new_zeros((self.max_send_count, local_state.size(-1)))
-        if self.send_local_indices.numel() > 0:
-            send_values = local_state.index_select(0, self.send_local_indices)
-            send_buffer[: send_values.size(0)] = send_values
+        # NOTE: We must NOT early-return based on this rank's halo or send
+        # counts being zero. ``all_to_all_single`` is a collective: every rank
+        # has to call it the same number of times in the same order. If this
+        # rank silently skipped a no-op exchange while peers expected one,
+        # NCCL would deadlock and eventually time out.
 
-        gathered = dist_nn.all_gather(send_buffer)
         owned_state = local_state[: self.owned_node_count]
+        feat_dim = local_state.size(-1)
 
-        halo_chunks = []
-        for owner in range(self.world_size):
-            positions = self.recv_positions_by_owner.get(owner)
-            if positions is None or positions.numel() == 0:
-                continue
-            owner_values = gathered[owner][: self.send_counts[owner]]
-            halo_chunks.append(owner_values.index_select(0, positions))
+        # IMPORTANT: Always build send_buffer via ``index_select`` (even when
+        # empty) so the tensor is part of ``local_state``'s autograd graph.
+        # If we used ``new_zeros`` for the empty case, autograd would not
+        # create a backward node for ``_AlltoAllSingle`` on this rank, and
+        # during backward this rank would skip the reverse collective while
+        # peers issued it — deadlocking NCCL.
+        send_buffer = local_state.index_select(0, self.send_local_indices)
 
-        if not halo_chunks:
-            return owned_state
+        recv_buffer = local_state.new_empty((self.total_recv, feat_dim))
+        recv_buffer = dist_nn.all_to_all_single(
+            recv_buffer,
+            send_buffer,
+            output_split_sizes=self.recv_split_sizes,
+            input_split_sizes=self.send_split_sizes,
+            group=self.group,
+        )
 
-        halo_state = torch.cat(halo_chunks, dim=0)
-        return torch.cat([owned_state, halo_state], dim=0)
+        # IMPORTANT: Always return via ``torch.cat`` so the autograd graph
+        # topology is identical on every rank. If we conditionally returned
+        # ``owned_state`` when ``recv_buffer`` was empty, ``recv_buffer``
+        # would be disconnected from downstream computation on that rank,
+        # the backward of ``all_to_all_single`` would be pruned, and other
+        # ranks would deadlock waiting for the reverse collective.
+        #
+        # ALSO: even when we always concat, a rank whose downstream graph
+        # never *reads* halo positions (e.g. its local mesh edges have no
+        # src indices in the halo region) will receive a zero/None gradient
+        # for ``recv_buffer`` and autograd may prune ``_AlltoAllSingle``'s
+        # backward node on that rank only. The peers still run the reverse
+        # collective and the SeqNums diverge → NCCL deadlock at the next
+        # collective (often DDP's ALLREDUCE on the gradient bucket).
+        # Tie ``owned_state`` to ``recv_buffer`` via a zero-weighted scalar
+        # so the backward path through ``recv_buffer`` is always live.
+        if self.total_recv > 0 and recv_buffer.requires_grad:
+            sentinel = recv_buffer.sum() * 0.0
+            owned_state = owned_state + sentinel
+        return torch.cat([owned_state, recv_buffer], dim=0)
 
 
 class DomainGraphSharder:
@@ -293,14 +335,59 @@ class DomainGraphSharder:
         self.mesh_edge_index = mesh_edge_index.detach().cpu()
         self.mesh_edge_attr = mesh_edge_attr.detach().cpu()
         self.is_enabled = self.world_size > 1
+        self.uses_synced_partition = False
 
         self.spec = self._build_partition_spec()
+
+    def _resolve_node_owner(
+        self,
+        neighbors: list[list[int]],
+        xyz: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.is_enabled:
+            self.uses_synced_partition = False
+            return torch.zeros((xyz.size(0),), dtype=torch.long)
+
+        if not (dist.is_available() and dist.is_initialized()):
+            self.uses_synced_partition = False
+            return _balanced_region_grow(neighbors, xyz, self.world_size)
+
+        if int(dist.get_world_size()) != self.world_size:
+            self.uses_synced_partition = False
+            return _balanced_region_grow(neighbors, xyz, self.world_size)
+
+        num_nodes = int(xyz.size(0))
+        backend = str(dist.get_backend())
+
+        if backend == "nccl" and torch.cuda.is_available():
+            local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+            device = torch.device(
+                "cuda",
+                torch.cuda.current_device() if torch.cuda.is_initialized() else local_rank,
+            )
+            if self.rank == 0:
+                node_owner = _balanced_region_grow(neighbors, xyz, self.world_size).to(device=device)
+            else:
+                node_owner = torch.empty((num_nodes,), device=device, dtype=torch.long)
+            dist.broadcast(node_owner, src=0)
+            node_owner = node_owner.cpu()
+        else:
+            payload = [
+                _balanced_region_grow(neighbors, xyz, self.world_size).tolist()
+                if self.rank == 0
+                else None
+            ]
+            dist.broadcast_object_list(payload, src=0)
+            node_owner = torch.as_tensor(payload[0], dtype=torch.long)
+
+        self.uses_synced_partition = True
+        return node_owner
 
     def _build_partition_spec(self) -> MeshPartitionSpec:
         num_nodes = int(self.mesh_x.size(0))
         xyz = _lat_lon_to_unit_xyz(self.mesh_pos)
         neighbors = _build_neighbors(num_nodes, self.mesh_edge_index)
-        node_owner = _balanced_region_grow(neighbors, xyz, self.world_size)
+        node_owner = self._resolve_node_owner(neighbors, xyz)
 
         owned_by_rank = [
             torch.nonzero(node_owner == rank, as_tuple=False).flatten()
@@ -366,6 +453,23 @@ class DomainGraphSharder:
                 send_ids = owned_ids.new_empty((0,))
             all_send_global_ids_by_rank.append(send_ids)
 
+        # Per-destination send IDs from THIS rank: what we must send to each dst_rank.
+        # This mirrors recv_global_ids_by_owner observed by dst_rank: it is the subset
+        # of dst_rank's halo that this rank owns.
+        send_global_ids_by_dst: list[torch.Tensor] = []
+        for dst_rank in range(self.world_size):
+            if dst_rank == self.rank:
+                send_global_ids_by_dst.append(torch.empty((0,), dtype=torch.long))
+                continue
+            halo_ids = halo_by_rank[dst_rank]
+            if halo_ids.numel() == 0:
+                send_global_ids_by_dst.append(torch.empty((0,), dtype=torch.long))
+                continue
+            mask = node_owner.index_select(0, halo_ids) == self.rank
+            send_global_ids_by_dst.append(
+                halo_ids.index_select(0, torch.nonzero(mask, as_tuple=False).flatten())
+            )
+
         return MeshPartitionSpec(
             rank=self.rank,
             world_size=self.world_size,
@@ -379,11 +483,12 @@ class DomainGraphSharder:
             local_mesh_edge_index=local_mesh_edge_index,
             local_mesh_edge_attr=local_mesh_edge_attr,
             all_send_global_ids_by_rank=all_send_global_ids_by_rank,
+            send_global_ids_by_dst=send_global_ids_by_dst,
             recv_global_ids_by_owner=recv_global_ids_by_owner,
         )
 
-    def build_halo_exchange(self, device: torch.device) -> HaloExchange:
-        return HaloExchange(self.spec, device=device)
+    def build_halo_exchange(self, device: torch.device, group=None) -> HaloExchange:
+        return HaloExchange(self.spec, device=device, group=group)
 
     def shard_graph(self, data: HeteroData) -> HeteroData:
         if not self.is_enabled:

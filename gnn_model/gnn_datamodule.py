@@ -167,11 +167,11 @@ class GNNDataModule(pl.LightningDataModule):
         parallelization_strategy: str = "replicated",
         domain_halo_hops: int = 1,
         data_loader_seed: int = 0,
-        zarr_cache_max_size_bytes: int = 64 * 1024 * 1024,
-        train_num_workers: int = 2,
-        val_num_workers: int = 1,
+        zarr_cache_max_size_bytes: int = int(2e9),
+        train_num_workers: int = 4,
+        val_num_workers: int = 4,
         predict_num_workers: int = 1,
-        dataloader_prefetch_factor: int = 1,
+        dataloader_prefetch_factor: int = 2,
         pin_memory: bool | None = None,
         **kwargs,
     ):
@@ -560,10 +560,19 @@ class GNNDataModule(pl.LightningDataModule):
         return data
 
     def _ensure_domain_sharder(self):
-        if self.parallelization_strategy != "domain" or self.domain_sharder is not None:
+        if self.parallelization_strategy != "domain":
             return
 
         rank, world_size = get_rank_world_size()
+        sync_ready = bool(dist.is_available() and dist.is_initialized() and world_size > 1)
+
+        if self.domain_sharder is not None:
+            same_rank = self.domain_sharder.rank == rank
+            same_world_size = self.domain_sharder.world_size == world_size
+            already_synced = getattr(self.domain_sharder, "uses_synced_partition", False)
+            if same_rank and same_world_size and (not sync_ready or already_synced):
+                return
+
         mesh_x = _t32(self.mesh_structure["mesh_features_torch"][0])
         mesh_pos = _t32(self.mesh_structure["mesh_lat_lon_torch"][0])
         mesh_edge_index = _t64(self.mesh_structure["m2m_edge_index_torch"][0])
@@ -583,7 +592,8 @@ class GNNDataModule(pl.LightningDataModule):
             spec = self.domain_sharder.spec
             print(
                 "[DataModule] Domain sharding enabled: "
-                f"world_size={world_size}, owned_nodes={spec.owned_node_count}, halo_nodes={spec.halo_node_count}"
+                f"world_size={world_size}, owned_nodes={spec.owned_node_count}, "
+                f"halo_nodes={spec.halo_node_count}, synced_partition={self.domain_sharder.uses_synced_partition}"
             )
 
     def _create_latent_nodes(self, data, inst_name, inst_dict, num_latent_steps):

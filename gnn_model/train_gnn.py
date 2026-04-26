@@ -187,7 +187,7 @@ def main():
     parser.add_argument(
         "--disable_bipartite_activation_checkpointing",
         action="store_true",
-        help="Disable activation checkpointing inside bipartite GAT layers.",
+        help="Disable activation checkpointing inside bipartite GAT layers (faster but uses more memory).",
     )
     parser.add_argument(
         "--cfg_path",
@@ -208,8 +208,12 @@ def main():
     parser.add_argument(
         "--spatial_edge_chunk_size",
         type=int,
-        default=16384,
-        help="Edge chunk size used by the sliding-window transformer's spatial mixer.",
+        default=1_000_000_000,
+        help=(
+            "Edge chunk size used by the sliding-window transformer's spatial mixer. "
+            "Defaults to a very large value so chunking is effectively disabled; lower it "
+            "only if a single index_add over all mesh edges runs out of memory."
+        ),
     )
     parser.add_argument("--node_dropout", type=float, default=0.03)
     parser.add_argument("--encoder_dropout", type=float, default=0.1)
@@ -292,19 +296,19 @@ def main():
     parser.add_argument(
         "--zarr_cache_max_size_bytes",
         type=int,
-        default=64 * 1024 * 1024,
+        default=int(2e9),
         help="Per-process Zarr LRU cache size in bytes. Lower this if dataloader workers are OOM-killed.",
     )
     parser.add_argument(
         "--train_num_workers",
         type=int,
-        default=2,
+        default=4,
         help="Number of PyG dataloader workers for training.",
     )
     parser.add_argument(
         "--val_num_workers",
         type=int,
-        default=1,
+        default=4,
         help="Number of PyG dataloader workers for validation.",
     )
     parser.add_argument(
@@ -316,7 +320,7 @@ def main():
     parser.add_argument(
         "--dataloader_prefetch_factor",
         type=int,
-        default=1,
+        default=2,
         help="Prefetch factor for dataloaders with worker processes.",
     )
     parser.add_argument(

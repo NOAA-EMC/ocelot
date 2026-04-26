@@ -106,9 +106,17 @@ class SpatialMixBlock(nn.Module):
         owned_node_count: Optional[int] = None,
         halo_exchange: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ) -> torch.Tensor:
-        if edge_index is None:
-            return x
-        if not torch.is_tensor(edge_index) or edge_index.numel() == 0:
+        # IMPORTANT: When ``halo_exchange`` is provided, every rank must call
+        # it the same number of times per forward pass even if this rank has
+        # nothing to mix. Otherwise the collective desyncs and NCCL hangs.
+        no_edges = (
+            edge_index is None
+            or not torch.is_tensor(edge_index)
+            or edge_index.numel() == 0
+        )
+        if no_edges:
+            if halo_exchange is not None:
+                return halo_exchange(x)
             return x
 
         # edge_index: [2, E]

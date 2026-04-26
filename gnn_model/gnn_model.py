@@ -857,7 +857,23 @@ class GNNLightning(pl.LightningModule):
             dtype=self.mesh_edge_attr.dtype,
         )
         self._domain_owned_node_count = int(spec.owned_node_count)
-        self._halo_exchange = sharder.build_halo_exchange(device=self.mesh_x.device)
+        halo_group = getattr(self, "_halo_process_group", None)
+        if halo_group is None and dist.is_available() and dist.is_initialized():
+            # Halo exchanges use autograd-aware all_to_all collectives, while
+            # DDP schedules parameter-gradient allreduces during the same
+            # backward pass. If both share the default process group, autograd
+            # may legitimately enqueue them in different relative orders on
+            # different ranks (e.g. one rank reaches a DDP bucket before its
+            # halo backward, while peers are still in halo backward), causing
+            # same-SeqNum op-type mismatches. Put halo collectives on their own
+            # communicator so their ordering is independent of DDP's default
+            # group allreduces.
+            halo_group = dist.new_group(ranks=list(range(dist.get_world_size())))
+            self._halo_process_group = halo_group
+        self._halo_exchange = sharder.build_halo_exchange(
+            device=self.mesh_x.device,
+            group=halo_group,
+        )
         self._domain_parallel_initialized = True
 
     def _loss_for_backward(self, total_loss: torch.Tensor, local_count: int) -> torch.Tensor:
@@ -1174,6 +1190,31 @@ class GNNLightning(pl.LightningModule):
         num_latent_steps = step_info["num_steps"]
         step_mapping = step_info["step_mapping"]
         edge_mapping = self._map_step_edges(data, step_mapping)
+
+        # COLLECTIVE-SYNC FIX: the processor calls halo_exchange (an
+        # ``all_to_all_single``) once per latent step. If ranks disagree on
+        # ``num_latent_steps`` (because their batch has a different set of
+        # ``*_target_stepK`` node_types), they launch a different number of
+        # collectives and NCCL deadlocks. Take the max across ranks so every
+        # rank iterates the loop the same number of times. Ranks that don't
+        # have data for a given step simply skip the decoder for that step
+        # (decoders are local, so that's safe).
+        if (
+            self.is_domain_parallel
+            and dist.is_available()
+            and dist.is_initialized()
+            and dist.get_world_size() > 1
+        ):
+            device = encoded_features["mesh"].device
+            steps_tensor = torch.tensor([int(num_latent_steps)], device=device, dtype=torch.long)
+            dist.all_reduce(steps_tensor, op=dist.ReduceOp.MAX)
+            global_num_latent_steps = int(steps_tensor.item())
+            if global_num_latent_steps != num_latent_steps:
+                self.debug(
+                    f"[LATENT][SYNC] rank-local num_steps={num_latent_steps} "
+                    f"-> global max={global_num_latent_steps}"
+                )
+            num_latent_steps = global_num_latent_steps
 
         self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         self.debug(f"[LATENT] Step mapping: {step_mapping}")
@@ -1584,6 +1625,21 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"[LATENT] Warning: {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
 
         self.debug(f"[LATENT] Completed {num_latent_steps} sequential processor steps")
+
+        # COLLECTIVE-SYNC FIX: stash a zero-weighted scalar anchor on self so
+        # training_step can tie ``total_loss`` to the full forward graph. This
+        # guarantees ``loss.backward()`` walks every ``_AlltoAllSingle`` node
+        # (encoder halo + all processor halos) on every rank, even ranks that
+        # end up with ``num_predictions == 0`` (all target lists empty / no
+        # owned obs). Without this anchor, such a rank's ``total_loss`` stays
+        # a leaf tensor with no graph, backward skips every halo collective
+        # on that rank, and NCCL deadlocks at the next differing collective
+        # (e.g. rank shows ALLREDUCE at SeqNum=N while peers show ALLTOALL).
+        if self.is_domain_parallel and current_mesh_features.requires_grad:
+            self._mesh_graph_anchor = current_mesh_features.sum() * 0.0
+        else:
+            self._mesh_graph_anchor = None
+
         return predictions, mesh_features_per_step
 
     def get_current_rollout_steps(self):
@@ -1817,6 +1873,18 @@ class GNNLightning(pl.LightningModule):
         dummy_loss = 0.0
         for param in self.parameters():
             dummy_loss += param.sum() * 0.0
+
+        # COLLECTIVE-SYNC FIX: attach the model's activation graph to
+        # ``total_loss`` with zero weight so ``loss.backward()`` always walks
+        # every halo-exchange ``_AlltoAllSingle`` node, even on a rank where
+        # ``num_predictions == 0``. ``dummy_loss`` above only touches params
+        # (keeps DDP happy); it does NOT traverse the encoder/processor
+        # activations, so without this anchor those halo backwards would be
+        # pruned on a no-prediction rank and SeqNums would desync.
+        mesh_anchor = getattr(self, "_mesh_graph_anchor", None)
+        if mesh_anchor is not None:
+            total_loss = total_loss + mesh_anchor
+
         backward_loss = self._loss_for_backward(total_loss, num_predictions)
         logged_loss = self._loss_for_logging(total_loss, num_predictions)
         avg_loss = backward_loss + dummy_loss
