@@ -8,6 +8,8 @@ Shows:
 - Conventional obs types (radiosonde, aircraft, surface)
 - Pressure levels as rows
 - Heatmap showing relative contribution at each level
+
+Author: Azadeh Gholoubi
 """
 
 import pandas as pd
@@ -32,6 +34,8 @@ INSTRUMENT_NAMES = {
     'atms': 'ATMS',
     'ssmis': 'SSMIS',
     'seviri': 'SEVIRI',
+    'seviri_asr': 'SEVIRI ASR',
+    'seviri_csr': 'SEVIRI CSR',
     'avhrr': 'AVHRR',
     'ascat': 'ASCAT'
 }
@@ -42,6 +46,8 @@ CHANNEL_NAMES = {
     'atms': {i: f'ATMS ch{i+1}' for i in range(22)},
     'ssmis': {i: f'SSMIS ch{i+1}' for i in range(24)},
     'seviri': {i: f'SEVIRI ch{i+1}' for i in range(12)},
+    'seviri_asr': {i: f'SEVIRI ASR ch{4+i}' for i in range(8)},
+    'seviri_csr': {i: f'SEVIRI CSR ch{4+i}' for i in range(8)},
     'avhrr': {i: f'AVHRR ch{i+1}' for i in range(5)},
     'ascat': {0: 'ASCAT u-wind', 1: 'ASCAT v-wind'},
     'radiosonde': {0: 'Radiosonde Temp', 1: 'Radiosonde Dewpt', 2: 'Radiosonde U', 3: 'Radiosonde V'},
@@ -275,7 +281,7 @@ def plot_satellite_vs_conventional(df):
     df_pressure = df[df['pressure_hpa'].notna()].copy()
 
     # Categorize observations
-    satellite_types = ['amsua', 'atms', 'ssmis', 'seviri', 'avhrr']
+    satellite_types = ['amsua', 'atms', 'ssmis', 'seviri', 'seviri_asr', 'seviri_csr', 'avhrr']
     conventional_types = ['radiosonde', 'aircraft', 'surface_obs']
 
     df_pressure['obs_category'] = df_pressure['instrument'].apply(
@@ -417,7 +423,7 @@ def main():
     plot_relative_contribution_by_pressure(df)
     plot_top_contributors_by_level(df)
     plot_satellite_vs_conventional(df)
-    plot_satellite_channels_by_pressure(df, instruments=['amsua', 'atms', 'ssmis', 'avhrr', 'ascat', 'seviri'])
+    plot_satellite_channels_by_pressure(df, instruments=['amsua', 'atms', 'ssmis', 'avhrr', 'ascat', 'seviri_asr', 'seviri_csr', 'seviri'])
 
     print("\n" + "="*80)
     print("✓ All plots created successfully!")

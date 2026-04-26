@@ -7,6 +7,8 @@ This dataset yields (prev_batch, curr_batch) pairs where:
 
 Sequential ordering is CRITICAL for FSOI because the background
 must be built from the previous window.
+
+Author: Azadeh Gholoubi
 """
 
 import torch

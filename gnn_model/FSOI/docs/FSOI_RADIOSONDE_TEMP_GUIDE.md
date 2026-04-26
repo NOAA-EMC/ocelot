@@ -1,5 +1,7 @@
 # FSOI Radiosonde Temperature Impact Study - Quick Reference
 
+Author: Azadeh Gholoubi
+
 ## Objective
 Determine how **all observation types** (satellite + conventional) impact **radiosonde temperature forecast error**.
 

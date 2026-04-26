@@ -4,6 +4,8 @@ Plot FSOI impact by pressure level for radiosonde and aircraft observations.
 
 This script creates visualizations showing the relative contribution of each
 observation type to forecast error at different pressure levels.
+
+Author: Azadeh Gholoubi
 """
 
 import pandas as pd

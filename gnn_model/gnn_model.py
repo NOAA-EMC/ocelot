@@ -30,7 +30,7 @@ from create_mesh_graph_global import create_mesh
 from torch_geometric.data import HeteroData
 from typing import Dict, Tuple, List, Optional
 from torch_geometric.utils import scatter
-from loss import weighted_huber_loss
+from loss import weighted_huber_loss, weighted_mse_loss
 from processor_transformer import SlidingWindowTransformerProcessor
 from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
@@ -105,6 +105,7 @@ class GNNLightning(pl.LightningModule):
         instrument_weights=None,
         channel_weights=None,
         huber_delta: float = 0.1,
+        loss_type: str = "mse",
         verbose=False,
         detect_anomaly=False,
         max_rollout_steps=1,
@@ -115,6 +116,7 @@ class GNNLightning(pl.LightningModule):
         processor_window: int = 4,
         processor_depth: int = 2,
         processor_heads: int = 4,
+        spatial_mixing_steps: int = 1,
         processor_dropout: float = 0.0,
         spatial_edge_chunk_size: int = 16384,
         encoder_type: str = "interaction",     # "interaction" | "gat"
@@ -170,6 +172,9 @@ class GNNLightning(pl.LightningModule):
         self.lr = lr
         self.weight_decay = float(weight_decay)
         self.huber_delta = float(huber_delta)
+        self.loss_type = str(loss_type).lower()
+        if self.loss_type not in ("huber", "mse"):
+            raise ValueError(f"loss_type must be 'huber' or 'mse' (got: {self.loss_type!r})")
         self.lr_schedule = str(lr_schedule)
         self.warmup_pct = float(warmup_pct)
         self.warmup_start_factor = float(warmup_start_factor)
@@ -378,6 +383,12 @@ class GNNLightning(pl.LightningModule):
         else:
             self.pressure_level_projector = None
 
+        # Target valid-time + local solar time conditioning lives in the last 5 target_metadata columns.
+        self.target_time_feature_dim = 5
+        self.target_time_embed_dim = 8
+        self.target_time_embedder = make_mlp([self.target_time_feature_dim, self.target_time_embed_dim])
+        self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.hidden_dim)
+
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
@@ -398,6 +409,7 @@ class GNNLightning(pl.LightningModule):
                     dropout=processor_dropout,
                     use_causal_mask=True,
                     use_cross_scale=True,  # Enable cross-scale attention
+                    spatial_mixing_steps=spatial_mixing_steps,
                 )
             else:
                 # Use single-level transformer for fixed mesh
@@ -411,6 +423,7 @@ class GNNLightning(pl.LightningModule):
                     dropout=processor_dropout,
                     use_causal_mask=True,
                     spatial_edge_chunk_size=self.spatial_edge_chunk_size,
+                    spatial_mixing_steps=spatial_mixing_steps,
                 )
         elif self.processor_type == "interaction":
             pass  # processor will be built later
@@ -573,6 +586,22 @@ class GNNLightning(pl.LightningModule):
                 for i, down_feat in enumerate(mesh_down_features_list):
                     self.register_buffer(f"mesh_down_edge_attr_{i}", _as_f32(down_feat))
 
+    def _safe_trainer(self):
+        try:
+            return self.trainer
+        except RuntimeError:
+            return None
+
+    def _is_global_zero_safe(self) -> bool:
+        trainer = self._safe_trainer()
+        return getattr(trainer, "is_global_zero", True)
+
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        # PyG Data/HeteroData implements .to()
+        if hasattr(batch, "to"):
+            return batch.to(device)
+        return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
     def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
         if edge_attr is None:
             return edge_attr
@@ -612,7 +641,7 @@ class GNNLightning(pl.LightningModule):
         def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
             if not getattr(self, "verbose", False):
                 return
-            if hasattr(self, "trainer") and (not getattr(self.trainer, "is_global_zero", True)):
+            if not self._is_global_zero_safe():
                 return
             if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
                 self._edge_attr_debug_seen = set()
@@ -823,6 +852,32 @@ class GNNLightning(pl.LightningModule):
             if inst_name in instruments:
                 return instruments[inst_name].get("features", None)
         return None
+
+    def _compute_channel_loss(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        instrument_ids: Optional[torch.Tensor],
+        valid_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if self.loss_type == "mse":
+            return weighted_mse_loss(
+                y_pred,
+                y_true,
+                instrument_ids=instrument_ids,
+                channel_weights=self.channel_weights,
+                rebalancing=True,
+                valid_mask=valid_mask,
+            )
+        return weighted_huber_loss(
+            y_pred,
+            y_true,
+            instrument_ids=instrument_ids,
+            channel_weights=self.channel_weights,
+            delta=self.huber_delta,
+            rebalancing=True,
+            valid_mask=valid_mask,
+        )
 
     def debug(self, *args, **kwargs):
         if getattr(self, "verbose", False) and (not hasattr(self, "trainer") or self.trainer.is_global_zero):
@@ -1526,6 +1581,7 @@ class GNNLightning(pl.LightningModule):
                     # Embed viewing geometry information FIRST (before decoder initialization)
                     sa_emb = None
                     pressure_emb = None
+                    time_emb = None
                     if base_type == "ascat_target":
                         scan_angle = data[step_node_type].x  # [N,3] for ASCAT
                         sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
@@ -1552,6 +1608,16 @@ class GNNLightning(pl.LightningModule):
                         # For radiosonde and aircraft: condition on pressure level (vertical geometry)
                         pressure_level_idx = data[step_node_type].pressure_level  # [N]
                         pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
+
+                    if hasattr(data[step_node_type], "target_metadata"):
+                        target_metadata = data[step_node_type].target_metadata
+                        if (
+                            target_metadata is not None
+                            and target_metadata.numel() > 0
+                            and target_metadata.size(1) >= (2 + self.target_time_feature_dim)
+                        ):
+                            time_feat = target_metadata[:, -self.target_time_feature_dim:].to(reference_device)
+                            time_emb = self.target_time_embedder(time_feat)
 
                     # Decoder initialization: CONDITION on viewing geometry
                     # Instead of zeros, initialize decoder WITH geometry information
@@ -1580,6 +1646,10 @@ class GNNLightning(pl.LightningModule):
                     else:
                         # Conventional obs without viewing geometry: use zeros
                         target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
+
+                    # Add target-time conditioning as an additive bias over the full hidden_dim.
+                    if time_emb is not None:
+                        target_features_initial = target_features_initial + self.target_time_projector(time_emb)
 
                     edge_attr = self._edge_features(
                         data=data,
@@ -1848,15 +1918,7 @@ class GNNLightning(pl.LightningModule):
                     print(f"  Skipping this prediction to avoid crash")
                     continue
 
-                channel_loss = weighted_huber_loss(
-                    y_pred,
-                    y_true,
-                    instrument_ids=instrument_ids,
-                    channel_weights=self.channel_weights,  # dict keyed by int ids
-                    delta=self.huber_delta,
-                    rebalancing=True,
-                    valid_mask=valid_mask,
-                )
+                channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
 
                 if not torch.isfinite(channel_loss):
                     if self.trainer.is_global_zero:
@@ -1992,14 +2054,11 @@ class GNNLightning(pl.LightningModule):
                         continue  # nothing valid for this node_type/step
 
                 # Get the channel-weighted loss
-                channel_loss = weighted_huber_loss(
+                channel_loss = self._compute_channel_loss(
                     y_pred,
                     y_true,
-                    instrument_ids=instrument_ids,
-                    channel_weights=self.channel_weights,
-                    delta=self.huber_delta,
-                    rebalancing=True,
-                    valid_mask=valid_mask,
+                    instrument_ids,
+                    valid_mask,
                 )
 
                 if not torch.isfinite(channel_loss):

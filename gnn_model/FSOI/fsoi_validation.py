@@ -3,6 +3,8 @@ FSOI Validation - Finite-difference sanity checks for FSOI implementation.
 
 This module provides validation tests to ensure gradients are computed correctly
 by comparing automatic differentiation (autograd) with finite differences.
+
+Author: Azadeh Gholoubi
 """
 
 import torch

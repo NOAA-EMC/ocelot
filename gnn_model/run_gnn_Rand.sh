@@ -99,8 +99,31 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-Rand_TenYear_edge_awareSpatialMixing}"
+RUN_NAME="${RUN_NAME:-Rand_TenYear_Test}"
 echo "RUN_NAME=$RUN_NAME"
+
+# Loss/optimizer settings
+LOSS_TYPE="${LOSS_TYPE:-mse}"
+
+LR="${LR:-1.5e-4}"
+
+# LR schedule (must match train_gnn.py choices: plateau | cosine_warmup)
+LR_SCHEDULE="${LR_SCHEDULE:-cosine_warmup}"
+WARMUP_PCT="${WARMUP_PCT:-0.05}"
+WARMUP_START_FACTOR="${WARMUP_START_FACTOR:-0.01}"
+MIN_LR="${MIN_LR:-1e-6}"
+
+# If you're starting from scratch, you typically want:
+#   RESUME_FROM_LATEST=0 and LOAD_WEIGHTS_ONLY=0
+LOAD_WEIGHTS_ONLY="${LOAD_WEIGHTS_ONLY:-0}"
+
+echo "LOSS_TYPE=$LOSS_TYPE"
+echo "LR=$LR"
+echo "LR_SCHEDULE=$LR_SCHEDULE"
+echo "WARMUP_PCT=$WARMUP_PCT"
+echo "WARMUP_START_FACTOR=$WARMUP_START_FACTOR"
+echo "MIN_LR=$MIN_LR"
+echo "LOAD_WEIGHTS_ONLY=$LOAD_WEIGHTS_ONLY"
 
 # Resume behavior:
 # - Default is AUTO: if checkpoints/$RUN_NAME/last.ckpt exists, resume; otherwise start fresh.
@@ -135,6 +158,9 @@ RESUME_ARGS=()
 if [[ "$RESUME_FROM_LATEST" == "1" ]]; then
 	RESUME_ARGS+=(--resume_from_latest)
 fi
+if [[ "$LOAD_WEIGHTS_ONLY" == "1" ]]; then
+	RESUME_ARGS+=(--load_weights_only)
+fi
 
 
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
@@ -153,13 +179,18 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--val_window_days 12 \
 	--val_mode sequential \
 	--val_stride_days 12 \
-	--val_update_every_n_epochs 30 \
-	--lr 1.5e-4 \
+	--val_update_every_n_epochs 100 \
+	--lr "$LR" \
+	--lr_schedule "$LR_SCHEDULE" \
+	--warmup_pct "$WARMUP_PCT" \
+	--warmup_start_factor "$WARMUP_START_FACTOR" \
+	--min_lr "$MIN_LR" \
 	--weight_decay 1e-4 \
 	--processor_dropout 0.1 \
 	--node_dropout 0.05 \
 	--encoder_dropout 0.1 \
 	--decoder_dropout 0.1 \
+	--loss_type "$LOSS_TYPE" \
 	--huber_delta 0.5 \
 	--seed 12345 \
 	--max_epochs  3280\
@@ -168,7 +199,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--disable_early_stopping \
 	--val_csv_out_dir "val_csv/${RUN_NAME}" \
 	--val_csv_num_batches 3 \
-	--val_csv_every_n_epochs 30 \
+	--val_csv_every_n_epochs 10 \
 	--val_csv_max_rows 50000 \
 	--val_csv_sample_seed 12345
 

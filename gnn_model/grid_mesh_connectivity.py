@@ -89,6 +89,9 @@ def radius_query_indices(
         grid_edge_indices.append(np.repeat(grid_index, len(mesh_neighbors)))
         mesh_edge_indices.append(mesh_neighbors)
 
+    if not any(len(mesh_neighbors) for mesh_neighbors in query_indices):
+        return np.empty((0,), dtype=int), np.empty((0,), dtype=int)
+
     # [num_edges]
     grid_edge_indices = np.concatenate(grid_edge_indices, axis=0).astype(int)
     mesh_edge_indices = np.concatenate(mesh_edge_indices, axis=0).astype(int)

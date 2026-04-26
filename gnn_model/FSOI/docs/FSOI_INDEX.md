@@ -1,5 +1,7 @@
 # FSOI for OCELOT — Index
 
+Author: Azadeh Gholoubi
+
 This folder documents and supports the FSOI (Forecast Sensitivity to Observations Impact) workflow.
 
 Assumption: run commands from the `gnn_model/` directory.

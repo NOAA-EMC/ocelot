@@ -298,17 +298,20 @@ def obs_mesh_conn(
         g2m_edge_index = np.stack(g2m_grid_mesh_indices, axis=0)
         g2m_edge_index_torch = torch.tensor(g2m_edge_index, dtype=torch.long)
 
-        # Only care about edge features here
-        _, _, g2m_features = gc_mu.get_bipartite_graph_spatial_features(
-            senders_node_lat=grid_lat_lon_flat[:, 0],
-            senders_node_lon=grid_lat_lon_flat[:, 1],
-            senders=g2m_edge_index[0, :],
-            receivers_node_lat=grid_con_mesh_lat_lon[:, 0],
-            receivers_node_lon=grid_con_mesh_lat_lon[:, 1],
-            receivers=g2m_edge_index[1, :],
-            **GC_SPATIAL_FEATURES_KWARGS,
-        )
-        g2m_features_torch = torch.tensor(g2m_features, dtype=DEFAULT_DTYPE)
+        if g2m_edge_index.shape[1] == 0:
+            g2m_features_torch = torch.empty((0, 4), dtype=DEFAULT_DTYPE)
+        else:
+            # Only care about edge features here
+            _, _, g2m_features = gc_mu.get_bipartite_graph_spatial_features(
+                senders_node_lat=grid_lat_lon_flat[:, 0],
+                senders_node_lon=grid_lat_lon_flat[:, 1],
+                senders=g2m_edge_index[0, :],
+                receivers_node_lat=grid_con_mesh_lat_lon[:, 0],
+                receivers_node_lon=grid_con_mesh_lat_lon[:, 1],
+                receivers=g2m_edge_index[1, :],
+                **GC_SPATIAL_FEATURES_KWARGS,
+            )
+            g2m_features_torch = torch.tensor(g2m_features, dtype=DEFAULT_DTYPE)
 
     else:
 
@@ -321,24 +324,27 @@ def obs_mesh_conn(
         m2g_edge_index = np.stack(m2g_grid_mesh_indices[::-1], axis=0)
         m2g_edge_index_torch = torch.tensor(m2g_edge_index, dtype=torch.long)
 
-        # Only care about edge features here
-        _, _, m2g_features = gc_mu.get_bipartite_graph_spatial_features(
-            senders_node_lat=grid_con_mesh_lat_lon[:, 0],
-            senders_node_lon=grid_con_mesh_lat_lon[:, 1],
-            senders=m2g_edge_index[0, :],
-            receivers_node_lat=grid_lat_lon_flat[:, 0],
-            receivers_node_lon=grid_lat_lon_flat[:, 1],
-            receivers=m2g_edge_index[1, :],
-            **GC_SPATIAL_FEATURES_KWARGS,
-        )
-        m2g_features_torch = torch.tensor(m2g_features, dtype=DEFAULT_DTYPE)
+        if m2g_edge_index.shape[1] == 0:
+            m2g_features_torch = torch.empty((0, 4), dtype=DEFAULT_DTYPE)
+        else:
+            # Only care about edge features here
+            _, _, m2g_features = gc_mu.get_bipartite_graph_spatial_features(
+                senders_node_lat=grid_con_mesh_lat_lon[:, 0],
+                senders_node_lon=grid_con_mesh_lat_lon[:, 1],
+                senders=m2g_edge_index[0, :],
+                receivers_node_lat=grid_lat_lon_flat[:, 0],
+                receivers_node_lon=grid_lat_lon_flat[:, 1],
+                receivers=m2g_edge_index[1, :],
+                **GC_SPATIAL_FEATURES_KWARGS,
+            )
+            m2g_features_torch = torch.tensor(m2g_features, dtype=DEFAULT_DTYPE)
 
     num_mesh_nodes = grid_con_mesh_lat_lon.shape[0]
     print(
         f"Created graph with {num_grid_nodes} grid nodes "
         f"connected to {num_mesh_nodes}"
     )
-    print(f"#grid / #mesh = {num_grid_nodes/num_mesh_nodes :.2f}")
+    print(f"#grid / #mesh = {num_grid_nodes/num_mesh_nodes:.2f}")
     if o2m:
         return (g2m_edge_index_torch, g2m_features_torch)
     else:

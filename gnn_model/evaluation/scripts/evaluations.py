@@ -11,10 +11,50 @@ We now also support *pointwise* verification metrics directly from the new
 """
 
 import os
+import sys
 import glob
 import argparse
+
 import numpy as np
 import pandas as pd
+
+
+def _reexec_under_micromamba_if_needed() -> None:
+    """Re-exec this script under the stable micromamba env if needed.
+
+    Avoids failures when the user's current `python` is from a broken conda env.
+    """
+
+    if os.environ.get("OCELOT_SKIP_MICROMAMBA_REEXEC") == "1":
+        return
+    if os.environ.get("OCELOT_IN_MICROMAMBA") == "1":
+        return
+
+    env_home = os.environ.get(
+        "OCELOT_ENV_HOME",
+        "/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env",
+    )
+    mm = os.environ.get(
+        "OCELOT_MM",
+        os.path.join(env_home, "micromamba", "bin", "micromamba"),
+    )
+    root_prefix = os.environ.get(
+        "MAMBA_ROOT_PREFIX",
+        os.path.join(env_home, "micromamba_root"),
+    )
+    env_name = os.environ.get("OCELOT_ENV_NAME", "ocelot-cu121")
+
+    if not (os.path.exists(mm) and os.access(mm, os.X_OK)):
+        return
+
+    new_env = os.environ.copy()
+    new_env["MAMBA_ROOT_PREFIX"] = root_prefix
+    new_env["OCELOT_IN_MICROMAMBA"] = "1"
+    cmd = [mm, "run", "-n", env_name, "python"] + sys.argv
+    os.execvpe(mm, cmd, new_env)
+
+
+_reexec_under_micromamba_if_needed()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "figures"))
@@ -70,6 +110,15 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Generate the 12h-horizon aggregate plot that uses all obs from leads 3/6/9/12 in one map (default: enabled).",
+    )
+    parser.add_argument(
+        "--plot_pressure_level_maps",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Generate radiosonde/aircraft maps for each pressure level (e.g., level_850hPa/...). "
+            "Default is enabled. Use --no-plot_pressure_level_maps to disable (note: mixed-level maps are not generated for radiosonde/aircraft)."
+        ),
     )
     parser.add_argument(
         "--strict_obs_window",
@@ -140,11 +189,22 @@ def parse_args():
         action="store_true",
         help="Set if CSV files contain true_ columns for comparison with predictions"
     )
+
+    parser.add_argument(
+        "--instruments",
+        nargs="*",
+        default=None,
+        help=(
+            "Optional subset of instruments to plot (space-separated). "
+            "Example: --instruments radiosonde aircraft surface_obs. "
+            "If omitted, runs the default full plotting suite."
+        ),
+    )
     return parser.parse_args()
 
 
 def _require_plotting():
-    if ccrs is None or plt is None:
+    if ccrs is None or plt is None or TwoSlopeNorm is None:
         raise RuntimeError(
             "Plotting dependencies (cartopy/matplotlib) are not available in this environment. "
             "Run with --mode metrics or install cartopy+matplotlib."
@@ -327,6 +387,7 @@ TINY_THRESH = {
     "wind_u": 1.0,  # m/s
     "wind_v": 1.0,  # m/s
     "airPressure": 5.0,  # hPa
+    "pressureMeanSeaLevel_prepbufr": 5.0,  # hPa
 }
 
 # features that should default to ABS error when error_metric="auto"
@@ -524,7 +585,7 @@ def plot_ocelot_target_diff(
     units: str | None = None,  # e.g., "K" for ATMS/AMSU-A
     robust_q: float = 99.0,  # robust clipping for Difference panel
     point_size: int = 7,
-    projection=ccrs.PlateCarree(),  # try ccrs.Robinson() or ccrs.Mollweide() to match your sample look
+    projection=None,  # cartopy CRS; defaults to PlateCarree when plotting deps are available
 ):
     """
     Make a 3-panel figure: OCELOT (prediction), Target (truth), Difference (pred - true),
@@ -545,6 +606,8 @@ def plot_ocelot_target_diff(
         projection: Cartopy projection for the map
     """
     _require_plotting()
+    if projection is None:
+        projection = ccrs.PlateCarree()
     csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
 
     if not csv_files:
@@ -635,7 +698,7 @@ def plot_ocelot_target_diff(
             # Exclude obvious sentinel/fill values that might have passed through
             if fname == "airTemperature":
                 valid &= (t >= -80) & (t <= 60) & (p >= -80) & (p <= 60)
-            elif fname == "airPressure":
+            elif _is_surface_pressure_feature(fname):
                 valid &= (t >= 300) & (t <= 1200) & (p >= 300) & (p <= 1200)
             elif fname == "dewPointTemperature":
                 valid &= (t >= -100) & (t <= 40) & (p >= -100) & (p <= 40)
@@ -732,7 +795,7 @@ def plot_ocelot_target_diff_12h_horizon(
     units: str | None = None,
     robust_q: float = 99.0,
     point_size: int = 7,
-    projection=ccrs.PlateCarree(),
+    projection=None,
 ):
     """Single 3-panel map aggregating all observations over a multi-step forecast window.
 
@@ -741,6 +804,8 @@ def plot_ocelot_target_diff_12h_horizon(
     to target sub-windows 00–03, 03–06, 06–09, 09–12 hours after init.
     """
     _require_plotting()
+    if projection is None:
+        projection = ccrs.PlateCarree()
 
     horizon_fhrs = horizon_fhrs or [3, 6, 9, 12]
 
@@ -878,7 +943,7 @@ def plot_ocelot_target_diff_12h_horizon(
         if instrument_name == "surface_obs":
             if fname == "airTemperature":
                 valid &= (t >= -80) & (t <= 60) & (p >= -80) & (p <= 60)
-            elif fname == "airPressure":
+            elif _is_surface_pressure_feature(fname):
                 valid &= (t >= 300) & (t <= 1200) & (p >= 300) & (p <= 1200)
             elif fname == "dewPointTemperature":
                 valid &= (t >= -100) & (t <= 40) & (p >= -100) & (p <= 40)
@@ -952,7 +1017,7 @@ def plot_mesh_maps(
     fig_dir: str = DEFAULT_FIG_DIR,
     units: str | None = None,
     point_size: int = 7,
-    projection=ccrs.PlateCarree(),
+    projection=None,
 ):
     """
     Plot mesh-grid maps (no ground truth comparison).
@@ -971,6 +1036,10 @@ def plot_mesh_maps(
         point_size: Size of scatter plot points
         projection: Cartopy projection for the map
     """
+    _require_plotting()
+    if projection is None:
+        projection = ccrs.PlateCarree()
+
     csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
 
     if not csv_files:
@@ -1122,7 +1191,7 @@ def _make_axes_triple(title):
     return fig, axes
 
 
-PRESSURE_COL_CANDIDATES = ["pressure_hPa", "pressure_hpa", "airPressure", "pressure"]
+PRESSURE_COL_CANDIDATES = ["pressure_hPa", "pressure_hpa", "pressureMeanSeaLevel", "airPressure", "pressure"]
 HEIGHT_COL_CANDIDATES = ["log_pressure_height_m", "log_pressure_height"]
 PRESSURE_LEVEL_CANDIDATES = ["pressure_level_idx", "pressure_level_index"]  # Categorical level indices
 PRESSURE_LABEL_CANDIDATES = ["pressure_level_label", "level_label"]  # Human-readable labels
@@ -1136,6 +1205,10 @@ def _first_existing(df, candidates):
         if c in df.columns:
             return c
     return None
+
+
+def _is_surface_pressure_feature(name: str) -> bool:
+    return name in {"airPressure", "pressureMeanSeaLevel_prepbufr"}
 
 
 def radiosonde_metrics_by_pressure(
@@ -1743,11 +1816,15 @@ def plot_instrument_maps(
     batch_idx: int | None = None,
     init_time: str | None = None,
     fhr: int | None = None,
+    horizon_fhrs: list[int] | None = None,
+    strict_obs_window: bool = False,
     num_channels: int = 1,
     data_dir: str = "val_csv",
     fig_dir: str = DEFAULT_FIG_DIR,
     error_metric: str = "auto",  # "auto" | "absolute" | "percent" | "smape"
     drop_small_truth: bool = True,  # for percent/sMAPE
+    plot_pressure_level_maps: bool = False,
+    min_points_per_level: int = 200,
 ):
     """
     Load prediction CSV and generate maps for each feature with robust errors.
@@ -1758,13 +1835,27 @@ def plot_instrument_maps(
         batch_idx: Batch index (training mode)
         init_time: Initialization time (testing mode, format: YYYYMMDDHH)
         fhr: Forecast hour (testing mode, e.g., 3, 6, 9, 12)
+        horizon_fhrs: If set, aggregate multiple leads into a single plot set (e.g., [3,6,9,12]).
+            For radiosonde/aircraft with plot_pressure_level_maps enabled, this produces per-level horizon maps.
+        strict_obs_window: If True, raise if obs_time_unix falls outside the expected horizon window.
         num_channels: Number of channels for the instrument
         data_dir: Directory containing the CSV files
         fig_dir: Directory to save figures
         error_metric: Error metric to use (auto, absolute, percent, smape)
         drop_small_truth: Drop small truth values for relative metrics
     """
-    csv_files, filename_tag, title_tag = find_csv_files(data_dir, instrument_name, epoch, batch_idx, init_time, fhr)
+    _require_plotting()
+
+    # Horizon plots must not filter by fhr in the filename.
+    fhr_for_filename = None if horizon_fhrs is not None else fhr
+    csv_files, filename_tag, title_tag = find_csv_files(
+        data_dir,
+        instrument_name,
+        epoch,
+        batch_idx,
+        init_time,
+        fhr_for_filename,
+    )
 
     if not csv_files:
         print(f"No CSV files found matching criteria in {data_dir}")
@@ -1783,8 +1874,53 @@ def plot_instrument_maps(
     try:
         df = pd.read_csv(filepath)
         print(f"\n--- Processing {instrument_name} from {filepath} ---")
-        if fhr is not None:
-            step_hours = _infer_latent_step_hours_from_df(df)
+        step_hours = _infer_latent_step_hours_from_df(df)
+
+        if horizon_fhrs is not None:
+            horizon_fhrs = [int(x) for x in (horizon_fhrs or [3, 6, 9, 12])]
+            df = _filter_df_by_lead_hours_set(df, horizon_fhrs)
+            if len(df) == 0:
+                print(f"[WARN] No rows remain after filtering lead_hours_nominal in {horizon_fhrs}. Skipping.")
+                return
+
+            leads_present = []
+            if "lead_hours_nominal" in df.columns:
+                lead_vals = pd.to_numeric(df["lead_hours_nominal"], errors="coerce").to_numpy(dtype=float)
+                leads_present = sorted({int(round(x)) for x in lead_vals[np.isfinite(lead_vals)]})
+            if not leads_present:
+                leads_present = list(horizon_fhrs)
+
+            horizon_start_h, horizon_end_h = _infer_horizon_window_from_leads(leads_present, step_hours)
+            filename_tag = f"{filename_tag}_horizon_{horizon_start_h:02d}h_{horizon_end_h:02d}h"
+            leads_str = ", ".join(str(int(h)) for h in leads_present)
+            step_str = f"{int(step_hours)}h" if step_hours is not None else "?h"
+            title_tag = (
+                f"{title_tag} • Horizon {horizon_start_h:02d}–{horizon_end_h:02d}h after init"
+                f" (aggregated {step_str} windows; nominal leads {leads_str}h)"
+            )
+
+            if {"obs_time_unix", "init_time_unix"}.issubset(df.columns):
+                try:
+                    obs_unix = pd.to_numeric(df["obs_time_unix"], errors="coerce").to_numpy(dtype=float)
+                    init_unix = pd.to_numeric(df["init_time_unix"], errors="coerce").to_numpy(dtype=float)
+                    m = np.isfinite(obs_unix) & np.isfinite(init_unix) & (obs_unix >= 0) & (init_unix >= 0)
+                    if np.any(m):
+                        dsec = obs_unix[m] - init_unix[m]
+                        start_s = float(horizon_start_h) * 3600.0
+                        end_s = float(horizon_end_h) * 3600.0
+                        tol_s = 1.0
+                        outside = (dsec < (start_s - tol_s)) | (dsec > (end_s + tol_s))
+                        n_out = int(np.sum(outside))
+                        if n_out > 0:
+                            if strict_obs_window:
+                                raise ValueError("obs_time_unix outside expected horizon window")
+                            print(f"  [WARN] {n_out} obs_time_unix offsets outside expected horizon window")
+                except Exception as e:
+                    if strict_obs_window:
+                        raise
+                    print(f"  [WARN] Failed to validate obs_time_unix offsets for horizon maps: {e}")
+
+        elif fhr is not None:
             df = _filter_df_by_lead_hours_nominal(df, fhr)
             if len(df) == 0:
                 print(f"[WARN] No rows remain after filtering lead_hours_nominal=={int(fhr)}h. Skipping.")
@@ -1799,6 +1935,78 @@ def plot_instrument_maps(
 
     feats = _discover_features(df, num_channels)
 
+    # Optional: for radiosonde/aircraft, also create per-pressure-level maps.
+    is_pressure_instrument = instrument_name in ("radiosonde", "aircraft")
+    do_levels = bool(plot_pressure_level_maps) and is_pressure_instrument
+    level_col = _first_existing(df, PRESSURE_LEVEL_CANDIDATES) if do_levels else None
+    label_col = _first_existing(df, PRESSURE_LABEL_CANDIDATES) if do_levels else None
+    if do_levels and (level_col is None) and (label_col is None) and ("pressure_hPa" not in df.columns):
+        print("[WARN] Requested per-level maps but no pressure_level_label/idx/pressure_hPa columns found; skipping per-level maps.")
+        do_levels = False
+
+    def _level_series(frame: pd.DataFrame) -> pd.Series | None:
+        if not do_levels:
+            return None
+        if label_col is not None and label_col in frame.columns:
+            s = frame[label_col].astype(str)
+            # Normalize labels like '850hPa'
+            return s
+        if level_col is not None and level_col in frame.columns:
+            lvl = pd.to_numeric(frame[level_col], errors="coerce")
+            # Map known standard indices to labels
+            labels = []
+            for x in lvl.to_numpy(dtype=float, na_value=np.nan):
+                if not np.isfinite(x):
+                    labels.append(np.nan)
+                    continue
+                i = int(x)
+                if 0 <= i < len(STANDARD_PRESSURE_LEVELS):
+                    labels.append(f"{STANDARD_PRESSURE_LEVELS[i]}hPa")
+                else:
+                    labels.append(f"level_{i}")
+            return pd.Series(labels, index=frame.index)
+        if "pressure_hPa" in frame.columns:
+            p = pd.to_numeric(frame["pressure_hPa"], errors="coerce")
+            # Snap to nearest standard level
+            std = np.asarray(STANDARD_PRESSURE_LEVELS, dtype=float)
+            out = []
+            for x in p.to_numpy(dtype=float, na_value=np.nan):
+                if not np.isfinite(x):
+                    out.append(np.nan)
+                    continue
+                j = int(np.argmin(np.abs(std - float(x))))
+                out.append(f"{int(std[j])}hPa")
+            return pd.Series(out, index=frame.index)
+        return None
+
+    lvl_s = _level_series(df)
+    if do_levels and lvl_s is not None:
+        df = df.copy()
+        df["_pressure_level_label_eval"] = lvl_s.astype(object)
+
+    def _sorted_level_labels(series: pd.Series) -> list[str]:
+        vals = [str(x) for x in series.dropna().unique().tolist() if str(x) and str(x) != "nan"]
+
+        def _parse_hpa(label: str) -> float | None:
+            s = str(label).lower().replace(" ", "")
+            # common variants: '850hpa', 'level_850hpa', 'p=850'
+            import re
+
+            m = re.search(r"(\d{2,4})", s)
+            if not m:
+                return None
+            try:
+                return float(m.group(1))
+            except Exception:
+                return None
+
+        parsed = [(v, _parse_hpa(v)) for v in vals]
+        if any(p is not None for _, p in parsed):
+            # sort high->low pressure
+            parsed.sort(key=lambda x: (x[1] is None, -(x[1] or 0.0), x[0]))
+            return [v for v, _ in parsed]
+        return sorted(vals)
+
     for fname in feats:
         true_col = f"true_{fname}"
         pred_col = f"pred_{fname}"
@@ -1808,20 +2016,20 @@ def plot_instrument_maps(
             print(f"Warning: Missing columns for '{fname}'. Skipping.")
             continue
 
-        # validity mask
-        valid = np.ones(len(df), dtype=bool)
+        # base validity mask
+        base_valid = np.ones(len(df), dtype=bool)
         if mask_col in df.columns:
-            valid &= df[mask_col].fillna(False).astype(bool).to_numpy()
-        t = _np(df[true_col])
-        p = _np(df[pred_col])
-        lon = _np(df["lon"])
-        lat = _np(df["lat"])
+            base_valid &= df[mask_col].fillna(False).astype(bool).to_numpy()
+        t_all = _np(df[true_col])
+        p_all = _np(df[pred_col])
+        lon_all = _np(df["lon"])
+        lat_all = _np(df["lat"])
         pcol = _first_existing(df, PRESSURE_COL_CANDIDATES)
         pressure = _np(df[pcol]) if pcol else None
-        if instrument_name == "radiosonde" and pressure is not None:
-            valid &= np.isfinite(pressure) & (pressure >= 10) & (pressure <= 1100)
+        if instrument_name in ("radiosonde", "aircraft") and pressure is not None:
+            base_valid &= np.isfinite(pressure) & (pressure >= 10) & (pressure <= 1100)
 
-        valid &= np.isfinite(t) & np.isfinite(p) & np.isfinite(lon) & np.isfinite(lat)
+        base_valid &= np.isfinite(t_all) & np.isfinite(p_all) & np.isfinite(lon_all) & np.isfinite(lat_all)
 
         if instrument_name == "radiosonde":
             # Try using pressure_level_idx first (more accurate)
@@ -1850,153 +2058,145 @@ def plot_instrument_maps(
 
         # drop tiny truth for relative metrics
         tiny = TINY_THRESH.get(fname, 0.0)
-        if drop_small_truth and metric in ("percent", "smape"):
-            valid &= np.abs(t) >= tiny
 
-        if not np.any(valid):
-            print(f"Info: No valid rows for '{fname}'. Skipping.")
-            continue
+        def _plot_one(tag_dir: str, tag_suffix: str, valid_mask: np.ndarray, *, min_points: int) -> None:
+            if drop_small_truth and metric in ("percent", "smape"):
+                valid_mask = valid_mask & (np.abs(t_all) >= tiny)
+            if not np.any(valid_mask):
+                return
 
-        t, p, lon, lat = t[valid], p[valid], lon[valid], lat[valid]
+            t = t_all[valid_mask]
+            p = p_all[valid_mask]
+            lon = lon_all[valid_mask]
+            lat = lat_all[valid_mask]
 
-        # sanity to console
-        _print_sanity(fname, t, p, tiny if drop_small_truth else None)
+            if int(t.size) < int(min_points):
+                return
 
-        # shared color limits for true/pred
-        vmin = float(np.nanmin([t.min(), p.min()]))
-        vmax = float(np.nanmax([t.max(), p.max()]))
+            _print_sanity(fname, t, p, tiny if drop_small_truth else None)
 
-        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • {fname}{title_tag}")
+            vmin = float(np.nanmin([t.min(), p.min()]))
+            vmax = float(np.nanmax([t.max(), p.max()]))
 
-        # Ground Truth
-        sc1 = axes[0].scatter(lon, lat, c=t, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
-        fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
-        axes[0].set_title("Ground Truth")
+            fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • {fname}{title_tag}{tag_suffix}")
 
-        # Prediction
-        sc2 = axes[1].scatter(lon, lat, c=p, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
-        fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
-        axes[1].set_title("Prediction")
+            sc1 = axes[0].scatter(lon, lat, c=t, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+            fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
+            axes[0].set_title("Ground Truth")
 
-        # Error panel
-        if metric == "absolute":
-            err = np.abs(p - t)
-            lo, hi = np.nanpercentile(err, [1, 99])
-            err = np.clip(err, lo, hi)
-            label, cmap, norm = "Abs Error", "jet", None
-        elif metric == "percent":
-            denom = np.clip(np.abs(t), 1e-6, None)
-            err = 100.0 * (p - t) / denom
-            err = np.clip(err, -200, 200)
-            m = float(np.nanmax(np.abs(err))) if np.isfinite(err).any() else 1.0
-            label, cmap, norm = "% Error", "bwr", TwoSlopeNorm(vmin=-m, vcenter=0.0, vmax=m)
-        else:  # smape
-            err = _smape(p, t)
-            lo, hi = np.nanpercentile(err, [1, 99])
-            err = np.clip(err, lo, hi)
-            label, cmap, norm = "sMAPE (%)", "jet", None
+            sc2 = axes[1].scatter(lon, lat, c=p, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+            fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
+            axes[1].set_title("Prediction")
 
-        sc3 = axes[2].scatter(lon, lat, c=err, cmap=cmap, norm=norm, s=7, transform=ccrs.PlateCarree())
-        fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label(label)
-        axes[2].set_title(label)
+            if metric == "absolute":
+                err = np.abs(p - t)
+                lo, hi = np.nanpercentile(err, [1, 99])
+                err = np.clip(err, lo, hi)
+                label, cmap, norm = "Abs Error", "jet", None
+            elif metric == "percent":
+                denom = np.clip(np.abs(t), 1e-6, None)
+                err = 100.0 * (p - t) / denom
+                err = np.clip(err, -200, 200)
+                m = float(np.nanmax(np.abs(err))) if np.isfinite(err).any() else 1.0
+                label, cmap, norm = "% Error", "bwr", TwoSlopeNorm(vmin=-m, vcenter=0.0, vmax=m)
+            else:  # smape
+                err = _smape(p, t)
+                lo, hi = np.nanpercentile(err, [1, 99])
+                err = np.clip(err, lo, hi)
+                label, cmap, norm = "sMAPE (%)", "jet", None
 
-        for ax in axes:
-            ax.set_xlabel("Longitude")
-            _add_land_boundaries(ax)
-            ax.set_global()
-        axes[0].set_ylabel("Latitude")
+            sc3 = axes[2].scatter(lon, lat, c=err, cmap=cmap, norm=norm, s=7, transform=ccrs.PlateCarree())
+            fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label(label)
+            axes[2].set_title(label)
 
-        safe_fname = str(fname).replace(" ", "_")
-        out_png = os.path.join(fig_dir, f"{instrument_name}_map_{safe_fname}{filename_tag}_{metric}.png")
-        plt.savefig(out_png, dpi=150)
-        plt.close()
-        print(f"  -> Saved plot: {out_png}")
+            for ax in axes:
+                ax.set_xlabel("Longitude")
+                _add_land_boundaries(ax)
+                ax.set_global()
+            axes[0].set_ylabel("Latitude")
+
+            safe_fname = str(fname).replace(" ", "_")
+            os.makedirs(tag_dir, exist_ok=True)
+            out_png = os.path.join(tag_dir, f"{instrument_name}_map_{safe_fname}{filename_tag}{tag_suffix}_{metric}.png")
+            plt.savefig(out_png, dpi=150)
+            plt.close()
+            print(f"  -> Saved plot: {out_png}")
+
+        # (1) aggregate (existing behavior)
+        if is_pressure_instrument:
+            # For radiosonde/aircraft, do not generate mixed-pressure maps.
+            if not do_levels:
+                print(
+                    f"Info: Skipping {instrument_name} mixed-level map for '{fname}'. "
+                    "Enable per-level maps with --plot_pressure_level_maps (default: enabled)."
+                )
+        else:
+            if np.any(base_valid):
+                _plot_one(fig_dir, "", base_valid, min_points=1)
+            else:
+                print(f"Info: No valid rows for '{fname}'. Skipping.")
+
+        # (2) per-level
+        if do_levels and "_pressure_level_label_eval" in df.columns:
+            levels = _sorted_level_labels(df["_pressure_level_label_eval"])
+            for lvl in levels:
+                lvl_mask = base_valid & (df["_pressure_level_label_eval"].astype(str) == str(lvl)).to_numpy()
+                lvl_dir = os.path.join(fig_dir, f"level_{str(lvl)}")
+                _plot_one(lvl_dir, f"_{str(lvl)}", lvl_mask, min_points=int(min_points_per_level))
 
     # -------- optional vector wind diagnostics --------
     cols_needed = {"true_wind_u", "true_wind_v", "pred_wind_u", "pred_wind_v", "lon", "lat"}
     if cols_needed.issubset(df.columns):
-        tu = _np(df["true_wind_u"])
-        tv = _np(df["true_wind_v"])
-        pu = _np(df["pred_wind_u"])
-        pv = _np(df["pred_wind_v"])
+        tu_all = _np(df["true_wind_u"])
+        tv_all = _np(df["true_wind_v"])
+        pu_all = _np(df["pred_wind_u"])
+        pv_all = _np(df["pred_wind_v"])
         lon_all = _np(df["lon"])
         lat_all = _np(df["lat"])
 
-        valid = np.isfinite(tu) & np.isfinite(tv) & np.isfinite(pu) & np.isfinite(pv) & np.isfinite(lon_all) & np.isfinite(lat_all)
-        tu, tv, pu, pv = tu[valid], tv[valid], pu[valid], pv[valid]
-        lon_all, lat_all = lon_all[valid], lat_all[valid]
+        valid_wind = (
+            np.isfinite(tu_all)
+            & np.isfinite(tv_all)
+            & np.isfinite(pu_all)
+            & np.isfinite(pv_all)
+            & np.isfinite(lon_all)
+            & np.isfinite(lat_all)
+        )
 
-        ts = np.hypot(tu, tv)
-        ps = np.hypot(pu, pv)
-        # meteorological direction in deg [0,360)
-        tdir = (np.degrees(np.arctan2(-tu, -tv)) + 360.0) % 360.0
-        pdir = (np.degrees(np.arctan2(-pu, -pv)) + 360.0) % 360.0
-        ang = _shortest_arc_deg(pdir, tdir)
-        se = np.abs(ps - ts)
+        def _plot_wind_maps(tag_dir: str, tag_suffix: str, valid_mask: np.ndarray) -> None:
+            if valid_mask is None:
+                return
+            valid_mask = valid_wind & valid_mask
+            if not np.any(valid_mask):
+                return
+            tu_i, tv_i, pu_i, pv_i = tu_all[valid_mask], tv_all[valid_mask], pu_all[valid_mask], pv_all[valid_mask]
+            lon_i, lat_i = lon_all[valid_mask], lat_all[valid_mask]
 
-        # mask calm winds for direction
-        calm = ts < CALM_WIND_THRESHOLD
-        tdir_c = tdir.copy()
-        pdir_c = pdir.copy()
-        ang_c = ang.copy()
-        tdir_c[calm] = np.nan
-        pdir_c[calm] = np.nan
-        ang_c[calm] = np.nan
+            ts_i = np.hypot(tu_i, tv_i)
+            ps_i = np.hypot(pu_i, pv_i)
+            tdir_i = (np.degrees(np.arctan2(-tu_i, -tv_i)) + 360.0) % 360.0
+            pdir_i = (np.degrees(np.arctan2(-pu_i, -pv_i)) + 360.0) % 360.0
+            ang_i = _shortest_arc_deg(pdir_i, tdir_i)
+            se_i = np.abs(ps_i - ts_i)
 
-        # ---------- wind speed triple (ALL valid points) ----------
-        vmin = float(np.nanmin([ts.min(), ps.min()]))
-        vmax = float(np.nanmax([ts.max(), ps.max()]))
+            # ---------- wind speed triple ----------
+            vmin = float(np.nanmin([ts_i.min(), ps_i.min()]))
+            vmax = float(np.nanmax([ts_i.max(), ps_i.max()]))
 
-        fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_speed{title_tag}")
+            fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_speed{title_tag}{tag_suffix}")
 
-        sc1 = axes[0].scatter(lon_all, lat_all, c=ts, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
-        fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
-        axes[0].set_title("Ground Truth")
-
-        sc2 = axes[1].scatter(lon_all, lat_all, c=ps, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
-        fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
-        axes[1].set_title("Prediction")
-
-        lo, hi = np.nanpercentile(se, [1, 99])
-        sc3 = axes[2].scatter(lon_all, lat_all, c=np.clip(se, lo, hi), cmap="jet", s=7, transform=ccrs.PlateCarree())
-        fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("Abs Error (m/s)")
-        axes[2].set_title("Abs Error (m/s)")
-
-        for ax in axes:
-            ax.set_xlabel("Longitude")
-            _add_land_boundaries(ax)
-            ax.set_global()
-        axes[0].set_ylabel("Latitude")
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_speed{filename_tag}.png")
-        plt.savefig(out_png, dpi=150)
-        plt.close()
-        print(f"  -> Saved plot: {out_png}")
-
-        # ---------- wind direction triple (subset to non-calm) ----------
-        keep = ~np.isnan(ang_c)
-        if keep.any():
-            lon_dir, lat_dir = lon_all[keep], lat_all[keep]
-            tdir_plot, pdir_plot, ang_plot = tdir_c[keep], pdir_c[keep], ang_c[keep]
-
-            vmin = float(np.nanmin([tdir_plot.min(), pdir_plot.min()]))
-            vmax = float(np.nanmax([tdir_plot.max(), pdir_plot.max()]))
-
-            fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_direction{title_tag}")
-
-            sc1 = axes[0].scatter(lon_dir, lat_dir, c=tdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+            sc1 = axes[0].scatter(lon_i, lat_i, c=ts_i, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
             fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
             axes[0].set_title("Ground Truth")
 
-            sc2 = axes[1].scatter(lon_dir, lat_dir, c=pdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+            sc2 = axes[1].scatter(lon_i, lat_i, c=ps_i, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
             fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
             axes[1].set_title("Prediction")
 
-            lo, hi = np.nanpercentile(ang_plot, [1, 99])
-            sc3 = axes[2].scatter(lon_dir, lat_dir, c=np.clip(ang_plot, lo, hi), cmap="jet", s=7, transform=ccrs.PlateCarree())
-            fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("Abs Error (deg)")
-            axes[2].set_title("Abs Error (deg)")
+            lo, hi = np.nanpercentile(se_i, [1, 99])
+            sc3 = axes[2].scatter(lon_i, lat_i, c=np.clip(se_i, lo, hi), cmap="jet", s=7, transform=ccrs.PlateCarree())
+            fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("Abs Error (m/s)")
+            axes[2].set_title("Abs Error (m/s)")
 
             for ax in axes:
                 ax.set_xlabel("Longitude")
@@ -2005,10 +2205,67 @@ def plot_instrument_maps(
             axes[0].set_ylabel("Latitude")
 
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            out_png = os.path.join(fig_dir, f"{instrument_name}_map_wind_direction{filename_tag}.png")
+            os.makedirs(tag_dir, exist_ok=True)
+            out_png = os.path.join(tag_dir, f"{instrument_name}_map_wind_speed{filename_tag}{tag_suffix}.png")
             plt.savefig(out_png, dpi=150)
             plt.close()
             print(f"  -> Saved plot: {out_png}")
+
+            # ---------- wind direction triple (subset to non-calm) ----------
+            calm_i = ts_i < CALM_WIND_THRESHOLD
+            ang_i = ang_i.copy()
+            ang_i[calm_i] = np.nan
+
+            keep = ~np.isnan(ang_i)
+            if keep.any():
+                lon_dir, lat_dir = lon_i[keep], lat_i[keep]
+                tdir_plot, pdir_plot, ang_plot = tdir_i[keep], pdir_i[keep], ang_i[keep]
+
+                vmin = float(np.nanmin([tdir_plot.min(), pdir_plot.min()]))
+                vmax = float(np.nanmax([tdir_plot.max(), pdir_plot.max()]))
+
+                fig, axes = _make_axes_triple(f"Instrument: {instrument_name} • wind_direction{title_tag}{tag_suffix}")
+
+                sc1 = axes[0].scatter(lon_dir, lat_dir, c=tdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+                fig.colorbar(sc1, ax=axes[0], orientation="horizontal", pad=0.1).set_label("Value")
+                axes[0].set_title("Ground Truth")
+
+                sc2 = axes[1].scatter(lon_dir, lat_dir, c=pdir_plot, cmap="jet", s=7, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+                fig.colorbar(sc2, ax=axes[1], orientation="horizontal", pad=0.1).set_label("Value")
+                axes[1].set_title("Prediction")
+
+                lo, hi = np.nanpercentile(ang_plot, [1, 99])
+                sc3 = axes[2].scatter(lon_dir, lat_dir, c=np.clip(ang_plot, lo, hi), cmap="jet", s=7, transform=ccrs.PlateCarree())
+                fig.colorbar(sc3, ax=axes[2], orientation="horizontal", pad=0.1).set_label("Abs Error (deg)")
+                axes[2].set_title("Abs Error (deg)")
+
+                for ax in axes:
+                    ax.set_xlabel("Longitude")
+                    _add_land_boundaries(ax)
+                    ax.set_global()
+                axes[0].set_ylabel("Latitude")
+
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                os.makedirs(tag_dir, exist_ok=True)
+                out_png = os.path.join(tag_dir, f"{instrument_name}_map_wind_direction{filename_tag}{tag_suffix}.png")
+                plt.savefig(out_png, dpi=150)
+                plt.close()
+                print(f"  -> Saved plot: {out_png}")
+
+        if is_pressure_instrument:
+            if do_levels and ("_pressure_level_label_eval" in df.columns):
+                levels = _sorted_level_labels(df["_pressure_level_label_eval"])
+                for lvl in levels:
+                    lvl_mask = (df["_pressure_level_label_eval"].astype(str) == str(lvl)).to_numpy()
+                    lvl_dir = os.path.join(fig_dir, f"level_{str(lvl)}")
+                    _plot_wind_maps(lvl_dir, f"_{str(lvl)}", lvl_mask)
+            else:
+                print(
+                    f"Info: Skipping {instrument_name} mixed-level wind maps. "
+                    "Enable per-level maps with --plot_pressure_level_maps (default: enabled)."
+                )
+        else:
+            _plot_wind_maps(fig_dir, "", np.ones(len(df), dtype=bool))
 
 
 # ----------------- main -----------------
@@ -2041,10 +2298,12 @@ if __name__ == "__main__":
         FHR = args.fhr
         PLOT_ALL_FHRS = bool(args.plot_all_fhrs)
         PLOT_HORIZON_12H = bool(args.plot_horizon_12h)
+        PLOT_PRESSURE_LEVEL_MAPS = bool(args.plot_pressure_level_maps)
         STRICT_OBS_WINDOW = bool(args.strict_obs_window)
         DATA_DIR = args.data_dir
         PLOT_DIR = args.plot_dir
         HAS_GROUND_TRUTH = args.has_ground_truth
+        INSTRUMENTS = args.instruments
     else:  # Manually configure arguments, see examples below
         # --- Example[1] Training mode - Obs-location ourputs (Original outputs) ---
         HAS_GROUND_TRUTH = True  # Set True if have ground truth for comparison
@@ -2056,6 +2315,7 @@ if __name__ == "__main__":
         PLOT_DIR = os.path.join(DEFAULT_FIG_DIR, "val", "obs")
         PLOT_ALL_FHRS = False
         PLOT_HORIZON_12H = True
+        PLOT_PRESSURE_LEVEL_MAPS = False
         STRICT_OBS_WINDOW = False
         # --- Example[2] Training mode - Mesh Prediction ---
         # HAS_GROUND_TRUTH = False
@@ -2085,13 +2345,22 @@ if __name__ == "__main__":
     plot_dir = os.path.abspath(PLOT_DIR)
     os.makedirs(plot_dir, exist_ok=True)
 
+    selected = None
+    if 'INSTRUMENTS' in globals() and INSTRUMENTS:
+        selected = {str(x).strip() for x in INSTRUMENTS if str(x).strip()}
+
+    def _want(name: str) -> bool:
+        return True if selected is None else (str(name) in selected)
+
     # Choose plotting approach based on HAS_GROUND_TRUTH flag
     if not HAS_GROUND_TRUTH:
         # Forecast-only visualization (target files)
         print("\n=== Plotting prediction-only maps (no ground truth) ===\n")
 
-        plot_mesh_maps("radiosonde", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=5, data_dir=DATA_DIR, fig_dir=plot_dir)
-        plot_mesh_maps("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
+        if _want("radiosonde"):
+            plot_mesh_maps("radiosonde", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=5, data_dir=DATA_DIR, fig_dir=plot_dir)
+        if _want("surface_obs"):
+            plot_mesh_maps("surface_obs", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, FHR, num_channels=6, data_dir=DATA_DIR, fig_dir=plot_dir)
 
     else:
         # Model evaluation with ground truth
@@ -2113,110 +2382,99 @@ if __name__ == "__main__":
             fhrs_to_plot = [int(FHR)] if FHR is not None else []
 
         # Plot radiosonde profiles by categorical pressure level (more accurate)
-        plot_radiosonde_profiles_by_pressure_level(
-            "radiosonde",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-        )
-        if PLOT_HORIZON_12H:
-            plot_radiosonde_profiles_by_pressure_level_horizon(
+        if _want("radiosonde"):
+            plot_radiosonde_profiles_by_pressure_level(
                 "radiosonde",
                 EPOCH_TO_PLOT,
                 BATCH_IDX_TO_PLOT,
                 INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
+                FHR,
                 data_dir=DATA_DIR,
                 fig_dir=plot_dir,
             )
+            if PLOT_HORIZON_12H:
+                plot_radiosonde_profiles_by_pressure_level_horizon(
+                    "radiosonde",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                )
 
         # Plot aircraft profiles by categorical pressure level (similar to radiosonde)
         # Use lower min_samples threshold for aircraft due to sparser data distribution
-        plot_radiosonde_profiles_by_pressure_level(
-            "aircraft",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            min_samples=1000,  # Exclude very sparse levels (e.g., 150 hPa with N=240)
-        )
-        if PLOT_HORIZON_12H:
-            plot_radiosonde_profiles_by_pressure_level_horizon(
+        if _want("aircraft"):
+            plot_radiosonde_profiles_by_pressure_level(
                 "aircraft",
                 EPOCH_TO_PLOT,
                 BATCH_IDX_TO_PLOT,
                 INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
+                FHR,
                 data_dir=DATA_DIR,
                 fig_dir=plot_dir,
-                min_samples=1000,
+                min_samples=1000,  # Exclude very sparse levels (e.g., 150 hPa with N=240)
             )
+            if PLOT_HORIZON_12H:
+                plot_radiosonde_profiles_by_pressure_level_horizon(
+                    "aircraft",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    min_samples=1000,
+                )
 
-        # Aircraft conventional observations (temperature, humidity, winds)
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("aircraft", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=4, data_dir=DATA_DIR, fig_dir=plot_dir, units="various")
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
-                "aircraft",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=4,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-                units="various",
-            )
+        # Aircraft map plots are generated below via plot_instrument_maps().
+        # We intentionally do not generate mixed-level aircraft maps (all pressures together).
 
         # ASCAT backscatter: add units for sigma0
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
-                "ascat",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=3,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-                units="dB",
-            )
+        if _want("ascat"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff("ascat", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+                                        num_channels=3, data_dir=DATA_DIR, fig_dir=plot_dir, units="dB")
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "ascat",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=3,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units="dB",
+                )
 
         # brightness temperature instruments (add units to annotate RMSE like your sample)
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
-                "atms",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=22,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-                units="K",
-            )
+        if _want("atms"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff("atms", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+                                        num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "atms",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=22,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units="K",
+                )
 
         # brightness temperature instruments (add units to annotate RMSE like your sample)
         for fhr_i in fhrs_to_plot:
             plot_ocelot_target_diff("cris_pca", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=22, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+                                    num_channels=10, data_dir=DATA_DIR, fig_dir=plot_dir, units=None)
         if PLOT_HORIZON_12H:
             plot_ocelot_target_diff_12h_horizon(
                 "cris_pca",
@@ -2225,10 +2483,10 @@ if __name__ == "__main__":
                 INIT_TIME,
                 horizon_fhrs=HORIZON_FHRS,
                 strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=22,
+                num_channels=10,
                 data_dir=DATA_DIR,
                 fig_dir=plot_dir,
-                units="K",
+                units=None,
             )
 
         for fhr_i in fhrs_to_plot:
@@ -2248,290 +2506,339 @@ if __name__ == "__main__":
                 units="K",
             )
 
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("ssmis", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=24, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
+        if _want("ssmis"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff("ssmis", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+                                        num_channels=24, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "ssmis",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=24,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units="K",
+                )
+
+        if _want("seviri_asr"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff("seviri_asr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+                                        num_channels=8, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "seviri_asr",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=8,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units="K",
+                )
+        if _want("seviri_csr"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff("seviri_csr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
+                                        num_channels=8, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "seviri_csr",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=8,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units="K",
+                )
+
+        # AVHRR reflectance/albedo: omit units or add as needed
+        if _want("avhrr"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff(
+                    "avhrr",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr_i,
+                    num_channels=3,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                )
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "avhrr",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=3,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units=None,
+                )
+        # Surface obs and snow cover: omit units or add as needed
+        if _want("surface_obs"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff(
+                    "surface_obs",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr_i,
+                    num_channels=6,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                )
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "surface_obs",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=6,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units=None,
+                )
+
+        if _want("snow_cover"):
+            for fhr_i in fhrs_to_plot:
+                plot_ocelot_target_diff(
+                    "snow_cover",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr_i,
+                    num_channels=2,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                )
+            if PLOT_HORIZON_12H:
+                plot_ocelot_target_diff_12h_horizon(
+                    "snow_cover",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=2,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    units=None,
+                )
+
+        # plot_instrument_maps also requires ground truth
+
+        if _want("radiosonde"):
+            for fhr_i in fhrs_to_plot:
+                plot_instrument_maps(
+                    "radiosonde",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr_i,
+                    num_channels=5,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    error_metric="auto",
+                    drop_small_truth=True,
+                    plot_pressure_level_maps=PLOT_PRESSURE_LEVEL_MAPS,
+                )
+            if PLOT_HORIZON_12H:
+                plot_instrument_maps(
+                    "radiosonde",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr=None,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=5,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    error_metric="auto",
+                    drop_small_truth=True,
+                    plot_pressure_level_maps=PLOT_PRESSURE_LEVEL_MAPS,
+                )
+
+        if _want("aircraft"):
+            for fhr_i in fhrs_to_plot:
+                plot_instrument_maps(
+                    "aircraft",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr_i,
+                    num_channels=4,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    error_metric="auto",
+                    drop_small_truth=True,
+                    plot_pressure_level_maps=PLOT_PRESSURE_LEVEL_MAPS,
+                )
+            if PLOT_HORIZON_12H:
+                plot_instrument_maps(
+                    "aircraft",
+                    EPOCH_TO_PLOT,
+                    BATCH_IDX_TO_PLOT,
+                    INIT_TIME,
+                    fhr=None,
+                    horizon_fhrs=HORIZON_FHRS,
+                    strict_obs_window=STRICT_OBS_WINDOW,
+                    num_channels=4,
+                    data_dir=DATA_DIR,
+                    fig_dir=plot_dir,
+                    error_metric="auto",
+                    drop_small_truth=True,
+                    plot_pressure_level_maps=PLOT_PRESSURE_LEVEL_MAPS,
+                )
+
+        if _want("ascat"):
+            plot_instrument_maps(
+                "ascat",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                FHR,
+                num_channels=3,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                error_metric="absolute",
+                drop_small_truth=False,
+            )
+
+        if _want("surface_obs"):
+            plot_instrument_maps(
+                "surface_obs",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                FHR,
+                num_channels=6,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                error_metric="auto",
+                drop_small_truth=True,
+            )
+
+        # plot_instrument_maps(
+        #     "snow_cover",
+        #     EPOCH_TO_PLOT,
+        #     BATCH_IDX_TO_PLOT,
+        #     INIT_TIME,
+        #     FHR,
+        #     num_channels=2,
+        #     data_dir=DATA_DIR,
+        #     fig_dir=plot_dir,
+        #     error_metric="auto",
+        #     drop_small_truth=True,
+        # )
+
+        if _want("avhrr"):
+            plot_instrument_maps(
+                "avhrr",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                FHR,
+                num_channels=3,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                error_metric="percent",
+                drop_small_truth=False,
+            )
+
+        if _want("atms"):
+            plot_instrument_maps(
+                "atms",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                FHR,
+                num_channels=22,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                error_metric="percent",
+                drop_small_truth=False,
+            )
+
+        if _want("cris_pca"):
+            plot_instrument_maps(
+                "cris_pca",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                FHR,
+                num_channels=10,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                error_metric="percent",
+                drop_small_truth=False,
+            )
+
+        if _want("amsua"):
+            plot_instrument_maps(
+                "amsua",
+                EPOCH_TO_PLOT,
+                BATCH_IDX_TO_PLOT,
+                INIT_TIME,
+                FHR,
+                num_channels=15,
+                data_dir=DATA_DIR,
+                fig_dir=plot_dir,
+                error_metric="percent",
+                drop_small_truth=False,
+            )
+
+        if _want("ssmis"):
+            plot_instrument_maps(
                 "ssmis",
                 EPOCH_TO_PLOT,
                 BATCH_IDX_TO_PLOT,
                 INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
+                FHR,
                 num_channels=24,
                 data_dir=DATA_DIR,
                 fig_dir=plot_dir,
-                units="K",
+                error_metric="percent",
+                drop_small_truth=False,
             )
 
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("seviri_asr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
+        if _want("seviri_asr"):
+            plot_instrument_maps(
                 "seviri_asr",
                 EPOCH_TO_PLOT,
                 BATCH_IDX_TO_PLOT,
                 INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=16,
+                FHR,
+                num_channels=8,
                 data_dir=DATA_DIR,
                 fig_dir=plot_dir,
-                units="K",
+                error_metric="percent",
+                drop_small_truth=False,
             )
 
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff("seviri_csr", EPOCH_TO_PLOT, BATCH_IDX_TO_PLOT, INIT_TIME, fhr_i,
-                                    num_channels=16, data_dir=DATA_DIR, fig_dir=plot_dir, units="K")
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
+        if _want("seviri_csr"):
+            plot_instrument_maps(
                 "seviri_csr",
                 EPOCH_TO_PLOT,
                 BATCH_IDX_TO_PLOT,
                 INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=16,
+                FHR,
+                num_channels=8,
                 data_dir=DATA_DIR,
                 fig_dir=plot_dir,
-                units="K",
+                error_metric="percent",
+                drop_small_truth=False,
             )
-
-        # AVHRR reflectance/albedo: omit units or add as needed
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff(
-                "avhrr",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                fhr_i,
-                num_channels=3,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-            )
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
-                "avhrr",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=3,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-                units=None,
-            )
-        # Surface obs and snow cover: omit units or add as needed
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff(
-                "surface_obs",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                fhr_i,
-                num_channels=6,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-            )
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
-                "surface_obs",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=6,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-                units=None,
-            )
-
-        for fhr_i in fhrs_to_plot:
-            plot_ocelot_target_diff(
-                "snow_cover",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                fhr_i,
-                num_channels=2,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-            )
-        if PLOT_HORIZON_12H:
-            plot_ocelot_target_diff_12h_horizon(
-                "snow_cover",
-                EPOCH_TO_PLOT,
-                BATCH_IDX_TO_PLOT,
-                INIT_TIME,
-                horizon_fhrs=HORIZON_FHRS,
-                strict_obs_window=STRICT_OBS_WINDOW,
-                num_channels=2,
-                data_dir=DATA_DIR,
-                fig_dir=plot_dir,
-                units=None,
-            )
-
-        # plot_instrument_maps also requires ground truth
-
-        plot_instrument_maps(
-            "radiosonde",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=5,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="auto",  # ABS for most, sMAPE for pressure
-            drop_small_truth=True,
-        )
-
-        # Aircraft: similar to radiosonde with 4 features (T, q, u, v)
-        plot_instrument_maps(
-            "aircraft",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=4,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="auto",  # ABS for temperature and winds
-            drop_small_truth=True,
-        )
-
-        # ASCAT backscatter: use absolute error for sigma0 measurements
-        plot_instrument_maps(
-            "ascat",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=3,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="absolute",  # Absolute error for backscatter coefficients
-            drop_small_truth=False,
-        )
-
-        # Surface obs: ABS for thermo/u/v, sMAPE for pressure
-        plot_instrument_maps(
-            "surface_obs",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=6,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="auto",  # ABS for most, sMAPE for pressure
-            drop_small_truth=True,
-        )
-
-        plot_instrument_maps(
-            "snow_cover",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=2,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="auto",
-            drop_small_truth=True,
-        )
-
-        plot_instrument_maps(
-            "avhrr",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=3,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )
-
-        plot_instrument_maps(
-            "atms",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=22,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )
-
-        plot_instrument_maps(
-            "cris_pca",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=22,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )
-
-        plot_instrument_maps(
-            "amsua",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=15,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )
-
-        plot_instrument_maps(
-            "ssmis",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=24,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )
-
-        plot_instrument_maps(
-            "seviri_asr",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=16,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )
-
-        plot_instrument_maps(
-            "seviri_csr",
-            EPOCH_TO_PLOT,
-            BATCH_IDX_TO_PLOT,
-            INIT_TIME,
-            FHR,
-            num_channels=16,
-            data_dir=DATA_DIR,
-            fig_dir=plot_dir,
-            error_metric="percent",
-            drop_small_truth=False,
-        )

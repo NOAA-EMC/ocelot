@@ -17,7 +17,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}" ]]; then
+  GNN_MODEL_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+else
+  GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
 OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 
 cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
@@ -57,6 +61,18 @@ fi
 
 # Which lead times to plot (hours)
 FHR_LIST=${FHR_LIST:-"3 6 9 12"}
+
+# Radiosonde map levels (hPa) for GFS comparisons.
+# Used only when INSTRUMENT=radiosonde.
+RADIOSONDE_LEVELS=${RADIOSONDE_LEVELS:-"1000 850 700 500 300 200"}
+RADIOSONDE_LEVEL_TOL_HPA=${RADIOSONDE_LEVEL_TOL_HPA:-25}
+
+# Optional obs-space pressure filtering before building *_vs_gfs.csv.
+# Useful for radiosonde/aircraft mesh-level runs (e.g. 850 hPa only).
+OBS_SPACE_PRESSURE_LEVEL_IDX=${OBS_SPACE_PRESSURE_LEVEL_IDX:-}
+OBS_SPACE_PRESSURE_LEVEL_LABEL=${OBS_SPACE_PRESSURE_LEVEL_LABEL:-}
+OBS_SPACE_PRESSURE_HPA=${OBS_SPACE_PRESSURE_HPA:-}
+OBS_SPACE_PRESSURE_TOL_HPA=${OBS_SPACE_PRESSURE_TOL_HPA:-25}
 
 # Extra CLI args forwarded to evaluations.py (optional)
 # Example:
@@ -100,10 +116,29 @@ echo "CKPT=${CKPT}"
 echo "OUT_ROOT=${OUT_ROOT}"
 echo "GFS_ROOT=${GFS_ROOT}"
 echo "GFS_TIME_MODE=${GFS_TIME_MODE}"
+echo "RADIOSONDE_LEVELS=${RADIOSONDE_LEVELS}"
 
-# Conda
-source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
-conda activate gnn-env
+if [ "${INSTRUMENT}" = "radiosonde" ] && [ -z "${OBS_SPACE_PRESSURE_LEVEL_IDX}" ] && [ -n "${MESH_PRESSURE_LEVEL_IDX:-}" ]; then
+  OBS_SPACE_PRESSURE_LEVEL_IDX="${MESH_PRESSURE_LEVEL_IDX}"
+fi
+
+if [ -n "${OBS_SPACE_PRESSURE_LEVEL_IDX}" ] || [ -n "${OBS_SPACE_PRESSURE_LEVEL_LABEL}" ] || [ -n "${OBS_SPACE_PRESSURE_HPA}" ]; then
+  echo "OBS_SPACE pressure filter: idx=${OBS_SPACE_PRESSURE_LEVEL_IDX:-<none>} label=${OBS_SPACE_PRESSURE_LEVEL_LABEL:-<none>} hPa=${OBS_SPACE_PRESSURE_HPA:-<none>} tol=${OBS_SPACE_PRESSURE_TOL_HPA}"
+fi
+
+# Use the clean micromamba environment (does not depend on conda).
+OCELOT_ENV_HOME="${OCELOT_ENV_HOME:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env}"
+MM="${MM:-${OCELOT_ENV_HOME}/micromamba/bin/micromamba}"
+export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-${OCELOT_ENV_HOME}/micromamba_root}"
+OCELOT_ENV_NAME="${OCELOT_ENV_NAME:-ocelot-cu121}"
+
+if [[ ! -x "${MM}" ]]; then
+  echo "ERROR: micromamba not found/executable at: ${MM}"
+  echo "Create it via: cd ${OCELOT_ENV_HOME} && ./create_env.sh ${OCELOT_ENV_NAME}"
+  exit 2
+fi
+
+PY=("${MM}" run -n "${OCELOT_ENV_NAME}" python)
 
 # Ensure we run the code from THIS checkout (not NNJA mirror)
 export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
@@ -120,7 +155,7 @@ mkdir -p "${OUT_ROOT}" "${PLOT_TRUTH_DIR}" "${PLOT_GFS_DIR}" "${PLOT_MESH_GFS_DI
 
 echo "==== 1) Prediction (obs-space, with truth) ===="
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
-  python predict_gnn.py \
+  "${MM}" run -n "${OCELOT_ENV_NAME}" python predict_gnn.py \
     --checkpoint "${CKPT}" \
     --start_date "${START_DATE}" \
     --end_date "${END_DATE}" \
@@ -131,7 +166,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
     --batch_size 1
 
 echo "==== 2) OCELOT vs Truth plots (per lead hour) ===="
-python "${EVAL_SCRIPT}" --mode plots --has_ground_truth \
+"${PY[@]}" "${EVAL_SCRIPT}" --mode plots --has_ground_truth \
   --data_dir "${OBS_DIR}" \
   --plot_dir "${PLOT_TRUTH_DIR}" \
   --init_time "${INIT_TIME}" \
@@ -141,13 +176,13 @@ python "${EVAL_SCRIPT}" --mode plots --has_ground_truth \
   ${EVAL_EXTRA_ARGS}
 
 echo "==== 2b) Pointwise metrics (pred vs truth) ===="
-python "${EVAL_SCRIPT}" --mode metrics \
+"${PY[@]}" "${EVAL_SCRIPT}" --mode metrics \
   --data_dir "${OBS_DIR}" \
   --metrics_pattern "pred_*init_${INIT_TIME}.csv" \
   --metrics_out "${OUT_ROOT}/metrics_pointwise_init_${INIT_TIME}.csv" \
   --metrics_groupby instrument,lead_hours_nominal
 
-echo "==== 3) Build *_vs_gfs.csv (surface_obs: wind + t2m + sp) ===="
+echo "==== 3) Build *_vs_gfs.csv (obs-space OCELOT vs GFS) ===="
 OCELOT_CSV="${OBS_DIR}/pred_${INSTRUMENT}_target_init_${INIT_TIME}.csv"
 OUT_VS_GFS="${OBS_DIR}/pred_${INSTRUMENT}_target_init_${INIT_TIME}_vs_gfs.csv"
 
@@ -158,18 +193,31 @@ if [ ! -f "${OCELOT_CSV}" ]; then
   exit 3
 fi
 
-python "${COMPARE_TO_GFS_SCRIPT}" \
-  --instrument "${INSTRUMENT}" \
-  --ocelot_csv "${OCELOT_CSV}" \
-  --gfs_root "${GFS_ROOT}" \
-  --out_csv "${OUT_VS_GFS}" \
-  --init_mode from_csv \
-  --interp nearest \
-  --gfs_time_mode "${GFS_TIME_MODE}" \
+COMPARE_TO_GFS_ARGS=(
+  --instrument "${INSTRUMENT}"
+  --ocelot_csv "${OCELOT_CSV}"
+  --gfs_root "${GFS_ROOT}"
+  --out_csv "${OUT_VS_GFS}"
+  --init_mode from_csv
+  --interp nearest
+  --gfs_time_mode "${GFS_TIME_MODE}"
   --chunk_size 200000
+)
+
+if [ -n "${OBS_SPACE_PRESSURE_LEVEL_IDX}" ]; then
+  COMPARE_TO_GFS_ARGS+=(--pressure_level_idx "${OBS_SPACE_PRESSURE_LEVEL_IDX}")
+fi
+if [ -n "${OBS_SPACE_PRESSURE_LEVEL_LABEL}" ]; then
+  COMPARE_TO_GFS_ARGS+=(--pressure_level_label "${OBS_SPACE_PRESSURE_LEVEL_LABEL}")
+fi
+if [ -n "${OBS_SPACE_PRESSURE_HPA}" ]; then
+  COMPARE_TO_GFS_ARGS+=(--pressure_hpa "${OBS_SPACE_PRESSURE_HPA}" --pressure_hpa_tol "${OBS_SPACE_PRESSURE_TOL_HPA}")
+fi
+
+"${PY[@]}" "${COMPARE_TO_GFS_SCRIPT}" "${COMPARE_TO_GFS_ARGS[@]}"
 
 echo "==== 3b) Sanity-check GFS coverage (fail fast if missing) ===="
-python -c "
+"${PY[@]}" -c "
 import pandas as pd
 p='${OUT_VS_GFS}'
 df=pd.read_csv(p, nrows=200000)
@@ -183,19 +231,37 @@ if non_null==0:
 "
 
 echo "==== 4) Plots: RMSE vs fhr + maps (OCELOT vs Truth vs GFS) ===="
-python "${PLOT_GFS_COMPARE_SCRIPT}" \
+PLOT_VARS="wind_temperature_pressure"
+if [ "${INSTRUMENT}" == "radiosonde" ] || [ "${INSTRUMENT}" == "aircraft" ]; then
+  PLOT_VARS="wind_temperature"
+fi
+
+if [ "${INSTRUMENT}" == "radiosonde" ]; then
+  "${PY[@]}" "${PLOT_GFS_COMPARE_SCRIPT}" \
+    --init_time "${INIT_TIME}" \
+    --data_dir "${OBS_DIR}" \
+    --plot_dir "${PLOT_GFS_DIR}" \
+    --instrument "${INSTRUMENT}" \
+    --vars "${PLOT_VARS}" \
+    --chunksize 200000 \
+    --maps --fhrs ${FHR_LIST} \
+    --levels ${RADIOSONDE_LEVELS} \
+    --level_tol_hpa ${RADIOSONDE_LEVEL_TOL_HPA}
+else
+  "${PY[@]}" "${PLOT_GFS_COMPARE_SCRIPT}" \
   --init_time "${INIT_TIME}" \
   --data_dir "${OBS_DIR}" \
   --plot_dir "${PLOT_GFS_DIR}" \
   --instrument "${INSTRUMENT}" \
-  --vars wind_temperature_pressure \
+    --vars "${PLOT_VARS}" \
   --chunksize 200000 \
   --maps --fhrs ${FHR_LIST}
+fi
 
 echo "==== 5) Mesh-grid: interpolate GFS onto OCELOT mesh grid (same points) ===="
 if [ -d "${MESH_DIR}" ]; then
   shopt -s nullglob
-  mesh_matches=("${MESH_DIR}/${INSTRUMENT}_init_${INIT_TIME}_f"*.csv)
+  mesh_matches=("${MESH_DIR}"/*_init_${INIT_TIME}_f*.csv)
   filtered_matches=()
   for mesh_path in "${mesh_matches[@]}"; do
     case "${mesh_path}" in
@@ -206,40 +272,65 @@ if [ -d "${MESH_DIR}" ]; then
   shopt -u nullglob
 
   if [ ${#filtered_matches[@]} -eq 0 ]; then
-    echo "[INFO] No mesh-grid prediction CSVs found for instrument=${INSTRUMENT} init=${INIT_TIME}; skipping step 5."
+    echo "[INFO] No mesh-grid prediction CSVs found for init=${INIT_TIME}; skipping step 5."
     echo "[INFO] Mesh-grid files are only produced when prediction runs with enable_mesh_pred: true."
   else
-  # Mesh-grid outputs are one file per fhr: <instrument>_init_<INIT>_f<FFF>.csv
-  for fhr in ${FHR_LIST}; do
-    mesh_csv="${MESH_DIR}/${INSTRUMENT}_init_${INIT_TIME}_f$(printf '%03d' ${fhr}).csv"
-    gfs_on_ocelot_mesh_csv="${MESH_DIR}/${INSTRUMENT}_init_${INIT_TIME}_f$(printf '%03d' ${fhr})_gfs_on_ocelot_mesh.csv"
-    if [ -f "${mesh_csv}" ]; then
-      # Fail fast: require mesh_idx so we can guarantee strict alignment across mesh products.
-      if ! head -n 1 "${mesh_csv}" | tr ',' '\n' | grep -qx "mesh_idx"; then
-        echo "ERROR: mesh-grid CSV is missing mesh_idx (old format): ${mesh_csv}"
-        echo "Re-run prediction with the updated code that writes mesh_idx."
-        exit 4
-      fi
-
-      python "${COMPARE_MESH_TO_GFS_SCRIPT}" \
-        --mesh_csv "${mesh_csv}" \
-        --gfs_root "${GFS_ROOT}" \
-        --out_csv "${gfs_on_ocelot_mesh_csv}" \
-        --interp nearest
-
-      # Plot a small set of variables if present.
-      mkdir -p "${PLOT_MESH_GFS_DIR}/fhr${fhr}"
-      for v in u10 v10 t2m sp; do
-        python "${PLOT_MESH_VS_GFS_MAPS_SCRIPT}" \
-          --csv "${gfs_on_ocelot_mesh_csv}" \
-          --plot_dir "${PLOT_MESH_GFS_DIR}/fhr${fhr}" \
-          --var "${v}" \
-          --gfs_root "${GFS_ROOT}" || true
+    mesh_instruments=()
+    for mesh_path in "${filtered_matches[@]}"; do
+      mesh_base="$(basename "${mesh_path}")"
+      mesh_inst="${mesh_base%%_init_${INIT_TIME}_f*}"
+      already_added=0
+      for existing_inst in "${mesh_instruments[@]}"; do
+        if [ "${existing_inst}" = "${mesh_inst}" ]; then
+          already_added=1
+          break
+        fi
       done
-    else
-      echo "[WARN] Mesh-grid CSV not found for fhr=${fhr}: ${mesh_csv}"
-    fi
-  done
+      if [ ${already_added} -eq 0 ]; then
+        mesh_instruments+=("${mesh_inst}")
+      fi
+    done
+
+    echo "[INFO] Mesh-grid compare instruments for init=${INIT_TIME}: ${mesh_instruments[*]}"
+
+    # Mesh-grid outputs are one file per fhr: <instrument>_init_<INIT>_f<FFF>.csv
+    for mesh_instrument in "${mesh_instruments[@]}"; do
+      for fhr in ${FHR_LIST}; do
+        mesh_csv="${MESH_DIR}/${mesh_instrument}_init_${INIT_TIME}_f$(printf '%03d' ${fhr}).csv"
+        gfs_on_ocelot_mesh_csv="${MESH_DIR}/${mesh_instrument}_init_${INIT_TIME}_f$(printf '%03d' ${fhr})_gfs_on_ocelot_mesh.csv"
+        if [ -f "${mesh_csv}" ]; then
+          # Fail fast: require mesh_idx so we can guarantee strict alignment across mesh products.
+          if ! head -n 1 "${mesh_csv}" | tr ',' '\n' | grep -qx "mesh_idx"; then
+            echo "ERROR: mesh-grid CSV is missing mesh_idx (old format): ${mesh_csv}"
+            echo "Re-run prediction with the updated code that writes mesh_idx."
+            exit 4
+          fi
+
+          echo "[INFO] Building mesh-vs-GFS CSV for instrument=${mesh_instrument} fhr=${fhr}"
+          "${PY[@]}" "${COMPARE_MESH_TO_GFS_SCRIPT}" \
+            --mesh_csv "${mesh_csv}" \
+            --gfs_root "${GFS_ROOT}" \
+            --out_csv "${gfs_on_ocelot_mesh_csv}" \
+            --interp nearest
+
+          # Plot a small set of variables if present.
+          mkdir -p "${PLOT_MESH_GFS_DIR}/fhr${fhr}"
+          mesh_vars="u10 v10 t2m sp"
+          if [ "${mesh_instrument}" == "radiosonde" ] || [ "${mesh_instrument}" == "aircraft" ]; then
+            mesh_vars="u v temp"
+          fi
+          for v in ${mesh_vars}; do
+            "${PY[@]}" "${PLOT_MESH_VS_GFS_MAPS_SCRIPT}" \
+              --csv "${gfs_on_ocelot_mesh_csv}" \
+              --plot_dir "${PLOT_MESH_GFS_DIR}/fhr${fhr}" \
+              --var "${v}" \
+              --gfs_root "${GFS_ROOT}" || true
+          done
+        else
+          echo "[WARN] Mesh-grid CSV not found for instrument=${mesh_instrument} fhr=${fhr}: ${mesh_csv}"
+        fi
+      done
+    done
   fi
 else
   echo "[WARN] Mesh-grid directory not found: ${MESH_DIR}"
