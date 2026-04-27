@@ -182,6 +182,16 @@ echo "Key settings:"
 echo "  - Target instrument: radiosonde"
 echo "  - Target variables: ALL (T, Td, u, v)"
 echo "  - Forecast lead: +12h (step 0)"
+
+# Data path for FSOI inference (override with env var DATA_PATH if needed)
+DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
+echo "  - Data path: $DATA_PATH"
+
+if [ ! -d "$DATA_PATH" ]; then
+    echo "ERROR: DATA_PATH does not exist: $DATA_PATH"
+    echo "Set a valid path via: DATA_PATH=/path/to/data sbatch $(basename \"$0\") --checkpoint /path/to/model.ckpt"
+    exit 1
+fi
 echo ""
 
 # ========================================================================
@@ -206,7 +216,11 @@ echo ""
 echo "=========================================="
 echo "Step 2: Computing FSOI..."
 echo "=========================================="
-python FSOI/fsoi_inference.py --checkpoint "$CHECKPOINT_PATH" --config "$CONFIG_FILE" 2>&1 | tee "${LOG_DIR}/fsoi_inference_${SLURM_JOB_ID}.log"
+python FSOI/fsoi_inference.py \
+    --checkpoint "$CHECKPOINT_PATH" \
+    --config "$CONFIG_FILE" \
+    --data_path "$DATA_PATH" \
+    2>&1 | tee "${LOG_DIR}/fsoi_inference_${SLURM_JOB_ID}.log"
 
 if [ $? -ne 0 ]; then
     echo "ERROR: FSOI computation failed. Check ${LOG_DIR}/fsoi_inference_${SLURM_JOB_ID}.log"

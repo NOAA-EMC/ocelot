@@ -65,7 +65,8 @@ memory:
     atms: 50000
     amsua: 30000
     ssmis: 30000
-    seviri: 30000
+    seviri_asr: 30000
+    seviri_csr: 30000
 
 model:
   checkpoint_path: "checkpoints/"

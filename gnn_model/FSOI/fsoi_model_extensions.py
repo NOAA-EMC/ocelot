@@ -78,21 +78,37 @@ def predict_at_targets(
     # ===========================================================================
     # STEP 1: Copy INPUT nodes from prev_batch (encoder - previous observations)
     # ===========================================================================
+    # NOTE: Skip node types with 0 observations.  PyG's Batch.from_data_list
+    # calls value.max() on edge_index/index attrs and crashes on 0-row tensors,
+    # and a 0-row node store contributes nothing to the forward pass anyway.
     for node_type in prev_batch.node_types:
         if "_input" in node_type:
+            store = prev_batch[node_type]
+            n_rows = 0
+            if hasattr(store, 'x') and store.x is not None:
+                n_rows = store.x.shape[0]
+            elif hasattr(store, 'lat') and store.lat is not None:
+                n_rows = store.lat.shape[0]
+            if n_rows == 0:
+                print(f"[Background] Skipping empty input node store {node_type} (0 obs in prev_batch)")
+                continue
+
             # Copy ALL attributes from prev_batch input nodes
-            for attr_name in prev_batch[node_type].keys():
+            for attr_name in store.keys():
                 if attr_name not in ['edge_index', 'y']:  # Skip edges and targets
-                    forecast_batch[node_type][attr_name] = prev_batch[node_type][attr_name]
+                    forecast_batch[node_type][attr_name] = store[attr_name]
 
             inst_name = node_type.replace("_input", "")
-            print(f"[Background] Copied {node_type} from prev_batch")
+            print(f"[Background] Copied {node_type} from prev_batch ({n_rows} obs)")
 
     # ===========================================================================
     # STEP 2: Build ENCODER edges from prev_batch INPUT locations → mesh
     # ===========================================================================
     for node_type in prev_batch.node_types:
         if "_input" in node_type:
+            # Skip if we did not copy this input node store in STEP 1
+            if node_type not in forecast_batch.node_types:
+                continue
             edge_type = (node_type, "to", "mesh")
 
             # Rebuild encoder edges using prev obs locations
@@ -108,6 +124,10 @@ def predict_at_targets(
                     model.mesh_structure["mesh_list"],
                     o2m=True,  # obs to mesh
                 )
+
+                if edge_index_enc.numel() == 0 or edge_index_enc.shape[1] == 0:
+                    print(f"[Background] Skipping encoder edges for {node_type}: 0 edges")
+                    continue
 
                 forecast_batch[edge_type].edge_index = edge_index_enc
                 forecast_batch[edge_type].edge_attr = edge_attr_enc
@@ -135,6 +155,18 @@ def predict_at_targets(
 
             pseudo_target_type = f"{inst_name}_target_step{forecast_step}"
             curr_input = curr_batch_metadata[node_type_input]
+
+            # Skip instruments with 0 obs in curr_batch — building a 0-row
+            # pseudo-target would later crash Batch.from_data_list.
+            n_curr = 0
+            if hasattr(curr_input, 'x') and curr_input.x is not None:
+                n_curr = curr_input.x.shape[0]
+            elif hasattr(curr_input, 'lat') and curr_input.lat is not None:
+                n_curr = curr_input.lat.shape[0]
+            if n_curr == 0:
+                print(f"[Background] Skipping pseudo-target {pseudo_target_type}: 0 curr obs")
+                subsample_indices[inst_name] = None
+                continue
 
             # ---- optional subsample ----------------------------------------
             N_raw = curr_input.x.shape[0] if hasattr(curr_input, 'x') else 0
@@ -256,6 +288,10 @@ def predict_at_targets(
                     o2m=False,  # mesh to obs (decoder)
                 )
 
+                if edge_index_dec.numel() == 0 or edge_index_dec.shape[1] == 0:
+                    print(f"[Background] Skipping decoder edges to {pseudo_target_type}: 0 edges")
+                    continue
+
                 forecast_batch[edge_type].edge_index = edge_index_dec
                 forecast_batch[edge_type].edge_attr = edge_attr_dec
 
@@ -271,6 +307,29 @@ def predict_at_targets(
         dtype=torch.float32,
         device=device,
     )
+
+    # ---- Defensive scrub: drop any 0-element node/edge stores ------------
+    # PyG's collate calls value.max() on edge_index / index attrs and crashes
+    # if a tensor has numel()==0.  Remove any node/edge type that ended up
+    # empty before batching.
+    for nt in list(forecast_batch.node_types):
+        store = forecast_batch[nt]
+        empty = False
+        for k in list(store.keys()):
+            v = store[k]
+            if torch.is_tensor(v) and v.numel() == 0:
+                empty = True
+                break
+        if empty:
+            print(f"[Background] Scrubbing empty node store {nt} before batching")
+            del forecast_batch[nt]
+
+    for et in list(forecast_batch.edge_types):
+        store = forecast_batch[et]
+        ei = getattr(store, 'edge_index', None)
+        if ei is None or (torch.is_tensor(ei) and ei.numel() == 0):
+            print(f"[Background] Scrubbing empty edge store {et} before batching")
+            del forecast_batch[et]
 
     # Batch and move to device
     forecast_batch = Batch.from_data_list([forecast_batch])
