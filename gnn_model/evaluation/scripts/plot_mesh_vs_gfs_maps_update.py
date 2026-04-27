@@ -558,6 +558,8 @@ def main() -> int:
     base_title = f"mesh-grid {args.var}{lvl} • init={df['init_time'].iloc[0] if 'init_time' in df.columns else ''} fhr={df['fhr'].iloc[0] if 'fhr' in df.columns else ''}"
     level_suffix = f"_{'_' + level_tag if level_tag else ''}"
 
+    instrument = os.path.basename(args.csv).split("_init_")[0]
+
     if has_analysis:
         # 6-panel: need all three to be finite at the same points
         valid = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(pred) & np.isfinite(gfs) & np.isfinite(anl)
@@ -566,7 +568,7 @@ def main() -> int:
         title = f"{base_title} • vs GFS forecast + analysis"
         out_png = os.path.join(
             args.plot_dir,
-            f"mesh_6panel_{args.var}{level_suffix}.png",
+            f"{instrument}_mesh_6panel_{args.var}{level_suffix}.png",
         )
         plot_sixpanel(_lon, _lat, _pred, _gfs, _anl, title, out_png,
                       units=units, point_size=int(args.point_size))
@@ -578,7 +580,7 @@ def main() -> int:
         title = f"{base_title} • OCELOT_on_mesh vs GFS_on_mesh"
         out_png = os.path.join(
             args.plot_dir,
-            f"mesh_OCELOT_on_mesh_vs_GFS_on_mesh_{args.var}{level_suffix}.png",
+            f"{instrument}_mesh_OCELOT_vs_GFS_{args.var}{level_suffix}.png",
         )
         plot_tripanel(_lon, _lat, _pred, _gfs, title, out_png,
                       units=units, point_size=int(args.point_size))

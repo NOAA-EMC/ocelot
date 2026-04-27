@@ -395,7 +395,6 @@ def add_gfs_to_isobaric_mesh(mesh_csv: str, gfs_root: str, method: str) -> pd.Da
     out["init_time"] = init
     out["fhr"] = fhr
     out["valid_time"] = valid_ymdh
-    out["instrument"] = inst
     return out
 
 
@@ -412,11 +411,11 @@ def main() -> int:
         required=True,
         help="Mesh-grid prediction CSV, e.g. surface_obs_init_YYYYMMDDHH_f003.csv",
     )
-    ap.add_argument("--out_csv", required=True)
     ap.add_argument(
         "--gfs_root",
         default="/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25",
     )
+    ap.add_argument("--out_csv", required=True)
     ap.add_argument("--interp", default="nearest", choices=["nearest", "linear"])
     args = ap.parse_args()
 
