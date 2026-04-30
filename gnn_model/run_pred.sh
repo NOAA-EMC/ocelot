@@ -37,12 +37,15 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Prediction mode:
-    #--checkpoint /scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/mainBranch/ocelot/gnn_model/checkpoints/Rand_TenYear_nl16/gnn-epoch-epoch=364-val_loss-val_loss=0.15.ckpt \
+EXPT="test1-3years"
+CKPT="checkpoints/$EXPT/ep181.ckpt"
+OUT_DIR="predictions/$EXPT"
+
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
-    --checkpoint /scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/MAIN/main260429/ocelot/gnn_model/checkpoints/test1-3years/ep181.ckpt \
+    --checkpoint $CKPT
     --start_date 2025-02-28 \
     --end_date 2025-03-03 \
-    --output_dir predictions/test1-3years \
+    --output_dir $OUTDIR \
     --eval-mode  # comment out to run in inference mode
     # Evaluation mode: Predict on obs-space for all instruments (AMSUA, aircraft, etc.) with ground truth comparisons.
     #                  The last timebin is held as the target bin, consistent with training.
