@@ -1,13 +1,11 @@
 #!/bin/bash -l
-#SBATCH -A gpu-emc-ai
-#SBATCH -p u1-h100
-#SBATCH -q gpu
-#SBATCH --gres=gpu:h100:1
+#SBATCH -A da-cpu
+#SBATCH -p u1-service
 #SBATCH -J mesh_gfs_compare
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=0
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=32G
 #SBATCH -t 01:00:00
 #SBATCH --output=mesh_gfs_compare_%j.out
 #SBATCH --error=mesh_gfs_compare_%j.err
@@ -15,8 +13,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GNN_MODEL_DIR="/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/MAIN/main260403/ocelot/gnn_model"  # "$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/recover_mesh_attr/ocelot/gnn_model/evaluation/scripts/"
+GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 
 cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
@@ -27,18 +26,17 @@ cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
 
 INIT_TIME=${INIT_TIME:-2025030100}
 INSTRUMENT_LIST=${INSTRUMENT_LIST:-"surface_obs radiosonde"}
-EXP_NAME=${EXP_NAME:-ep1808_sdate0228}
+EXP_NAME=${EXP_NAME:-test1-3years}
 FHR_LIST=${FHR_LIST:-"3 6 9 12"}
 GFS_ROOT=${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}
 
 OUT_ROOT=${OUT_ROOT:-"predictions/${EXP_NAME}"}
 MESH_DIR=${OUT_ROOT}/pred_csv/mesh-grid
-PLOT_ROOT="evaluation/${OUT_ROOT}/figures"
+PLOT_ROOT="evaluation/figures/${EXP_NAME}"
 PLOT_MESH_GFS_DIR=${PLOT_ROOT}/mesh_ocelot_gfs_gfs0/init_${INIT_TIME}
 
-CODE_ROOT="/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/evaluation/ocelot/gnn_model/evaluation/scripts/"
-COMPARE_MESH_TO_GFS_SCRIPT=${CODE_ROOT}/compare_mesh_to_gfs_update.py
-PLOT_MESH_VS_GFS_MAPS_SCRIPT=${CODE_ROOT}/plot_mesh_vs_gfs_maps_update.py
+COMPARE_MESH_TO_GFS_SCRIPT=${SCRIPT_DIR}/compare_mesh_to_gfs_update.py
+PLOT_MESH_VS_GFS_MAPS_SCRIPT=${SCRIPT_DIR}/plot_mesh_vs_gfs_maps_update.py
 
 echo "Running on $(hostname)"
 echo "INIT_TIME=${INIT_TIME}"
