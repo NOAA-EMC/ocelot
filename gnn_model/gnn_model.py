@@ -33,6 +33,8 @@ from loss import weighted_huber_loss, weighted_mse_loss
 from processor_transformer import SlidingWindowTransformerProcessor
 from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
+from process_timeseries import _encode_target_time_features
+from datetime import datetime
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -724,10 +726,30 @@ class GNNLightning(pl.LightningModule):
 
             print(f"[MESH PRED] {inst_name}: {edge_index.shape[1]} edges")
 
+            edge_attr_key = f'{inst_name}_edge_attr'
+            if edge_attr_key in data:
+                edge_attr = torch.from_numpy(data[edge_attr_key]).float()
+                if edge_attr.shape[0] != edge_index.shape[1]:
+                    raise ValueError(
+                        f"[MESH PRED] {inst_name}: edge_attr row count ({edge_attr.shape[0]}) "
+                        f"!= edge_index edge count ({edge_index.shape[1]})"
+                    )
+                if edge_attr.shape[1] != self.bipartite_edge_attr_dim:
+                    raise ValueError(
+                        f"[MESH PRED] {inst_name}: edge_attr dim ({edge_attr.shape[1]}) "
+                        f"!= bipartite_edge_attr_dim ({self.bipartite_edge_attr_dim})"
+                    )
+            else:
+                print(
+                    f"[MESH PRED] WARNING: No edge_attr found for {inst_name} in {edges_path}. "
+                    f"Falling back to zeros — re-run precompute_mesh_edges.py to fix this."
+                )
+                edge_attr = torch.zeros((edge_index.size(1), self.bipartite_edge_attr_dim))
+
             # Store on CPU - will move to device when used
             mesh_pred_edges[inst_name] = {
                 'edge_index': edge_index,  # CPU tensor (no .to(device))
-                'edge_attr': torch.zeros((edge_index.size(1), self.bipartite_edge_attr_dim)),  # CPU
+                'edge_attr': edge_attr,
                 'lats': torch.from_numpy(mesh_lats).float(),  # CPU
                 'lons': torch.from_numpy(mesh_lons).float(),  # CPU
                 'num_nodes': num_nodes
@@ -2040,9 +2062,11 @@ class GNNLightning(pl.LightningModule):
         try:
             with torch.no_grad():
                 temp_mesh_pred_edges = self._get_mesh_pred_edges()
+                init_time_unix = self._extract_init_time_unix(self._last_val_batch)
                 mesh_predictions = self._decode_all_steps_to_mesh(
                     self._last_val_mesh_features,
-                    temp_mesh_pred_edges
+                    temp_mesh_pred_edges,
+                    init_time_unix
                 )
                 if mesh_predictions:
                     self._save_mesh_predictions(
@@ -2063,75 +2087,57 @@ class GNNLightning(pl.LightningModule):
             self._last_val_mesh_features = None
             self._last_val_batch = None
 
-    def _extract_init_time_str(self, batch):
-        """
-        Extract initialization time string from batch in YYYYMMDDHH format.
-        Handles multiple formats: pandas Timestamp, list/tuple, Unix timestamp, tensor.
-
-        Args:
-            batch: Batch data containing input_time or time attribute
-
-        Returns:
-            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
-        """
-        from datetime import datetime
-        import pandas as pd
-
-        if batch is None:
-            return 'unknown'
-
-        # Prefer forecast init (start of target window) when available.
-        # `GNNDataModule` attaches:
-        # - init_time: start of the target window (forecast init / cycle time)
-        # - input_time: start of the input window
-        ts = None
-
-        def _pick_attr(name: str):
+    def _resolve_init_ts(self, batch):
+        """Return raw init timestamp (int/float unix, pd.Timestamp, or datetime), or None."""
+        def _pick_attr(name):
             if not hasattr(batch, name):
                 return None
             v = getattr(batch, name)
+            if isinstance(v, (list, tuple)):
+                v = v[0] if len(v) > 0 else None
             if v is None:
                 return None
-            if isinstance(v, (list, tuple)):
-                return v[0] if len(v) > 0 else None
             # Treat scalar tensors and numeric sentinels as missing.
             if hasattr(v, 'item'):
                 try:
                     vv = v.item()
-                    if isinstance(vv, (int, float)) and float(vv) < 0:
-                        return None
-                    return vv
+                    return None if float(vv) < 0 else vv
                 except Exception:
-                    return v
-            if isinstance(v, (int, float)) and float(v) < 0:
-                return None
-            return v
+                    return None
+            return None if isinstance(v, (int, float)) and float(v) < 0 else v
 
         init_ts = _pick_attr('init_time')
         input_ts = _pick_attr('input_time')
         time_ts = _pick_attr('time')
 
         if init_ts is not None:
-            ts = init_ts
+            return init_ts
         elif input_ts is not None:
-            # In inference mode the datamodule may not populate init_time (no targets).
-            # In our binning logic, input_time is the *start* of the input window, so
-            # forecast init ≈ input_time + data_window_hours.
             try:
                 window_h = self.hparams.get('data_window_hours', None)
                 if window_h is not None and isinstance(window_h, (int, float)):
-                    ts = float(input_ts) + float(window_h) * 3600.0
+                    return float(input_ts) + float(window_h) * 3600.0
                 else:
-                    ts = input_ts
+                    return input_ts
             except Exception:
-                ts = input_ts
+                return input_ts
         else:
-            ts = time_ts
+            return time_ts
 
-        # Now convert ts to string based on its type
+    def _extract_init_time_str(self, batch):
+        """
+        Extract initialization time string from batch in YYYYMMDDHH format.
+        Args:
+            batch: Batch data containing input_time or time attribute
+
+        Returns:
+            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
+        """
+        if batch is None:
+            return 'unknown'
+        ts = self._resolve_init_ts(batch)
         if ts is None:
             return 'unknown'
-
         try:
             # Handle pandas Timestamp
             if isinstance(ts, pd.Timestamp):
@@ -2153,6 +2159,20 @@ class GNNLightning(pl.LightningModule):
         except Exception as e:
             print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
             return 'unknown'
+
+    def _extract_init_time_unix(self, batch) -> int:
+        ts = self._resolve_init_ts(batch)
+        if ts is None:
+            raise ValueError(
+                "[MESH PRED] Cannot determine init_time_unix from batch — "
+                "batch has no valid init_time or input_time. "
+                "Target-time conditioning requires a valid analysis time."
+            )
+        if isinstance(ts, pd.Timestamp):
+            return int(ts.timestamp())
+        if isinstance(ts, datetime):
+            return int(ts.timestamp())
+        return int(float(ts))
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
                                       valid_mask_list, out_dir, batch_idx, mode='val'):
@@ -2559,7 +2579,7 @@ class GNNLightning(pl.LightningModule):
                 df.to_csv(filepath, index=False)
                 print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
 
-    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges):
+    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
         """Decode all forecast steps to mesh grid."""
 
         if not mesh_features_per_step:  # Check if the list is empty
@@ -2580,12 +2600,15 @@ class GNNLightning(pl.LightningModule):
 
                 # Decode each step
                 for step_idx, mesh_feat in enumerate(mesh_features_per_step):
-                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name])
+                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name],
+                            step_idx=step_idx,
+                            init_time_unix=init_time_unix
+                           )
                     predictions[inst_name].append(pred)
 
         return predictions
 
-    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges):
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, step_idx, init_time_unix=None):
         """Decode one step's mesh features to mesh grid."""
         # Get decoder
         decoder_key = f"mesh__to__{inst_name}_target"
@@ -2626,6 +2649,27 @@ class GNNLightning(pl.LightningModule):
             # Satellites, surface obs etc.: no pressure conditioning (same as training)
             rec_rep = torch.zeros(N, self.hidden_dim, device=device)
             print(f"[MESH PRED] Decoding {inst_name} with zero initialization (no pressure conditioning)")
+
+        # --- Target-time conditioning (mirrors regular decoder) ---
+        if init_time_unix is None:
+            raise ValueError(
+                f"[MESH PRED] init_time_unix is required for target-time conditioning "
+                f"but was not provided for instrument '{inst_name}'. "
+                f"Pass the analysis time as a Unix timestamp when calling mesh prediction."
+            )
+
+        # Compute valid time = init + lead
+        lead_seconds = step_idx * self.latent_step_hours * 3600
+        target_time_unix = int(init_time_unix) + lead_seconds
+
+        # Build time features using the same convention as _encode_target_time_features()
+        # LST is estimated from mesh node longitude
+        lons_deg = edges['lons'].cpu().numpy()  # [N]
+        target_times_unix = np.full(N, target_time_unix, dtype=np.int64)
+        time_feat_np = _encode_target_time_features(target_times_unix, lons_deg)  # [N, 5]
+        time_feat = torch.from_numpy(time_feat_np).float().to(device)
+        time_emb = self.target_time_embedder(time_feat)  # [N, 8]
+        rec_rep = rec_rep + self.target_time_projector(time_emb)  # additive bias
 
         # Decode
         decoded = decoder(
@@ -2751,7 +2795,8 @@ class GNNLightning(pl.LightningModule):
                         print("[PREDICT] No mesh features available for mesh predictions")
                     else:
                         mesh_pred_edges = self._get_mesh_pred_edges()
-                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges)
+                        init_time_unix = self._extract_init_time_unix(batch)
+                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges,init_time_unix)
                         if mesh_predictions:
                             mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
                             self._save_mesh_predictions(
