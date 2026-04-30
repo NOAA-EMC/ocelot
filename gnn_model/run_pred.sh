@@ -42,7 +42,7 @@ CKPT="checkpoints/$EXPT/ep181.ckpt"
 OUT_DIR="predictions/$EXPT"
 
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
-    --checkpoint $CKPT
+    --checkpoint $CKPT \
     --start_date 2025-02-28 \
     --end_date 2025-03-03 \
     --output_dir $OUTDIR \
