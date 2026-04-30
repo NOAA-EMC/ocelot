@@ -2601,9 +2601,9 @@ class GNNLightning(pl.LightningModule):
                 # Decode each step
                 for step_idx, mesh_feat in enumerate(mesh_features_per_step):
                     pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name],
-                            step_idx=step_idx,
-                            init_time_unix=init_time_unix
-                           )
+                                                         step_idx=step_idx,
+                                                         init_time_unix=init_time_unix
+                                                         )
                     predictions[inst_name].append(pred)
 
         return predictions
@@ -2796,7 +2796,7 @@ class GNNLightning(pl.LightningModule):
                     else:
                         mesh_pred_edges = self._get_mesh_pred_edges()
                         init_time_unix = self._extract_init_time_unix(batch)
-                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges,init_time_unix)
+                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges, init_time_unix)
                         if mesh_predictions:
                             mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
                             self._save_mesh_predictions(
