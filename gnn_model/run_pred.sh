@@ -45,7 +45,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
     --checkpoint $CKPT \
     --start_date 2025-02-28 \
     --end_date 2025-03-03 \
-    --output_dir $OUTDIR \
+    --output_dir $OUT_DIR \
     --eval-mode  # comment out to run in inference mode
     # Evaluation mode: Predict on obs-space for all instruments (AMSUA, aircraft, etc.) with ground truth comparisons.
     #                  The last timebin is held as the target bin, consistent with training.
