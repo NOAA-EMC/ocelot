@@ -146,6 +146,31 @@ def _as_scalar_bin(x):
     return x
 
 
+def _expand_seviri_instrument_aliases(names):
+    """Expand legacy 'seviri' instrument alias to both v7 streams."""
+    if names is None:
+        return None
+    if isinstance(names, str):
+        names = [names]
+
+    expanded = []
+    for name in names:
+        if name == 'seviri':
+            expanded.extend(['seviri_asr', 'seviri_csr'])
+        else:
+            expanded.append(name)
+
+    # Stable de-duplication while preserving order.
+    out = []
+    seen = set()
+    for name in expanded:
+        if name in seen:
+            continue
+        out.append(name)
+        seen.add(name)
+    return out
+
+
 def compute_fsoi_for_pair(
     model,
     prev_batch,
@@ -200,6 +225,11 @@ def compute_fsoi_for_pair(
     target_instruments = fsoi_config['forecast'].get('target_instruments', 'all')
     if target_instruments == 'all':
         target_instruments = None
+    else:
+        expanded_targets = _expand_seviri_instrument_aliases(target_instruments)
+        if expanded_targets != target_instruments:
+            print(f"[FSOI Config] Expanded forecast.target_instruments {target_instruments} -> {expanded_targets}")
+        target_instruments = expanded_targets
 
     # Get target variables filter (e.g., ["temperature"])
     target_variables = fsoi_config['forecast'].get('target_variables', 'all')
@@ -273,10 +303,10 @@ def compute_fsoi_for_pair(
         for inst_name, feats in raw_mask_map.items():
             if feats is None:
                 continue
-            if isinstance(feats, str):
-                feature_mask_map[inst_name] = [feats]
-            else:
-                feature_mask_map[inst_name] = list(feats)
+            expanded_names = _expand_seviri_instrument_aliases(inst_name)
+            feat_list = [feats] if isinstance(feats, str) else list(feats)
+            for expanded_name in expanded_names:
+                feature_mask_map[expanded_name] = list(feat_list)
 
         # ========================================
         # STEP 2: Compute background inputs (xb)
@@ -295,13 +325,23 @@ def compute_fsoi_for_pair(
         # small and do not need capping.
         mem_config = fsoi_config.get('memory', {}) or {}
         max_decoder_nodes_cfg = mem_config.get('max_decoder_nodes', {}) or {}
+        if 'seviri' in max_decoder_nodes_cfg:
+            legacy_cap = max_decoder_nodes_cfg.get('seviri')
+            max_decoder_nodes_cfg = dict(max_decoder_nodes_cfg)
+            max_decoder_nodes_cfg.pop('seviri', None)
+            max_decoder_nodes_cfg.setdefault('seviri_asr', legacy_cap)
+            max_decoder_nodes_cfg.setdefault('seviri_csr', legacy_cap)
+            print(
+                "[FSOI Config] Expanded memory.max_decoder_nodes.seviri "
+                f"-> seviri_asr={max_decoder_nodes_cfg.get('seviri_asr')}, "
+                f"seviri_csr={max_decoder_nodes_cfg.get('seviri_csr')}"
+            )
         # Defaults for known heavy instruments (override in fsoi_config.yaml)
         default_caps = {
             'avhrr': 30000,
             'atms': 50000,
             'amsua': 30000,
             'ssmis': 30000,
-            'seviri': 30000,
             'seviri_asr': 30000,
             'seviri_csr': 30000,
         }
@@ -767,6 +807,12 @@ def main():
         default="cuda:0",
         help="Device to use (default: cuda:0)",
     )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default=None,
+        help="Override data directory (default: use train/val global v7 path)",
+    )
 
     args = parser.parse_args()
 
@@ -869,7 +915,15 @@ def main():
     print("\nSetting up data...")
 
     # Determine data path (same logic as train_gnn.py)
-    data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v6"
+    region = "global"
+    if args.data_path:
+        data_path = args.data_path
+    elif region == "conus":
+        data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
+    else:
+        data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7"
+
+    print(f"Data path: {data_path}")
 
     # Create datamodule for accessing data
     datamodule = GNNDataModule(

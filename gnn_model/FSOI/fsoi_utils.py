@@ -1511,7 +1511,6 @@ def validate_gradients(
         'cris',
         'airs',
         'ssmis',
-        'seviri',
         'seviri_asr',
         'seviri_csr',
         'avhrr',

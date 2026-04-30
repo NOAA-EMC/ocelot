@@ -126,7 +126,8 @@ def main():
         if region == "conus":
             data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
         else:
-            data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
+            # Keep prediction defaults aligned with train/val (multi-year merged Zarrs).
+            data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7"
     else:
         data_path = args.data_path
 

@@ -159,7 +159,7 @@ def test_dataset_creation(obs_config, feature_stats):
         test_start = "2024-01-01"
         test_end = "2024-01-03"  # Just 2-3 days
 
-        data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v6"
+        data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7"
 
         print(f"Creating datamodule for {test_start} to {test_end}")
 

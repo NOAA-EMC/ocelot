@@ -621,7 +621,7 @@ def plot_satellite_channel_impacts(df_ch, output_dir):
     print("Creating satellite channel impact plot...")
 
     # Filter for satellite instruments only
-    satellite_instruments = ['atms', 'amsua', 'ssmis', 'seviri', 'seviri_asr', 'seviri_csr', 'avhrr', 'iasi', 'cris', 'airs', 'mhs', 'amsub']
+    satellite_instruments = ['atms', 'amsua', 'ssmis', 'seviri_asr', 'seviri_csr', 'avhrr', 'iasi', 'cris', 'airs', 'mhs', 'amsub']
     df_sat = df_ch[df_ch['instrument'].str.lower().isin(satellite_instruments)].copy()
 
     if df_sat.empty:

@@ -33,7 +33,6 @@ INSTRUMENT_NAMES = {
     'amsua': 'AMSU-A',
     'atms': 'ATMS',
     'ssmis': 'SSMIS',
-    'seviri': 'SEVIRI',
     'seviri_asr': 'SEVIRI ASR',
     'seviri_csr': 'SEVIRI CSR',
     'avhrr': 'AVHRR',
@@ -45,7 +44,6 @@ CHANNEL_NAMES = {
     'amsua': {i: f'AMSU-A ch{i+1}' for i in range(15)},
     'atms': {i: f'ATMS ch{i+1}' for i in range(22)},
     'ssmis': {i: f'SSMIS ch{i+1}' for i in range(24)},
-    'seviri': {i: f'SEVIRI ch{i+1}' for i in range(12)},
     'seviri_asr': {i: f'SEVIRI ASR ch{4+i}' for i in range(8)},
     'seviri_csr': {i: f'SEVIRI CSR ch{4+i}' for i in range(8)},
     'avhrr': {i: f'AVHRR ch{i+1}' for i in range(5)},
@@ -281,7 +279,7 @@ def plot_satellite_vs_conventional(df):
     df_pressure = df[df['pressure_hpa'].notna()].copy()
 
     # Categorize observations
-    satellite_types = ['amsua', 'atms', 'ssmis', 'seviri', 'seviri_asr', 'seviri_csr', 'avhrr']
+    satellite_types = ['amsua', 'atms', 'ssmis', 'seviri_asr', 'seviri_csr', 'avhrr']
     conventional_types = ['radiosonde', 'aircraft', 'surface_obs']
 
     df_pressure['obs_category'] = df_pressure['instrument'].apply(
@@ -423,7 +421,7 @@ def main():
     plot_relative_contribution_by_pressure(df)
     plot_top_contributors_by_level(df)
     plot_satellite_vs_conventional(df)
-    plot_satellite_channels_by_pressure(df, instruments=['amsua', 'atms', 'ssmis', 'avhrr', 'ascat', 'seviri_asr', 'seviri_csr', 'seviri'])
+    plot_satellite_channels_by_pressure(df, instruments=['amsua', 'atms', 'ssmis', 'avhrr', 'ascat', 'seviri_asr', 'seviri_csr'])
 
     print("\n" + "="*80)
     print("✓ All plots created successfully!")
