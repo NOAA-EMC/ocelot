@@ -2670,7 +2670,7 @@ class GNNLightning(pl.LightningModule):
             )
 
         # Compute valid time = init + lead
-        lead_seconds = int(step_idx * self.latent_step_hours * 3600)
+        lead_seconds = int(round((step_idx + 0.5) * self.latent_step_hours * 3600))
         target_time_unix = int(int(init_time_unix) + lead_seconds)
 
         # Build time features using the same convention as _encode_target_time_features()
