@@ -14,9 +14,9 @@
 
 
 #Script to run evaluations for multiple initialization times
-#Submit with: sbatch evaluation/scripts/run_evaluation.sh [START_DATE] [END_DATE]
-#Example: sbatch evaluation/scripts/run_evaluation.sh 2023010100 2023010912
-#Or use defaults: sbatch evaluation/scripts/run_evaluation.sh
+#Submit with: sbatch evaluation/scripts/run_evaluation_gnn_env.sh [START_DATE] [END_DATE]
+#Example: sbatch evaluation/scripts/run_evaluation_gnn_env.sh 2023010100 2023010912
+#Or use defaults: sbatch evaluation/scripts/run_evaluation_gnn_env.sh
 
 #set -e  # Exit on error
 

@@ -13,8 +13,7 @@
 
 set -euo pipefail
 
-# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_DIR="/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/recover_mesh_attr/ocelot/gnn_model/evaluation/scripts/"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 

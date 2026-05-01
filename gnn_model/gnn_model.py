@@ -2097,13 +2097,24 @@ class GNNLightning(pl.LightningModule):
                 v = v[0] if len(v) > 0 else None
             if v is None:
                 return None
-            # Treat scalar tensors and numeric sentinels as missing.
+
             if hasattr(v, 'item'):
                 try:
+                    if hasattr(v, 'numel') and v.numel() > 1:
+                        flat = v.reshape(-1)
+                        if not torch.all(flat == flat[0]):
+                            import warnings
+                            warnings.warn(
+                                f"[_pick_attr] '{name}' has {v.numel()} non-identical "
+                                f"values; using first ({flat[0].item()!r}) for timestamp.",
+                                RuntimeWarning, stacklevel=2,
+                            )
+                        v = flat[0]
                     vv = v.item()
                     return None if float(vv) < 0 else vv
                 except Exception:
                     return None
+
             return None if isinstance(v, (int, float)) and float(v) < 0 else v
 
         init_ts = _pick_attr('init_time')
@@ -2659,8 +2670,8 @@ class GNNLightning(pl.LightningModule):
             )
 
         # Compute valid time = init + lead
-        lead_seconds = step_idx * self.latent_step_hours * 3600
-        target_time_unix = int(init_time_unix) + lead_seconds
+        lead_seconds = int(step_idx * self.latent_step_hours * 3600)
+        target_time_unix = int(int(init_time_unix) + lead_seconds)
 
         # Build time features using the same convention as _encode_target_time_features()
         # LST is estimated from mesh node longitude

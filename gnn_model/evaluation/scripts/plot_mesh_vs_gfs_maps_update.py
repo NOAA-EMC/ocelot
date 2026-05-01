@@ -178,9 +178,9 @@ _INIT_FHR_RE = re.compile(r"init_(?P<init>\d{10}).*?_f(?P<fhr>\d{3})")
 def _infer_init_fhr(df: pd.DataFrame, csv_path: str) -> tuple[str, int]:
     if "init_time" in df.columns and "fhr" in df.columns:
         init = str(df["init_time"].iloc[0])
-        fhr = int(pd.to_numeric(df["fhr"].iloc[0], errors="coerce"))
-        if init.isdigit() and len(init) == 10 and np.isfinite(float(fhr)):
-            return init, fhr
+        fhr_value = pd.to_numeric(df["fhr"].iloc[0], errors="coerce")
+        if init.isdigit() and len(init) == 10 and np.isfinite(fhr_value):
+            return init, int(fhr_value)
     m = _INIT_FHR_RE.search(os.path.basename(str(csv_path)))
     if m:
         return m.group("init"), int(m.group("fhr"))
@@ -560,7 +560,7 @@ def main() -> int:
         f" • init={df['init_time'].iloc[0] if 'init_time' in df.columns else ''}"
         f" fhr={df['fhr'].iloc[0] if 'fhr' in df.columns else ''}"
     )
-    level_suffix = f"_{'_' + level_tag if level_tag else ''}"
+    level_suffix = f"_{level_tag if level_tag else ''}"
 
     instrument = os.path.basename(args.csv).split("_init_")[0]
 
