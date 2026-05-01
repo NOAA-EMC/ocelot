@@ -560,7 +560,7 @@ def main() -> int:
         f" • init={df['init_time'].iloc[0] if 'init_time' in df.columns else ''}"
         f" fhr={df['fhr'].iloc[0] if 'fhr' in df.columns else ''}"
     )
-    level_suffix = f"_{level_tag if level_tag else ''}"
+    level_suffix = f"{'_' + level_tag if level_tag else ''}"
 
     instrument = os.path.basename(args.csv).split("_init_")[0]
 
