@@ -43,6 +43,23 @@ def vertice_cart_to_lat_lon(vertices):
     return np.stack((nodes_lat, nodes_lon), axis=1)  # (N, 2)
 
 
+def load_static_mesh_features(path: str) -> dict:
+    """
+    Load pre-computed static mesh features (land mask, elevation) from .npz.
+ 
+    Parameters
+    ----------
+    path : str
+        Path produced by precompute_static_mesh_features.py
+ 
+    Returns
+    -------
+    dict  keyed by 'elevation_norm_level_{i}', 'land_mask_level_{i}', etc.
+    """
+    data = np.load(path)
+    return {k: data[k] for k in data.files}
+
+
 def plot_graph(edge_index, pos_lat_lon, title=None):
     """
     Plot flattened global graph
@@ -122,7 +139,18 @@ def inter_mesh_connection(from_mesh, to_mesh):
     return edge_index
 
 
-def create_mesh(splits, levels, hierarchical, plot=False):
+def create_mesh(splits, levels, hierarchical, plot=False, static_mesh_path: str = None):
+    """
+    static_mesh_path : str or None
+        Path to the .npz produced by precompute_static_mesh_features.py.
+        When provided, `elevation_norm` is appended to each level's mesh_features.
+        When None the function behaves exactly as before (backward compatible).
+    """
+    # --- load static features once if path supplied ---
+    static_feats = None
+    if static_mesh_path is not None:
+        static_feats = load_static_mesh_features(static_mesh_path)
+        print(f"[create_mesh] Loaded static mesh features from {static_mesh_path}")
     # Mesh, index 0 is initial graph, with longest edges
     mesh_list = gc_im.get_hierarchy_of_triangular_meshes_for_sphere(splits)
     if levels is not None:
@@ -209,6 +237,29 @@ def create_mesh(splits, levels, hierarchical, plot=False):
             receivers=mesh_edge_index[1, :],
             **GC_SPATIAL_FEATURES_KWARGS,
         )
+
+        # --- Append elevation if static features were provided ---
+        if static_feats is not None:
+            level_idx = len(mesh_features_list)          # current level index
+            key = f"elevation_norm_level_{level_idx}"
+            if key in static_feats:
+                elev_norm = static_feats[key]            # (N,) float32
+                # Sanity check
+                assert elev_norm.shape[0] == mesh_features.shape[0], (
+                    f"Elevation shape mismatch at level {level_idx}: "
+                    f"elev={elev_norm.shape[0]}, mesh={mesh_features.shape[0]}. "
+                    f"Did you run precompute_static_mesh_features.py with the same "
+                    f"--splits={splits} --levels={levels}?"
+                )
+                mesh_features = np.concatenate(
+                    [mesh_features, elev_norm[:, None]], axis=1   # (N, D+1)
+                )
+                print(f"  [create_mesh] Level {level_idx}: appended elevation_norm "
+                      f"→ mesh_features shape {mesh_features.shape}")
+            else:
+                print(f"  [create_mesh] WARNING: key '{key}' not found in static features, "
+                      f"skipping elevation for level {level_idx}")
+
         mesh_features_list.append(mesh_features)
         m2m_features_list.append(m2m_features)
         mesh_lat_lon_list.append(mesh_lat_lon)

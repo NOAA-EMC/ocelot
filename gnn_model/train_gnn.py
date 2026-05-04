@@ -294,6 +294,10 @@ def main():
     parser.add_argument("--es_start_epoch", type=int, default=0)
     parser.add_argument("--disable_early_stopping", action="store_true")
 
+    # Precomputed mesh elevation and land-sea mask features
+    parser.add_argument("--static_mesh_path", type=str, default="static_mesh_features.npz",
+            help="Path to static_mesh_features.npz (adds elevation to mesh nodes)")
+
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -490,6 +494,7 @@ def main():
         pressure_level_conditioning=str(args.pressure_level_conditioning),
         use_bipartite_edge_attr=(not args.disable_bipartite_edge_attr),
         bipartite_edge_attr_dim=int(args.bipartite_edge_attr_dim),
+        static_mesh_path=args.static_mesh_path,
     )
 
     if resume_path and args.load_weights_only:

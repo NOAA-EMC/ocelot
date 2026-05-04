@@ -143,6 +143,7 @@ class GNNLightning(pl.LightningModule):
         pressure_level_conditioning: str = "project",  # "pad" | "project"
         use_bipartite_edge_attr: bool = True,
         bipartite_edge_attr_dim: int = 4,
+        static_mesh_path: str = None,
         **kwargs,
     ):
         """
@@ -283,7 +284,8 @@ class GNNLightning(pl.LightningModule):
             splits=mesh_resolution,
             levels=mesh_levels,
             hierarchical=hierarchical_mode,
-            plot=False
+            plot=False,
+            static_mesh_path=static_mesh_path,
         )
 
         # Store whether we're in hierarchical mode
