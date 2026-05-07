@@ -238,27 +238,35 @@ def create_mesh(splits, levels, hierarchical, plot=False, static_mesh_path: str 
             **GC_SPATIAL_FEATURES_KWARGS,
         )
 
-        # --- Append elevation if static features were provided ---
+        # --- Append static features if provided ---
+        # Each feature in STATIC_MESH_FEATURES is appended as one column if its
+        # key exists in the .npz.  To enable/disable individual features, add or
+        # remove entries from the list below.  Order here determines column order
+        # in mesh_features, so keep it consistent across runs.
+        STATIC_MESH_FEATURES = [
+            # "elevation_norm",   # tanh-normalised elevation, range ≈ [-1, 1]
+            "land_mask",        # binary land/sea mask, range [0, 1]
+        ]
         if static_feats is not None:
-            level_idx = len(mesh_features_list)          # current level index
-            key = f"elevation_norm_level_{level_idx}"
-            if key in static_feats:
-                elev_norm = static_feats[key]            # (N,) float32
-                # Sanity check
-                assert elev_norm.shape[0] == mesh_features.shape[0], (
-                    f"Elevation shape mismatch at level {level_idx}: "
-                    f"elev={elev_norm.shape[0]}, mesh={mesh_features.shape[0]}. "
-                    f"Did you run precompute_static_mesh_features.py with the same "
-                    f"--splits={splits} --levels={levels}?"
-                )
-                mesh_features = np.concatenate(
-                    [mesh_features, elev_norm[:, None]], axis=1   # (N, D+1)
-                )
-                print(f"  [create_mesh] Level {level_idx}: appended elevation_norm "
-                      f"→ mesh_features shape {mesh_features.shape}")
-            else:
-                print(f"  [create_mesh] WARNING: key '{key}' not found in static features, "
-                      f"skipping elevation for level {level_idx}")
+            level_idx = len(mesh_features_list)
+            for feat_name in STATIC_MESH_FEATURES:
+                key = f"{feat_name}_level_{level_idx}"
+                if key in static_feats:
+                    feat = static_feats[key]             # (N,) float32
+                    assert feat.shape[0] == mesh_features.shape[0], (
+                        f"Static feature '{feat_name}' shape mismatch at level {level_idx}: "
+                        f"feat={feat.shape[0]}, mesh={mesh_features.shape[0]}. "
+                        f"Did you run precompute_static_mesh_features.py with the same "
+                        f"--splits={splits} --levels={levels}?"
+                    )
+                    mesh_features = np.concatenate(
+                        [mesh_features, feat[:, None]], axis=1
+                    )
+                    print(f"  [create_mesh] Level {level_idx}: appended '{feat_name}' "
+                          f"→ mesh_features shape {mesh_features.shape}")
+                else:
+                    print(f"  [create_mesh] WARNING: key '{key}' not found in static features, "
+                          f"skipping '{feat_name}' for level {level_idx}")
 
         mesh_features_list.append(mesh_features)
         m2m_features_list.append(m2m_features)
