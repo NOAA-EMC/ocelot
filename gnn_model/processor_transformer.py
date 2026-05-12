@@ -98,6 +98,18 @@ class SpatialMixBlock(nn.Module):
         for start in range(0, int(num_edges), self.edge_chunk_size):
             yield start, min(start + self.edge_chunk_size, int(num_edges))
 
+    def _zero_parameter_anchor(self, ref: torch.Tensor) -> torch.Tensor:
+        anchor = ref.new_zeros(())
+        if not torch.is_grad_enabled():
+            return anchor
+        for parameter in self.parameters():
+            if parameter.requires_grad:
+                anchor = anchor + (parameter.sum() * 0.0).to(
+                    device=ref.device,
+                    dtype=ref.dtype,
+                )
+        return anchor
+
     def forward(
         self,
         x: torch.Tensor,
@@ -115,6 +127,7 @@ class SpatialMixBlock(nn.Module):
             or edge_index.numel() == 0
         )
         if no_edges:
+            x = x + self._zero_parameter_anchor(x)
             if halo_exchange is not None:
                 return halo_exchange(x)
             return x

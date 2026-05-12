@@ -308,9 +308,26 @@ class HaloExchange:
         # collective (often DDP's ALLREDUCE on the gradient bucket).
         # Tie ``owned_state`` to ``recv_buffer`` via a zero-weighted scalar
         # so the backward path through ``recv_buffer`` is always live.
-        if self.total_recv > 0 and recv_buffer.requires_grad:
-            sentinel = recv_buffer.sum() * 0.0
-            owned_state = owned_state + sentinel
+        #
+        # We anchor unconditionally (do NOT gate on ``total_recv > 0``):
+        # a rank whose ``total_recv == 0`` has an empty ``recv_buffer``,
+        # but peers may still hold non-empty halos and will issue the
+        # reverse ``all_to_all_single`` in backward. If this rank's
+        # ``_AlltoAllSingle`` is pruned (because nothing downstream of an
+        # empty ``recv_buffer`` produces a non-zero grad), peers stall on
+        # the reverse collective → NCCL ALLTOALL_BASE watchdog timeout.
+        # ``recv_buffer.sum()`` on an empty tensor is a 0 scalar that still
+        # carries the autograd edge to ``_AlltoAllSingle``, so multiplying
+        # by 0.0 keeps the graph live without altering numerics.
+        #
+        # We also anchor through ``send_buffer`` so the *forward* input
+        # autograd edge is always live on every rank — needed when a rank
+        # has zero owned-region consumers of its own send rows but peers
+        # depend on them.
+        if recv_buffer.requires_grad:
+            owned_state = owned_state + recv_buffer.sum() * 0.0
+        if send_buffer.requires_grad:
+            owned_state = owned_state + send_buffer.sum() * 0.0
         return torch.cat([owned_state, recv_buffer], dim=0)
 
 

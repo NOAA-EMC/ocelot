@@ -594,6 +594,53 @@ class GNNLightning(pl.LightningModule):
         except RuntimeError:
             return None
 
+    @staticmethod
+    def _is_mesh_geometry_state_key(key: str) -> bool:
+        if key in {"mesh_x", "mesh_edge_index", "mesh_edge_attr"}:
+            return True
+        if key.startswith("mesh_x_level_"):
+            return True
+        if key.startswith("mesh_edge_index_level_") or key.startswith("mesh_edge_attr_level_"):
+            return True
+        if key.startswith("mesh_up_edge_index_") or key.startswith("mesh_up_edge_attr_"):
+            return True
+        if key.startswith("mesh_down_edge_index_") or key.startswith("mesh_down_edge_attr_"):
+            return True
+        return False
+
+    def on_load_checkpoint(self, checkpoint):
+        state = checkpoint.get("state_dict", None)
+        if not isinstance(state, dict):
+            return
+
+        current_state = self.state_dict()
+        replaced = []
+        for key in list(state.keys()):
+            if self._is_mesh_geometry_state_key(key) and key not in current_state:
+                state.pop(key, None)
+
+        for key, value in current_state.items():
+            if not self._is_mesh_geometry_state_key(key):
+                continue
+            state[key] = value.detach().clone()
+            replaced.append(key)
+
+        if replaced:
+            print(
+                "[CKPT] Using freshly built mesh geometry for checkpoint restore "
+                f"({len(replaced)} tensor(s): {', '.join(replaced[:6])}"
+                f"{'...' if len(replaced) > 6 else ''})"
+            )
+
+    def on_save_checkpoint(self, checkpoint):
+        state = checkpoint.get("state_dict", None)
+        if not isinstance(state, dict):
+            return
+
+        for key in list(state.keys()):
+            if self._is_mesh_geometry_state_key(key):
+                state.pop(key, None)
+
     def _is_global_zero_safe(self) -> bool:
         trainer = self._safe_trainer()
         return getattr(trainer, "is_global_zero", True)

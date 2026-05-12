@@ -19,6 +19,9 @@ echo "Node: $(hostname)"
 echo "Architecture: $(uname -m)"
 
 # Load Conda environment
+if command -v module >/dev/null 2>&1; then
+	module load conda >/dev/null 2>&1 || true
+fi
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
 
