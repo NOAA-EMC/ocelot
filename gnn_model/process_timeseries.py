@@ -519,7 +519,7 @@ def _stats_from_cfg(feature_stats, inst_name, feat_keys):
 
 
 @timing_resource_decorator
-def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None, require_targets=True):
+def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None, require_targets=True, verbose=False):
     """
     Loads and normalizes features for each time bin.
     Adds per-channel masks for inputs and targets so features can be missing independently.
@@ -528,7 +528,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
     ## MODIFIED to support latent rollout (multiple target windows).
     """
-    print(f"\nProcessing {bin_name}...")
+    if verbose:
+        print(f"\nProcessing {bin_name}...")
     for obs_type in list(data_summary[bin_name].keys()):
         for inst_name in list(data_summary[bin_name][obs_type].keys()):
             z = z_dict[obs_type][inst_name]
@@ -594,7 +595,8 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
             # -------------------- QC (per-channel; apply to input + ALL targets simultaneously) --------------------
             if qc_filters:
-                print(f"Applying QC for {inst_name}...")
+                if verbose:
+                    print(f"Applying QC for {inst_name}...")
                 for var, cfg in qc_filters.items():
                     rng = cfg.get("range") if isinstance(cfg, dict) else (cfg if isinstance(cfg, (list, tuple)) else None)
                     flag_col = cfg.get("qm_flag_col") if isinstance(cfg, dict) else None
@@ -1348,10 +1350,10 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]
 
-            # Print summary
-            print(f"[{bin_name}] {inst_name}: input {orig_in} -> "
-                  f"{input_features_final.shape[0]}, targets {orig_tg_sizes} -> "
-                  f"{[t.shape[0] for t in target_features_final_list]}")
+            if verbose:
+                print(f"[{bin_name}] {inst_name}: input {orig_in} -> "
+                    f"{input_features_final.shape[0]}, targets {orig_tg_sizes} -> "
+                    f"{[t.shape[0] for t in target_features_final_list]}")
 
         if not data_summary[bin_name].get(obs_type):
             del data_summary[bin_name][obs_type]

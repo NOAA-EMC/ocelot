@@ -370,6 +370,27 @@ def main():
         help="Disable DataLoader pin_memory if host-memory pressure is high.",
     )
     parser.add_argument(
+        "--graph_cache_dir",
+        type=str,
+        default=None,
+        help="Directory for precomputed per-bin graph shards. Enables cache reads/writes when set with the cache flags.",
+    )
+    parser.add_argument(
+        "--graph_cache_read",
+        action="store_true",
+        help="Read precomputed per-bin graph/domain shards from --graph_cache_dir when present.",
+    )
+    parser.add_argument(
+        "--graph_cache_write",
+        action="store_true",
+        help="Write per-bin graph/domain shards to --graph_cache_dir after building them.",
+    )
+    parser.add_argument(
+        "--precompute_graph_cache",
+        action="store_true",
+        help="Materialize train/validation graph shards for the current window during datamodule setup.",
+    )
+    parser.add_argument(
         "--capture_cuda_memory_snapshot",
         action="store_true",
         help="Capture CUDA memory history and dump a snapshot after training for debugging.",
@@ -633,6 +654,10 @@ def main():
         predict_num_workers=int(args.predict_num_workers),
         dataloader_prefetch_factor=int(args.dataloader_prefetch_factor),
         pin_memory=(not args.disable_pin_memory),
+        graph_cache_dir=args.graph_cache_dir,
+        graph_cache_read=bool(args.graph_cache_read),
+        graph_cache_write=bool(args.graph_cache_write),
+        precompute_graph_cache=bool(args.precompute_graph_cache),
         # epoch-0 windows
         train_start=initial_start_date,
         train_end=initial_end_date,
@@ -697,13 +722,19 @@ def main():
         "devices": int(args.devices) if args.devices is not None else 2,
         "num_nodes": int(args.num_nodes) if args.num_nodes is not None else 4,
         "strategy": strategy,
-        "precision": "16-mixed" if torch.cuda.is_available() else "32-true",
-        "log_every_n_steps": 1,
+        # bf16-mixed: native on H100/A100, avoids fp16 GradScaler overhead
+        # (one fewer all-reduce-style sync per step under DDP) and the
+        # narrow-range inf/nan stalls fp16 can produce on this model.
+        "precision": "bf16-mixed" if torch.cuda.is_available() else "32-true",
+        # Logging every step under DDP forces metric reductions/IO on each
+        # training step, which limits scaling. Aggregate over a small window
+        # that still fits within typical per-epoch step counts (~24).
+        "log_every_n_steps": 10,
         "logger": logger,
         "num_sanity_val_steps": 2,
         "gradient_clip_val": 0.5,
         "enable_progress_bar": False,
-        "reload_dataloaders_every_n_epochs": 1,
+        "reload_dataloaders_every_n_epochs": 5,
         "check_val_every_n_epoch": 1,
         "use_distributed_sampler": False,
     }

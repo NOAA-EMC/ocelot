@@ -12,6 +12,7 @@ import os
 import json
 import hashlib
 import time
+from collections.abc import Callable
 import importlib
 import lightning.pytorch as pl
 import numpy as np
@@ -97,6 +98,9 @@ class BinDataset(Dataset):
         require_targets=True,
         tag="TRAIN",
         verbose: bool = False,
+        graph_cache_path_fn: Callable[[str], str] | None = None,
+        graph_cache_read: bool = False,
+        graph_cache_write: bool = False,
     ):
         self.bin_names = list(bin_names) if bin_names is not None else []
         self.data_summary = data_summary
@@ -107,6 +111,9 @@ class BinDataset(Dataset):
         self.require_targets = require_targets
         self.tag = tag
         self.verbose = bool(verbose)
+        self.graph_cache_path_fn = graph_cache_path_fn
+        self.graph_cache_read = bool(graph_cache_read)
+        self.graph_cache_write = bool(graph_cache_write)
 
     def __len__(self):
         return len(self.bin_names)
@@ -116,6 +123,21 @@ class BinDataset(Dataset):
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
         if self.verbose and rank == 0 and idx == 0:
             print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
+
+        cache_path = self.graph_cache_path_fn(bin_name) if self.graph_cache_path_fn is not None else None
+        if cache_path and self.graph_cache_read and os.path.exists(cache_path):
+            try:
+                graph_data = torch.load(cache_path, map_location="cpu", weights_only=False)
+                graph_data.bin_name = bin_name
+                return graph_data
+            except Exception as e:
+                if self.verbose and rank == 0:
+                    print(f"[Rank {rank}] [{self.tag}] WARNING failed to load graph cache {cache_path}: {e}")
+                try:
+                    os.remove(cache_path)
+                except OSError:
+                    pass
+
         try:
             out = extract_features(
                 self.z,
@@ -124,6 +146,7 @@ class BinDataset(Dataset):
                 self.observation_config,
                 feature_stats=self.feature_stats,
                 require_targets=self.require_targets,
+                verbose=self.verbose,
             )
             bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
@@ -161,6 +184,21 @@ class BinDataset(Dataset):
             graph_data.init_time = _t64(int(init_time_unix) if init_time_unix is not None else -1)
             graph_data.input_time = _t64(int(input_time_unix) if input_time_unix is not None else -1)
 
+            if cache_path and self.graph_cache_write:
+                try:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    tmp_path = f"{cache_path}.tmp.{os.getpid()}.{idx}"
+                    torch.save(graph_data, tmp_path)
+                    os.replace(tmp_path, cache_path)
+                except Exception as e:
+                    if self.verbose and rank == 0:
+                        print(f"[Rank {rank}] [{self.tag}] WARNING failed to write graph cache {cache_path}: {e}")
+                    try:
+                        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except OSError:
+                        pass
+
             return graph_data
         except Exception as e:
             print(f"[Rank {rank}] [{self.tag}] ERROR processing {bin_name}: {e}")
@@ -196,8 +234,12 @@ class GNNDataModule(pl.LightningDataModule):
         train_num_workers: int = 4,
         val_num_workers: int = 4,
         predict_num_workers: int = 1,
-        dataloader_prefetch_factor: int = 2,
+        dataloader_prefetch_factor: int = 4,
         pin_memory: bool | None = None,
+        graph_cache_dir: str | None = None,
+        graph_cache_read: bool = False,
+        graph_cache_write: bool = False,
+        precompute_graph_cache: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -235,6 +277,10 @@ class GNNDataModule(pl.LightningDataModule):
         self.hparams.val_num_workers = max(0, int(val_num_workers))
         self.hparams.predict_num_workers = max(0, int(predict_num_workers))
         self.hparams.dataloader_prefetch_factor = max(1, int(dataloader_prefetch_factor))
+        self.hparams.graph_cache_dir = None if graph_cache_dir is None else str(graph_cache_dir)
+        self.hparams.graph_cache_read = bool(graph_cache_read or precompute_graph_cache)
+        self.hparams.graph_cache_write = bool(graph_cache_write or precompute_graph_cache)
+        self.hparams.precompute_graph_cache = bool(precompute_graph_cache)
 
         self.mesh_structure = mesh_structure
         self.feature_stats = feature_stats
@@ -255,6 +301,8 @@ class GNNDataModule(pl.LightningDataModule):
         # Version counters (for debugging staleness)
         self._train_version = 0
         self._val_version = 0
+
+        self._precomputed_graph_cache_keys: set[tuple[str, int]] = set()
 
         # If callbacks want separate windows, they will set these:
         # Default: create non-overlapping train/val split to prevent data leakage
@@ -366,7 +414,7 @@ class GNNDataModule(pl.LightningDataModule):
         if not is_ddp:
             if os.path.exists(cache_path):
                 try:
-                    obj = torch.load(cache_path)
+                    obj = torch.load(cache_path, weights_only=False)
                     return obj["data_summary"], obj["bin_names"]
                 except Exception as e:
                     if verbose:
@@ -385,7 +433,7 @@ class GNNDataModule(pl.LightningDataModule):
         built_obj = None
         if rank == 0:
             if os.path.exists(cache_path):
-                built_obj = torch.load(cache_path)
+                built_obj = torch.load(cache_path, weights_only=False)
             else:
                 if verbose:
                     print(f"[DM.cache] building {kind} summary -> {cache_path}")
@@ -404,8 +452,40 @@ class GNNDataModule(pl.LightningDataModule):
             if os.path.exists(cache_path):
                 break
             time.sleep(0.25)
-        obj = torch.load(cache_path)
+        obj = torch.load(cache_path, weights_only=False)
         return obj["data_summary"], obj["bin_names"]
+
+    def _graph_cache_enabled(self) -> bool:
+        return bool(getattr(self.hparams, "graph_cache_dir", None))
+
+    def _graph_cache_namespace(self, kind: str) -> str:
+        rank, world_size = get_rank_world_size()
+        payload = {
+            "graph_cache_version": 1,
+            "kind": str(kind),
+            "window_size": str(getattr(self.hparams, "window_size", "")),
+            "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
+            "observation_config": getattr(self.hparams, "observation_config", None),
+            "pipeline": getattr(self.hparams, "pipeline", None),
+            "parallelization_strategy": self.parallelization_strategy,
+            "domain_halo_hops": int(self.domain_halo_hops),
+            "rank": int(rank),
+            "world_size": int(world_size),
+            "mesh_nodes": int(self.mesh_structure["mesh_features_torch"][0].shape[0]),
+        }
+        digest = hashlib.blake2b(json.dumps(payload, sort_keys=True, default=str).encode("utf-8"), digest_size=16).hexdigest()
+        return f"{kind}/rank{rank:04d}_of_{world_size:04d}/{digest}"
+
+    def _graph_cache_path(self, kind: str, bin_name: str) -> str | None:
+        if not self._graph_cache_enabled():
+            return None
+        safe_bin_name = str(bin_name).replace(os.sep, "_")
+        return os.path.join(str(self.hparams.graph_cache_dir), self._graph_cache_namespace(kind), f"{safe_bin_name}.pt")
+
+    def _make_graph_cache_path_fn(self, kind: str):
+        if not self._graph_cache_enabled():
+            return None
+        return lambda bin_name: self._graph_cache_path(kind, bin_name)
 
     # ------------- Setup / Zarr open -------------
 
@@ -480,6 +560,9 @@ class GNNDataModule(pl.LightningDataModule):
         self._rebuild_train_summary()
         self._rebuild_val_summary()
 
+        if self._graph_cache_enabled() and bool(getattr(self.hparams, "precompute_graph_cache", False)):
+            self.precompute_graph_cache(stage=stage)
+
         if stage in (None, "fit"):
             # For now we use the full lists produced by organize_bins_times;
             # callbacks can narrow them by changing windows and triggering reload.
@@ -530,6 +613,9 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[DM.set_train_window] v{self._train_version} -> {self.hparams.train_start} .. {self.hparams.train_end}")
         # Rebuild summary/bin names immediately so the *next* dataloader reload sees fresh objects
         self._rebuild_train_summary()
+        if self._graph_cache_enabled() and bool(getattr(self.hparams, "precompute_graph_cache", False)):
+            train_ds = self._make_dataset(self.train_bin_names, self.train_data_summary, "TRAIN", True, "train")
+            self._precompute_dataset_cache("train", train_ds)
 
     def set_val_window(self, start_dt, end_dt):
         self.hparams.val_start = pd.to_datetime(start_dt)
@@ -537,6 +623,9 @@ class GNNDataModule(pl.LightningDataModule):
         self._val_version += 1
         print(f"[DM.set_val_window]   v{self._val_version} -> {self.hparams.val_start} .. {self.hparams.val_end}")
         self._rebuild_val_summary()
+        if self._graph_cache_enabled() and bool(getattr(self.hparams, "precompute_graph_cache", False)):
+            val_ds = self._make_dataset(self.val_bin_names, self.val_data_summary, "VAL", self.require_targets, "val")
+            self._precompute_dataset_cache("val", val_ds)
 
     # ------------- Graph builder -------------
 
@@ -629,12 +718,13 @@ class GNNDataModule(pl.LightningDataModule):
             # Store pressure level index for radiosonde and aircraft (if available)
             if "input_pressure_level" in inst_dict:
                 data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
-                print(
-                    f"[DATAMODULE] Stored pressure_level for {node_type_input}: "
-                    f"shape={data[node_type_input].pressure_level.shape}, "
-                    f"range=[{data[node_type_input].pressure_level.min()}, {data[node_type_input].pressure_level.max()}]"
-                )
-            elif inst_name in ["radiosonde", "aircraft"]:
+                if self._is_verbose():
+                    print(
+                        f"[DATAMODULE] Stored pressure_level for {node_type_input}: "
+                        f"shape={data[node_type_input].pressure_level.shape}, "
+                        f"range=[{data[node_type_input].pressure_level.min()}, {data[node_type_input].pressure_level.max()}]"
+                    )
+            elif inst_name in ["radiosonde", "aircraft"] and self._is_verbose():
                 print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_input}! Data may not be preprocessed with new code.")
 
             # Create encoder edges (observation to mesh)
@@ -751,12 +841,13 @@ class GNNDataModule(pl.LightningDataModule):
             if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
                 pressure_level_idx = inst_dict["target_pressure_level_list"][step][keep_t]
                 data[node_type_target].pressure_level = pressure_level_idx.long()
-                print(
-                    f"[DATAMODULE] Stored pressure_level for {node_type_target}: "
-                    f"shape={data[node_type_target].pressure_level.shape}, "
-                    f"range=[{data[node_type_target].pressure_level.min()}, {data[node_type_target].pressure_level.max()}]"
-                )
-            elif inst_name in ["radiosonde", "aircraft"]:
+                if self._is_verbose():
+                    print(
+                        f"[DATAMODULE] Stored pressure_level for {node_type_target}: "
+                        f"shape={data[node_type_target].pressure_level.shape}, "
+                        f"range=[{data[node_type_target].pressure_level.min()}, {data[node_type_target].pressure_level.max()}]"
+                    )
+            elif inst_name in ["radiosonde", "aircraft"] and self._is_verbose():
                 print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_target}! Data may not be preprocessed with new code.")
 
             # Edges - filter lat/lon too
@@ -811,21 +902,82 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
             data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
 
+    def _make_dataset(self, bin_names, data_summary, tag: str, require_targets: bool, cache_kind: str) -> BinDataset:
+        return BinDataset(
+            bin_names,
+            data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.hparams.observation_config,
+            feature_stats=self.feature_stats,
+            require_targets=require_targets,
+            tag=tag,
+            verbose=bool(getattr(self.hparams, "verbose", False)),
+            graph_cache_path_fn=self._make_graph_cache_path_fn(cache_kind),
+            graph_cache_read=bool(getattr(self.hparams, "graph_cache_read", False)),
+            graph_cache_write=bool(getattr(self.hparams, "graph_cache_write", False)),
+        )
+
+    def _precompute_dataset_cache(self, kind: str, ds: BinDataset) -> None:
+        rank, _ = get_rank_world_size()
+        key = (str(kind), int(rank), id(ds.data_summary), len(ds.bin_names))
+        if key in self._precomputed_graph_cache_keys:
+            return
+        self._precomputed_graph_cache_keys.add(key)
+
+        if not self._graph_cache_enabled() or not bool(getattr(self.hparams, "graph_cache_write", False)):
+            return
+
+        missing = []
+        for bin_name in ds.bin_names:
+            cache_path = ds.graph_cache_path_fn(bin_name) if ds.graph_cache_path_fn is not None else None
+            if cache_path and not os.path.exists(cache_path):
+                missing.append(bin_name)
+
+        if not missing:
+            if rank == 0:
+                print(f"[GraphCache] {kind}: all {len(ds.bin_names)} rank-local shards already cached")
+            return
+
+        print(f"[Rank {rank}] [GraphCache] precomputing {len(missing)}/{len(ds.bin_names)} {kind} shards")
+        index_by_bin_name = {bin_name: idx for idx, bin_name in enumerate(ds.bin_names)}
+        for idx, bin_name in enumerate(missing):
+            original_idx = index_by_bin_name[bin_name]
+            _ = ds[original_idx]
+            if self._is_verbose() and rank == 0 and (idx + 1) % 8 == 0:
+                print(f"[GraphCache] {kind}: cached {idx + 1}/{len(missing)}")
+
+    def precompute_graph_cache(self, stage=None) -> None:
+        if not self._graph_cache_enabled():
+            return
+        train_ds = self._make_dataset(self.train_bin_names, self.train_data_summary, "TRAIN", True, "train")
+        val_ds = self._make_dataset(self.val_bin_names, self.val_data_summary, "VAL", self.require_targets, "val")
+        if stage in (None, "fit"):
+            self._precompute_dataset_cache("train", train_ds)
+            if self.val_bin_names:
+                self._precompute_dataset_cache("val", val_ds)
+
     # ------------- DataLoaders -------------
     def _worker_init(self, worker_id):
         import numpy as np
         base_seed = int(torch.initial_seed()) % 2**31
         rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        print(
-            f"[WorkerInit] rank={rank} worker={worker_id} pid={os.getpid()} seed={base_seed} "
-            f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
-        )
+        if self._is_verbose():
+            print(
+                f"[WorkerInit] rank={rank} worker={worker_id} pid={os.getpid()} seed={base_seed} "
+                f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
+            )
 
     def _loader_kwargs(self, num_workers: int) -> dict:
         kwargs = {
             "num_workers": int(num_workers),
             "pin_memory": bool(self.hparams.pin_memory),
-            "persistent_workers": False,
+            # persistent_workers avoids tearing down/respawning worker
+            # processes (and re-importing/re-opening zarr stores) between
+            # epochs. Note: Lightning's `reload_dataloaders_every_n_epochs`
+            # will still rebuild the DataLoader at epoch boundaries, so this
+            # is effective only when that reload is disabled or infrequent.
+            "persistent_workers": int(num_workers) > 0,
         }
         if num_workers > 0:
             kwargs["worker_init_fn"] = self._worker_init
@@ -839,16 +991,7 @@ class GNNDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         self._ensure_domain_sharder()
-        ds = BinDataset(
-            self.train_bin_names,
-            self.train_data_summary,
-            self.z,
-            self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
-            require_targets=True,  # Training always requires targets
-            tag="TRAIN",
-        )
+        ds = self._make_dataset(self.train_bin_names, self.train_data_summary, "TRAIN", True, "train")
 
         is_dist = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
         use_domain = bool(self.domain_sharder is not None and self.domain_sharder.is_enabled)
@@ -878,16 +1021,7 @@ class GNNDataModule(pl.LightningDataModule):
         if not self.val_bin_names:
             return None
         self._ensure_domain_sharder()
-        ds = BinDataset(
-            self.val_bin_names,
-            self.val_data_summary,
-            self.z,
-            self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
-            require_targets=True,  # Validation requires targets for comparison
-            tag="VAL",
-        )
+        ds = self._make_dataset(self.val_bin_names, self.val_data_summary, "VAL", True, "val")
 
         is_dist = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
         use_domain = bool(self.domain_sharder is not None and self.domain_sharder.is_enabled)

@@ -117,6 +117,14 @@ MIN_LR="${MIN_LR:-1e-6}"
 #   RESUME_FROM_LATEST=0 and LOAD_WEIGHTS_ONLY=0
 LOAD_WEIGHTS_ONLY="${LOAD_WEIGHTS_ONLY:-0}"
 
+# Optional graph shard cache.  A precompute pass materializes the current
+# time-window/domain shards before fitting; read/write lets later jobs reuse
+# them and lets new random windows warm the cache on demand.
+GRAPH_CACHE_DIR="${GRAPH_CACHE_DIR:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/graph_cache/${RUN_NAME}}"
+GRAPH_CACHE_READ="${GRAPH_CACHE_READ:-1}"
+GRAPH_CACHE_WRITE="${GRAPH_CACHE_WRITE:-1}"
+PRECOMPUTE_GRAPH_CACHE="${PRECOMPUTE_GRAPH_CACHE:-0}"
+
 echo "LOSS_TYPE=$LOSS_TYPE"
 echo "LR=$LR"
 echo "LR_SCHEDULE=$LR_SCHEDULE"
@@ -124,6 +132,10 @@ echo "WARMUP_PCT=$WARMUP_PCT"
 echo "WARMUP_START_FACTOR=$WARMUP_START_FACTOR"
 echo "MIN_LR=$MIN_LR"
 echo "LOAD_WEIGHTS_ONLY=$LOAD_WEIGHTS_ONLY"
+echo "GRAPH_CACHE_DIR=$GRAPH_CACHE_DIR"
+echo "GRAPH_CACHE_READ=$GRAPH_CACHE_READ"
+echo "GRAPH_CACHE_WRITE=$GRAPH_CACHE_WRITE"
+echo "PRECOMPUTE_GRAPH_CACHE=$PRECOMPUTE_GRAPH_CACHE"
 
 # Resume behavior:
 # - Default is AUTO: if checkpoints/$RUN_NAME/last.ckpt exists, resume; otherwise start fresh.
@@ -162,10 +174,25 @@ if [[ "$LOAD_WEIGHTS_ONLY" == "1" ]]; then
 	RESUME_ARGS+=(--load_weights_only)
 fi
 
+GRAPH_CACHE_ARGS=()
+if [[ -n "$GRAPH_CACHE_DIR" ]]; then
+	GRAPH_CACHE_ARGS+=(--graph_cache_dir "$GRAPH_CACHE_DIR")
+fi
+if [[ "$GRAPH_CACHE_READ" == "1" ]]; then
+	GRAPH_CACHE_ARGS+=(--graph_cache_read)
+fi
+if [[ "$GRAPH_CACHE_WRITE" == "1" ]]; then
+	GRAPH_CACHE_ARGS+=(--graph_cache_write)
+fi
+if [[ "$PRECOMPUTE_GRAPH_CACHE" == "1" ]]; then
+	GRAPH_CACHE_ARGS+=(--precompute_graph_cache)
+fi
+
 
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--run_name "$RUN_NAME" \
 	"${RESUME_ARGS[@]}" \
+	"${GRAPH_CACHE_ARGS[@]}" \
 	--mesh_type fixed \
 	--scan_angle_conditioning project \
 	--sampling_mode random \

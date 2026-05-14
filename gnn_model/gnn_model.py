@@ -35,7 +35,14 @@ from processor_transformer import SlidingWindowTransformerProcessor
 from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
 from process_timeseries import _encode_target_time_features
-from datetime import datetime
+from datetime import datetime, timedelta
+
+# NCCL collective timeout for the dedicated halo process group. The default
+# `dist.new_group()` timeout (~10 min) is too tight for distributed validation
+# where per-rank PyG dataloader IO between batches can skew ranks by many
+# minutes (rank 11 alone hit the watchdog at the encoder halo while peers were
+# still loading the next val bin from /scratch3 — see gnn_train_13505981.err).
+_HALO_GROUP_TIMEOUT = timedelta(hours=1)
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -992,13 +999,27 @@ class GNNLightning(pl.LightningModule):
             # same-SeqNum op-type mismatches. Put halo collectives on their own
             # communicator so their ordering is independent of DDP's default
             # group allreduces.
-            halo_group = dist.new_group(ranks=list(range(dist.get_world_size())))
+            halo_group = dist.new_group(
+                ranks=list(range(dist.get_world_size())),
+                timeout=_HALO_GROUP_TIMEOUT,
+            )
             self._halo_process_group = halo_group
         self._halo_exchange = sharder.build_halo_exchange(
             device=self.mesh_x.device,
             group=halo_group,
         )
         self._domain_parallel_initialized = True
+
+    def _halo_step_barrier(self) -> None:
+        """Synchronize all ranks on the halo process group at the start of a
+        training/validation step so per-rank dataloader/IO skew between batches
+        cannot desync the first halo all_to_all in the encoder forward."""
+        if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+            return
+        group = getattr(self, "_halo_process_group", None)
+        if group is None:
+            return
+        dist.barrier(group=group)
 
     def _loss_for_backward(self, total_loss: torch.Tensor, local_count: int) -> torch.Tensor:
         if not self.is_domain_parallel or not dist.is_available() or not dist.is_initialized():
@@ -1040,6 +1061,15 @@ class GNNLightning(pl.LightningModule):
         super().on_train_epoch_start()
         rank = int(os.environ.get("RANK", "0"))
 
+        # Sync all ranks after the (per-rank, non-collective) train data-summary
+        # rebuild that happens in ValWindowCallback.on_train_epoch_end /
+        # DataModule._rebuild_*_summary. Without this barrier, fast ranks can
+        # race ahead into the first training forward and time out on the
+        # encoder halo all_to_all while slow ranks are still in CPU-bound
+        # `organize_bins_times`.
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            dist.barrier()
+
         # One concise banner (only once on global zero)
         if getattr(self.trainer, "is_global_zero", True):
             print(f"=== Starting Epoch {self.current_epoch} ===")
@@ -1070,6 +1100,15 @@ class GNNLightning(pl.LightningModule):
 
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()
+
+        # Sync all ranks after the (per-rank, non-collective) val data-summary
+        # rebuild (`DataModule._rebuild_val_summary` -> `organize_bins_times`,
+        # observed at ~237 s/rank). Without this barrier, fast ranks can race
+        # into the first validation forward and time out on the encoder halo
+        # all_to_all while slower ranks are still preparing the val window.
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            dist.barrier()
+
         rank = int(os.environ.get("RANK", "0"))
         print(f"\n[Rank {rank}] === VAL EPOCH {self.current_epoch} START ===")
         dm = self.trainer.datamodule
@@ -1181,7 +1220,7 @@ class GNNLightning(pl.LightningModule):
         embedded_features = {}
         # Embed static mesh features
         for node_type, x in data.x_dict.items():
-            print(f"embed: [node_type] {node_type}: {x.shape}")
+            self.debug(f"embed: [node_type] {node_type}: {x.shape}")
             if node_type == "mesh":
                 embedded_features[node_type] = self.mesh_embedder(x)
             elif node_type.endswith("_input"):
@@ -1196,7 +1235,7 @@ class GNNLightning(pl.LightningModule):
 
                     # Concatenate with original features
                     x_with_embed = torch.cat([x, pressure_embed], dim=-1)  # [N, input_dim + 8]
-                    print(
+                    self.debug(
                         f"PRESSURE-LEVEL EMBEDDING APPLIED: {node_type} | "
                         f"orig={x.shape} + embed={pressure_embed.shape} → combined={x_with_embed.shape}"
                     )
@@ -1219,7 +1258,7 @@ class GNNLightning(pl.LightningModule):
 
         for edge_type, edge_index in data.edge_index_dict.items():
             src_type, _, dst_type = edge_type
-            print(f"encode: [edge_type] {edge_type}: {edge_index.shape}")
+            self.debug(f"encode: [edge_type] {edge_type}: {edge_index.shape}")
             if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
                 obs_features = embedded_features[src_type]
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
@@ -1274,7 +1313,7 @@ class GNNLightning(pl.LightningModule):
         # For standard processor, ensure all node types exist
         if not self.is_hierarchical and hasattr(self.processor, 'norms'):
             for node_type in self.processor.norms[0].keys():
-                print(f"prep: [node_type] ", node_type)
+                self.debug(f"prep: [node_type] {node_type}")
                 if node_type not in encoded_features:
                     if node_type in data.node_types:
                         num_nodes = data[node_type].num_nodes
@@ -1366,7 +1405,7 @@ class GNNLightning(pl.LightningModule):
             if self.processor_type == "sliding_transformer":
                 if self.is_hierarchical:
                     # Hierarchical transformer: process all mesh levels with cross-scale attention
-                    print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
+                    self.debug(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
                     # Prepare mesh features for all levels
                     # NOTE: Level ordering is [finest, ..., coarsest] (level 0 = finest, level -1 = coarsest)
                     mesh_features_list = []
@@ -1387,7 +1426,7 @@ class GNNLightning(pl.LightningModule):
                                             device=current_mesh_features.device)
                             )
 
-                    print(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
+                    self.debug(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
 
                     # Prepare up/down edge indices for cross-scale attention
                     up_edge_index_list = []
@@ -1399,7 +1438,7 @@ class GNNLightning(pl.LightningModule):
                         up_edge_index_list.append(up_ei)
                         down_edge_index_list.append(down_ei)
 
-                    print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
+                    self.debug(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
 
                     # Process through hierarchical transformer
                     mesh_edge_index_list = [
@@ -1418,7 +1457,7 @@ class GNNLightning(pl.LightningModule):
                         mesh_edge_attr_list=mesh_edge_attr_list,
                     )
 
-                    print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
+                    self.debug(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
 
                     # COARSE→FINE CONDITIONING: Add hierarchical information flow
                     # Gather coarse features (L1) to fine nodes (L0) for better multi-scale learning
@@ -1435,8 +1474,8 @@ class GNNLightning(pl.LightningModule):
                         if step == 0 and self.global_step == 0:
                             src_max = down_edge_index[0].max().item()
                             dst_max = down_edge_index[1].max().item()
-                            print(f"[COARSE→FINE] Edge direction check: src_max={src_max} (expect <{coarse_features.shape[0]}), "
-                                  f"dst_max={dst_max} (expect <{fine_features.shape[0]})")
+                            self.debug(f"[COARSE→FINE] Edge direction check: src_max={src_max} (expect <{coarse_features.shape[0]}), "
+                                       f"dst_max={dst_max} (expect <{fine_features.shape[0]})")
 
                         # Gather: each edge gets coarse features from source
                         coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]
@@ -1466,14 +1505,14 @@ class GNNLightning(pl.LightningModule):
                         if step == 0:  # Diagnostics once per batch
                             delta_norm = delta.norm(dim=-1).mean().item()
                             gate_mean = gate.mean().item()
-                            print(f"[COARSE→FINE] L1({coarse_features.shape[0]})→L0({fine_features.shape[0]}) | "
-                                  f"δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
+                            self.debug(f"[COARSE→FINE] L1({coarse_features.shape[0]})→L0({fine_features.shape[0]}) | "
+                                       f"δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
                     else:
                         # Use the finest level output (level 0)
                         current_mesh_features = processed_levels[0]
                 else:
                     # Single-level transformer for fixed mesh
-                    print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
+                    self.debug(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
                     current_mesh_features = self.swt(
                         current_mesh_features,
                         mesh_edge_index=data[("mesh", "to", "mesh")].edge_index,
@@ -1562,7 +1601,7 @@ class GNNLightning(pl.LightningModule):
                     if step == 0 and self.global_step == 0:
                         src_max = down_edge_index[0].max().item()
                         dst_max = down_edge_index[1].max().item()
-                        print(f"[COARSE→FINE] InteractionNet edge check: src_max={src_max}, dst_max={dst_max}")
+                        self.debug(f"[COARSE→FINE] InteractionNet edge check: src_max={src_max}, dst_max={dst_max}")
 
                     # Gather coarse features to fine nodes
                     coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]
@@ -1588,7 +1627,7 @@ class GNNLightning(pl.LightningModule):
                     if step == 0:  # Diagnostics
                         delta_norm = delta.norm(dim=-1).mean().item()
                         gate_mean = gate.mean().item()
-                        print(f"[COARSE→FINE] InteractionNet: δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
+                        self.debug(f"[COARSE→FINE] InteractionNet: δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
                 else:
                     # Use the finest level output (level 0)
                     current_mesh_features = processed_levels[0]
@@ -1625,7 +1664,7 @@ class GNNLightning(pl.LightningModule):
                         if src_type == "mesh" and dst_type == step_node_type:
                             step_edge_type = edge_type
                             step_edge_index = edge_index
-                            print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
+                            self.debug(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
                             break
 
                     if step_edge_type is None or step_edge_index is None:
@@ -1662,14 +1701,14 @@ class GNNLightning(pl.LightningModule):
                         if base_type == "atms_target" and self.global_step % 200 == 0:
                             sa = data[step_node_type].x
                             if sa.numel() == 0:
-                                print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
+                                self.debug(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
                             else:
                                 sa_f = sa.float()
                                 mean_v = sa_f.mean().item()
                                 std_v = sa_f.std(unbiased=False).item()
                                 min_v = sa_f.min().item()
                                 max_v = sa_f.max().item()
-                                print(
+                                self.debug(
                                     f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={mean_v:.4f}, "
                                     f"std={std_v:.4f}, min={min_v:.4f}, max={max_v:.4f}"
                                 )
@@ -1741,11 +1780,11 @@ class GNNLightning(pl.LightningModule):
 
                     # Diagnostic logging for radiosonde
                     if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
-                        print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
+                        self.debug(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
 
                     # Diagnostic logging for satellites
                     if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
-                        print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
+                        self.debug(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
 
                     # Safety: verify mapper exists before using
                     assert base_type in self.output_mappers, f"Missing output mapper for {base_type}"
@@ -1753,7 +1792,7 @@ class GNNLightning(pl.LightningModule):
 
                     # Store prediction for this step
                     predictions[base_type].append(step_prediction)
-                    print(f"predict: [node_type] {base_type}: {step_prediction.shape}")
+                    self.debug(f"predict: [node_type] {base_type}: {step_prediction.shape}")
 
                     self.debug(f"[LATENT] Step {step} - {base_type}: {step_prediction.shape}")
 
@@ -1920,19 +1959,24 @@ class GNNLightning(pl.LightningModule):
         return results
 
     def training_step(self, batch, batch_idx):
-        print("[DIAG] Entered training_step()")
-        if torch.cuda.is_available():
+        self.debug("[DIAG] Entered training_step()")
+        # Per-batch sync on the halo process group: per-rank PyG dataloader IO
+        # between batches can desync ranks by minutes; without this, the first
+        # halo all_to_all in the encoder forward will be hit alone by the
+        # fastest rank and trip the watchdog (see gnn_train_13505981.err).
+        self._halo_step_barrier()
+        if self.verbose and torch.cuda.is_available():
             gpu_id = torch.cuda.current_device()
             allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
-            print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
+            self.debug(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
 
         # Print first-batch info for window validation
         if not getattr(self, "_printed_first_train_batch", False):
             bt = getattr(batch, "input_time", None) or getattr(batch, "time", None)
-            print(f"[FirstTrainBatch] batch_idx=0 time={bt}")
+            self.debug(f"[FirstTrainBatch] batch_idx=0 time={bt}")
             self._printed_first_train_batch = True
 
-        print(f"[training_step] batch: {getattr(batch, 'bin_name', 'N/A')}")
+        self.debug(f"[training_step] batch: {getattr(batch, 'bin_name', 'N/A')}")
 
         # ---- Forward pass and loss calculation ----
         all_predictions = self(batch)
@@ -2026,13 +2070,18 @@ class GNNLightning(pl.LightningModule):
         if self.verbose:
             print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
 
+        # NOTE: sync_dist=False here avoids an AllReduce on every training
+        # step. The cross-rank averaging was a major DDP scaling bottleneck.
+        # Each rank logs its own train_loss for monitoring; val_loss (logged
+        # below with sync_dist=True at epoch end) provides the synced metric
+        # used for checkpointing / early stopping.
         self.log(
             "train_loss",
             logged_loss,
             on_step=True,
             on_epoch=True,
             prog_bar=True,
-            sync_dist=not self.is_domain_parallel,
+            sync_dist=False,
             batch_size=1,
         )
         self.log("rollout_steps", float(latent_rollout_steps), on_step=True, sync_dist=False)
@@ -2042,7 +2091,9 @@ class GNNLightning(pl.LightningModule):
         return avg_loss
 
     def validation_step(self, batch, batch_idx):
-        print(f"VALIDATION STEP batch: {batch.bin_name}")
+        self.debug(f"VALIDATION STEP batch: {batch.bin_name}")
+        # Per-batch sync on the halo process group; see training_step note.
+        self._halo_step_barrier()
 
         # Build decoder names from config (all possible node_types with targets)
         decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
@@ -2079,6 +2130,37 @@ class GNNLightning(pl.LightningModule):
 
         total_loss = torch.tensor(0.0, device=self.device)
         num_predictions = 0
+
+        # Domain-sharded CSV export contains an all_gather_object. Call it in
+        # a rank-invariant order before the skip-prone metrics loop so ranks
+        # with no valid local rows still participate with an empty payload.
+        _csv_gate = (
+            self.val_csv_enabled
+            and batch_idx < max(1, self.val_csv_num_batches)
+            and (self.current_epoch % max(1, self.val_csv_every_n_epochs) == 0)
+        )
+        if _csv_gate and (self.is_domain_parallel or self.trainer.is_global_zero):
+            out_dir = self.val_csv_out_dir
+            if self.trainer.is_global_zero:
+                os.makedirs(out_dir, exist_ok=True)
+            for csv_node_type in decoder_names:
+                preds_list_for_csv = all_predictions.get(csv_node_type, [])
+                gt_data_for_csv = ground_truth_data.get(csv_node_type, None)
+                if gt_data_for_csv is None:
+                    gts_list_for_csv = []
+                    valid_mask_list_for_csv = []
+                else:
+                    gts_list_for_csv = gt_data_for_csv["gts_list"]
+                    valid_mask_list_for_csv = gt_data_for_csv["valid_mask_list"]
+                self._save_latent_concatenated_csv(
+                    batch,
+                    csv_node_type,
+                    preds_list_for_csv,
+                    gts_list_for_csv,
+                    valid_mask_list_for_csv,
+                    out_dir,
+                    batch_idx,
+                )
 
         # --- Loop over all node_types/decoders ---
         for node_type, preds_list in all_predictions.items():
@@ -2140,10 +2222,13 @@ class GNNLightning(pl.LightningModule):
 
                 total_loss = total_loss + weighted_loss
                 num_predictions += 1
+                # Per-node-type val loss: avoid sync_dist to skip an AllReduce
+                # per (node_type, step, batch). The aggregate 'val_loss'
+                # below is synced and is what's used for checkpointing.
                 self.log(
                     f"val_loss_{node_type}",
                     weighted_loss.detach(),
-                    sync_dist=not self.is_domain_parallel,
+                    sync_dist=False,
                     on_epoch=True,
                     batch_size=1,
                     prog_bar=False,
@@ -2188,23 +2273,6 @@ class GNNLightning(pl.LightningModule):
                 all_step_mae[node_type].append(step_mae)
                 all_step_bias[node_type].append(step_bias)
 
-                if (
-                    self.trainer.is_global_zero  # only main process
-                    and step == 0  # only concatenate latent rollout once
-                    and self.val_csv_enabled
-                    and batch_idx < max(1, self.val_csv_num_batches)
-                    and (self.current_epoch % max(1, self.val_csv_every_n_epochs) == 0)
-                ):
-                    # --- CSV save block ---
-                    out_dir = self.val_csv_out_dir
-                    os.makedirs(out_dir, exist_ok=True)
-
-                    # LATENT ROLLOUT: Concatenate all steps into standard format
-                    self._save_latent_concatenated_csv(
-                        batch, node_type, preds_list, gts_list,
-                        valid_mask_list, out_dir, batch_idx
-                    )
-
             # Placeholder logging for missing steps (to ensure stable CSV shape for loggers)
             num_channels = all_step_rmse[node_type][0].shape[0] if all_step_rmse[node_type] else 1
             for step in range(n_steps, self.max_rollout_steps):
@@ -2236,8 +2304,9 @@ class GNNLightning(pl.LightningModule):
                     try:
                         plt.figure()
                         # Get data and remove any NaN/inf values
-                        y_true_data = y_true_unnorm[:, i].cpu().numpy()
-                        y_pred_data = y_pred_unnorm[:, i].cpu().numpy()
+                        # Promote to float32: numpy() can't consume bfloat16.
+                        y_true_data = y_true_unnorm[:, i].float().cpu().numpy()
+                        y_pred_data = y_pred_unnorm[:, i].float().cpu().numpy()
 
                         # Filter out non-finite values
                         y_true_finite = y_true_data[np.isfinite(y_true_data)]
@@ -2572,34 +2641,40 @@ class GNNLightning(pl.LightningModule):
             except Exception:
                 lead_nom = np.nan
             all_lead_hours_nominal.extend([lead_nom] * int(len(ts)))
-            all_pred.append(y_pred_unnorm.detach().cpu().numpy())
-            all_true.append(y_true_unnorm.detach().cpu().numpy())
+            # numpy() does not support bfloat16 (the trainer now runs in
+            # bf16-mixed precision), so promote to float32 before host copy.
+            all_pred.append(y_pred_unnorm.detach().float().cpu().numpy())
+            all_true.append(y_true_unnorm.detach().float().cpu().numpy())
             all_pressure.extend(pressure_hpa)
             all_pressure_level.extend(pressure_level_idx)
 
             if valid_mask is not None:
                 all_mask.append(valid_mask.detach().cpu().numpy().astype(bool))
             else:
-                all_mask.append(np.ones_like(y_pred_unnorm.detach().cpu().numpy(), dtype=bool))
+                all_mask.append(
+                    np.ones_like(y_pred_unnorm.detach().float().cpu().numpy(), dtype=bool)
+                )
 
-        if not all_pred:
-            print(f"[WARN] No valid predictions for {node_type}, skipping CSV save")
-            return
-
-        # Concatenate all steps
-        # If there is no ground truth at all, treat this as inference mode and skip saving
-        if not all_true:
-            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
-            return
-
-        all_pred_concat = np.vstack(all_pred)
-        all_true_concat = np.vstack(all_true)
-        all_mask_concat = np.vstack(all_mask)
-
-        # Skip saving if no real ground truth data
-        if all_true_concat.size == 0:
-            print(f"[PREDICT] latent csv: Skipping {node_type} - empty ground truth array")
-            return
+        # Under domain sharding every rank must reach the collective
+        # ``all_gather_object`` call below, even if it has zero rows for this
+        # node_type.  We therefore replace the previous early-returns with a
+        # local "empty payload" flag so all ranks fall through to the gather.
+        _local_has_data = bool(all_pred) and bool(all_true)
+        if _local_has_data:
+            all_pred_concat = np.vstack(all_pred)
+            all_true_concat = np.vstack(all_true)
+            all_mask_concat = np.vstack(all_mask)
+            if all_true_concat.size == 0:
+                _local_has_data = False
+        if not _local_has_data:
+            # Determine channel count from feature names (best effort) so the
+            # empty DataFrame matches the global schema; falls back gracefully
+            # if other ranks also have nothing.
+            _feats_probe = self._feature_names_for_node(node_type) or []
+            n_ch_probe = max(1, len(_feats_probe))
+            all_pred_concat = np.zeros((0, n_ch_probe), dtype=np.float32)
+            all_true_concat = np.zeros((0, n_ch_probe), dtype=np.float32)
+            all_mask_concat = np.zeros((0, n_ch_probe), dtype=bool)
 
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
@@ -2729,7 +2804,41 @@ class GNNLightning(pl.LightningModule):
             if len(valid_levels) > 0:
                 print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
 
-        # Optional subsampling to bound I/O and file size (validation diagnostics)
+        # ------------------------------------------------------------------
+        # Domain-sharding gather: each rank only holds its spatial subset of
+        # the globe.  All_gather the per-rank DataFrames so rank 0 can write
+        # one globally-complete CSV per (init, epoch, batch).  In replicated
+        # (non-domain-parallel) mode this branch is skipped and rank 0 already
+        # has the full data.
+        # ------------------------------------------------------------------
+        if self.is_domain_parallel and dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            if world_size > 1:
+                gathered = [None] * world_size
+                try:
+                    dist.all_gather_object(gathered, df)
+                except Exception as e:
+                    print(f"[WARN] val_csv all_gather_object failed for {node_type}: {e}")
+                    gathered = [df]
+                if not self.trainer.is_global_zero:
+                    return
+                non_empty = [d for d in gathered if isinstance(d, pd.DataFrame) and len(d) > 0]
+                if non_empty:
+                    df = pd.concat(non_empty, ignore_index=True)
+                else:
+                    df = df.iloc[0:0]
+
+        # From here on only rank 0 (or the single replicated process) writes.
+        if not self.trainer.is_global_zero:
+            return
+
+        if len(df) == 0:
+            print(f"[WARN] No valid predictions for {node_type} after gather, skipping CSV save")
+            return
+
+        # Optional subsampling to bound I/O and file size (validation diagnostics).
+        # Done *after* the cross-rank gather so the cap applies to the global row
+        # count, not the per-rank shard.
         if mode != 'predict' and self.val_csv_max_rows is not None and len(df) > self.val_csv_max_rows:
             try:
                 node_seed = abs(hash(str(node_type))) % 1000003
@@ -2744,6 +2853,7 @@ class GNNLightning(pl.LightningModule):
                 pass
 
         # Save with appropriate filename based on mode
+        os.makedirs(out_dir, exist_ok=True)
         if mode == 'predict':
             if init_time_str != 'unknown':
                 filename = f"{out_dir}/pred_{node_type}_init_{init_time_str}.csv"
@@ -2756,8 +2866,8 @@ class GNNLightning(pl.LightningModule):
                 filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
         df.to_csv(filename, index=False)
         print(f"Saved latent concatenated CSV: {filename}")
-        print(f"  Total observations from all steps: {len(df)}")
-        print(f"  Steps combined: {len(all_pred)}")
+        print(f"  Total observations after gather: {len(df)}")
+        print(f"  Steps combined (rank-local): {len(all_pred)}")
 
     def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
         """
@@ -2804,7 +2914,8 @@ class GNNLightning(pl.LightningModule):
                 # Unnormalize using existing method
                 node_type = f"{inst_name}_target"
                 pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
-                pred_np = pred_unnorm.detach().cpu().numpy()
+                # Promote bf16->float32 before numpy() (bfloat16 unsupported).
+                pred_np = pred_unnorm.detach().float().cpu().numpy()
 
                 df = pd.DataFrame({
                     'mesh_idx': np.arange(len(mesh_lats), dtype=np.int64),
