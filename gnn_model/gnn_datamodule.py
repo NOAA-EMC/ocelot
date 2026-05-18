@@ -441,7 +441,7 @@ class GNNDataModule(pl.LightningDataModule):
                     else:
                         raise ValueError(
                             f"Unknown source '{src}' for {inst_name}. "
-                            "NNJA support has been removed from this repo; use src='zarr'."
+                            "Use src='zarr' for OCELOT v1 data loading."
                         )
 
         if dist.is_available() and dist.is_initialized():
@@ -586,7 +586,7 @@ class GNNDataModule(pl.LightningDataModule):
                 grid_lat_deg = inst_dict["input_lat_deg"]
                 grid_lon_deg = inst_dict["input_lon_deg"]
 
-                # Keep lat/lon on the observation nodes (used by FSOI matching)
+                # Keep lat/lon on observation nodes for downstream diagnostics and matching.
                 data[node_type_input].lat = _t32(grid_lat_deg)
                 data[node_type_input].lon = _t32(grid_lon_deg)
 
@@ -708,7 +708,7 @@ class GNNDataModule(pl.LightningDataModule):
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
                 target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
 
-                # Keep lat/lon on the target nodes (used by FSOI matching)
+                # Keep lat/lon on target nodes for downstream diagnostics and matching.
                 data[node_type_target].lat = _t32(target_lat_deg)
                 data[node_type_target].lon = _t32(target_lon_deg)
 
@@ -858,36 +858,3 @@ class GNNDataModule(pl.LightningDataModule):
         print(f"[PREDICT] require_targets={self.require_targets}")
 
         return loader
-
-    def fsoi_dataloader(self):
-        """Deterministic dataloader for FSOI.
-
-        Uses the same bin ordering as prediction, but enforces batch_size=1.
-        """
-        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
-            self._rebuild_val_summary()
-
-        if not self.val_bin_names:
-            return None
-
-        ds = BinDataset(
-            self.val_bin_names,
-            self.val_data_summary,
-            self.z,
-            self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
-            require_targets=self.require_targets,
-            include_persistence_inputs=self.include_persistence_inputs,
-            tag="FSOI",
-        )
-
-        return PyGDataLoader(
-            ds,
-            batch_size=1,
-            shuffle=False,
-            num_workers=1,
-            pin_memory=True,
-            persistent_workers=False,
-            worker_init_fn=self._worker_init,
-        )

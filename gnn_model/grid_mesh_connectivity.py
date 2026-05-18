@@ -11,7 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tools for converting from regular grids on a sphere, to triangular meshes."""
+"""Tools for connecting observation grids to triangular meshes.
+
+Author: Azadeh Gholoubi
+
+Adapted from GraphCast mesh-connectivity utilities for the OCELOT model.
+"""
 
 import icosahedral_mesh
 import numpy as np

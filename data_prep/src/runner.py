@@ -1,3 +1,7 @@
+"""Execution runner for OCELOT data-preparation readers.
+
+"""
+
 import os
 import sys
 import importlib.util

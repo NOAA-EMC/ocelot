@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""SEVIRI ASR BUFR mapping for OCELOT data preparation.
+
+"""
 
 import os
 from bufr.obs_builder import ObsBuilder, add_main_functions, map_path

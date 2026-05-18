@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+#
+# GPU Slurm array wrapper for 2025 OCELOT prediction-only jobs.
+#
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100

@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+# Purpose: Slurm launcher for sequential-window OCELOT training.
 #SBATCH --exclude=u22g09,u22g08,u22g10
 #SBATCH -A gpu-emc-ai  # gpu-ai4wp gpu-emc-ai
 #SBATCH -p u1-h100
@@ -27,20 +29,9 @@ echo "Running on H100 nodes..."
 echo "Node: $(hostname)"
 echo "Architecture: $(uname -m)"
 
-# Use the clean micromamba environment (does not depend on conda).
-OCELOT_ENV_HOME="${OCELOT_ENV_HOME:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env}"
-MM="${MM:-${OCELOT_ENV_HOME}/micromamba/bin/micromamba}"
-export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-${OCELOT_ENV_HOME}/micromamba_root}"
-OCELOT_ENV_NAME="${OCELOT_ENV_NAME:-ocelot-cu121}"
-
-if [[ ! -x "${MM}" ]]; then
-	echo "ERROR: micromamba not found/executable at: ${MM}"
-	echo "Create it via: cd ${OCELOT_ENV_HOME} && ./create_env.sh ${OCELOT_ENV_NAME}"
-	exit 2
-fi
-
-# PYTHONPATH
-# export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
+# Load Conda environment
+source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
+conda activate gnn-env
 
 # Debug + performance
 # export NCCL_DEBUG=INFO
@@ -107,7 +98,7 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-Seq_TenYear_nl16}"
+RUN_NAME="${RUN_NAME:-ocelot_v1_sequential_window}"
 echo "RUN_NAME=$RUN_NAME"
 
 # Resume behavior:
@@ -145,7 +136,7 @@ if [[ "$RESUME_FROM_LATEST" == "1" ]]; then
 fi
 
 
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores "${MM}" run -n "${OCELOT_ENV_NAME}" python train_gnn.py \
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--run_name "$RUN_NAME" \
 	"${RESUME_ARGS[@]}" \
 	--mesh_type fixed \
@@ -170,7 +161,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores "${MM}" run -n "${OCELOT
 	--conv_weight_mult 3.0 \
 	--huber_delta 0.5 \
 	--seed 12345 \
-	--max_epochs  3280\
+	--max_epochs 3280 \
 	--cache_val_windows \
 	--val_cache_max_entries 16 \
 	--disable_early_stopping \

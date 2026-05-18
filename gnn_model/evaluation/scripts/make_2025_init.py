@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 """Build initialization lists from available GFS cycles.
 
+Author: Azadeh Gholoubi
+
 Supported sampling modes:
 
 paired_cycles:

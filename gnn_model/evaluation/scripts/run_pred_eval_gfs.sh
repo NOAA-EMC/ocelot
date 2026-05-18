@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+#
+# End-to-end prediction and evaluation workflow for OCELOT, persistence, and GFS comparisons.
+#
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
@@ -40,8 +44,8 @@ INIT_TIME=${INIT_TIME:-2025030100}
 INSTRUMENT=${INSTRUMENT:-surface_obs}
 
 # Which experiment to write under predictions/<EXP_NAME>
-# Example: Rand_TenYear_nl16 | Seq_TenYear_nl16
-EXP_NAME=${EXP_NAME:-Seq_TenYear_nl16}
+# Example: ocelot_v1_random_window | ocelot_v1_sequential_window
+EXP_NAME=${EXP_NAME:-ocelot_v1_gfs_eval}
 
 
 # If you want a specific epoch, set CKPT=/path/to/file.ckpt when submitting.
@@ -158,27 +162,13 @@ if [ -n "${OBS_SPACE_PRESSURE_LEVEL_IDX}" ] || [ -n "${OBS_SPACE_PRESSURE_LEVEL_
   echo "OBS_SPACE pressure filter: idx=${OBS_SPACE_PRESSURE_LEVEL_IDX:-<none>} label=${OBS_SPACE_PRESSURE_LEVEL_LABEL:-<none>} hPa=${OBS_SPACE_PRESSURE_HPA:-<none>} tol=${OBS_SPACE_PRESSURE_TOL_HPA}"
 fi
 
-# Use the clean micromamba environment (does not depend on conda).
-OCELOT_ENV_HOME="${OCELOT_ENV_HOME:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env}"
-MM="${MM:-${OCELOT_ENV_HOME}/micromamba/bin/micromamba}"
-export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-${OCELOT_ENV_HOME}/micromamba_root}"
-OCELOT_ENV_NAME="${OCELOT_ENV_NAME:-ocelot-cu121}"
-
-if [[ ! -x "${MM}" ]]; then
-  echo "ERROR: micromamba not found/executable at: ${MM}"
-  echo "Create it via: cd ${OCELOT_ENV_HOME} && ./create_env.sh ${OCELOT_ENV_NAME}"
-  exit 2
-fi
-
-ENV_PY="${MAMBA_ROOT_PREFIX}/envs/${OCELOT_ENV_NAME}/bin/python"
-if [[ -x "${ENV_PY}" && "${USE_MICROMAMBA_RUN:-0}" != "1" ]]; then
-  PY=("${ENV_PY}")
-else
-  PY=("${MM}" run -n "${OCELOT_ENV_NAME}" python)
-fi
+# Load Conda environment used for OCELOT v1 training and validation.
+source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
+conda activate gnn-env
+PY=(python)
 echo "PY=${PY[*]}"
 
-# Ensure we run the code from THIS checkout (not NNJA mirror)
+# Ensure we run the code from this checkout.
 export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
 
 # Derived dates for predict_gnn.py (YYYY-MM-DD)
