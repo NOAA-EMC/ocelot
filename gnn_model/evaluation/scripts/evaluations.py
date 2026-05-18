@@ -283,10 +283,16 @@ def compute_pointwise_metrics_from_val_csv(
             except Exception:
                 pass
 
-        # Identify base variables from pred_* columns.
-        pred_cols = [c for c in df.columns if c.startswith("pred_")]
-        for pred_col in pred_cols:
-            base_var = pred_col[len("pred_"):]
+        # Identify forecast-like variables from pred_* and optional persist_* columns.
+        forecast_cols = [
+            ("ocelot", c, c[len("pred_"):])
+            for c in df.columns if c.startswith("pred_")
+        ]
+        forecast_cols.extend(
+            ("persistence", c, c[len("persist_"):])
+            for c in df.columns if c.startswith("persist_")
+        )
+        for baseline, pred_col, base_var in forecast_cols:
             true_col = f"true_{base_var}"
             if true_col not in df.columns:
                 continue
@@ -330,13 +336,14 @@ def compute_pointwise_metrics_from_val_csv(
 
             # Always include variable
             gcols["variable"] = np.array([base_var] * int(valid.sum()), dtype=object)
+            gcols["baseline"] = np.array([baseline] * int(valid.sum()), dtype=object)
 
             gdf = pd.DataFrame(gcols)
             gdf["abs_err"] = abs_err
             gdf["sq_err"] = sq_err
             gdf["err"] = err
 
-            gb = gdf.groupby([k for k in groupby_keys if k != "variable"] + ["variable"], dropna=False)
+            gb = gdf.groupby([k for k in groupby_keys if k not in ("variable", "baseline")] + ["variable", "baseline"], dropna=False)
             agg = gb.agg(
                 n=("err", "size"),
                 sum_abs=("abs_err", "sum"),
@@ -352,7 +359,9 @@ def compute_pointwise_metrics_from_val_csv(
 
     # Combine across all files/batches by summing sufficient statistics.
     out_df = pd.concat(rows_out, ignore_index=True)
-    gb_keys = [k for k in groupby_keys if k != "variable" and k in out_df.columns] + ["variable"]
+    gb_keys = [k for k in groupby_keys if k not in ("variable", "baseline") and k in out_df.columns] + ["variable"]
+    if "baseline" in out_df.columns:
+        gb_keys.append("baseline")
     out_df = out_df.groupby(gb_keys, dropna=False, as_index=False).agg(
         n=("n", "sum"),
         sum_abs=("sum_abs", "sum"),
@@ -368,8 +377,11 @@ def compute_pointwise_metrics_from_val_csv(
     out_df.drop(columns=["sum_abs", "sum_sq", "sum_err"], inplace=True)
 
     # Stable column ordering
-    base_cols = [k for k in groupby_keys if k in out_df.columns and k != "variable"]
-    cols = base_cols + ["variable", "n", "rmse", "mae", "bias"]
+    base_cols = [
+        k for k in groupby_keys
+        if k in out_df.columns and k not in ("variable", "baseline")
+    ]
+    cols = base_cols + ["variable", "baseline", "n", "rmse", "mae", "bias"]
     cols = [c for c in cols if c in out_df.columns] + [c for c in out_df.columns if c not in cols]
     out_df = out_df[cols]
 
