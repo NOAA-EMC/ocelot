@@ -93,6 +93,7 @@ class BinDataset(Dataset):
         observation_config,
         feature_stats=None,
         require_targets=True,
+        include_persistence_inputs=False,
         tag="TRAIN",
         verbose: bool = False,
     ):
@@ -103,6 +104,7 @@ class BinDataset(Dataset):
         self.observation_config = observation_config
         self.feature_stats = feature_stats
         self.require_targets = require_targets
+        self.include_persistence_inputs = bool(include_persistence_inputs)
         self.tag = tag
         self.verbose = bool(verbose)
 
@@ -122,6 +124,7 @@ class BinDataset(Dataset):
                 self.observation_config,
                 feature_stats=self.feature_stats,
                 require_targets=self.require_targets,
+                include_persistence_inputs=self.include_persistence_inputs,
             )
             bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
@@ -195,6 +198,7 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
         self.save_hyperparameters()
         self.prediction_mode = bool(prediction_mode)
+        self.include_persistence_inputs = bool(prediction_mode)
 
         # If require_targets not specified, default based on prediction_mode
         # prediction_mode=True → require_targets=False (inference)
@@ -557,6 +561,15 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
+            if "input_features_raw" in inst_dict:
+                data[node_type_input].input_features_raw = _t32(inst_dict["input_features_raw"])
+            if "input_channel_mask" in inst_dict:
+                data[node_type_input].input_channel_mask = torch.as_tensor(
+                    inst_dict["input_channel_mask"], dtype=torch.bool
+                )
+            if "input_time_unix" in inst_dict:
+                data[node_type_input].input_times = _t64(inst_dict["input_time_unix"])
+
             # Store pressure level index for radiosonde and aircraft (if available)
             if "input_pressure_level" in inst_dict:
                 data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
@@ -761,6 +774,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=True,  # Training always requires targets
+            include_persistence_inputs=False,
             tag="TRAIN",
         )
         loader = PyGDataLoader(
@@ -787,6 +801,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=True,  # Validation requires targets for comparison
+            include_persistence_inputs=self.include_persistence_inputs,
             tag="VAL",
         )
         loader = PyGDataLoader(
@@ -824,6 +839,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=self.require_targets,  # Use datamodule's require_targets setting
+            include_persistence_inputs=self.include_persistence_inputs,
             tag="PREDICT",
         )
 
@@ -862,6 +878,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=self.require_targets,
+            include_persistence_inputs=self.include_persistence_inputs,
             tag="FSOI",
         )
 

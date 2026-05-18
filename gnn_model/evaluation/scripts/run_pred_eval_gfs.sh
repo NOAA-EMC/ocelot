@@ -16,15 +16,19 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}" ]]; then
+SOURCE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${GNN_MODEL_DIR:-}" && -f "${GNN_MODEL_DIR}/predict_gnn.py" ]]; then
+  GNN_MODEL_DIR="$(cd "${GNN_MODEL_DIR}" && pwd)"
+elif [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/predict_gnn.py" ]]; then
   GNN_MODEL_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+elif [[ -f "${SOURCE_SCRIPT_DIR}/../../predict_gnn.py" ]]; then
+  GNN_MODEL_DIR="$(cd "${SOURCE_SCRIPT_DIR}/../.." && pwd)"
 else
-  GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  GNN_MODEL_DIR="/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model"
 fi
 OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 
-cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
+cd "${GNN_MODEL_DIR}"
 
 # =====================
 # User-config parameters
@@ -88,6 +92,24 @@ GFS_ROOT=${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}
 # - nominal: use init + fhr (bucket end)
 # - obs_interp: time-interpolate GFS to each row's observation time (recommended)
 GFS_TIME_MODE=${GFS_TIME_MODE:-obs_interp}
+GFS_FHR_STEP=${GFS_FHR_STEP:-3}
+ANALYSIS_TIME_MODE=${ANALYSIS_TIME_MODE:-exact}
+
+# Workflow switches. Set CSV_ONLY=1 for post-processing jobs that should not
+# spend time making per-init plots.
+CSV_ONLY=${CSV_ONLY:-0}
+RUN_PREDICTION=${RUN_PREDICTION:-1}
+RUN_TRUTH_PLOTS=${RUN_TRUTH_PLOTS:-1}
+RUN_METRICS=${RUN_METRICS:-1}
+RUN_OBS_GFS_CSV=${RUN_OBS_GFS_CSV:-1}
+RUN_GFS_PLOTS=${RUN_GFS_PLOTS:-1}
+RUN_MESH_GFS_CSV=${RUN_MESH_GFS_CSV:-1}
+RUN_MESH_GFS_PLOTS=${RUN_MESH_GFS_PLOTS:-1}
+if [ "${CSV_ONLY}" = "1" ]; then
+  RUN_TRUTH_PLOTS=0
+  RUN_GFS_PLOTS=0
+  RUN_MESH_GFS_PLOTS=0
+fi
 
 # Outputs
 OUT_ROOT=${OUT_ROOT:-"predictions/${EXP_NAME}"}
@@ -116,7 +138,17 @@ echo "CKPT=${CKPT}"
 echo "OUT_ROOT=${OUT_ROOT}"
 echo "GFS_ROOT=${GFS_ROOT}"
 echo "GFS_TIME_MODE=${GFS_TIME_MODE}"
+echo "GFS_FHR_STEP=${GFS_FHR_STEP}"
+echo "ANALYSIS_TIME_MODE=${ANALYSIS_TIME_MODE}"
 echo "RADIOSONDE_LEVELS=${RADIOSONDE_LEVELS}"
+echo "CSV_ONLY=${CSV_ONLY}"
+echo "RUN_PREDICTION=${RUN_PREDICTION}"
+echo "RUN_TRUTH_PLOTS=${RUN_TRUTH_PLOTS}"
+echo "RUN_METRICS=${RUN_METRICS}"
+echo "RUN_OBS_GFS_CSV=${RUN_OBS_GFS_CSV}"
+echo "RUN_GFS_PLOTS=${RUN_GFS_PLOTS}"
+echo "RUN_MESH_GFS_CSV=${RUN_MESH_GFS_CSV}"
+echo "RUN_MESH_GFS_PLOTS=${RUN_MESH_GFS_PLOTS}"
 
 if [ "${INSTRUMENT}" = "radiosonde" ] && [ -z "${OBS_SPACE_PRESSURE_LEVEL_IDX}" ] && [ -n "${MESH_PRESSURE_LEVEL_IDX:-}" ]; then
   OBS_SPACE_PRESSURE_LEVEL_IDX="${MESH_PRESSURE_LEVEL_IDX}"
@@ -138,7 +170,13 @@ if [[ ! -x "${MM}" ]]; then
   exit 2
 fi
 
-PY=("${MM}" run -n "${OCELOT_ENV_NAME}" python)
+ENV_PY="${MAMBA_ROOT_PREFIX}/envs/${OCELOT_ENV_NAME}/bin/python"
+if [[ -x "${ENV_PY}" && "${USE_MICROMAMBA_RUN:-0}" != "1" ]]; then
+  PY=("${ENV_PY}")
+else
+  PY=("${MM}" run -n "${OCELOT_ENV_NAME}" python)
+fi
+echo "PY=${PY[*]}"
 
 # Ensure we run the code from THIS checkout (not NNJA mirror)
 export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
@@ -148,39 +186,53 @@ export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
 INIT_DATE="${INIT_TIME:0:8}"
 START_DATE=$(date -u -d "${INIT_DATE} -1 day" +%Y-%m-%d)
 END_DATE=$(date -u -d "${INIT_DATE} +1 day" +%Y-%m-%d)
+export PREDICT_INIT_TIME_FILTER=${PREDICT_INIT_TIME_FILTER:-${INIT_TIME}}
 
 echo "START_DATE=${START_DATE} END_DATE=${END_DATE}"
+echo "PREDICT_INIT_TIME_FILTER=${PREDICT_INIT_TIME_FILTER}"
 
 mkdir -p "${OUT_ROOT}" "${PLOT_TRUTH_DIR}" "${PLOT_GFS_DIR}" "${PLOT_MESH_GFS_DIR}"
 
-echo "==== 1) Prediction (obs-space, with truth) ===="
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
-  "${MM}" run -n "${OCELOT_ENV_NAME}" python predict_gnn.py \
-    --checkpoint "${CKPT}" \
-    --start_date "${START_DATE}" \
-    --end_date "${END_DATE}" \
-    --output_dir "${OUT_ROOT}" \
-    --eval-mode \
-    --devices 1 \
-    --num_nodes 1 \
-    --batch_size 1
+if [ "${RUN_PREDICTION}" = "1" ]; then
+  echo "==== 1) Prediction (obs-space, with truth) ===="
+  srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
+    "${PY[@]}" predict_gnn.py \
+      --checkpoint "${CKPT}" \
+      --start_date "${START_DATE}" \
+      --end_date "${END_DATE}" \
+      --output_dir "${OUT_ROOT}" \
+      --eval-mode \
+      --devices 1 \
+      --num_nodes 1 \
+      --batch_size 1
+else
+  echo "==== 1) Prediction skipped (RUN_PREDICTION=${RUN_PREDICTION}) ===="
+fi
 
-echo "==== 2) OCELOT vs Truth plots (per lead hour) ===="
-"${PY[@]}" "${EVAL_SCRIPT}" --mode plots --has_ground_truth \
-  --data_dir "${OBS_DIR}" \
-  --plot_dir "${PLOT_TRUTH_DIR}" \
-  --init_time "${INIT_TIME}" \
-  --fhr "${EVAL_FHR_DEFAULT}" \
-  --plot_all_fhrs \
-  --plot_horizon_12h \
-  ${EVAL_EXTRA_ARGS}
+if [ "${RUN_TRUTH_PLOTS}" = "1" ]; then
+  echo "==== 2) OCELOT vs Truth plots (per lead hour) ===="
+  "${PY[@]}" "${EVAL_SCRIPT}" --mode plots --has_ground_truth \
+    --data_dir "${OBS_DIR}" \
+    --plot_dir "${PLOT_TRUTH_DIR}" \
+    --init_time "${INIT_TIME}" \
+    --fhr "${EVAL_FHR_DEFAULT}" \
+    --plot_all_fhrs \
+    --plot_horizon_12h \
+    ${EVAL_EXTRA_ARGS}
+else
+  echo "==== 2) OCELOT vs Truth plots skipped (RUN_TRUTH_PLOTS=${RUN_TRUTH_PLOTS}) ===="
+fi
 
-echo "==== 2b) Pointwise metrics (pred vs truth) ===="
-"${PY[@]}" "${EVAL_SCRIPT}" --mode metrics \
-  --data_dir "${OBS_DIR}" \
-  --metrics_pattern "pred_*init_${INIT_TIME}.csv" \
-  --metrics_out "${OUT_ROOT}/metrics_pointwise_init_${INIT_TIME}.csv" \
-  --metrics_groupby instrument,lead_hours_nominal
+if [ "${RUN_METRICS}" = "1" ]; then
+  echo "==== 2b) Pointwise metrics (pred vs truth) ===="
+  "${PY[@]}" "${EVAL_SCRIPT}" --mode metrics \
+    --data_dir "${OBS_DIR}" \
+    --metrics_pattern "pred_*init_${INIT_TIME}.csv" \
+    --metrics_out "${OUT_ROOT}/metrics_pointwise_init_${INIT_TIME}.csv" \
+    --metrics_groupby instrument,lead_hours_nominal
+else
+  echo "==== 2b) Pointwise metrics skipped (RUN_METRICS=${RUN_METRICS}) ===="
+fi
 
 echo "==== 3) Build *_vs_gfs.csv (obs-space OCELOT vs GFS) ===="
 OCELOT_CSV="${OBS_DIR}/pred_${INSTRUMENT}_target_init_${INIT_TIME}.csv"
@@ -201,6 +253,7 @@ COMPARE_TO_GFS_ARGS=(
   --init_mode from_csv
   --interp nearest
   --gfs_time_mode "${GFS_TIME_MODE}"
+  --fhr_step "${GFS_FHR_STEP}"
   --chunk_size 200000
 )
 
@@ -214,10 +267,11 @@ if [ -n "${OBS_SPACE_PRESSURE_HPA}" ]; then
   COMPARE_TO_GFS_ARGS+=(--pressure_hpa "${OBS_SPACE_PRESSURE_HPA}" --pressure_hpa_tol "${OBS_SPACE_PRESSURE_TOL_HPA}")
 fi
 
-"${PY[@]}" "${COMPARE_TO_GFS_SCRIPT}" "${COMPARE_TO_GFS_ARGS[@]}"
+if [ "${RUN_OBS_GFS_CSV}" = "1" ]; then
+  "${PY[@]}" "${COMPARE_TO_GFS_SCRIPT}" "${COMPARE_TO_GFS_ARGS[@]}"
 
-echo "==== 3b) Sanity-check GFS coverage (fail fast if missing) ===="
-"${PY[@]}" -c "
+  echo "==== 3b) Sanity-check GFS coverage (fail fast if missing) ===="
+  "${PY[@]}" -c "
 import pandas as pd
 p='${OUT_VS_GFS}'
 df=pd.read_csv(p, nrows=200000)
@@ -229,33 +283,40 @@ print(f'GFS coverage check: {non_null}/{len(df)} rows have at least one non-NaN 
 if non_null==0:
   raise SystemExit('ERROR: GFS columns are all NaN (check INIT_TIME and GFS_ROOT layout)')
 "
+else
+  echo "==== 3) Obs-space GFS CSV skipped (RUN_OBS_GFS_CSV=${RUN_OBS_GFS_CSV}) ===="
+fi
 
-echo "==== 4) Plots: RMSE vs fhr + maps (OCELOT vs Truth vs GFS) ===="
 PLOT_VARS="wind_temperature_pressure"
 if [ "${INSTRUMENT}" == "radiosonde" ] || [ "${INSTRUMENT}" == "aircraft" ]; then
   PLOT_VARS="wind_temperature"
 fi
 
-if [ "${INSTRUMENT}" == "radiosonde" ]; then
-  "${PY[@]}" "${PLOT_GFS_COMPARE_SCRIPT}" \
+if [ "${RUN_GFS_PLOTS}" = "1" ]; then
+  echo "==== 4) Plots: RMSE vs fhr + maps (OCELOT vs Truth vs GFS) ===="
+  if [ "${INSTRUMENT}" == "radiosonde" ]; then
+    "${PY[@]}" "${PLOT_GFS_COMPARE_SCRIPT}" \
+      --init_time "${INIT_TIME}" \
+      --data_dir "${OBS_DIR}" \
+      --plot_dir "${PLOT_GFS_DIR}" \
+      --instrument "${INSTRUMENT}" \
+      --vars "${PLOT_VARS}" \
+      --chunksize 200000 \
+      --maps --fhrs ${FHR_LIST} \
+      --levels ${RADIOSONDE_LEVELS} \
+      --level_tol_hpa ${RADIOSONDE_LEVEL_TOL_HPA}
+  else
+    "${PY[@]}" "${PLOT_GFS_COMPARE_SCRIPT}" \
     --init_time "${INIT_TIME}" \
     --data_dir "${OBS_DIR}" \
     --plot_dir "${PLOT_GFS_DIR}" \
     --instrument "${INSTRUMENT}" \
-    --vars "${PLOT_VARS}" \
+      --vars "${PLOT_VARS}" \
     --chunksize 200000 \
-    --maps --fhrs ${FHR_LIST} \
-    --levels ${RADIOSONDE_LEVELS} \
-    --level_tol_hpa ${RADIOSONDE_LEVEL_TOL_HPA}
+    --maps --fhrs ${FHR_LIST}
+  fi
 else
-  "${PY[@]}" "${PLOT_GFS_COMPARE_SCRIPT}" \
-  --init_time "${INIT_TIME}" \
-  --data_dir "${OBS_DIR}" \
-  --plot_dir "${PLOT_GFS_DIR}" \
-  --instrument "${INSTRUMENT}" \
-    --vars "${PLOT_VARS}" \
-  --chunksize 200000 \
-  --maps --fhrs ${FHR_LIST}
+  echo "==== 4) GFS plots skipped (RUN_GFS_PLOTS=${RUN_GFS_PLOTS}) ===="
 fi
 
 echo "==== 5) Mesh-grid: interpolate GFS onto OCELOT mesh grid (same points) ===="
@@ -306,26 +367,39 @@ if [ -d "${MESH_DIR}" ]; then
             exit 4
           fi
 
-          echo "[INFO] Building mesh-vs-GFS CSV for instrument=${mesh_instrument} fhr=${fhr}"
-          "${PY[@]}" "${COMPARE_MESH_TO_GFS_SCRIPT}" \
-            --mesh_csv "${mesh_csv}" \
-            --gfs_root "${GFS_ROOT}" \
-            --out_csv "${gfs_on_ocelot_mesh_csv}" \
-            --interp nearest
+          if [ "${RUN_MESH_GFS_CSV}" = "1" ]; then
+            echo "[INFO] Building mesh-vs-GFS CSV for instrument=${mesh_instrument} fhr=${fhr}"
+            "${PY[@]}" "${COMPARE_MESH_TO_GFS_SCRIPT}" \
+              --mesh_csv "${mesh_csv}" \
+              --gfs_root "${GFS_ROOT}" \
+              --out_csv "${gfs_on_ocelot_mesh_csv}" \
+              --interp nearest \
+              --analysis_time_mode "${ANALYSIS_TIME_MODE}"
+          else
+            echo "[INFO] Mesh-vs-GFS CSV skipped for instrument=${mesh_instrument} fhr=${fhr} (RUN_MESH_GFS_CSV=${RUN_MESH_GFS_CSV})"
+          fi
 
           # Plot a small set of variables if present.
-          mkdir -p "${PLOT_MESH_GFS_DIR}/fhr${fhr}"
-          mesh_vars="u10 v10 t2m sp"
-          if [ "${mesh_instrument}" == "radiosonde" ] || [ "${mesh_instrument}" == "aircraft" ]; then
-            mesh_vars="u v temp"
+          if [ "${RUN_MESH_GFS_PLOTS}" = "1" ]; then
+            if [ ! -f "${gfs_on_ocelot_mesh_csv}" ]; then
+              echo "[WARN] Mesh-vs-GFS plot skipped because CSV is missing: ${gfs_on_ocelot_mesh_csv}"
+            else
+              mkdir -p "${PLOT_MESH_GFS_DIR}/fhr${fhr}"
+              mesh_vars="u10 v10 t2m sp"
+              if [ "${mesh_instrument}" == "radiosonde" ] || [ "${mesh_instrument}" == "aircraft" ]; then
+                mesh_vars="u v temp"
+              fi
+              for v in ${mesh_vars}; do
+                "${PY[@]}" "${PLOT_MESH_VS_GFS_MAPS_SCRIPT}" \
+                  --csv "${gfs_on_ocelot_mesh_csv}" \
+                  --plot_dir "${PLOT_MESH_GFS_DIR}/fhr${fhr}" \
+                  --var "${v}" \
+                  --gfs_root "${GFS_ROOT}" || true
+              done
+            fi
+          else
+            echo "[INFO] Mesh-vs-GFS plots skipped for instrument=${mesh_instrument} fhr=${fhr} (RUN_MESH_GFS_PLOTS=${RUN_MESH_GFS_PLOTS})"
           fi
-          for v in ${mesh_vars}; do
-            "${PY[@]}" "${PLOT_MESH_VS_GFS_MAPS_SCRIPT}" \
-              --csv "${gfs_on_ocelot_mesh_csv}" \
-              --plot_dir "${PLOT_MESH_GFS_DIR}/fhr${fhr}" \
-              --var "${v}" \
-              --gfs_root "${GFS_ROOT}" || true
-          done
         else
           echo "[WARN] Mesh-grid CSV not found for instrument=${mesh_instrument} fhr=${fhr}: ${mesh_csv}"
         fi
