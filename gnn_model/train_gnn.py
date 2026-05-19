@@ -1,3 +1,11 @@
+"""OCELOT training entry point.
+
+Author: Azadeh Gholoubi
+
+This script configures data sampling, model construction, checkpointing,
+distributed training, and validation for the OCELOT v1 experiments.
+"""
+
 import argparse
 import faulthandler
 import os

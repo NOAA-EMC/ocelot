@@ -1,5 +1,4 @@
-"""
-Pre-compute mesh prediction edges offline to avoid rtree multiprocessing issues.
+"""Precompute mesh prediction edges for OCELOT.
 
 This script creates the mesh→grid connections once and saves them to a file.
 The training script then loads these pre-computed edges instead of calling

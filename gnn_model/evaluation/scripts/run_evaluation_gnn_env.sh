@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+#
+# Run OCELOT evaluation plots or GFS comparison plots in the configured GNN environment.
+#
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A da-cpu
 #SBATCH -p u1-service
@@ -69,10 +73,10 @@ BATCH_IDX_TO_PLOT=""
 # Testing mode examples:
 #   DATA_DIR="predictions/pred_csv/obs-space/"     # observation-location outputs (with ground truth; set HAS_GROUND_TRUTH = true)
 #   DATA_DIR="predictions/pred_csv/mesh-grid/"     # mesh-grid outputs (forecast only; set HAS_GROUND_TRUTH = false)
-DATA_DIR="predictions/test1-3years/pred_csv/mesh-grid/"
+DATA_DIR="predictions/ocelot_v1_prediction_example/pred_csv/mesh-grid/"
 
 # Output directory for plots
-PLOT_DIR="evaluation/figures/test1-3years/pred_mesh"
+PLOT_DIR="evaluation/figures/ocelot_v1_prediction_example/pred_mesh"
 
 # --- Mode Configuration ---
 # Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth

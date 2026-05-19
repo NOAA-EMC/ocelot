@@ -1,3 +1,12 @@
+"""Time-series feature engineering and graph-data preparation for OCELOT.
+
+Author: Azadeh Gholoubi
+
+This module bins observations into model windows, applies QC/feature
+transforms, builds target-time features, and prepares the arrays consumed by the
+OCELOT data module.
+"""
+
 import hashlib
 import numpy as np
 import pandas as pd

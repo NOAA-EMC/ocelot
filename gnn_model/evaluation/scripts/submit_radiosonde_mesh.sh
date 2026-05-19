@@ -1,7 +1,10 @@
 #!/bin/bash
+# Author: Azadeh Gholoubi
+#
+# Submit a radiosonde mesh-grid vs GFS run at a fixed pressure level.
+#
 set -euo pipefail
 
-# Submit a radiosonde-on-grid (mesh-grid) vs GFS run at a fixed pressure level.
 # Defaults to 850 hPa, where mesh_pressure_level_idx=2.
 #
 # Usage:

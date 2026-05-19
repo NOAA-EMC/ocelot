@@ -1,3 +1,7 @@
+"""Template settings for OCELOT data preparation.
+
+"""
+
 import os
 
 config_dir = os.path.split(os.path.abspath(__file__))[0]

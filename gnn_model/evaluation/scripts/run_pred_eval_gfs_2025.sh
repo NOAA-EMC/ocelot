@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+#
+# Slurm array wrapper for full-year 2025 OCELOT prediction and GFS evaluation.
+#
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
@@ -70,6 +74,11 @@ if [[ "${INIT_SELECTION}" == "all" ]]; then
 else
   INIT_LIST_ARGS+=(--num-inits "${NUM_INITS}" --sample-mode "${INIT_SAMPLE_MODE}")
 fi
+
+# Load Conda environment used for OCELOT v1 training and validation before
+# calling helper Python scripts directly.
+source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
+conda activate gnn-env
 python "${SCRIPT_DIR}/make_2025_init.py" "${INIT_LIST_ARGS[@]}" > "${INIT_LIST_FILE}"
 mapfile -t INIT_TIMES < "${INIT_LIST_FILE}"
 
@@ -90,7 +99,7 @@ fi
 export INIT_TIME="${INIT_TIMES[${ARRAY_IDX}]}"
 
 # Manuscript checkpoint/current experiment defaults. Override at sbatch time if needed.
-export EXP_NAME=${EXP_NAME:-paper_2025_full_Epoch3079}
+export EXP_NAME=${EXP_NAME:-ocelot_v1_2025_gfs_eval}
 export CKPT=${CKPT:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}
 export INSTRUMENT=${INSTRUMENT:-surface_obs}
 export GFS_ROOT

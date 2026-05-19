@@ -1,3 +1,12 @@
+"""Hierarchical interaction-network processor for OCELOT mesh levels.
+
+Author: Azadeh Gholoubi
+
+This module keeps the message-passing hierarchical processor used for
+experiments and compatibility. The transformer-based hierarchical processor is
+preferred for large OCELOT v1 runs.
+"""
+
 import torch
 import torch.nn as nn
 from typing import Dict, List, Tuple

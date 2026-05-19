@@ -1,6 +1,12 @@
-# Standard library
-import os
-from argparse import ArgumentParser
+"""Global mesh graph construction utilities for OCELOT.
+
+Author: Azadeh Gholoubi
+
+This module builds the GraphCast-style icosahedral mesh hierarchy used by the
+current OCELOT model and constructs observation-to-mesh or mesh-to-target edge
+indices/features. `create_mesh` is used by the model initialization path, while
+`obs_mesh_conn` is used by data loading and mesh-edge precomputation.
+"""
 
 # Third-party
 import matplotlib
@@ -9,7 +15,6 @@ import numpy as np
 import scipy
 import torch
 import torch_geometric as pyg
-import zarr
 from graphcast_aux import _get_max_edge_distance
 import grid_mesh_connectivity as gc_gm
 import icosahedral_mesh as gc_im
@@ -123,6 +128,18 @@ def inter_mesh_connection(from_mesh, to_mesh):
 
 
 def create_mesh(splits, levels, hierarchical, plot=False):
+    """Create the mesh hierarchy and spatial features used by OCELOT.
+
+    Args:
+        splits: Number of icosahedral refinement splits.
+        levels: Optional number of finest hierarchy levels to retain.
+        hierarchical: If true, return explicit coarse/fine hierarchy edges.
+        plot: If true, render diagnostic plots of mesh connectivity.
+
+    Returns:
+        Dictionary containing mesh objects, mesh lat/lon coordinates, processor
+        edge indices, edge features, and optional hierarchy edges.
+    """
     # Mesh, index 0 is initial graph, with longest edges
     mesh_list = gc_im.get_hierarchy_of_triangular_meshes_for_sphere(splits)
     if levels is not None:
@@ -267,6 +284,20 @@ def create_mesh(splits, levels, hierarchical, plot=False):
 def obs_mesh_conn(
     grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, o2m=True
 ):
+    """Build observation-to-mesh or mesh-to-observation connectivity.
+
+    Args:
+        grid_lat: Observation/target latitudes in degrees.
+        grid_lon: Observation/target longitudes in degrees.
+        m2m_graphs: Mesh graph list from `create_mesh`.
+        mesh_lat_lon_list: Mesh latitude/longitude arrays from `create_mesh`.
+        mesh_list: Full mesh hierarchy from `create_mesh`.
+        o2m: If true, build radius-query obs-to-mesh edges. If false, build
+            mesh-to-target edges using containing mesh triangles.
+
+    Returns:
+        Tuple of `(edge_index, edge_attr)` as torch tensors.
+    """
 
     # Create lat-lon grid
     grid_lat_lon_flat = np.stack((grid_lat, grid_lon), axis=1)  # shape (N, 2)
@@ -349,85 +380,3 @@ def obs_mesh_conn(
         return (g2m_edge_index_torch, g2m_features_torch)
     else:
         return (m2g_edge_index_torch, m2g_features_torch)
-
-
-def main():
-    """
-    Global graph generation
-    """
-    parser = ArgumentParser(description="Graph generation arguments")
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        default="global_example_era5",
-        help="Dataset to load grid point coordinates from "
-        "(default: global_example_era5)",
-    )
-    parser.add_argument(
-        "--graph",
-        type=str,
-        default="global_multiscale",
-        help="Name to save graph as (default: global_multiscale)",
-    )
-    parser.add_argument(
-        "--plot",
-        type=int,
-        default=0,
-        help="If graphs should be plotted during generation " "(default: 0 (false))",
-    )
-    parser.add_argument(
-        "--splits",
-        default=3,
-        type=int,
-        help="Number of splits to triangular mesh (default: 3)",
-    )
-    parser.add_argument(
-        "--levels",
-        type=int,
-        help="Number of levels to keep, from finest upwards "
-        "(default: None (keep all))",
-    )
-    parser.add_argument(
-        "--hierarchical",
-        type=int,
-        default=0,
-        help="Generate hierarchical mesh graph (default: 0, no)",
-    )
-    args = parser.parse_args()
-    args_dict = {
-        "data_path": "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v4/global/",
-        "plot": True,
-    }
-    for key, value in args_dict.items():
-        if hasattr(args, key):
-            setattr(args, key, value)
-        else:
-            print(f"INFO: Adding new argument '{key}' to args")
-            setattr(args, key, value)
-
-    mesh_structure = create_mesh(args.splits, args.levels, args.hierarchical, args.plot)
-
-    fields_group_path = os.path.join(args.data_path, "atms_20240401_20240407.zarr")
-    graph_dir_path = os.path.join("graphs", args.graph)
-    os.makedirs(graph_dir_path, exist_ok=True)
-
-    # Load grid positions
-    fields_group = zarr.open(fields_group_path, mode="r")
-    grid_lat = np.array(fields_group["latitude"], dtype=DEFAULT_DTYPE)[
-        :1000
-    ]  # (num_lat,)
-    grid_lon = np.array(fields_group["longitude"], dtype=DEFAULT_DTYPE)[
-        :1000
-    ]  # (num_long,)
-
-    obs_mesh_conn(
-        grid_lat,
-        grid_lon,
-        mesh_structure["m2m_graphs"],
-        mesh_structure["mesh_lat_lon_list"],
-        mesh_structure["mesh_list"],
-    )
-
-
-if __name__ == "__main__":
-    main()

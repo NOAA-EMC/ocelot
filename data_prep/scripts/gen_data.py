@@ -1,3 +1,7 @@
+"""Generate OCELOT data-preparation jobs.
+
+"""
+
 import sys
 import os
 import argparse
