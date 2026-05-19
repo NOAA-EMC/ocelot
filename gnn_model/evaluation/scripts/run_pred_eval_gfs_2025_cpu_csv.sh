@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+#
+# CPU Slurm array wrapper for 2025 GFS/analysis CSV generation.
+#
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-compute
 #SBATCH -J ocelot_2025_csv

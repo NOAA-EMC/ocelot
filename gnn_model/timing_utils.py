@@ -1,3 +1,11 @@
+"""Runtime timing and resource logging helpers for OCELOT scripts.
+
+Author: Azadeh Gholoubi
+
+Training and preprocessing scripts use the decorator in this module to report
+elapsed time and coarse CPU, memory, and disk usage around long-running steps.
+"""
+
 import os
 import time
 

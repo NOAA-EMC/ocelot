@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Print summary statistics for variables in a Zarr file."""
+"""Print summary statistics for OCELOT Zarr data-preparation outputs.
+
+"""
 import argparse
 from typing import List
 

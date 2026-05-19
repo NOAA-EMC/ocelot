@@ -11,50 +11,12 @@ We now also support *pointwise* verification metrics directly from the new
 """
 
 import os
-import sys
 import glob
 import argparse
 
 import numpy as np
 import pandas as pd
 
-
-def _reexec_under_micromamba_if_needed() -> None:
-    """Re-exec this script under the stable micromamba env if needed.
-
-    Avoids failures when the user's current `python` is from a broken conda env.
-    """
-
-    if os.environ.get("OCELOT_SKIP_MICROMAMBA_REEXEC") == "1":
-        return
-    if os.environ.get("OCELOT_IN_MICROMAMBA") == "1":
-        return
-
-    env_home = os.environ.get(
-        "OCELOT_ENV_HOME",
-        "/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env",
-    )
-    mm = os.environ.get(
-        "OCELOT_MM",
-        os.path.join(env_home, "micromamba", "bin", "micromamba"),
-    )
-    root_prefix = os.environ.get(
-        "MAMBA_ROOT_PREFIX",
-        os.path.join(env_home, "micromamba_root"),
-    )
-    env_name = os.environ.get("OCELOT_ENV_NAME", "ocelot-cu121")
-
-    if not (os.path.exists(mm) and os.access(mm, os.X_OK)):
-        return
-
-    new_env = os.environ.copy()
-    new_env["MAMBA_ROOT_PREFIX"] = root_prefix
-    new_env["OCELOT_IN_MICROMAMBA"] = "1"
-    cmd = [mm, "run", "-n", env_name, "python"] + sys.argv
-    os.execvpe(mm, cmd, new_env)
-
-
-_reexec_under_micromamba_if_needed()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIG_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "figures"))

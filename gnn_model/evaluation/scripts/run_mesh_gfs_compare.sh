@@ -1,4 +1,8 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+#
+# Build OCELOT mesh-grid vs GFS comparison CSVs and plots for one init time.
+#
 #SBATCH -A da-cpu
 #SBATCH -p u1-service
 #SBATCH -J mesh_gfs_compare
@@ -25,7 +29,7 @@ cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
 
 INIT_TIME=${INIT_TIME:-2025030100}
 INSTRUMENT_LIST=${INSTRUMENT_LIST:-"surface_obs radiosonde"}
-EXP_NAME=${EXP_NAME:-test1-3years}
+EXP_NAME=${EXP_NAME:-ocelot_v1_mesh_gfs}
 FHR_LIST=${FHR_LIST:-"3 6 9 12"}
 GFS_ROOT=${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}
 
@@ -34,8 +38,8 @@ MESH_DIR=${OUT_ROOT}/pred_csv/mesh-grid
 PLOT_ROOT="evaluation/figures/${EXP_NAME}"
 PLOT_MESH_GFS_DIR=${PLOT_ROOT}/mesh_ocelot_gfs_gfs0/init_${INIT_TIME}
 
-COMPARE_MESH_TO_GFS_SCRIPT=${SCRIPT_DIR}/compare_mesh_to_gfs_update.py
-PLOT_MESH_VS_GFS_MAPS_SCRIPT=${SCRIPT_DIR}/plot_mesh_vs_gfs_maps_update.py
+COMPARE_MESH_TO_GFS_SCRIPT=${SCRIPT_DIR}/compare_mesh_to_gfs.py
+PLOT_MESH_VS_GFS_MAPS_SCRIPT=${SCRIPT_DIR}/plot_mesh_vs_gfs_maps.py
 
 echo "Running on $(hostname)"
 echo "INIT_TIME=${INIT_TIME}"

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""Radiosonde BUFR mapping for OCELOT data preparation.
+
+"""
 
 import os
 import numpy as np

@@ -11,7 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Utilities for building models."""
+"""Graph spatial feature utilities adapted for OCELOT.
+
+Author: Azadeh Gholoubi
+
+This file retains the Apache-2.0 DeepMind GraphCast utility structure and adapts
+the spatial feature construction for the OCELOT mesh graph.
+"""
 
 from typing import Any, Mapping, Optional, Tuple
 

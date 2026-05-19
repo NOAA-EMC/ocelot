@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# Run OCELOT evaluation plots or GFS comparison plots over a date range.
+#
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A da-cpu
 #SBATCH -p u1-service
@@ -32,19 +34,10 @@ OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 
 cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
 
-# Use the clean micromamba environment (does not depend on conda).
-OCELOT_ENV_HOME="${OCELOT_ENV_HOME:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/ocelot_env}"
-MM="${MM:-${OCELOT_ENV_HOME}/micromamba/bin/micromamba}"
-export MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-${OCELOT_ENV_HOME}/micromamba_root}"
-OCELOT_ENV_NAME="${OCELOT_ENV_NAME:-ocelot-cu121}"
-
-if [[ ! -x "${MM}" ]]; then
-    echo "ERROR: micromamba not found/executable at: ${MM}"
-    echo "Create it via: cd ${OCELOT_ENV_HOME} && ./create_env.sh ${OCELOT_ENV_NAME}"
-    exit 2
-fi
-
-PY=("${MM}" run -n "${OCELOT_ENV_NAME}" python)
+# Load Conda environment used for OCELOT v1 training and validation.
+source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
+conda activate gnn-env
+PY=(python)
 
 # Add PYTHONPATH
 export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
