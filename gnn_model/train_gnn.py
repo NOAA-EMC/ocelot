@@ -1,4 +1,5 @@
 import argparse
+import gc
 import faulthandler
 import os
 import socket
@@ -617,14 +618,28 @@ def main():
     )
 
     if resume_path and args.load_weights_only:
-        print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
         model = GNNLightning(**model_kwargs)
-        ckpt = torch.load(resume_path, map_location="cpu")
-        state = ckpt.get("state_dict", ckpt)
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(
-            f"[INFO] Weights-only load complete. missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
-        )
+        try:
+            load_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0")))
+        except Exception:
+            load_rank = 0
+
+        if load_rank == 0:
+            print(f"[INFO] Loading weights only (strict=False) from: {resume_path}", flush=True)
+            ckpt = torch.load(resume_path, map_location="cpu")
+            state = ckpt.get("state_dict", ckpt)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(
+                f"[INFO] Weights-only load complete. missing_keys={len(missing)} unexpected_keys={len(unexpected)}",
+                flush=True,
+            )
+            del state, ckpt
+            gc.collect()
+        else:
+            print(
+                f"[INFO] Rank {load_rank}: skipping checkpoint deserialize; DDP initial broadcast will sync rank 0 weights.",
+                flush=True,
+            )
     else:
         model = GNNLightning(**model_kwargs)
 

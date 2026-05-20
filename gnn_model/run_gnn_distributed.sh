@@ -42,6 +42,7 @@ export NCCL_IB_DISABLE=0
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_P2P_LEVEL=NVL
 export PYTHONFAULTHANDLER=1
+export PYTHONUNBUFFERED=1
 
 # Fix distributed timeout issues
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600    # 1 hour timeout
@@ -49,7 +50,9 @@ export TORCH_NCCL_DESYNC_DEBUG=1                # Better error reporting
 export NCCL_TIMEOUT=3600                        # NCCL timeout 1 hour
 export TORCH_DISTRIBUTED_DEBUG=OFF # INFO
 # export CUDA_LAUNCH_BLOCKING=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# NOTE: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True was removed because
+# the H100 driver in this environment logs "expandable_segments not supported
+# on this platform" -- the flag was silently inert and made logs misleading.
 # Local NNJA mirror (shared path visible to ALL nodes)
 export NNJA_LOCAL_ROOT=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/nnja-ai
 export PYTHONPATH=/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/src/ocelot/gnn_model:/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot:$PYTHONPATH
@@ -80,12 +83,25 @@ GRAPH_CACHE_DIR="${GRAPH_CACHE_DIR:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/oc
 GRAPH_CACHE_READ="${GRAPH_CACHE_READ:-1}"
 GRAPH_CACHE_WRITE="${GRAPH_CACHE_WRITE:-1}"
 PRECOMPUTE_GRAPH_CACHE="${PRECOMPUTE_GRAPH_CACHE:-0}"
+RESUME_WEIGHTS_ONLY="${RESUME_WEIGHTS_ONLY:-0}"
+WEIGHTS_ONLY_CKPT="${WEIGHTS_ONLY_CKPT:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/checkpoints/${RUN_NAME}/last_state_dict.ckpt}"
 
 echo "RUN_NAME=$RUN_NAME"
 echo "GRAPH_CACHE_DIR=$GRAPH_CACHE_DIR"
 echo "GRAPH_CACHE_READ=$GRAPH_CACHE_READ"
 echo "GRAPH_CACHE_WRITE=$GRAPH_CACHE_WRITE"
 echo "PRECOMPUTE_GRAPH_CACHE=$PRECOMPUTE_GRAPH_CACHE"
+echo "RESUME_WEIGHTS_ONLY=$RESUME_WEIGHTS_ONLY"
+
+RESUME_ARGS=()
+if [[ "$RESUME_WEIGHTS_ONLY" == "1" ]]; then
+	echo "WEIGHTS_ONLY_CKPT=$WEIGHTS_ONLY_CKPT"
+	if [[ ! -f "$WEIGHTS_ONLY_CKPT" ]]; then
+		echo "ERROR: WEIGHTS_ONLY_CKPT not found: $WEIGHTS_ONLY_CKPT" >&2
+		exit 2
+	fi
+	RESUME_ARGS+=(--resume_from_checkpoint="$WEIGHTS_ONLY_CKPT" --load_weights_only)
+fi
 
 GRAPH_CACHE_ARGS=()
 if [[ -n "$GRAPH_CACHE_DIR" ]]; then
@@ -105,21 +121,21 @@ fi
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python /scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/src/ocelot/gnn_model/train_gnn.py \
 	--run_name="$RUN_NAME" \
 	"${GRAPH_CACHE_ARGS[@]}" \
+	"${RESUME_ARGS[@]}" \
 	--hidden_dim=256 \
 	--parallelization_strategy=domain \
 	--domain_halo_hops=1 \
 	--num_nodes=8 \
-	--zarr_cache_max_size_bytes=67108864 \
+	--zarr_cache_max_size_bytes=33554432 \
 	--decoder_dst_chunk_size=1024 \
 	--encoder_dst_chunk_size=4096 \
 	--encoder_dst_chunk_threshold=4096 \
 	--val_csv_out_dir=val_csv \
-	--zarr_cache_max_size_bytes=67108864 \
-	--train_num_workers=8 \
-	--val_num_workers=4 \
-	--dataloader_prefetch_factor=4 \
+	--train_num_workers=2 \
+	--val_num_workers=1 \
+	--dataloader_prefetch_factor=1 \
 	--disable_pin_memory \
-	# --resume_from_latest \
+	--max_epochs 328\
 	# --limit_val_batches=1 
 
 	# pin_memory is disabled to avoid the known PyTorch instability with

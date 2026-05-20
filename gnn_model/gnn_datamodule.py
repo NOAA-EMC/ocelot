@@ -7,6 +7,7 @@ pipelines through a PyTorch Lightning data module.
 Author: Azadeh Gholoubi
 """
 
+import gc
 import glob
 import os
 import json
@@ -264,10 +265,12 @@ class GNNDataModule(pl.LightningDataModule):
         self._val_cache: dict[tuple[pd.Timestamp, pd.Timestamp], tuple[dict, list[str]]] = {}
         self._val_cache_lru: list[tuple[pd.Timestamp, pd.Timestamp]] = []
 
-        # On-disk cache for expensive summary builds (DDP-safe)
+        # On-disk cache for expensive summary builds (DDP-safe).
+        # NOTE: SLURM_JOB_ID is intentionally omitted from the directory so that
+        # the cache is reused across jobs (the file name itself is a hash of
+        # the window dates, observation_config, etc., so it's still correct).
         submit_dir = os.environ.get("SLURM_SUBMIT_DIR") or os.getcwd()
-        job_id = os.environ.get("SLURM_JOB_ID")
-        self._summary_cache_dir = os.path.join(submit_dir, ".summary_cache", job_id or "local")
+        self._summary_cache_dir = os.path.join(submit_dir, ".summary_cache")
 
         # Keep as hparam for downstream access
         self.hparams.verbose = bool(verbose)
@@ -283,6 +286,8 @@ class GNNDataModule(pl.LightningDataModule):
         self.hparams.precompute_graph_cache = bool(precompute_graph_cache)
 
         self.mesh_structure = mesh_structure
+        # Lazily-built bidirectional fp16 mesh edge tensors (see _create_graph_structure).
+        self._m2m_bidir_cache: tuple[torch.Tensor, torch.Tensor] | None = None
         self.feature_stats = feature_stats
         self.parallelization_strategy = str(parallelization_strategy)
         self.domain_halo_hops = int(domain_halo_hops)
@@ -431,17 +436,39 @@ class GNNDataModule(pl.LightningDataModule):
             return data_summary, bin_names
 
         built_obj = None
+        build_error: str | None = None
         if rank == 0:
             if os.path.exists(cache_path):
-                built_obj = torch.load(cache_path, weights_only=False)
-            else:
+                try:
+                    built_obj = torch.load(cache_path, weights_only=False)
+                except Exception as e:
+                    build_error = f"cache load failed: {e}"
+            if built_obj is None and build_error is None:
                 if verbose:
                     print(f"[DM.cache] building {kind} summary -> {cache_path}")
-                data_summary, bin_names = _build()
-                built_obj = {"data_summary": data_summary, "bin_names": bin_names}
-                tmp = f"{cache_path}.tmp.{os.getpid()}"
-                torch.save(built_obj, tmp)
-                os.replace(tmp, cache_path)
+                try:
+                    data_summary, bin_names = _build()
+                    built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+                    tmp = f"{cache_path}.tmp.{os.getpid()}"
+                    torch.save(built_obj, tmp)
+                    os.replace(tmp, cache_path)
+                except Exception as e:
+                    build_error = f"_build() failed: {e}"
+
+        # Broadcast rank-0 failure status so other ranks don't hang in the
+        # cache-file poll loop below waiting for a file that will never exist.
+        err_list = [build_error]
+        try:
+            dist.broadcast_object_list(err_list, src=0)
+        except Exception:
+            # Older PyTorch / unsupported backend -- fall through; the barrier
+            # plus polling will still surface the issue eventually.
+            pass
+        if err_list[0] is not None:
+            dist.barrier()
+            raise RuntimeError(
+                f"[DM.cache] rank 0 failed to build {kind} summary at {cache_path}: {err_list[0]}"
+            )
 
         dist.barrier()
 
@@ -571,12 +598,19 @@ class GNNDataModule(pl.LightningDataModule):
     # ------------- Summary (re)builders -------------
     def _rebuild_train_summary(self):
         _, rank = self._ddp_info()
+        # Drop the previous summary before building a new one so peak RSS does not
+        # transiently hold two copies. Important when this is called during epoch
+        # resampling on every rank.
+        self.train_data_summary = None
+        self.train_bin_names = []
+        gc.collect()
         self.train_data_summary, self.train_bin_names = self._load_or_build_summary(
             "train",
             self.hparams.train_start,
             self.hparams.train_end,
             require_targets=True,
         )
+        gc.collect()
         print(
             f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
             f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
@@ -588,12 +622,17 @@ class GNNDataModule(pl.LightningDataModule):
         if self._cache_val_windows and key in self._val_cache:
             self.val_data_summary, self.val_bin_names = self._val_cache[key]
         else:
+            # Drop the previous val summary before building a new one.
+            self.val_data_summary = None
+            self.val_bin_names = []
+            gc.collect()
             self.val_data_summary, self.val_bin_names = self._load_or_build_summary(
                 "val",
                 self.hparams.val_start,
                 self.hparams.val_end,
                 require_targets=self.require_targets,
             )
+            gc.collect()
             if self._cache_val_windows:
                 self._val_cache[key] = (self.val_data_summary, self.val_bin_names)
                 self._val_cache_lru.append(key)
@@ -636,12 +675,19 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh"].x = _t32(self.mesh_structure["mesh_features_torch"][0])
         data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
-        m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-        # Keep mesh edge_attr in fp16 to reduce device memory footprint under AMP.
-        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
-        reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
-        data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
-        data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
+        # Cache the bidirectional fp16 mesh edge tensors once. They're static
+        # across bins and otherwise get re-materialized (and re-allocated) on
+        # every __getitem__ inside every worker process.
+        if getattr(self, "_m2m_bidir_cache", None) is None:
+            m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
+            m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
+            reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
+            self._m2m_bidir_cache = (
+                torch.cat([m2m_edge_index, reverse_edges], dim=1).contiguous(),
+                torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0).contiguous(),
+            )
+        data["mesh", "to", "mesh"].edge_index = self._m2m_bidir_cache[0]
+        data["mesh", "to", "mesh"].edge_attr = self._m2m_bidir_cache[1]
 
         window_hours = int(self.hparams.window_size.replace('h', ''))
 
@@ -968,16 +1014,23 @@ class GNNDataModule(pl.LightningDataModule):
                 f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
             )
 
-    def _loader_kwargs(self, num_workers: int) -> dict:
+    def _loader_kwargs(self, num_workers: int, num_bins: int | None = None) -> dict:
+        # Cap workers to the actual amount of work available on this rank.
+        # Spawning more workers than bins/batches just multiplies the
+        # copy-on-write fork footprint without speeding anything up, and has
+        # been implicated in node-level OOMs during DataLoader fork.
+        if num_bins is not None and num_bins > 0:
+            num_workers = min(int(num_workers), int(num_bins))
+        num_workers = max(0, int(num_workers))
         kwargs = {
-            "num_workers": int(num_workers),
+            "num_workers": num_workers,
             "pin_memory": bool(self.hparams.pin_memory),
             # persistent_workers avoids tearing down/respawning worker
             # processes (and re-importing/re-opening zarr stores) between
             # epochs. Note: Lightning's `reload_dataloaders_every_n_epochs`
             # will still rebuild the DataLoader at epoch boundaries, so this
             # is effective only when that reload is disabled or infrequent.
-            "persistent_workers": int(num_workers) > 0,
+            "persistent_workers": num_workers > 0,
         }
         if num_workers > 0:
             kwargs["worker_init_fn"] = self._worker_init
@@ -1011,7 +1064,7 @@ class GNNDataModule(pl.LightningDataModule):
             shuffle=shuffle,
             sampler=sampler,
             generator=generator,
-            **self._loader_kwargs(self.hparams.train_num_workers),
+            **self._loader_kwargs(self.hparams.train_num_workers, num_bins=len(self.train_bin_names)),
         )
         print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
               f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
@@ -1034,7 +1087,7 @@ class GNNDataModule(pl.LightningDataModule):
             batch_size=self.hparams.batch_size,
             shuffle=False,
             sampler=sampler,
-            **self._loader_kwargs(self.hparams.val_num_workers),
+            **self._loader_kwargs(self.hparams.val_num_workers, num_bins=len(self.val_bin_names)),
         )
         print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
               f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
@@ -1054,16 +1107,9 @@ class GNNDataModule(pl.LightningDataModule):
             print("[WARN] No bins found for prediction!")
             return None
 
-        # Create dataset
-        ds = BinDataset(
-            self.val_bin_names,
-            self.val_data_summary,
-            self.z,
-            self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
-            require_targets=self.require_targets,  # Use datamodule's require_targets setting
-            tag="PREDICT",
+        # Route through _make_dataset so the graph_cache is reused during inference.
+        ds = self._make_dataset(
+            self.val_bin_names, self.val_data_summary, "PREDICT", self.require_targets, "val"
         )
 
         # Create dataloader
@@ -1071,7 +1117,7 @@ class GNNDataModule(pl.LightningDataModule):
             ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
-            **self._loader_kwargs(self.hparams.predict_num_workers),
+            **self._loader_kwargs(self.hparams.predict_num_workers, num_bins=len(self.val_bin_names)),
         )
 
         print(f"[PREDICT] Dataloader created: {len(self.val_bin_names)} bins")
@@ -1092,20 +1138,14 @@ class GNNDataModule(pl.LightningDataModule):
         if not self.val_bin_names:
             return None
 
-        ds = BinDataset(
-            self.val_bin_names,
-            self.val_data_summary,
-            self.z,
-            self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
-            require_targets=self.require_targets,
-            tag="FSOI",
+        # Route through _make_dataset so the graph_cache is reused during FSOI.
+        ds = self._make_dataset(
+            self.val_bin_names, self.val_data_summary, "FSOI", self.require_targets, "val"
         )
 
         return PyGDataLoader(
             ds,
             batch_size=1,
             shuffle=False,
-            **self._loader_kwargs(self.hparams.predict_num_workers),
+            **self._loader_kwargs(self.hparams.predict_num_workers, num_bins=len(self.val_bin_names)),
         )

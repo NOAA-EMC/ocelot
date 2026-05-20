@@ -990,15 +990,11 @@ class GNNLightning(pl.LightningModule):
         self._domain_owned_node_count = int(spec.owned_node_count)
         halo_group = getattr(self, "_halo_process_group", None)
         if halo_group is None and dist.is_available() and dist.is_initialized():
-            # Halo exchanges use autograd-aware all_to_all collectives, while
-            # DDP schedules parameter-gradient allreduces during the same
-            # backward pass. If both share the default process group, autograd
-            # may legitimately enqueue them in different relative orders on
-            # different ranks (e.g. one rank reaches a DDP bucket before its
-            # halo backward, while peers are still in halo backward), causing
-            # same-SeqNum op-type mismatches. Put halo collectives on their own
-            # communicator so their ordering is independent of DDP's default
-            # group allreduces.
+            # Halo exchanges use autograd-aware all_to_all collectives. Keep
+            # them on a dedicated communicator so their sequence numbers are
+            # independent of the default DDP process group. DDP gradient sync is
+            # delayed until after halo backward finishes; see ``backward`` /
+            # ``_sync_domain_parallel_gradients`` below.
             halo_group = dist.new_group(
                 ranks=list(range(dist.get_world_size())),
                 timeout=_HALO_GROUP_TIMEOUT,
@@ -1043,6 +1039,109 @@ class GNNLightning(pl.LightningModule):
         dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
         dist.all_reduce(count_tensor, op=dist.ReduceOp.SUM)
         return total_tensor / count_tensor.clamp(min=1.0)
+
+    def _uses_manual_domain_grad_sync(self) -> bool:
+        return bool(
+            self.is_domain_parallel
+            and dist.is_available()
+            and dist.is_initialized()
+            and dist.get_world_size() > 1
+        )
+
+    def _ddp_wrapper(self):
+        trainer = self._safe_trainer()
+        if trainer is None:
+            return None
+        for candidate in (
+            getattr(getattr(trainer, "strategy", None), "model", None),
+            getattr(trainer, "model", None),
+        ):
+            if hasattr(candidate, "require_backward_grad_sync"):
+                return candidate
+        return None
+
+    def _disable_ddp_autograd_sync_if_needed(self) -> None:
+        """Permanently disable DDP's autograd-time bucket allreduces in domain mode.
+
+        DDP arms its gradient reducer inside ``_pre_forward`` based on
+        ``require_backward_grad_sync`` *at forward time*; toggling the flag
+        later (e.g. inside ``backward``) has no effect — the reducer hooks have
+        already been installed and will fire during backward, racing the halo
+        ``all_to_all`` collectives on a different communicator. The cleanest
+        remedy is to leave the flag off for the whole run and run our own
+        gradient allreduce in ``on_after_backward`` after halo backward has
+        fully drained.
+        """
+        if not self._uses_manual_domain_grad_sync():
+            return
+        ddp_model = self._ddp_wrapper()
+        if ddp_model is None:
+            return
+        if getattr(ddp_model, "require_backward_grad_sync", False):
+            ddp_model.require_backward_grad_sync = False
+
+    def on_train_start(self) -> None:
+        parent = getattr(super(), "on_train_start", None)
+        if callable(parent):
+            parent()
+        self._disable_ddp_autograd_sync_if_needed()
+
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        # Defensive: keep DDP autograd sync off even if some Lightning path
+        # toggles it back on (e.g. after a sanity-validation pass).
+        self._disable_ddp_autograd_sync_if_needed()
+
+    def _sync_domain_parallel_gradients(self) -> None:
+        if not self._uses_manual_domain_grad_sync():
+            return
+
+        # Ensure every halo ``all_to_all`` queued by autograd is fully drained
+        # on every rank *before* the default process group sees any gradient
+        # allreduces. This prevents the cross-communicator ordering race that
+        # caused the previous NCCL watchdog timeout.
+        self._halo_step_barrier()
+
+        params = [p for p in self.parameters() if p.requires_grad]
+        if not params:
+            return
+
+        # Build a global "did any rank produce a grad for this param?" mask in
+        # a single allreduce. Parameter iteration order is deterministic and
+        # identical across ranks, so the mask aligns positionally.
+        device = params[0].device
+        local_mask = torch.tensor(
+            [1 if p.grad is not None else 0 for p in params],
+            dtype=torch.int32,
+            device=device,
+        )
+        dist.all_reduce(local_mask, op=dist.ReduceOp.MAX)
+        active_flags = local_mask.tolist()
+        active = [p for p, flag in zip(params, active_flags) if flag]
+        if not active:
+            return
+
+        # Materialize zero grads where missing so the flat buffer is shaped
+        # consistently on every rank. Average-by-world-size matches standard
+        # DDP gradient-reduction semantics.
+        for p in active:
+            if p.grad is None:
+                p.grad = torch.zeros_like(p, memory_format=torch.preserve_format)
+
+        world_size = float(dist.get_world_size())
+        # Group by dtype: ``_flatten_dense_tensors`` requires a single dtype.
+        # In practice gradients are all fp32 under bf16-mixed precision, but
+        # group defensively in case a sub-module keeps a non-fp32 parameter.
+        from collections import OrderedDict
+        groups: "OrderedDict[torch.dtype, list]" = OrderedDict()
+        for p in active:
+            groups.setdefault(p.grad.dtype, []).append(p)
+        for dtype, ps in groups.items():
+            grads = [p.grad for p in ps]
+            flat = torch._utils._flatten_dense_tensors(grads)
+            dist.all_reduce(flat, op=dist.ReduceOp.SUM)
+            flat.div_(world_size)
+            for p, synced in zip(ps, torch._utils._unflatten_dense_tensors(flat, grads)):
+                p.grad.copy_(synced)
 
     def on_fit_start(self):
         # Reset one-time debug cache each run.
@@ -3059,6 +3158,8 @@ class GNNLightning(pl.LightningModule):
         return predictions
 
     def on_after_backward(self):
+        self._sync_domain_parallel_gradients()
+
         # Check if encoded gradient is available
         if hasattr(self, "_encoded_ref"):
             if self._encoded_ref is not None:
