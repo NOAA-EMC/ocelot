@@ -2627,6 +2627,7 @@ class GNNLightning(pl.LightningModule):
         all_mask = []
         all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
+        all_persist = []
 
         # Persist scan-angle conditioning inputs for satellite-style targets.
         # For these node types, batch[step_node_type].x stores scan angle(s).
@@ -2637,6 +2638,65 @@ class GNNLightning(pl.LightningModule):
             scan_angle_expected_dim = 1
 
         all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
+
+        def _rounded_loc_keys(lat_deg, lon_deg, pressure_level=None):
+            lat_key = np.round(np.asarray(lat_deg, dtype=np.float64), 4)
+            lon_key = np.round(np.asarray(lon_deg, dtype=np.float64), 4)
+            if pressure_level is None:
+                return list(zip(lat_key.tolist(), lon_key.tolist()))
+            pressure_key = np.asarray(pressure_level, dtype=np.int64)
+            return list(zip(lat_key.tolist(), lon_key.tolist(), pressure_key.tolist()))
+
+        def _build_persistence_lookup():
+            input_node = node_type.replace("_target", "_input")
+            if input_node not in batch.node_types:
+                return None
+            store = batch[input_node]
+            required = ("input_features_raw", "input_times", "lat", "lon")
+            if not all(hasattr(store, name) for name in required):
+                return None
+
+            vals = store.input_features_raw.detach().cpu().numpy()
+            times = store.input_times.detach().cpu().numpy().astype(np.int64)
+            lat = store.lat.detach().cpu().numpy()
+            lon = store.lon.detach().cpu().numpy()
+            mask = None
+            if hasattr(store, "input_channel_mask"):
+                mask = store.input_channel_mask.detach().cpu().numpy().astype(bool)
+            pressure = None
+            if hasattr(store, "pressure_level"):
+                pressure = store.pressure_level.detach().cpu().numpy().astype(np.int64)
+
+            if vals.size == 0 or times.size != vals.shape[0]:
+                return None
+
+            cutoff = init_unix if init_unix >= 0 else None
+            latest = {}
+            for row, key in enumerate(_rounded_loc_keys(lat, lon, pressure)):
+                if cutoff is not None and times[row] > cutoff:
+                    continue
+                prev = latest.get(key)
+                if prev is None or times[row] > prev[0]:
+                    v = vals[row].astype(np.float64, copy=True)
+                    if mask is not None and mask.shape == vals.shape:
+                        v[~mask[row]] = np.nan
+                    latest[key] = (int(times[row]), v)
+            return latest, pressure is not None
+
+        # Init time columns (constant per file/batch when available)
+        init_time_str = self._extract_init_time_str(batch)
+        init_dt_str = ""
+        init_unix = -1
+        if init_time_str not in (None, '', 'unknown'):
+            try:
+                init_dt = pd.to_datetime(init_time_str, format='%Y%m%d%H', utc=True)
+                init_dt_str = init_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                init_unix = int(init_dt.timestamp())
+            except Exception:
+                init_dt_str = ""
+                init_unix = -1
+
+        persistence_lookup = _build_persistence_lookup()
 
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
@@ -2747,6 +2807,26 @@ class GNNLightning(pl.LightningModule):
             all_pressure.extend(pressure_hpa)
             all_pressure_level.extend(pressure_level_idx)
 
+            persist = np.full(
+                y_true_unnorm.detach().cpu().numpy().shape,
+                np.nan,
+                dtype=np.float64,
+            )
+            if persistence_lookup is not None:
+                latest, needs_pressure = persistence_lookup
+                keys = _rounded_loc_keys(
+                    lat_deg,
+                    lon_deg,
+                    pressure_level_idx if needs_pressure else None,
+                )
+                for row, key in enumerate(keys):
+                    item = latest.get(key)
+                    if item is not None:
+                        vals = item[1]
+                        width = min(persist.shape[1], vals.shape[0])
+                        persist[row, :width] = vals[:width]
+            all_persist.append(persist)
+
             if valid_mask is not None:
                 all_mask.append(valid_mask.detach().cpu().numpy().astype(bool))
             else:
@@ -2763,6 +2843,7 @@ class GNNLightning(pl.LightningModule):
             all_pred_concat = np.vstack(all_pred)
             all_true_concat = np.vstack(all_true)
             all_mask_concat = np.vstack(all_mask)
+            all_persist_concat = np.vstack(all_persist) if all_persist else np.full_like(all_true_concat, np.nan, dtype=np.float64)
             if all_true_concat.size == 0:
                 _local_has_data = False
         if not _local_has_data:
@@ -2774,6 +2855,7 @@ class GNNLightning(pl.LightningModule):
             all_pred_concat = np.zeros((0, n_ch_probe), dtype=np.float32)
             all_true_concat = np.zeros((0, n_ch_probe), dtype=np.float32)
             all_mask_concat = np.zeros((0, n_ch_probe), dtype=bool)
+            all_persist_concat = np.zeros((0, n_ch_probe), dtype=np.float64)
 
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
@@ -2797,19 +2879,6 @@ class GNNLightning(pl.LightningModule):
         if all_scan_angle_cols and len(all_scan_angle_cols[0]) == len(df):
             for j in range(scan_angle_expected_dim):
                 df[f"scan_angle_{j}"] = np.asarray(all_scan_angle_cols[j], dtype=np.float64)
-
-        # Init time columns (constant per file/batch when available)
-        init_time_str = self._extract_init_time_str(batch)
-        init_dt_str = ""
-        init_unix = -1
-        if init_time_str not in (None, '', 'unknown'):
-            try:
-                init_dt = pd.to_datetime(init_time_str, format='%Y%m%d%H', utc=True)
-                init_dt_str = init_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                init_unix = int(init_dt.timestamp())
-            except Exception:
-                init_dt_str = ""
-                init_unix = -1
 
         if init_dt_str:
             df.insert(0, 'init_datetime', init_dt_str)
@@ -2849,6 +2918,7 @@ class GNNLightning(pl.LightningModule):
         for i, fname in enumerate(feats):
             col = _safe_col_name(fname)
             df[f"pred_{col}"] = all_pred_concat[:, i]
+            df[f"persist_{col}"] = all_persist_concat[:, i]
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
 
@@ -3207,6 +3277,16 @@ class GNNLightning(pl.LightningModule):
             dict: Predictions for all node types
         """
         print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
+
+        target_init_filter = os.environ.get("PREDICT_INIT_TIME_FILTER", "").strip()
+        if target_init_filter:
+            batch_init_time = self._extract_init_time_str(batch)
+            if batch_init_time != target_init_filter:
+                print(
+                    f"[PREDICT] Skipping batch {batch_idx}: init_time={batch_init_time} "
+                    f"does not match PREDICT_INIT_TIME_FILTER={target_init_filter}"
+                )
+                return {}
 
         # Forward pass
         forward_output = self(batch)

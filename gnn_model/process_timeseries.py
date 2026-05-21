@@ -1,3 +1,12 @@
+"""Time-series feature engineering and graph-data preparation for OCELOT.
+
+Author: Azadeh Gholoubi
+
+This module bins observations into model windows, applies QC/feature
+transforms, builds target-time features, and prepares the arrays consumed by the
+OCELOT data module.
+"""
+
 import hashlib
 import numpy as np
 import pandas as pd
@@ -519,7 +528,16 @@ def _stats_from_cfg(feature_stats, inst_name, feat_keys):
 
 
 @timing_resource_decorator
-def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None, require_targets=True, verbose=False):
+def extract_features(
+    z_dict,
+    data_summary,
+    bin_name,
+    observation_config,
+    feature_stats=None,
+    require_targets=True,
+    include_persistence_inputs=False,
+    verbose=False,
+):
     """
     Loads and normalizes features for each time bin.
     Adds per-channel masks for inputs and targets so features can be missing independently.
@@ -1305,6 +1323,14 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_metadata"] = torch.tensor(np.column_stack([lat_rad_input, lon_rad_input]), dtype=torch.float32)
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
+            if include_persistence_inputs:
+                data_summary_bin["input_features_raw"] = input_features_raw_clean.astype(np.float32)
+                data_summary_bin["input_channel_mask"] = input_valid_ch_clean.astype(bool)
+                data_summary_bin["input_time_unix"] = np.asarray(input_times_clean, dtype=np.int64)
+            else:
+                data_summary_bin.pop("input_features_raw", None)
+                data_summary_bin.pop("input_channel_mask", None)
+                data_summary_bin.pop("input_time_unix", None)
 
             # Store pressure level indices for radiosonde and aircraft
             if inst_name in ['radiosonde', 'aircraft'] and input_pressure_level is not None:

@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+# Purpose: General Slurm launcher for OCELOT training.
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A gpu-emc-ai
 #SBATCH -p u1-h100
@@ -14,6 +16,13 @@
 #SBATCH --error=gnn_train_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WORKDIR="${SLURM_SUBMIT_DIR:-$SCRIPT_DIR}"
+cd "$WORKDIR"
+echo "Working directory: $PWD"
+
 echo "Running on H100 nodes..."
 echo "Node: $(hostname)"
 echo "Architecture: $(uname -m)"
@@ -24,9 +33,6 @@ if command -v module >/dev/null 2>&1; then
 fi
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
-
-# PYTHONPATH
-# export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
 
 # Debug + performance
 # export NCCL_DEBUG=INFO
@@ -50,9 +56,6 @@ export NCCL_TIMEOUT=3600                        # NCCL timeout 1 hour
 export TORCH_DISTRIBUTED_DEBUG=OFF # INFO
 # export CUDA_LAUNCH_BLOCKING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# Local NNJA mirror (shared path visible to ALL nodes)
-export NNJA_LOCAL_ROOT=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/nnja-ai
-export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot/gnn_model:/scratch3/NCEPDEV/da/Azadeh.Gholoubi/NNJA/ocelot:$PYTHONPATH
 
 echo "Running on $(hostname)"
 echo "SLURM Node List: $SLURM_NODELIST"

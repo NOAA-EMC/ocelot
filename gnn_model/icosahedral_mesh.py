@@ -11,10 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Utils for creating icosahedral meshes."""
+"""Utilities for creating icosahedral triangular meshes.
 
-import itertools
-from typing import List, NamedTuple, Sequence, Tuple
+Author: Azadeh Gholoubi
+
+Adapted from GraphCast mesh utilities for the OCELOT model.
+"""
+
+from typing import List, NamedTuple, Tuple
 
 import numpy as np
 from scipy.spatial import transform
@@ -33,28 +37,6 @@ class TriangularMesh(NamedTuple):
 
     vertices: np.ndarray
     faces: np.ndarray
-
-
-def merge_meshes(mesh_list: Sequence[TriangularMesh]) -> TriangularMesh:
-    """Merges all meshes into one. Assumes the last mesh is the finest.
-
-    Args:
-       mesh_list: Sequence of meshes, from coarse to fine refinement levels. The
-         vertices and faces may contain those from preceding, coarser levels.
-
-    Returns:
-       `TriangularMesh` for which the vertices correspond to the highest
-       resolution mesh in the hierarchy, and the faces are the join set of the
-       faces at all levels of the hierarchy.
-    """
-    for mesh_i, mesh_ip1 in itertools.pairwise(mesh_list):
-        num_nodes_mesh_i = mesh_i.vertices.shape[0]
-        assert np.allclose(mesh_i.vertices, mesh_ip1.vertices[:num_nodes_mesh_i])
-
-    return TriangularMesh(
-        vertices=mesh_list[-1].vertices,
-        faces=np.concatenate([mesh.faces for mesh in mesh_list], axis=0),
-    )
 
 
 def get_hierarchy_of_triangular_meshes_for_sphere(splits: int) -> List[TriangularMesh]:
@@ -289,7 +271,3 @@ def faces_to_edges(faces: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     senders = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
     receivers = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
     return senders, receivers
-
-
-def get_last_triangular_mesh_for_sphere(splits: int) -> TriangularMesh:
-    return get_hierarchy_of_triangular_meshes_for_sphere(splits=splits)[-1]

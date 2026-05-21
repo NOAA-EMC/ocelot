@@ -1,3 +1,7 @@
+"""Plot radiosonde data-preparation outputs for inspection.
+
+"""
+
 import argparse
 from datetime import datetime, timedelta
 import numpy as np

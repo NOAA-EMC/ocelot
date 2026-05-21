@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# Author: Azadeh Gholoubi
+# Purpose: Slurm launcher used for OCELOT v1 random-window training.
 #SBATCH --exclude=u22g09,u22g08,u22g10
 #SBATCH -A gpu-ai4wp  # gpu-ai4wp gpu-emc-ai
 #SBATCH -p u1-h100
@@ -9,7 +11,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 48:00:00
+#SBATCH -t 12:00:00
 #SBATCH --output=gnn_train_Random_%j.out
 #SBATCH --error=gnn_train_Random_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -30,9 +32,6 @@ echo "Architecture: $(uname -m)"
 # Load Conda environment
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
-
-# PYTHONPATH
-# export PYTHONPATH=/scratch3/NCEPDEV/da/Azadeh.Gholoubi/tmp/lib/python3.10/site-packages:$PYTHONPATH
 
 # Debug + performance
 # export NCCL_DEBUG=INFO
@@ -99,7 +98,7 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-Rand_TenYear_Test}"
+RUN_NAME="${RUN_NAME:-ocelot_v1_random_window}"
 echo "RUN_NAME=$RUN_NAME"
 
 # Loss/optimizer settings
@@ -220,7 +219,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--loss_type "$LOSS_TYPE" \
 	--huber_delta 0.5 \
 	--seed 12345 \
-	--max_epochs  3280\
+	--max_epochs 3280 \
 	--cache_val_windows \
 	--val_cache_max_entries 16 \
 	--disable_early_stopping \

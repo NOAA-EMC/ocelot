@@ -97,6 +97,7 @@ class BinDataset(Dataset):
         observation_config,
         feature_stats=None,
         require_targets=True,
+        include_persistence_inputs=False,
         tag="TRAIN",
         verbose: bool = False,
         graph_cache_path_fn: Callable[[str], str] | None = None,
@@ -110,6 +111,7 @@ class BinDataset(Dataset):
         self.observation_config = observation_config
         self.feature_stats = feature_stats
         self.require_targets = require_targets
+        self.include_persistence_inputs = bool(include_persistence_inputs)
         self.tag = tag
         self.verbose = bool(verbose)
         self.graph_cache_path_fn = graph_cache_path_fn
@@ -148,6 +150,7 @@ class BinDataset(Dataset):
                 feature_stats=self.feature_stats,
                 require_targets=self.require_targets,
                 verbose=self.verbose,
+                include_persistence_inputs=self.include_persistence_inputs,
             )
             bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
@@ -249,6 +252,7 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
         self.save_hyperparameters()
         self.prediction_mode = bool(prediction_mode)
+        self.include_persistence_inputs = bool(prediction_mode)
 
         # If require_targets not specified, default based on prediction_mode
         # prediction_mode=True → require_targets=False (inference)
@@ -761,6 +765,15 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
+            if "input_features_raw" in inst_dict:
+                data[node_type_input].input_features_raw = _t32(inst_dict["input_features_raw"])
+            if "input_channel_mask" in inst_dict:
+                data[node_type_input].input_channel_mask = torch.as_tensor(
+                    inst_dict["input_channel_mask"], dtype=torch.bool
+                )
+            if "input_time_unix" in inst_dict:
+                data[node_type_input].input_times = _t64(inst_dict["input_time_unix"])
+
             # Store pressure level index for radiosonde and aircraft (if available)
             if "input_pressure_level" in inst_dict:
                 data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
@@ -948,7 +961,12 @@ class GNNDataModule(pl.LightningDataModule):
             data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
             data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
 
-    def _make_dataset(self, bin_names, data_summary, tag: str, require_targets: bool, cache_kind: str) -> BinDataset:
+    def _make_dataset(self, 
+                      bin_names, 
+                      data_summary, tag: str, 
+                      require_targets: bool, 
+                      cache_kind: str, 
+                      include_persistence_inputs: bool=False) -> BinDataset:
         return BinDataset(
             bin_names,
             data_summary,
@@ -957,6 +975,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=require_targets,
+            include_persistence_inputs=include_persistence_inputs,
             tag=tag,
             verbose=bool(getattr(self.hparams, "verbose", False)),
             graph_cache_path_fn=self._make_graph_cache_path_fn(cache_kind),
@@ -1073,8 +1092,14 @@ class GNNDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         if not self.val_bin_names:
             return None
+
         self._ensure_domain_sharder()
-        ds = self._make_dataset(self.val_bin_names, self.val_data_summary, "VAL", True, "val")
+        ds = self._make_dataset(self.val_bin_names, 
+                                self.val_data_summary,
+                                tag="VAL", 
+                                require_targets=True, 
+                                cache_kind="val", 
+                                include_persistence_inputs=self.include_persistence_inputs,)
 
         is_dist = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
         use_domain = bool(self.domain_sharder is not None and self.domain_sharder.is_enabled)
@@ -1108,9 +1133,12 @@ class GNNDataModule(pl.LightningDataModule):
             return None
 
         # Route through _make_dataset so the graph_cache is reused during inference.
-        ds = self._make_dataset(
-            self.val_bin_names, self.val_data_summary, "PREDICT", self.require_targets, "val"
-        )
+        ds = self._make_dataset(self.val_bin_names, 
+                                self.val_data_summary, 
+                                tag="PREDICT", 
+                                require_targets=self.require_targets, 
+                                cache_kind="val",
+                                include_persistence_inputs=self.include_persistence_inputs)
 
         # Create dataloader
         loader = PyGDataLoader(
@@ -1139,9 +1167,12 @@ class GNNDataModule(pl.LightningDataModule):
             return None
 
         # Route through _make_dataset so the graph_cache is reused during FSOI.
-        ds = self._make_dataset(
-            self.val_bin_names, self.val_data_summary, "FSOI", self.require_targets, "val"
-        )
+        ds = self._make_dataset(self.val_bin_names, 
+                                self.val_data_summary, 
+                                tag="FSOI", 
+                                require_targets=self.require_targets, 
+                                cache_kind="val", 
+                                include_persistence_inputs=self.include_persistence_inputs)
 
         return PyGDataLoader(
             ds,

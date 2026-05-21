@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""AMSU-A BUFR mapping for OCELOT data preparation.
+
+"""
 
 import os
 

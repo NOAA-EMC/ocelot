@@ -1,3 +1,12 @@
+"""Training callbacks for OCELOT GNN experiments.
+
+Author: Azadeh Gholoubi
+
+This module contains PyTorch Lightning callbacks used by the OCELOT training
+workflow, including random/sequential data-window resampling and checkpoint
+resume handling for the v1 training setup.
+"""
+
 import os
 import random
 import pandas as pd

@@ -1,6 +1,16 @@
+"""Load observation, instrument, and channel weights for OCELOT runs.
+
+Author: Azadeh Gholoubi
+
+The training and prediction entry points use this module to read the YAML
+configuration that defines observation groups, feature statistics, and optional
+instrument/channel loss weights.
+"""
+
+import warnings
+
 import yaml
 import torch
-import warnings
 
 
 def _handle_unknown_instrument_keys(

@@ -1,7 +1,7 @@
-"""
-GNN prediction/inference script.
+"""OCELOT prediction and inference entry point.
 
-Loads a trained checkpoint and runs predictions on specified date range.
+Loads a trained checkpoint and runs obs-space evaluation or mesh-grid inference
+over a requested date range.
 """
 
 import argparse
