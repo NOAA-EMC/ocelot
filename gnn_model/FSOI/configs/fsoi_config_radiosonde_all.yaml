@@ -23,10 +23,20 @@ forecast:
   # Pressure levels filter ("all" or a list like [850, 500, 250])
   target_pressure_levels: "all"
 
-  # Keep unweighted MSE for GraphDOP-style comparison
   use_instrument_weights: false
   use_channel_weights: false
-  use_area_weights: false
+  # Cosine-latitude area weighting for fair global comparison (dense NH obs
+  # would otherwise dominate unweighted totals).
+  use_area_weights: true
+
+  # Use a normalized forecast-error metric so different verification dates
+  # are comparable even when radiosonde target counts differ.
+  # Options: "mean" or "sum".
+  loss_reduction: "mean"
+
+  # Trapezoidal FSOI factor. 0.5 matches the usual observation-impact
+  # approximation: 0.5 * (xa - xb) * (ga + gb).
+  impact_factor: 0.5
 
   # Stratify loss by radiosonde pressure level (adds pressure info to ALL instruments)
   stratify_by_pressure: true
@@ -45,8 +55,8 @@ plots:
   scatter_max_points: 200000
 
 data:
-  start_date: "2024-01-01"
-  end_date: "2024-01-03"
+  start_date: "2025-06-01"
+  end_date: "2025-06-03"
 
   batch_size: 1
   num_workers: 1
@@ -98,9 +108,12 @@ validation:
   require_instruments: null
   require_satellite: false
 
-  finite_difference_check: false
-  fd_num_samples: 5
-  fd_epsilon: 1.0e-4
+  # Run FD gradient check on 3 dates (auto-spaced: pair 0, N//3, 2N//3).
+  # 10 samples per date = 30 total triples across the 30-day window.
+  finite_difference_check: true
+  fd_num_samples: 10
+  fd_epsilon: 1.0e-2
+  min_pairs_warning: 20
 
   verbose: true
 

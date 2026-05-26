@@ -37,3 +37,8 @@ gnn_model/*.err
 gnn_model/pred_eval_gfs_*.out
 gnn_model/pred_eval_gfs_*.err
 
+gnn_model/FSOI/logs/
+.claude/
+
+# FSOI outputs: kept locally only, not tracked in git (too large)
+gnn_model/FSOI/fsoi_outputs/

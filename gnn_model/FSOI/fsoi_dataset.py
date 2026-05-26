@@ -17,6 +17,21 @@ from typing import List, Tuple, Optional
 import pandas as pd
 
 
+def parse_fsoi_bin_time(bin_name: str) -> pd.Timestamp:
+    """Parse OCELOT bin names such as bin2025060100 or 2025-06-01_0000."""
+    name = str(bin_name)
+    if name.startswith('bin') and len(name) >= 13 and name[3:13].isdigit():
+        return pd.to_datetime(name[3:13], format='%Y%m%d%H')
+
+    if '_' in name:
+        date_part, time_part = name.split('_', 1)
+        if len(time_part) >= 2 and time_part[:2].isdigit():
+            return pd.to_datetime(f"{date_part} {time_part[:2]}:00")
+        return pd.to_datetime(date_part)
+
+    return pd.to_datetime(name)
+
+
 class FSOIDataset(Dataset):
     """
     Sequential dataset that yields (previous_window, current_window) pairs.
@@ -159,9 +174,7 @@ def create_fsoi_bin_list(
     for bin_name in data_summary.keys():
         # Extract timestamp from bin_name (format: "YYYY-MM-DD_HHMM")
         try:
-            # Common format: "2024-01-01_0000"
-            date_part = bin_name.split('_')[0]
-            bin_time = pd.to_datetime(date_part)
+            bin_time = parse_fsoi_bin_time(bin_name)
 
             if start <= bin_time <= end:
                 valid_bins.append(bin_name)
@@ -198,8 +211,8 @@ def verify_sequential_consistency(
 
     for i in range(len(bin_names) - 1):
         try:
-            t1 = pd.to_datetime(bin_names[i].split('_')[0])
-            t2 = pd.to_datetime(bin_names[i+1].split('_')[0])
+            t1 = parse_fsoi_bin_time(bin_names[i])
+            t2 = parse_fsoi_bin_time(bin_names[i+1])
             interval_hours = (t2 - t1).total_seconds() / 3600
             intervals.append(interval_hours)
         except Exception as e:

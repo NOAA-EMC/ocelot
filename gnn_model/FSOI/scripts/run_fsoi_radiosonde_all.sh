@@ -8,7 +8,7 @@
 #SBATCH -J fsoi_radiosonde_all
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=00:30:00
+#SBATCH --time=10:30:00
 #SBATCH --output=fsoi_radiosonde_all_%j.out
 #SBATCH --error=fsoi_radiosonde_all_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -100,8 +100,19 @@ echo "[PATH] Using GNN_MODEL_DIR=$GNN_MODEL_DIR_RESOLVED"
 cd "$GNN_MODEL_DIR_RESOLVED"
 echo "[PATH] PWD=$(pwd)"
 
+# Resolve configuration and run-specific output directory. Override with:
+#   CONFIG_FILE=...
+#   FSOI_START_DATE=YYYY-MM-DD FSOI_END_DATE=YYYY-MM-DD
+#   FSOI_OUTPUT_DIR=...
+CONFIG_FILE="${CONFIG_FILE:-FSOI/configs/fsoi_config_radiosonde_all.yaml}"
+read -r CONFIG_START_DATE CONFIG_END_DATE <<< "$(python -c 'import sys, yaml; cfg=yaml.safe_load(open(sys.argv[1])); data=cfg.get("data", {}); print(data.get("start_date", ""), data.get("end_date", ""))' "$CONFIG_FILE")"
+START_DATE_RUN="${FSOI_START_DATE:-$CONFIG_START_DATE}"
+END_DATE_RUN="${FSOI_END_DATE:-$CONFIG_END_DATE}"
+DATE_TAG="${START_DATE_RUN//-/}_${END_DATE_RUN//-/}"
+OUTPUT_DIR="${FSOI_OUTPUT_DIR:-FSOI/fsoi_outputs/radiosonde_allvars_impact_${DATE_TAG}}"
+
 # Create output directories
-mkdir -p FSOI/fsoi_outputs/radiosonde_allvars_impact
+mkdir -p "$OUTPUT_DIR"
 LOG_DIR="FSOI/logs"
 mkdir -p "$LOG_DIR"
 
@@ -176,12 +187,13 @@ else
 fi
 
 echo ""
-CONFIG_FILE="FSOI/configs/fsoi_config_radiosonde_all.yaml"
 echo "Configuration: $CONFIG_FILE"
 echo "Key settings:"
 echo "  - Target instrument: radiosonde"
 echo "  - Target variables: ALL (T, Td, u, v)"
 echo "  - Forecast lead: +12h (step 0)"
+echo "  - Date range: $START_DATE_RUN to $END_DATE_RUN"
+echo "  - Output dir: $OUTPUT_DIR"
 
 # Data path for FSOI inference (override with env var DATA_PATH if needed)
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
@@ -220,6 +232,10 @@ python FSOI/fsoi_inference.py \
     --checkpoint "$CHECKPOINT_PATH" \
     --config "$CONFIG_FILE" \
     --data_path "$DATA_PATH" \
+    --start_date "$START_DATE_RUN" \
+    --end_date "$END_DATE_RUN" \
+    --output_dir "$OUTPUT_DIR" \
+    --diagnostics \
     2>&1 | tee "${LOG_DIR}/fsoi_inference_${SLURM_JOB_ID}.log"
 
 if [ $? -ne 0 ]; then
@@ -233,7 +249,6 @@ echo ""
 # ========================================================================
 # Step 3: Quick summaries
 # ========================================================================
-OUTPUT_DIR="FSOI/fsoi_outputs/radiosonde_allvars_impact"
 CSV_DIR="$OUTPUT_DIR/csv"
 
 echo "=========================================="
@@ -267,6 +282,36 @@ if command -v python &> /dev/null && [ -d "$OUTPUT_DIR" ]; then
         --input "$CSV_DIR" \
         --output "$OUTPUT_DIR/figures" \
         2>&1 | tee "${LOG_DIR}/visualize_${SLURM_JOB_ID}.log" || true
+
+    python FSOI/plot_instrument_channel_heatmaps.py \
+        --input "$CSV_DIR" \
+        --output "$OUTPUT_DIR/figures" \
+        2>&1 | tee "${LOG_DIR}/plot_instrument_channel_heatmaps_${SLURM_JOB_ID}.log" || true
+
+    python FSOI/evaluate_fsoi_results.py \
+        --input "$CSV_DIR" \
+        --output "$OUTPUT_DIR/evaluation" \
+        2>&1 | tee "${LOG_DIR}/evaluate_${SLURM_JOB_ID}.log" || true
+
+    if [ -f "$CSV_DIR/scatter_samples.csv" ]; then
+        python FSOI/plot_fsoi_maps.py \
+            --input "$CSV_DIR/scatter_samples.csv" \
+            --output "$OUTPUT_DIR/figures/maps" \
+            --title "Radiosonde FSOI" \
+            2>&1 | tee "${LOG_DIR}/plot_maps_${SLURM_JOB_ID}.log" || true
+    fi
+
+    # Innovation diagnostics plots
+    DIAG_CSV="$OUTPUT_DIR/evaluation/innovation_diagnostics.csv"
+    INNO_SCATTER_ARG=""; INNO_DIAG_ARG=""
+    [ -f "$CSV_DIR/scatter_samples.csv" ] && INNO_SCATTER_ARG="--scatter $CSV_DIR/scatter_samples.csv"
+    [ -f "$DIAG_CSV" ] && INNO_DIAG_ARG="--diag $DIAG_CSV"
+    if [ -n "$INNO_SCATTER_ARG" ] || [ -n "$INNO_DIAG_ARG" ]; then
+        python FSOI/plot_innovation_diagnostics.py \
+            $INNO_SCATTER_ARG $INNO_DIAG_ARG \
+            --output "$OUTPUT_DIR/figures/innovation" \
+            2>&1 | tee "${LOG_DIR}/plot_innovation_${SLURM_JOB_ID}.log" || true
+    fi
 fi
 
 echo "=================================================="

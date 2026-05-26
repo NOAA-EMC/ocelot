@@ -24,6 +24,51 @@ STANDARD_PRESSURE_LEVELS = [
     1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10
 ]
 
+SATELLITE_INSTRUMENTS = [
+    'atms', 'amsua', 'ssmis', 'seviri_asr', 'seviri_csr',
+    'avhrr', 'iasi', 'cris', 'airs', 'mhs', 'amsub'
+]
+
+
+def _impact_sum_col(df: pd.DataFrame) -> str:
+    """Prefer scaled total impact when subsampled instruments are present."""
+    return 'sum_impact_scaled' if 'sum_impact_scaled' in df.columns else 'sum_impact'
+
+
+def _count_col_for_impact(df: pd.DataFrame, default: str) -> str:
+    """Prefer count columns that match scaled impacts."""
+    if _impact_sum_col(df) == 'sum_impact_scaled':
+        if default == 'total_count' and 'total_count_scaled' in df.columns:
+            return 'total_count_scaled'
+        if default == 'n_observations' and 'raw_n_observations' in df.columns:
+            return 'raw_n_observations'
+    return default
+
+
+def _parse_bin_time(bin_name: str) -> pd.Timestamp:
+    """Parse OCELOT bin names such as bin2025060100 or 2025-06-01_0000."""
+    name = str(bin_name)
+    if name.startswith('bin') and len(name) >= 13 and name[3:13].isdigit():
+        return pd.to_datetime(name[3:13], format='%Y%m%d%H')
+    if '_' in name:
+        date_part, time_part = name.split('_', 1)
+        if len(time_part) >= 2 and time_part[:2].isdigit():
+            return pd.to_datetime(f"{date_part} {time_part[:2]}:00")
+        return pd.to_datetime(date_part)
+    return pd.to_datetime(name)
+
+
+def _channel_display_values(df: pd.DataFrame) -> pd.Series:
+    """Return 1-based display channels, including older zero-based CSVs."""
+    channels = pd.to_numeric(df['channel'], errors='coerce')
+    if channels.dropna().empty:
+        return df['channel']
+    is_sat = df['instrument'].astype(str).str.lower().isin(SATELLITE_INSTRUMENTS)
+    if is_sat.any() and channels.loc[is_sat].min() == 0:
+        channels = channels.copy()
+        channels.loc[is_sat] = channels.loc[is_sat] + 1
+    return channels
+
 
 def _ensure_pressure_hpa(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure `pressure_hpa` exists using `pressure_level_idx` if available."""
@@ -43,13 +88,14 @@ def plot_instrument_impacts(df_inst, output_dir):
     print("Creating instrument impact plot...")
 
     # Aggregate by instrument
-    impacts = df_inst.groupby('instrument')['sum_impact'].sum().sort_values()
+    impact_col = _impact_sum_col(df_inst)
+    impacts = df_inst.groupby('instrument')[impact_col].sum().sort_values()
 
     fig, ax = plt.subplots(figsize=(10, 6))
     colors = ['green' if x < 0 else 'red' for x in impacts.values]
     impacts.plot(kind='barh', ax=ax, color=colors, alpha=0.7)
 
-    ax.set_xlabel('Total FSOI Impact (negative = helpful)')
+    ax.set_xlabel(f'Total FSOI Impact ({impact_col}; negative = helpful)')
     ax.set_ylabel('Instrument')
     ax.set_title('Observation Impact on Forecast Error')
     ax.axvline(x=0, color='black', linestyle='--', linewidth=1)
@@ -77,11 +123,13 @@ def plot_instrument_relative_contribution(df_inst: pd.DataFrame, output_dir: Pat
     print("Creating instrument relative contribution plot...")
 
     gb = df_inst.groupby('instrument')
-    sum_impact = gb['sum_impact'].sum()
+    impact_col = _impact_sum_col(df_inst)
+    sum_impact = gb[impact_col].sum()
 
     # Prefer a true per-observation mean if counts exist
     count_col = None
-    for c in ('n_observations', 'total_count', 'count'):
+    preferred_count = _count_col_for_impact(df_inst, 'n_observations')
+    for c in (preferred_count, 'n_observations', 'total_count', 'count'):
         if c in df_inst.columns:
             count_col = c
             break
@@ -145,15 +193,17 @@ def plot_pressure_instrument_heatmap(df_ch: pd.DataFrame, output_dir: Path, top_
     # Prefer per-observation mean at each (pressure, instrument) when counts are available.
     dfp = df[df['pressure_hpa'].notna()].copy()
 
-    has_counts = 'total_count' in dfp.columns
+    impact_col = _impact_sum_col(dfp)
+    count_col = _count_col_for_impact(dfp, 'total_count')
+    has_counts = count_col in dfp.columns
     if has_counts:
         agg = dfp.groupby(['pressure_hpa', 'instrument']).agg(
-            sum_impact=('sum_impact', 'sum'),
-            total_count=('total_count', 'sum'),
+            impact_sum=(impact_col, 'sum'),
+            total_count=(count_col, 'sum'),
         ).reset_index()
-        agg['mean_per_obs'] = agg['sum_impact'] / agg['total_count'].replace(0, np.nan)
+        agg['mean_per_obs'] = agg['impact_sum'] / agg['total_count'].replace(0, np.nan)
         value_col = 'mean_per_obs'
-        title_suffix = '(per-observation mean)'
+        title_suffix = f'(per-observation mean from {impact_col})'
     elif 'mean_impact' in dfp.columns:
         agg = dfp.groupby(['pressure_hpa', 'instrument']).agg(
             mean_impact=('mean_impact', 'mean'),
@@ -162,10 +212,10 @@ def plot_pressure_instrument_heatmap(df_ch: pd.DataFrame, output_dir: Path, top_
         title_suffix = '(mean_impact)'
     else:
         agg = dfp.groupby(['pressure_hpa', 'instrument']).agg(
-            sum_impact=('sum_impact', 'sum'),
+            impact_sum=(impact_col, 'sum'),
         ).reset_index()
-        value_col = 'sum_impact'
-        title_suffix = '(sum-based)'
+        value_col = 'impact_sum'
+        title_suffix = f'(sum-based: {impact_col})'
     if agg.empty:
         print("  Skipping: no (pressure, instrument) aggregated data")
         return
@@ -244,15 +294,17 @@ def plot_pressure_instrument_heatmaps_by_variable(df_ch: pd.DataFrame, output_di
             continue
 
         dfp = df[df['pressure_hpa'].notna()].copy()
-        has_counts = 'total_count' in dfp.columns
+        impact_col = _impact_sum_col(dfp)
+        count_col = _count_col_for_impact(dfp, 'total_count')
+        has_counts = count_col in dfp.columns
         if has_counts:
             agg = dfp.groupby(['pressure_hpa', 'instrument']).agg(
-                sum_impact=('sum_impact', 'sum'),
-                total_count=('total_count', 'sum'),
+                impact_sum=(impact_col, 'sum'),
+                total_count=(count_col, 'sum'),
             ).reset_index()
-            agg['mean_per_obs'] = agg['sum_impact'] / agg['total_count'].replace(0, np.nan)
+            agg['mean_per_obs'] = agg['impact_sum'] / agg['total_count'].replace(0, np.nan)
             value_col = 'mean_per_obs'
-            title_suffix = '(per-observation mean)'
+            title_suffix = f'(per-observation mean from {impact_col})'
         elif 'mean_impact' in dfp.columns:
             agg = dfp.groupby(['pressure_hpa', 'instrument']).agg(
                 mean_impact=('mean_impact', 'mean'),
@@ -261,10 +313,10 @@ def plot_pressure_instrument_heatmaps_by_variable(df_ch: pd.DataFrame, output_di
             title_suffix = '(mean_impact)'
         else:
             agg = dfp.groupby(['pressure_hpa', 'instrument']).agg(
-                sum_impact=('sum_impact', 'sum'),
+                impact_sum=(impact_col, 'sum'),
             ).reset_index()
-            value_col = 'sum_impact'
-            title_suffix = '(sum-based)'
+            value_col = 'impact_sum'
+            title_suffix = f'(sum-based: {impact_col})'
         if agg.empty:
             continue
 
@@ -324,15 +376,17 @@ def plot_variable_pressure_combined_heatmap(df_ch: pd.DataFrame, output_dir: Pat
         print("  Skipping: empty after filtering")
         return
 
-    has_counts = 'total_count' in dfp.columns
+    impact_col = _impact_sum_col(dfp)
+    count_col = _count_col_for_impact(dfp, 'total_count')
+    has_counts = count_col in dfp.columns
     if has_counts:
         agg = dfp.groupby(['target_variable', 'pressure_hpa', 'instrument']).agg(
-            sum_impact=('sum_impact', 'sum'),
-            total_count=('total_count', 'sum'),
+            impact_sum=(impact_col, 'sum'),
+            total_count=(count_col, 'sum'),
         ).reset_index()
-        agg['mean_per_obs'] = agg['sum_impact'] / agg['total_count'].replace(0, np.nan)
+        agg['mean_per_obs'] = agg['impact_sum'] / agg['total_count'].replace(0, np.nan)
         value_col = 'mean_per_obs'
-        title_suffix = '(per-observation mean)'
+        title_suffix = f'(per-observation mean from {impact_col})'
     elif 'mean_impact' in dfp.columns:
         agg = dfp.groupby(['target_variable', 'pressure_hpa', 'instrument']).agg(
             mean_impact=('mean_impact', 'mean'),
@@ -341,10 +395,10 @@ def plot_variable_pressure_combined_heatmap(df_ch: pd.DataFrame, output_dir: Pat
         title_suffix = '(mean_impact)'
     else:
         agg = dfp.groupby(['target_variable', 'pressure_hpa', 'instrument']).agg(
-            sum_impact=('sum_impact', 'sum'),
+            impact_sum=(impact_col, 'sum'),
         ).reset_index()
-        value_col = 'sum_impact'
-        title_suffix = '(sum-based)'
+        value_col = 'impact_sum'
+        title_suffix = f'(sum-based: {impact_col})'
     if agg.empty:
         print("  Skipping: no aggregated data")
         return
@@ -472,19 +526,21 @@ def plot_time_series(df_inst, output_dir):
         return
 
     try:
-        df_inst['date'] = pd.to_datetime(df_inst['curr_bin'].str[:10])
+        df_inst = df_inst.copy()
+        df_inst['date'] = df_inst['curr_bin'].apply(_parse_bin_time)
     except Exception as e:
         print(f"  Skipping: Could not parse dates - {e}")
         return
 
     # Daily aggregates by instrument
-    daily = df_inst.groupby(['date', 'instrument'])['sum_impact'].sum().unstack(fill_value=0)
+    impact_col = _impact_sum_col(df_inst)
+    daily = df_inst.groupby(['date', 'instrument'])[impact_col].sum().unstack(fill_value=0)
 
     fig, ax = plt.subplots(figsize=(14, 6))
     daily.plot(ax=ax, linewidth=2, alpha=0.8)
 
     ax.set_xlabel('Date')
-    ax.set_ylabel('Daily FSOI Impact')
+    ax.set_ylabel(f'Daily FSOI Impact ({impact_col})')
     ax.set_title('Observation Impact Time Series')
     ax.axhline(y=0, color='black', linestyle='--', linewidth=1)
     ax.grid(True, alpha=0.3)
@@ -497,6 +553,96 @@ def plot_time_series(df_inst, output_dir):
     print(f"  Saved: {output_dir / 'impact_timeseries.png'}")
 
 
+def plot_positive_frac_timeseries(df_inst: pd.DataFrame, output_dir: Path,
+                                  warn_std_threshold: float = 0.15) -> None:
+    """Time series of beneficial-observation fraction per instrument.
+
+    positive_frac = fraction of FSOI > 0 observations (detrimental).
+    A healthy system: ~20-40% positive, stable over time.
+    Large temporal swings (std > warn_std_threshold) indicate sensitivity to
+    synoptic conditions and flag the need for a longer averaging period.
+
+    Adds horizontal reference bands:
+      Green band [0.20, 0.50]: expected healthy range
+      Red dashed lines at 0.20 and 0.70: outer warning thresholds
+    """
+    print("Creating positive-fraction time series plot...")
+
+    required_cols = {'curr_bin', 'instrument', 'positive_frac'}
+    if not required_cols.issubset(df_inst.columns):
+        missing = required_cols - set(df_inst.columns)
+        print(f"  Skipping: missing columns {missing}")
+        return
+
+    try:
+        df = df_inst.copy()
+        df['date'] = df['curr_bin'].apply(_parse_bin_time)
+    except Exception as e:
+        print(f"  Skipping: could not parse dates — {e}")
+        return
+
+    # Per-(date, instrument) mean positive_frac
+    ts = (df.groupby(['date', 'instrument'])['positive_frac']
+            .mean()
+            .unstack('instrument')
+            .sort_index())
+
+    if ts.empty:
+        print("  Skipping: empty time series")
+        return
+
+    instruments = ts.columns.tolist()
+    n_inst = len(instruments)
+
+    # Detect instruments with high temporal variability
+    stds = ts.std()
+    unstable = stds[stds > warn_std_threshold].index.tolist()
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+    # Reference bands
+    ax.axhspan(0.20, 0.50, alpha=0.08, color='green', label='Expected range (20–50%)')
+    ax.axhline(0.20, color='red', linestyle='--', linewidth=0.8, alpha=0.6)
+    ax.axhline(0.70, color='red', linestyle='--', linewidth=0.8, alpha=0.6)
+
+    cmap = plt.get_cmap('tab20', max(n_inst, 1))
+    for i, inst in enumerate(instruments):
+        lw = 2.0 if inst in unstable else 1.2
+        ls = '--' if inst in unstable else '-'
+        ax.plot(ts.index, ts[inst], label=inst, linewidth=lw, linestyle=ls,
+                color=cmap(i), alpha=0.85)
+
+    ax.set_ylim(0, 1)
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Positive FSOI fraction\n(fraction of obs that increased error)')
+    ax.set_title('Sign Consistency: Fraction of Detrimental Observations Over Time')
+    ax.grid(True, alpha=0.25)
+    ax.legend(title='Instrument', bbox_to_anchor=(1.01, 1), loc='upper left',
+              fontsize=8)
+
+    if unstable:
+        note = 'Dashed = high temporal variability (std > {:.0%}): {}'.format(
+            warn_std_threshold, ', '.join(unstable))
+        ax.text(0.01, 0.02, note, transform=ax.transAxes, fontsize=7,
+                color='darkred', va='bottom')
+
+    plt.tight_layout()
+    out = output_dir / 'positive_frac_timeseries.png'
+    plt.savefig(out, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {out}")
+
+    if unstable:
+        print(f"  WARNING: {len(unstable)} instrument(s) show high temporal variability "
+              f"(std > {warn_std_threshold:.0%}): {unstable}")
+        print("  Consider extending the FSOI averaging period beyond the current window.")
+
+    # Also save the numeric time series to CSV for further analysis
+    ts_csv = output_dir / 'positive_frac_timeseries.csv'
+    ts.reset_index().to_csv(ts_csv, index=False)
+    print(f"  Saved: {ts_csv}")
+
+
 def plot_channel_heatmap(df_ch, output_dir, top_n=10):
     """Heatmap of channel-level impacts."""
     print("Creating channel heatmap...")
@@ -506,7 +652,8 @@ def plot_channel_heatmap(df_ch, output_dir, top_n=10):
         return
 
     # Get top instruments by total impact
-    top_insts = df_ch.groupby('instrument')['sum_impact'].sum().abs().nlargest(top_n).index
+    impact_col = _impact_sum_col(df_ch)
+    top_insts = df_ch.groupby('instrument')[impact_col].sum().abs().nlargest(top_n).index
     df_top = df_ch[df_ch['instrument'].isin(top_insts)]
 
     # Pivot to matrix format
@@ -560,23 +707,26 @@ def plot_positive_negative_scatter(df_inst, output_dir):
     print("Creating positive/negative scatter plot...")
 
     # Aggregate by instrument
+    impact_col = _impact_sum_col(df_inst)
+    count_col = _count_col_for_impact(df_inst, 'n_observations')
     summary = df_inst.groupby('instrument').agg({
-        'sum_impact': 'sum',
+        impact_col: 'sum',
         'positive_frac': 'mean',
-        'n_observations': 'sum'
+        count_col: 'sum'
     }).reset_index()
+    summary = summary.rename(columns={impact_col: 'impact_sum', count_col: 'plot_count'})
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
     # Size by number of observations
-    sizes = summary['n_observations'] / summary['n_observations'].max() * 500
+    sizes = summary['plot_count'] / summary['plot_count'].max() * 500
 
     scatter = ax.scatter(
         summary['positive_frac'],
-        summary['sum_impact'],
+        summary['impact_sum'],
         s=sizes,
         alpha=0.6,
-        c=summary['sum_impact'],
+        c=summary['impact_sum'],
         cmap='RdYlGn_r',
         edgecolors='black',
         linewidth=0.5,
@@ -586,7 +736,7 @@ def plot_positive_negative_scatter(df_inst, output_dir):
     for idx, row in summary.iterrows():
         ax.annotate(
             row['instrument'],
-            (row['positive_frac'], row['sum_impact']),
+            (row['positive_frac'], row['impact_sum']),
             fontsize=8,
             alpha=0.7,
         )
@@ -595,7 +745,7 @@ def plot_positive_negative_scatter(df_inst, output_dir):
     ax.axvline(x=0.5, color='gray', linestyle=':', linewidth=1)
 
     ax.set_xlabel('Positive Impact Fraction (higher = more detrimental)')
-    ax.set_ylabel('Total FSOI Impact (negative = helpful)')
+    ax.set_ylabel(f'Total FSOI Impact ({impact_col}; negative = helpful)')
     ax.set_title('Observation Impact: Magnitude vs. Sign Distribution')
     ax.grid(True, alpha=0.3)
 
@@ -604,9 +754,9 @@ def plot_positive_negative_scatter(df_inst, output_dir):
     cbar.set_label('Total Impact')
 
     # Add quadrant labels
-    ax.text(0.25, ax.get_ylim()[1]*0.9, 'Mostly Helpful\n(Negative Impact)',
+    ax.text(0.25, ax.get_ylim()[1] * 0.9, 'Mostly Helpful\n(Negative Impact)',
             ha='center', fontsize=10, alpha=0.5)
-    ax.text(0.75, ax.get_ylim()[1]*0.9, 'Mostly Harmful\n(Positive Impact)',
+    ax.text(0.75, ax.get_ylim()[1] * 0.9, 'Mostly Harmful\n(Positive Impact)',
             ha='center', fontsize=10, alpha=0.5)
 
     plt.tight_layout()
@@ -621,21 +771,29 @@ def plot_satellite_channel_impacts(df_ch, output_dir):
     print("Creating satellite channel impact plot...")
 
     # Filter for satellite instruments only
-    satellite_instruments = ['atms', 'amsua', 'ssmis', 'seviri_asr', 'seviri_csr', 'avhrr', 'iasi', 'cris', 'airs', 'mhs', 'amsub']
-    df_sat = df_ch[df_ch['instrument'].str.lower().isin(satellite_instruments)].copy()
+    df_sat = df_ch[df_ch['instrument'].str.lower().isin(SATELLITE_INSTRUMENTS)].copy()
 
     if df_sat.empty:
         print("  Skipping: No satellite channel data found")
         return
 
-    # Aggregate by instrument and channel
-    channel_impacts = df_sat.groupby(['instrument', 'channel'])['sum_impact'].sum().reset_index()
+    df_sat['channel_display'] = _channel_display_values(df_sat)
+
+    # Aggregate by instrument and human-facing channel number
+    impact_col = _impact_sum_col(df_sat)
+    channel_impacts = df_sat.groupby(['instrument', 'channel_display']).agg(
+        impact_sum=(impact_col, 'sum')
+    ).reset_index()
 
     # Create instrument_channel label
-    channel_impacts['label'] = channel_impacts['instrument'] + '_ch' + channel_impacts['channel'].astype(str)
+    channel_impacts['label'] = (
+        channel_impacts['instrument']
+        + '_ch'
+        + channel_impacts['channel_display'].astype(int).astype(str)
+    )
 
     # Sort by impact within each instrument
-    channel_impacts = channel_impacts.sort_values(['instrument', 'sum_impact'])
+    channel_impacts = channel_impacts.sort_values(['instrument', 'impact_sum'])
 
     # Create figure with subplots for each instrument
     instruments = sorted(channel_impacts['instrument'].unique())
@@ -658,8 +816,8 @@ def plot_satellite_channel_impacts(df_ch, output_dir):
         inst_data = channel_impacts[channel_impacts['instrument'] == inst].copy()
 
         # Get impacts and colors
-        impacts = inst_data['sum_impact'].values
-        channels = inst_data['channel'].values
+        impacts = inst_data['impact_sum'].values
+        channels = inst_data['channel_display'].values
         colors = ['green' if x < 0 else 'red' for x in impacts]
 
         # Create bar chart
@@ -703,16 +861,16 @@ def plot_satellite_channel_impacts(df_ch, output_dir):
     print("Creating top channels comparison plot...")
 
     # Get top 20 most beneficial and detrimental channels
-    top_beneficial = channel_impacts.nsmallest(20, 'sum_impact')
-    top_detrimental = channel_impacts.nlargest(20, 'sum_impact')
+    top_beneficial = channel_impacts.nsmallest(20, 'impact_sum')
+    top_detrimental = channel_impacts.nlargest(20, 'impact_sum')
     top_channels = pd.concat([top_beneficial, top_detrimental]).drop_duplicates()
-    top_channels = top_channels.sort_values('sum_impact')
+    top_channels = top_channels.sort_values('impact_sum')
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    colors = ['green' if x < 0 else 'red' for x in top_channels['sum_impact'].values]
+    colors = ['green' if x < 0 else 'red' for x in top_channels['impact_sum'].values]
 
     y_pos = range(len(top_channels))
-    ax.barh(y_pos, top_channels['sum_impact'].values, color=colors, alpha=0.7)
+    ax.barh(y_pos, top_channels['impact_sum'].values, color=colors, alpha=0.7)
     ax.set_yticks(y_pos)
     ax.set_yticklabels(top_channels['label'].values, fontsize=9)
 
@@ -739,6 +897,10 @@ def create_summary_table(df_inst, output_dir):
         'positive_frac': 'mean',
         'n_observations': 'sum',
     }
+    if 'sum_impact_scaled' in df_inst.columns:
+        agg_dict['sum_impact_scaled'] = ['sum', 'mean', 'std']
+    if 'raw_n_observations' in df_inst.columns:
+        agg_dict['raw_n_observations'] = 'sum'
 
     optional_aggs = {
         'innovation_abs_mean': 'mean',
@@ -757,8 +919,9 @@ def create_summary_table(df_inst, output_dir):
 
     summary.columns = ['_'.join(col).strip('_') for col in summary.columns.values]
 
-    # Sort by total impact (absolute value)
-    summary['abs_impact'] = summary['sum_impact_sum'].abs()
+    # Sort by total impact (absolute value), preferring scaled totals.
+    sort_col = 'sum_impact_scaled_sum' if 'sum_impact_scaled_sum' in summary.columns else 'sum_impact_sum'
+    summary['abs_impact'] = summary[sort_col].abs()
     summary = summary.sort_values('abs_impact', ascending=False)
     summary = summary.drop('abs_impact', axis=1)
 
@@ -767,15 +930,16 @@ def create_summary_table(df_inst, output_dir):
 
     # Save as formatted text
     with open(output_dir / 'summary_statistics.txt', 'w') as f:
-        f.write("="*80 + "\n")
+        f.write("=" * 80 + "\n")
         f.write("FSOI SUMMARY STATISTICS\n")
-        f.write("="*80 + "\n\n")
+        f.write("=" * 80 + "\n\n")
         f.write(summary.to_string(index=False))
         f.write("\n\n")
         f.write("Interpretation:\n")
-        f.write("  - sum_impact: Total contribution (negative = helpful)\n")
+        f.write("  - sum_impact: contribution over processed observations (negative = helpful)\n")
+        f.write("  - sum_impact_scaled: estimated full total when decoder subsampling was used\n")
         f.write("  - positive_frac: % of obs that increased error\n")
-        f.write("  - Large |sum_impact|: High impact instrument\n")
+        f.write("  - Large absolute total impact: high impact instrument\n")
         f.write("  - innovation_*: Magnitude of δx (analysis - background)\n")
         f.write("  - gradient_*: Magnitude of adjoint (ga+gb)\n")
         f.write("  - alignment_cosine: +1 aligned, -1 opposed between δx and gradient\n")
@@ -805,12 +969,12 @@ def main():
     output_dir = Path(args.output) if args.output else (input_dir / "plots")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FSOI VISUALIZATION")
-    print("="*80)
+    print("=" * 80)
     print(f"Input:  {input_dir}")
     print(f"Output: {output_dir}")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     # Load data
     print("Loading FSOI results...")
@@ -853,6 +1017,7 @@ def main():
     plot_instrument_relative_contribution(df_inst, output_dir)
     plot_time_series(df_inst, output_dir)
     plot_positive_negative_scatter(df_inst, output_dir)
+    plot_positive_frac_timeseries(df_inst, output_dir)
 
     if df_ch is not None and not df_ch.empty:
         plot_channel_heatmap(df_ch, output_dir)
@@ -866,9 +1031,9 @@ def main():
 
     create_summary_table(df_inst, output_dir)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("VISUALIZATION COMPLETE")
-    print("="*80)
+    print("=" * 80)
     print(f"\nPlots saved to: {output_dir}")
     print("\nGenerated files:")
     print("  - instrument_impacts.png")
@@ -881,7 +1046,9 @@ def main():
     print("  - top_satellite_channels.png (top beneficial/detrimental channels)")
     print("  - summary_statistics.csv")
     print("  - summary_statistics.txt")
-    print("="*80 + "\n")
+    print("  - positive_frac_timeseries.png  (sign stability per instrument)")
+    print("  - positive_frac_timeseries.csv  (numeric time series)")
+    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":

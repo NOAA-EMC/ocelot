@@ -266,7 +266,7 @@ data:
 
 **FSOI Formula:**
 ```
-FSOI(k) = δx(k) ⊙ (ga(k) + gb(k))
+FSOI(k) = 0.5 * δx(k) ⊙ (ga(k) + gb(k))
 
 where:
   δx(k) = innovation (xa - xb)
