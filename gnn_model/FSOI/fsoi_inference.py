@@ -171,6 +171,109 @@ def _expand_seviri_instrument_aliases(names):
     return out
 
 
+def _compute_innovation_diagnostics(
+    xa: dict,
+    xb: dict,
+    pair_idx: int,
+    curr_bin: str,
+    lead_step: int,
+) -> list[dict]:
+    """Compute per-instrument, per-channel innovation statistics.
+
+    Returns a list of records (one per instrument×channel) with:
+      mean, std, skewness, rmse, obs_range, normalized_rmse
+    A normalized_rmse < 0.05 (~5% of obs range) indicates xb is a good
+    background; > 0.20 suggests the background is unreliable.
+    """
+    records = []
+    for inst in xa:
+        if inst not in xb:
+            continue
+        dx = (xa[inst].detach().cpu() - xb[inst].detach().cpu()).float()  # [N, C]
+        xa_cpu = xa[inst].detach().cpu().float()
+        n_obs, n_ch = dx.shape
+        for ch in range(n_ch):
+            d = dx[:, ch].numpy()
+            x = xa_cpu[:, ch].numpy()
+            if len(d) == 0:
+                continue
+            mu = float(np.mean(d))
+            sigma = float(np.std(d))
+            rmse = float(np.sqrt(np.mean(d ** 2)))
+            obs_range = float(np.ptp(x)) if len(x) > 1 else float(np.abs(x).max() + 1e-9)
+            skew = float(np.mean(((d - mu) / (sigma + 1e-12)) ** 3)) if sigma > 1e-12 else 0.0
+            records.append({
+                'pair_idx': pair_idx,
+                'curr_bin': curr_bin,
+                'lead_step': lead_step,
+                'instrument': inst,
+                'channel': ch + 1,
+                'n_obs': n_obs,
+                'innovation_mean': mu,
+                'innovation_std': sigma,
+                'innovation_skewness': skew,
+                'innovation_rmse': rmse,
+                'obs_range': obs_range,
+                'normalized_rmse': rmse / (obs_range + 1e-12),
+            })
+    return records
+
+
+def _run_ose_check(
+    results: dict,
+    xa: dict,
+    xb: dict,
+    ea_control: float,
+    subsample_indices: dict,
+    model,
+    curr_batch,
+    observation_config: dict,
+    ose_instruments: list,
+    target_instruments,
+    target_variables,
+    target_pressure_levels,
+    instrument_weights: dict,
+    channel_weights: dict,
+    use_area_weights: bool,
+    loss_reduction: str,
+    lead_step: int,
+    pair_idx: int,
+):
+    """Compute OSE impact and append to results['ose_records']."""
+    from fsoi_ose import compute_ose_for_pair as _ose_pair
+    print(f"[OSE] Computing denial experiment for: {ose_instruments} (pair {pair_idx})")
+    try:
+        rec = _ose_pair(
+            model=model,
+            curr_batch=curr_batch,
+            xa=xa,
+            xb=xb,
+            denied_instruments=ose_instruments,
+            ea_control=ea_control,
+            observation_config=observation_config,
+            subsample_indices=subsample_indices,
+            target_instruments=target_instruments,
+            target_variables=target_variables,
+            target_pressure_levels=target_pressure_levels,
+            instrument_weights=instrument_weights,
+            channel_weights=channel_weights,
+            use_area_weights=use_area_weights,
+            loss_reduction=loss_reduction,
+            forecast_lead_step=lead_step,
+            pair_idx=pair_idx,
+            curr_bin=results.get('curr_bin', ''),
+            prev_bin=results.get('prev_bin', ''),
+        )
+        if rec:
+            results['ose_records'].append(rec)
+            print(f"[OSE]   ea_control={ea_control:.4e}  "
+                  f"ea_denied={rec['ea_denied']:.4e}  "
+                  f"ose_impact={rec['ose_impact']:+.4e}  "
+                  f"({rec['ose_sign']})")
+    except Exception as ose_err:
+        print(f"[OSE] ERROR on pair {pair_idx}: {ose_err}")
+
+
 def compute_fsoi_for_pair(
     model,
     prev_batch,
@@ -181,6 +284,15 @@ def compute_fsoi_for_pair(
     channel_weights: dict,
     pair_idx: int,
     verbose: bool = True,
+    run_fd_check: bool = False,
+    run_directional_check: bool = False,
+    run_float64_check: bool = False,
+    run_diagnostics: bool = False,
+    run_repro_check: bool = False,
+    ose_instruments: list = None,
+    gfs_reference: dict = None,
+    mesh_instrument: str = "radiosonde",
+    mesh_pressure_level_idx: int = 4,
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -246,6 +358,9 @@ def compute_fsoi_for_pair(
         target_pressure_levels = None
 
     use_area_weights = fsoi_config['forecast'].get('use_area_weights', True)
+    loss_reduction = fsoi_config['forecast'].get('loss_reduction', 'sum')
+    impact_factor = float(fsoi_config['forecast'].get('impact_factor', 0.5))
+    print(f"[FSOI Config] loss_reduction={loss_reduction}, impact_factor={impact_factor}")
 
     # Optional: save innovation-vs-FSOI scatter sample for plotting
     save_scatter_samples = fsoi_config.get('plots', {}).get('save_scatter_samples', True)
@@ -259,6 +374,11 @@ def compute_fsoi_for_pair(
         'curr_bin': _as_scalar_bin(curr_batch.bin_name),
         'fsoi_by_step': {},
         'scatter_samples': [],
+        'fd_records': [],          # finite-difference validation records for this pair
+        'directional_records': [], # Rademacher directional-derivative records
+        'float64_records': [],     # float64 per-obs FD records
+        'diag_records': [],        # innovation diagnostic records for this pair
+        'ose_records': [],         # OSE cross-check records for this pair
     }
 
     # Process each forecast lead step
@@ -362,6 +482,26 @@ def compute_fsoi_for_pair(
             max_decoder_nodes=max_decoder_nodes,  # Cap heavy decoder instruments
         )
 
+        # Track raw vs sampled row counts so aggregate CSVs can include
+        # scaled total-impact columns for instruments capped by max_decoder_nodes.
+        sampling_info = {}
+        for inst_name, tensor in xa.items():
+            raw_n = int(tensor.shape[0])
+            idx = subsample_indices.get(inst_name)
+            sampled_n = int(idx.numel()) if idx is not None else raw_n
+            sample_scale = float(raw_n / sampled_n) if sampled_n > 0 else 1.0
+            sampling_info[inst_name] = {
+                'raw_n_observations': raw_n,
+                'sampled_n_observations': sampled_n,
+                'sample_scale': sample_scale,
+                'is_subsampled': idx is not None,
+            }
+            if idx is not None:
+                print(
+                    f"[SAMPLING] {inst_name}: raw={raw_n}, sampled={sampled_n}, "
+                    f"scale={sample_scale:.3f}"
+                )
+
         # Clear CUDA cache after forward pass to free memory
         torch.cuda.empty_cache()
         print(f"[MEMORY] Cleared CUDA cache after xb computation")
@@ -379,6 +519,26 @@ def compute_fsoi_for_pair(
                 xa[inst_name].requires_grad_(True)
                 print(f"[ALIGN] Subsampled xa[{inst_name}] → {xa[inst_name].shape[0]} obs "
                       f"(matched to xb subsample)")
+
+        # Build obs_coords: per-instrument (lat, lon) numpy arrays already aligned
+        # with the (possibly subsampled) xa tensors, for use in scatter samples.
+        obs_coords: dict = {}
+        for inst_name, meta in metadata.items():
+            if not isinstance(meta, dict):
+                continue
+            lat_t = meta.get('lat')
+            lon_t = meta.get('lon')
+            if lat_t is None or lon_t is None:
+                continue
+            lat_np = lat_t.detach().cpu().numpy() if torch.is_tensor(lat_t) else np.asarray(lat_t)
+            lon_np = lon_t.detach().cpu().numpy() if torch.is_tensor(lon_t) else np.asarray(lon_t)
+            # Apply the same subsampling that was applied to xa
+            idx = subsample_indices.get(inst_name)
+            if idx is not None:
+                cpu_idx = idx.cpu().numpy()
+                lat_np = lat_np[cpu_idx]
+                lon_np = lon_np[cpu_idx]
+            obs_coords[inst_name] = (lat_np, lon_np)
 
         # Optionally zero specific channels (e.g., aircraft humidity) at inference time
         zero_feature_columns(xa, observation_config, feature_mask_map)
@@ -421,30 +581,171 @@ def compute_fsoi_for_pair(
         else:
             print("[3/6] Skipping alignment check (disabled in config)")
 
-        # Optional: Finite-difference gradient validation
-        if fsoi_config['validation'].get('finite_difference_check', False) and pair_idx == 0:
-            print("\n[VALIDATION] Running finite-difference gradient check...")
-            from fsoi_validation import validate_fsoi_gradients
+        # ── Resolve init_time_unix from batch (needed for mesh decoder) ────────
+        init_time_unix = None
+        try:
+            init_time_unix = model._extract_init_time_unix(curr_batch)
+        except Exception:
+            pass
 
-            num_samples = fsoi_config['validation'].get('fd_num_samples', 3)
-            epsilon = fsoi_config['validation'].get('fd_epsilon', 1e-4)
+        # ── Mesh-space verification path ─────────────────────────────────────
+        # When gfs_reference is provided, replace the obs-space error function
+        # with mesh-space MSE(OCELOT_mesh_pred, GFS_analysis).
+        # The innovation δx = xa - xb and the FSOI formula are unchanged —
+        # only the error metric (and its gradients) changes.
+        if gfs_reference is not None and init_time_unix is not None:
+            from fsoi_utils import compute_forecast_error_on_mesh
+            gfs_tensor = gfs_reference.get(mesh_instrument)
+            if gfs_tensor is None:
+                print(f"[MESH FSOI] No GFS tensor for '{mesh_instrument}', "
+                      f"falling back to obs-space error")
+            else:
+                # Monkey-patch: wrap compute_forecast_error to use mesh error
+                # for ea/eb inside the non-stratified path below.
+                # We store as a closure; the stratified path is not supported
+                # in mesh mode (would need one GFS load per level, very expensive).
+                _mesh_ea_fn = lambda batch_: compute_forecast_error_on_mesh(
+                    model=model,
+                    batch=batch_,
+                    gfs_reference=gfs_tensor,
+                    mesh_instrument=mesh_instrument,
+                    forecast_lead_step=lead_step,
+                    init_time_unix=init_time_unix,
+                    use_area_weights=use_area_weights,
+                    loss_reduction=loss_reduction,
+                )
+                print(f"[MESH FSOI] Using GFS mesh verification at pair {pair_idx}")
+
+        # Optional: innovation diagnostics (background quality check)
+        if run_diagnostics:
+            diag = _compute_innovation_diagnostics(
+                xa, xb,
+                pair_idx=pair_idx,
+                curr_bin=results['curr_bin'],
+                lead_step=lead_step,
+            )
+            results['diag_records'].extend(diag)
+            bad = [r for r in diag if r['normalized_rmse'] > 0.20]
+            if bad:
+                insts = sorted({r['instrument'] for r in bad})
+                print(f"[DIAG] WARNING: {len(bad)} channels have normalized_rmse > 20%: "
+                      f"{insts} — xb may be a poor background for these instruments")
+
+        # Optional: finite-difference gradient validation
+        if run_fd_check:
+            print("\n[VALIDATION] Running finite-difference gradient check "
+                  f"(pair {pair_idx})...")
+            from fsoi_validation import validate_fsoi_gradients, finite_difference_check as fd_check_one
+
+            num_samples = fsoi_config['validation'].get('fd_num_samples', 5)
+            epsilon = fsoi_config['validation'].get('fd_epsilon', 1e-2)
 
             fd_passed = validate_fsoi_gradients(
-                model,
-                prev_batch,
-                curr_batch,
-                num_samples=num_samples,
-                epsilon=epsilon,
+                model, prev_batch, curr_batch,
+                num_samples=num_samples, epsilon=epsilon,
             )
 
             if not fd_passed:
                 print("[WARNING] Finite-difference validation failed!")
-                print("  Gradients may be incorrect. Review implementation.")
                 if fsoi_config['validation'].get('require_fd_pass', False):
                     print("[ERROR] Stopping due to failed validation")
                     return results
             else:
-                print("[VALIDATION] Finite-difference check PASSED ✓")
+                print(f"[VALIDATION] Finite-difference check PASSED (pair {pair_idx})")
+
+            # Accumulate per-sample FD records keyed by pair and bin
+            try:
+                fd_xa = get_fsoi_inputs(curr_batch, observation_config,
+                                        model.instrument_name_to_id)
+                rng_fd = np.random.default_rng(pair_idx * 7919 + 42)
+                inst_list = [k for k in fd_xa if fd_xa[k].shape[0] > 0]
+                for _ in range(num_samples):
+                    inst_fd = inst_list[rng_fd.integers(len(inst_list))]
+                    x = fd_xa[inst_fd]
+                    obs_i = int(rng_fd.integers(x.shape[0]))
+                    ch_i = int(rng_fd.integers(x.shape[1]))
+                    rec = fd_check_one(
+                        model, curr_batch, inst_fd, obs_i, ch_i,
+                        epsilon=epsilon, forecast_step=lead_step,
+                    )
+                    if rec:
+                        rec['pair_idx'] = pair_idx
+                        rec['curr_bin'] = results['curr_bin']
+                        results['fd_records'].append(rec)
+            except Exception as fd_err:
+                print(f"[WARNING] FD sample collection failed for pair {pair_idx}: {fd_err}")
+
+        # Optional: directional-derivative check (Rademacher, float32) for satellite instruments
+        if run_directional_check:
+            print("\n[VALIDATION] Running directional-derivative check "
+                  f"(Rademacher, float32, pair {pair_idx})...")
+            try:
+                from fsoi_validation import directional_derivative_check
+                from fsoi_utils import get_fsoi_inputs as _get_inputs
+                _HIGH_N = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua', 'seviri_asr', 'seviri_csr'}
+                n_trials = fsoi_config['validation'].get('directional_n_trials', 5)
+                eps_dir  = fsoi_config['validation'].get('directional_epsilon',
+                                                         fsoi_config['validation'].get('fd_epsilon', 1e-2))
+                _xa_dir = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
+                for inst in sorted(_xa_dir.keys()):
+                    if inst not in _HIGH_N:
+                        continue
+                    dr = directional_derivative_check(
+                        model, curr_batch, inst,
+                        epsilon=eps_dir,
+                        n_trials=n_trials,
+                        seed=pair_idx * 31 + 7,
+                        forecast_step=lead_step,
+                    )
+                    if dr:
+                        for t in dr.get('trials', []):
+                            row = {
+                                'pair_idx': pair_idx,
+                                'curr_bin': results['curr_bin'],
+                                'inst_name': inst,
+                                'trial': t['trial'],
+                                'autograd_dd': t['autograd_dd'],
+                                'fd_dd': t['fd_dd'],
+                                'rel_error': t['rel_error'],
+                                'pearson_r': dr['pearson_r'],
+                                'l1_norm': dr['l1_norm'],
+                                'n_ulp': dr['n_ulp'],
+                                'status': dr['status'],
+                            }
+                            results['directional_records'].append(row)
+            except Exception as dir_err:
+                print(f"[WARNING] Directional derivative check failed for pair {pair_idx}: {dir_err}")
+
+        # Optional: float64 per-obs FD check for satellite instruments
+        if run_float64_check:
+            print("\n[VALIDATION] Running float64 FD check "
+                  f"(pair {pair_idx})...")
+            try:
+                from fsoi_validation import finite_difference_check_float64
+                from fsoi_utils import get_fsoi_inputs as _get_inputs
+                _HIGH_N = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua', 'seviri_asr', 'seviri_csr'}
+                n_f64  = fsoi_config['validation'].get('float64_num_samples', 3)
+                eps_f64 = fsoi_config['validation'].get('float64_epsilon', 1e-4)
+                _xa_f64 = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
+                rng_f64 = np.random.default_rng(pair_idx * 1009 + 13)
+                for inst in sorted(_xa_f64.keys()):
+                    if inst not in _HIGH_N:
+                        continue
+                    x = _xa_f64[inst]
+                    for _ in range(n_f64):
+                        obs_i = int(rng_f64.integers(x.shape[0]))
+                        ch_i  = int(rng_f64.integers(x.shape[1]))
+                        rec = finite_difference_check_float64(
+                            model, curr_batch, inst, obs_i, ch_i,
+                            epsilon=eps_f64,
+                            forecast_step=lead_step,
+                        )
+                        if rec:
+                            rec['pair_idx'] = pair_idx
+                            rec['curr_bin'] = results['curr_bin']
+                            results['float64_records'].append(rec)
+            except Exception as f64_err:
+                print(f"[WARNING] Float64 FD check failed for pair {pair_idx}: {f64_err}")
 
         # Whether to compute a separate loss per radiosonde pressure level
         # (enables pressure_hpa column for ALL instruments including satellites)
@@ -470,6 +771,9 @@ def compute_fsoi_for_pair(
                     target_instruments=target_instruments,
                     replace_indices=subsample_indices,
                     requested_target_variables=target_variables,
+                    target_pressure_levels=target_pressure_levels,
+                    loss_reduction=loss_reduction,
+                    impact_factor=impact_factor,
                 )
 
                 per_level_results = []
@@ -486,6 +790,7 @@ def compute_fsoi_for_pair(
                         metadata=meta_m,
                         innovations=mr.get('innovations'),
                         gradient_sums=mr.get('gradient_sums'),
+                        sampling_info=sampling_info,
                     )
                     df_ch['target_variable'] = mr.get('target_variable')
                     df_ch['target_channel'] = mr.get('target_channel')
@@ -497,6 +802,7 @@ def compute_fsoi_for_pair(
                         model.instrument_name_to_id,
                         innovations=mr.get('innovations'),
                         gradient_sums=mr.get('gradient_sums'),
+                        sampling_info=sampling_info,
                     )
                     df_inst['target_variable'] = mr.get('target_variable')
                     df_inst['target_channel'] = mr.get('target_channel')
@@ -517,13 +823,14 @@ def compute_fsoi_for_pair(
                     )
 
                     if save_scatter_samples and (not scatter_saved) and scatter_max_points > 0:
-                        # Save ONE representative metric’s scatter sample per (pair, lead_step)
+                        # Save ONE representative metric's scatter sample per (pair, lead_step)
                         # to avoid huge files.
                         scatter_df = sample_innovation_vs_fsoi(
                             mr['fsoi_values'],
                             mr.get('innovations') or {},
                             max_points=scatter_max_points,
                             seed=pair_idx * 1000 + int(lead_step),
+                            obs_coords=obs_coords,
                         )
                         if not scatter_df.empty:
                             scatter_df['pair_idx'] = pair_idx
@@ -547,6 +854,9 @@ def compute_fsoi_for_pair(
                     target_instruments=target_instruments,
                     target_variables=target_variables,
                     replace_indices=subsample_indices,
+                    target_pressure_levels=target_pressure_levels,
+                    loss_reduction=loss_reduction,
+                    impact_factor=impact_factor,
                 )
 
             if not per_level_results:
@@ -565,7 +875,18 @@ def compute_fsoi_for_pair(
                 'variable_stratified': bool(stratify_by_variable),
                 'per_level': per_level_results,
                 'metadata': metadata,
+                'sampling_info': sampling_info,
             }
+
+            # ── OSE cross-check (stratified path) ────────────────────────
+            if ose_instruments:
+                _run_ose_check(
+                    results, xa, xb, ea_total, subsample_indices,
+                    model, curr_batch, observation_config, ose_instruments,
+                    target_instruments, target_variables, target_pressure_levels,
+                    instrument_weights, channel_weights, use_area_weights,
+                    loss_reduction, lead_step, pair_idx,
+                )
 
         else:
             # ========================================
@@ -578,18 +899,24 @@ def compute_fsoi_for_pair(
             replace_batch_inputs(curr_batch_xa, xa, observation_config,
                                  replace_indices=subsample_indices)
 
-            # Compute forecast error for analysis
-            ea = compute_forecast_error(
-                model,
-                curr_batch_xa,
-                forecast_lead_step=lead_step,
-                instrument_weights=instrument_weights,
-                channel_weights=channel_weights,
-                use_area_weights=use_area_weights,
-                target_instruments=target_instruments,
-                target_variables=target_variables,
-                target_pressure_levels=target_pressure_levels,
-            )
+            # Compute forecast error for analysis (obs-space or mesh-space)
+            if gfs_reference is not None and init_time_unix is not None \
+                    and gfs_reference.get(mesh_instrument) is not None:
+                ea = _mesh_ea_fn(curr_batch_xa)
+                print(f"  [MESH] Analysis mesh error (ea): {ea.item():.6e}")
+            else:
+                ea = compute_forecast_error(
+                    model,
+                    curr_batch_xa,
+                    forecast_lead_step=lead_step,
+                    instrument_weights=instrument_weights,
+                    channel_weights=channel_weights,
+                    use_area_weights=use_area_weights,
+                    target_instruments=target_instruments,
+                    target_variables=target_variables,
+                    target_pressure_levels=target_pressure_levels,
+                    loss_reduction=loss_reduction,
+                )
 
             print(f"  Analysis error (ea): {ea.item():.6e}")
 
@@ -628,18 +955,24 @@ def compute_fsoi_for_pair(
             replace_batch_inputs(curr_batch_xb, xb, observation_config,
                                  replace_indices=subsample_indices)
 
-            # Compute forecast error for background
-            eb = compute_forecast_error(
-                model,
-                curr_batch_xb,
-                forecast_lead_step=lead_step,
-                instrument_weights=instrument_weights,
-                channel_weights=channel_weights,
-                use_area_weights=use_area_weights,
-                target_instruments=target_instruments,
-                target_variables=target_variables,
-                target_pressure_levels=target_pressure_levels,
-            )
+            # Compute forecast error for background (obs-space or mesh-space)
+            if gfs_reference is not None and init_time_unix is not None \
+                    and gfs_reference.get(mesh_instrument) is not None:
+                eb = _mesh_ea_fn(curr_batch_xb)
+                print(f"  [MESH] Background mesh error (eb): {eb.item():.6e}")
+            else:
+                eb = compute_forecast_error(
+                    model,
+                    curr_batch_xb,
+                    forecast_lead_step=lead_step,
+                    instrument_weights=instrument_weights,
+                    channel_weights=channel_weights,
+                    use_area_weights=use_area_weights,
+                    target_instruments=target_instruments,
+                    target_variables=target_variables,
+                    target_pressure_levels=target_pressure_levels,
+                    loss_reduction=loss_reduction,
+                )
 
             print(f"  Background error (eb): {eb.item():.6e}")
 
@@ -690,7 +1023,7 @@ def compute_fsoi_for_pair(
 
             # xa and xb are shape-aligned after the ALIGNMENT block above
             fsoi_values, innovations, gradient_sums = compute_fsoi_per_observation(
-                xa, xb, ga, gb, return_components=True
+                xa, xb, ga, gb, return_components=True, impact_factor=impact_factor
             )
 
             if save_scatter_samples and scatter_max_points > 0:
@@ -699,11 +1032,69 @@ def compute_fsoi_for_pair(
                     innovations,
                     max_points=scatter_max_points,
                     seed=pair_idx * 1000 + int(lead_step),
+                    obs_coords=obs_coords,
                 )
                 if not scatter_df.empty:
                     scatter_df['pair_idx'] = pair_idx
                     scatter_df['lead_step'] = lead_step
                     results['scatter_samples'].append(scatter_df)
+
+            # ── Reproducibility check (non-stratified path only) ──────────
+            if run_repro_check:
+                print("[REPRO] Re-running ea + ga to verify determinism...")
+                try:
+                    xa_r = {k: v.clone().detach().requires_grad_(True)
+                            for k, v in xa.items()}
+                    bat_r = curr_batch.clone()
+                    replace_batch_inputs(bat_r, xa_r, observation_config,
+                                         replace_indices=subsample_indices)
+                    ea_r = compute_forecast_error(
+                        model, bat_r,
+                        forecast_lead_step=lead_step,
+                        instrument_weights=instrument_weights,
+                        channel_weights=channel_weights,
+                        use_area_weights=use_area_weights,
+                        target_instruments=target_instruments,
+                        target_variables=target_variables,
+                        target_pressure_levels=target_pressure_levels,
+                        loss_reduction=loss_reduction,
+                    )
+                    ga_r = compute_adjoints(ea_r, xa_r, create_graph=False)
+                    torch.cuda.empty_cache()
+
+                    ea_diff = abs(ea_r.item() - ea.item())
+                    ga_diffs = [
+                        (ga_r[k] - ga[k]).abs().max().item()
+                        for k in ga if k in ga_r
+                    ]
+                    max_ga_diff = max(ga_diffs) if ga_diffs else float('nan')
+                    ea_rel = ea_diff / (abs(ea.item()) + 1e-12)
+
+                    if ea_diff < 1e-5 and max_ga_diff < 1e-5:
+                        print(f"[REPRO] PASS — ea_diff={ea_diff:.2e}, "
+                              f"max_ga_diff={max_ga_diff:.2e}")
+                        results['repro_status'] = 'PASS'
+                    else:
+                        print(f"[REPRO] WARN — ea_diff={ea_diff:.2e} "
+                              f"(rel={ea_rel:.2e}), max_ga_diff={max_ga_diff:.2e}")
+                        print("  Non-deterministic ops (e.g. atomic scatter) may "
+                              "cause small diffs; check if diff > 1e-3")
+                        results['repro_status'] = 'WARN'
+                    results['repro_ea_diff'] = ea_diff
+                    results['repro_max_ga_diff'] = max_ga_diff
+                except Exception as repro_err:
+                    print(f"[REPRO] ERROR: {repro_err}")
+                    results['repro_status'] = 'ERROR'
+
+            # ── OSE cross-check (non-stratified path) ────────────────────
+            if ose_instruments:
+                _run_ose_check(
+                    results, xa, xb, ea.item(), subsample_indices,
+                    model, curr_batch, observation_config, ose_instruments,
+                    target_instruments, target_variables, target_pressure_levels,
+                    instrument_weights, channel_weights, use_area_weights,
+                    loss_reduction, lead_step, pair_idx,
+                )
 
         # Memory control: only store full tensors if enabled (non-stratified path)
         store_full_tensors = fsoi_config['data'].get('store_full_tensors', False)
@@ -723,6 +1114,7 @@ def compute_fsoi_for_pair(
                 'xb': {k: v.detach().cpu() for k, v in xb.items()},
                 'ga': {k: v.detach().cpu() for k, v in ga.items()},
                 'gb': {k: v.detach().cpu() for k, v in gb.items()},
+                'sampling_info': sampling_info,
             }
             print(f"  [Memory] Stored full xa/xb/ga/gb tensors")
 
@@ -735,6 +1127,7 @@ def compute_fsoi_for_pair(
                 metadata=metadata,  # Pass metadata for pressure level stratification
                 innovations=innovations,
                 gradient_sums=gradient_sums,
+                sampling_info=sampling_info,
             )
 
             inst_agg = aggregate_fsoi_by_instrument(
@@ -742,6 +1135,7 @@ def compute_fsoi_for_pair(
                 model.instrument_name_to_id,  # Use model mapping for aggregation
                 innovations=innovations,
                 gradient_sums=gradient_sums,
+                sampling_info=sampling_info,
             )
 
             results['fsoi_by_step'][lead_step] = {
@@ -755,6 +1149,7 @@ def compute_fsoi_for_pair(
                 'gradient_sums': {k: v.detach().cpu() for k, v in gradient_sums.items()},
                 # Store metadata for final aggregation with pressure levels
                 'metadata': metadata,
+                'sampling_info': sampling_info,
             }
             print(f"  [Memory] Stored only aggregated FSOI statistics (saved memory)")
 
@@ -813,6 +1208,51 @@ def main():
         default=None,
         help="Override data directory (default: use train/val global v7 path)",
     )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        default=False,
+        help="Compute and save innovation diagnostics (mean/std/skewness/RMSE of "
+             "xa - xb) per instrument per pair to evaluation/innovation_diagnostics.csv",
+    )
+    parser.add_argument(
+        "--ose_instruments",
+        nargs="+",
+        default=None,
+        metavar="INST",
+        help="Run OSE cross-check by replacing xa[X] with xb[X] for these "
+             "instruments (e.g. --ose_instruments atms amsua). Adds one no-grad "
+             "forward pass per pair. Results saved to evaluation/ose_results.csv.",
+    )
+    parser.add_argument(
+        "--verification_target",
+        choices=["obs", "mesh"],
+        default="obs",
+        help="Verification target for FSOI forecast error:\n"
+             "  obs  (default): obs-space targets (e.g. radiosonde locations)\n"
+             "  mesh: OCELOT icosahedral mesh vs GFS analysis (global, unbiased)\n"
+             "Mesh mode requires --gfs_root and --mesh_instrument.",
+    )
+    parser.add_argument(
+        "--gfs_root",
+        type=str,
+        default="/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25",
+        help="Root directory of GFS GRIB2 analysis files (used with --verification_target mesh).",
+    )
+    parser.add_argument(
+        "--mesh_instrument",
+        type=str,
+        default="radiosonde",
+        choices=["radiosonde", "surface_obs"],
+        help="Which mesh decoder to use for verification (default: radiosonde).",
+    )
+    parser.add_argument(
+        "--mesh_pressure_level_idx",
+        type=int,
+        default=4,
+        help="Pressure level index 0-15 for radiosonde mesh verification "
+             "(0=1000hPa … 4=500hPa … 15=10hPa, default: 4=500hPa).",
+    )
 
     args = parser.parse_args()
 
@@ -832,6 +1272,21 @@ def main():
     fsoi_config = load_fsoi_config(args.config)
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = \
         load_weights_from_yaml(args.obs_config)
+
+    # ── Honor use_instrument_weights / use_channel_weights config flags ───────
+    # These flags were defined in all YAML configs but were never read — weights
+    # were always applied regardless.  This is now fixed.
+    _fc = fsoi_config.get('forecast', {})
+    if not _fc.get('use_instrument_weights', True):
+        instrument_weights = {}
+        print("[WEIGHTS] use_instrument_weights=false: uniform instrument weights")
+    else:
+        print(f"[WEIGHTS] use_instrument_weights=true: {len(instrument_weights)} instrument weights loaded")
+    if not _fc.get('use_channel_weights', True):
+        channel_weights = {}
+        print("[WEIGHTS] use_channel_weights=false: uniform channel weights")
+    else:
+        print(f"[WEIGHTS] use_channel_weights=true: {len(channel_weights)} channel weight sets loaded")
 
     # Override config with command-line args
     if args.output_dir:
@@ -991,6 +1446,99 @@ def main():
     )
 
     print(f"FSOI dataloader created with {len(fsoi_loader)} pairs")
+    min_pairs_warning = int(fsoi_config.get('validation', {}).get('min_pairs_warning', 20))
+    if len(fsoi_loader) < min_pairs_warning:
+        print(
+            f"[WARNING] Only {len(fsoi_loader)} sequential FSOI pairs. "
+            f"Use >= {min_pairs_warning} pairs for stable instrument rankings."
+        )
+
+    # ── Finite-difference pair schedule ──────────────────────────────────────
+    # Determine which pair indices get a FD gradient check.  The goal is to
+    # cover at least 3 distinct dates with ~5 samples each (15 total), spread
+    # across early, middle, and late in the FSOI window.
+    n_pairs = len(fsoi_loader)
+    fd_enabled = fsoi_config['validation'].get('finite_difference_check', False)
+    if fd_enabled:
+        fd_pairs_cfg = fsoi_config['validation'].get('fd_check_pairs', None)
+        if fd_pairs_cfg is not None:
+            fd_pair_set = set(int(p) for p in fd_pairs_cfg)
+        else:
+            # Auto: three equally-spaced pairs (early / middle / late)
+            pts = [0, max(0, n_pairs // 3), max(0, 2 * n_pairs // 3)]
+            fd_pair_set = set(pts)
+        print(f"[FD] Will run gradient validation on pair indices: "
+              f"{sorted(fd_pair_set)} (total dates: {len(fd_pair_set)})")
+    else:
+        fd_pair_set = set()
+
+    # Directional-derivative test (Rademacher, float32) — for high-N satellites
+    directional_enabled = fsoi_config['validation'].get('directional_derivative_check', False)
+    directional_pair_set = fd_pair_set if directional_enabled else set()
+    if directional_enabled:
+        print("[FD] Directional-derivative check enabled (Rademacher, float32) — "
+              "runs on same pair indices as scalar FD")
+
+    # Float64 per-obs FD test — for high-N satellites
+    float64_enabled = fsoi_config['validation'].get('float64_fd_check', False)
+    float64_pair_set = fd_pair_set if float64_enabled else set()
+    if float64_enabled:
+        print("[FD] Float64 FD check enabled — runs on same pair indices as scalar FD")
+
+    run_diagnostics = bool(args.diagnostics)
+    if run_diagnostics:
+        print("[DIAG] Innovation diagnostics enabled — saving to evaluation/innovation_diagnostics.csv")
+
+    repro_enabled = fsoi_config['validation'].get('check_reproducibility', False)
+    if repro_enabled:
+        print("[REPRO] Reproducibility check enabled — will re-run pair 0 forward+backward")
+
+    # ── Mesh-space verification setup ─────────────────────────────────────────
+    use_mesh_verification = (args.verification_target == "mesh")
+    mesh_pred_edges_cache = None
+    mesh_lats = mesh_lons = None
+
+    if use_mesh_verification:
+        import numpy as np
+        from FSOI.fsoi_gfs_loader import load_gfs_on_mesh
+        from fsoi_utils import compute_forecast_error_on_mesh
+
+        print(f"\n[MESH FSOI] Mesh-space verification enabled")
+        print(f"  Mesh instrument   : {args.mesh_instrument}")
+        hpa = [1000,925,850,700,500,400,300,250,200,150,100,70,50,30,20,10]
+        print(f"  Pressure level    : idx={args.mesh_pressure_level_idx} "
+              f"({hpa[args.mesh_pressure_level_idx]} hPa)")
+        print(f"  GFS root          : {args.gfs_root}")
+
+        # Enable mesh prediction on the model
+        model.enable_mesh_pred = True
+        model.mesh_pressure_level_idx = args.mesh_pressure_level_idx
+
+        # Load mesh prediction edges once (expensive, cached on model)
+        mesh_pred_edges_cache = model._get_mesh_pred_edges()
+        if args.mesh_instrument not in mesh_pred_edges_cache:
+            raise ValueError(
+                f"[MESH FSOI] No edges for '{args.mesh_instrument}'. "
+                f"Available: {list(mesh_pred_edges_cache.keys())}. "
+                "Run precompute_mesh_edges.py if needed."
+            )
+        edges = mesh_pred_edges_cache[args.mesh_instrument]
+        mesh_lats = edges['lats']  # [N_mesh] numpy array
+        mesh_lons = edges['lons']  # [N_mesh] numpy array
+        print(f"  Mesh nodes        : {len(mesh_lats):,} global icosahedral nodes")
+
+        if not os.path.isdir(args.gfs_root):
+            raise FileNotFoundError(
+                f"[MESH FSOI] GFS root not found: {args.gfs_root}. "
+                "Set via --gfs_root."
+            )
+
+    # OSE instruments: expand seviri aliases and validate
+    ose_instruments = None
+    if args.ose_instruments:
+        ose_instruments = _expand_seviri_instrument_aliases(args.ose_instruments)
+        print(f"[OSE] Observation-withholding experiment enabled for: {ose_instruments}")
+        print("[OSE] Adds 1 no-grad forward pass per pair per denial group.")
 
     # Main FSOI computation loop
     print("\n" + "="*80)
@@ -999,9 +1547,46 @@ def main():
 
     all_results = []
     scatter_frames = []
+    all_fd_records = []
+    all_directional_records = []
+    all_float64_records = []
+    all_diag_records = []
+    all_ose_records = []
 
     for pair_idx, (prev_batch, curr_batch) in enumerate(tqdm(fsoi_loader, desc="Computing FSOI")):
         try:
+            # ── Load GFS reference for mesh-space verification ───────────────
+            gfs_reference_pair = None
+            if use_mesh_verification:
+                from FSOI.fsoi_gfs_loader import load_gfs_on_mesh
+                from datetime import datetime, timezone
+                import numpy as np
+
+                # Parse valid time from curr_bin (end of current observation window)
+                curr_bin_name = _as_scalar_bin(curr_batch.bin_name)
+                try:
+                    if str(curr_bin_name).startswith('bin') and len(str(curr_bin_name)) >= 13:
+                        ts_str = str(curr_bin_name)[3:13]  # YYYYMMDDHH
+                        valid_dt = datetime.strptime(ts_str, "%Y%m%d%H")
+                    else:
+                        valid_dt = pd.to_datetime(str(curr_bin_name)).to_pydatetime()
+
+                    gfs_tensor = load_gfs_on_mesh(
+                        valid_dt=valid_dt,
+                        mesh_lats=mesh_lats,
+                        mesh_lons=mesh_lons,
+                        inst_name=args.mesh_instrument,
+                        feature_stats=feature_stats,
+                        gfs_root=args.gfs_root,
+                        pressure_level_idx=args.mesh_pressure_level_idx,
+                        device=device,
+                    )
+                    gfs_reference_pair = {args.mesh_instrument: gfs_tensor}
+                except Exception as gfs_err:
+                    print(f"[MESH FSOI] GFS load failed for pair {pair_idx}: {gfs_err}")
+                    print("  Falling back to obs-space verification for this pair")
+                    gfs_reference_pair = None
+
             # Compute FSOI for this pair
             result = compute_fsoi_for_pair(
                 model=model,
@@ -1013,12 +1598,31 @@ def main():
                 channel_weights=channel_weights,
                 pair_idx=pair_idx,
                 verbose=fsoi_config['validation'].get('verbose', True),
+                run_fd_check=(pair_idx in fd_pair_set),
+                run_directional_check=(pair_idx in directional_pair_set),
+                run_float64_check=(pair_idx in float64_pair_set),
+                run_diagnostics=run_diagnostics,
+                run_repro_check=(repro_enabled and pair_idx == 0),
+                ose_instruments=ose_instruments,
+                gfs_reference=gfs_reference_pair,
+                mesh_instrument=args.mesh_instrument if use_mesh_verification else "radiosonde",
+                mesh_pressure_level_idx=args.mesh_pressure_level_idx if use_mesh_verification else 4,
             )
 
             all_results.append(result)
 
             if isinstance(result, dict) and result.get('scatter_samples'):
                 scatter_frames.extend(result['scatter_samples'])
+            if isinstance(result, dict) and result.get('fd_records'):
+                all_fd_records.extend(result['fd_records'])
+            if isinstance(result, dict) and result.get('directional_records'):
+                all_directional_records.extend(result['directional_records'])
+            if isinstance(result, dict) and result.get('float64_records'):
+                all_float64_records.extend(result['float64_records'])
+            if isinstance(result, dict) and result.get('diag_records'):
+                all_diag_records.extend(result['diag_records'])
+            if isinstance(result, dict) and result.get('ose_records'):
+                all_ose_records.extend(result['ose_records'])
 
         except Exception as e:
             print(f"\n[ERROR] Failed to compute FSOI for pair {pair_idx}: {e}")
@@ -1049,6 +1653,8 @@ def main():
                 variable_stratified = bool(step_data.get('variable_stratified', False))
 
                 for level_data in step_data['per_level']:
+                    metric_ea = level_data.get('ea_p', step_data['ea'])
+                    metric_eb = level_data.get('eb_p', step_data['eb'])
                     if 'fsoi_channel_aggregates' in level_data:
                         df_ch = level_data['fsoi_channel_aggregates'].copy()
                     else:
@@ -1064,6 +1670,7 @@ def main():
                             metadata=meta_p,
                             innovations=level_data.get('innovations'),
                             gradient_sums=level_data.get('gradient_sums'),
+                            sampling_info=step_data.get('sampling_info'),
                         )
                         # Preserve target identity if present
                         if 'target_variable' in level_data:
@@ -1077,8 +1684,12 @@ def main():
                     df_ch['prev_bin'] = result['prev_bin']
                     df_ch['curr_bin'] = result['curr_bin']
                     df_ch['lead_step'] = lead_step
-                    df_ch['ea'] = step_data['ea']
-                    df_ch['eb'] = step_data['eb']
+                    df_ch['ea'] = metric_ea
+                    df_ch['eb'] = metric_eb
+                    df_ch['ea_p'] = metric_ea
+                    df_ch['eb_p'] = metric_eb
+                    df_ch['ea_total'] = step_data['ea']
+                    df_ch['eb_total'] = step_data['eb']
                     aggregated_by_channel.append(df_ch)
 
                 if variable_stratified:
@@ -1086,13 +1697,19 @@ def main():
                     for level_data in step_data['per_level']:
                         if 'fsoi_instrument_aggregates' not in level_data:
                             continue
+                        metric_ea = level_data.get('ea_p', step_data['ea'])
+                        metric_eb = level_data.get('eb_p', step_data['eb'])
                         df_inst = level_data['fsoi_instrument_aggregates'].copy()
                         df_inst['pair_idx'] = result['pair_idx']
                         df_inst['prev_bin'] = result['prev_bin']
                         df_inst['curr_bin'] = result['curr_bin']
                         df_inst['lead_step'] = lead_step
-                        df_inst['ea'] = step_data['ea']
-                        df_inst['eb'] = step_data['eb']
+                        df_inst['ea'] = metric_ea
+                        df_inst['eb'] = metric_eb
+                        df_inst['ea_p'] = metric_ea
+                        df_inst['eb_p'] = metric_eb
+                        df_inst['ea_total'] = step_data['ea']
+                        df_inst['eb_total'] = step_data['eb']
                         aggregated_by_instrument.append(df_inst)
                 else:
                     # For instrument-level: sum FSOI across all pressure levels.
@@ -1113,6 +1730,7 @@ def main():
                         model.instrument_name_to_id,
                         innovations=combined_innov,
                         gradient_sums=combined_gsum,
+                        sampling_info=step_data.get('sampling_info'),
                     )
                     df_inst['pair_idx'] = result['pair_idx']
                     df_inst['prev_bin'] = result['prev_bin']
@@ -1135,6 +1753,7 @@ def main():
                     metadata=metadata,
                     innovations=innovations,
                     gradient_sums=gradient_sums,
+                    sampling_info=step_data.get('sampling_info'),
                 )
                 df_channel['pair_idx'] = result['pair_idx']
                 df_channel['prev_bin'] = result['prev_bin']
@@ -1149,6 +1768,7 @@ def main():
                     model.instrument_name_to_id,
                     innovations=innovations,
                     gradient_sums=gradient_sums,
+                    sampling_info=step_data.get('sampling_info'),
                 )
                 df_inst['pair_idx'] = result['pair_idx']
                 df_inst['prev_bin'] = result['prev_bin']
@@ -1201,6 +1821,12 @@ def main():
                 'mean_impact': ['mean', 'std'],
                 'positive_frac': 'mean',
             }
+            if 'sum_impact_scaled' in df_all_instrument.columns:
+                summary_aggs['sum_impact_scaled'] = ['mean', 'std', 'sum']
+            if 'raw_n_observations' in df_all_instrument.columns:
+                summary_aggs['raw_n_observations'] = 'sum'
+            if 'sample_scale' in df_all_instrument.columns:
+                summary_aggs['sample_scale'] = 'mean'
 
             optional_aggs = {
                 'innovation_abs_mean': 'mean',
@@ -1235,6 +1861,119 @@ def main():
         else:
             print("  [SKIPPED] Scatter samples: None collected")
 
+    # ── Write OSE cross-check results ────────────────────────────────────
+    if all_ose_records:
+        from fsoi_ose import compare_ose_vs_fsoi
+        eval_dir = output_path / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        ose_df = pd.DataFrame(all_ose_records)
+        ose_csv = eval_dir / "ose_results.csv"
+        ose_df.to_csv(ose_csv, index=False)
+        print(f"\n[OSE] Saved {len(ose_df)} OSE records to {ose_csv}")
+
+        # Immediate comparison with FSOI if instrument CSV exists
+        fsoi_inst_csv = output_path / "csv" / "fsoi_by_instrument.csv"
+        if fsoi_inst_csv.is_file():
+            comp = compare_ose_vs_fsoi(ose_csv, fsoi_inst_csv)
+            if not comp.empty:
+                comp_csv = eval_dir / "ose_vs_fsoi_comparison.csv"
+                comp.to_csv(comp_csv, index=False)
+                valid = comp.dropna(subset=["closure_ratio"])
+                if not valid.empty:
+                    med_r = float(valid["closure_ratio"].median())
+                    sign_pct = float(valid["sign_agree"].mean() * 100)
+                    r_corr = float(valid[["ose_impact", "fsoi_predicted"]]
+                                   .corr().iloc[0, 1]) if len(valid) > 2 else float("nan")
+                    print(f"[OSE] Comparison: median closure_ratio={med_r:.3f} "
+                          f"(target 1.0)  sign_agree={sign_pct:.0f}%  "
+                          f"Pearson r={r_corr:.3f}")
+                    if abs(med_r - 1.0) > 0.30:
+                        print("[OSE] WARNING: closure_ratio far from 1.0 — "
+                              "nonlinear GNN effects may be significant for "
+                              f"{ose_instruments}")
+                print(f"[OSE] Comparison saved to {comp_csv}")
+
+    # ── Write reproducibility result ─────────────────────────────────────
+    if repro_enabled and all_results:
+        r0 = all_results[0]
+        repro_rec = {
+            'pair_idx': 0,
+            'curr_bin': r0.get('curr_bin', ''),
+            'status': r0.get('repro_status', 'NOT_RUN'),
+            'ea_diff': r0.get('repro_ea_diff', float('nan')),
+            'max_ga_diff': r0.get('repro_max_ga_diff', float('nan')),
+        }
+        eval_dir = output_path / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([repro_rec]).to_csv(eval_dir / "reproducibility_check.csv", index=False)
+        print(f"\n[REPRO] Result: {repro_rec['status']} "
+              f"(ea_diff={repro_rec['ea_diff']:.2e}, "
+              f"ga_diff={repro_rec['max_ga_diff']:.2e})")
+
+    # ── Write accumulated FD validation records ───────────────────────────
+    if all_fd_records:
+        eval_dir = output_path / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        fd_csv = eval_dir / "fd_validation.csv"
+        pd.DataFrame(all_fd_records).to_csv(fd_csv, index=False)
+        n_pass = sum(1 for r in all_fd_records if r.get('status') == 'PASS')
+        n_warn = sum(1 for r in all_fd_records if r.get('status') == 'WARNING')
+        n_fail = sum(1 for r in all_fd_records if r.get('status') == 'FAIL')
+        print(f"\n[FD] Saved {len(all_fd_records)} scalar FD records to {fd_csv}")
+        print(f"     PASS={n_pass}  WARN={n_warn}  FAIL={n_fail} "
+              f"(across {len(fd_pair_set)} dates)")
+        if n_fail > 0:
+            print("[FD] WARNING: some gradient checks failed — review fd_validation.csv")
+
+    # ── Write directional-derivative records ──────────────────────────────
+    if all_directional_records:
+        eval_dir = output_path / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        dir_csv = eval_dir / "fd_directional_validation.csv"
+        pd.DataFrame(all_directional_records).to_csv(dir_csv, index=False)
+        n_pass = sum(1 for r in all_directional_records if r.get('status') == 'PASS')
+        n_warn = sum(1 for r in all_directional_records if r.get('status') == 'WARN')
+        n_fail = sum(1 for r in all_directional_records if r.get('status') == 'FAIL')
+        n_insuf = sum(1 for r in all_directional_records if r.get('status') == 'INSUF_SIGNAL')
+        print(f"\n[FD] Saved {len(all_directional_records)} directional-deriv records to {dir_csv}")
+        print(f"     PASS={n_pass}  WARN={n_warn}  FAIL={n_fail}  INSUF_SIGNAL={n_insuf}")
+        if n_fail > 0:
+            print("[FD] WARNING: directional gradient direction test failed — "
+                  "review fd_directional_validation.csv")
+
+    # ── Write float64 FD records ──────────────────────────────────────────
+    if all_float64_records:
+        eval_dir = output_path / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        f64_csv = eval_dir / "fd_float64_validation.csv"
+        pd.DataFrame(all_float64_records).to_csv(f64_csv, index=False)
+        n_pass = sum(1 for r in all_float64_records if r.get('status') == 'PASS')
+        n_warn = sum(1 for r in all_float64_records if r.get('status') == 'WARN')
+        n_fail = sum(1 for r in all_float64_records if r.get('status') == 'FAIL')
+        print(f"\n[FD] Saved {len(all_float64_records)} float64 FD records to {f64_csv}")
+        print(f"     PASS={n_pass}  WARN={n_warn}  FAIL={n_fail}")
+        if n_fail > 0:
+            print("[FD] WARNING: float64 gradient check failed — review fd_float64_validation.csv")
+
+    # ── Write innovation diagnostics ──────────────────────────────────────
+    if all_diag_records:
+        eval_dir = output_path / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        diag_csv = eval_dir / "innovation_diagnostics.csv"
+        df_diag = pd.DataFrame(all_diag_records)
+        df_diag.to_csv(diag_csv, index=False)
+        print(f"\n[DIAG] Saved innovation diagnostics to {diag_csv}")
+        # Quick quality summary
+        bad_bg = df_diag[df_diag['normalized_rmse'] > 0.20]
+        if not bad_bg.empty:
+            bad_insts = sorted(bad_bg['instrument'].unique())
+            print(f"[DIAG] WARNING: {len(bad_bg)} (instrument×channel×pair) entries "
+                  f"have normalized_rmse > 20%: {bad_insts}")
+            print("       xb background forecast quality may be poor for these instruments.")
+        good = df_diag[df_diag['normalized_rmse'] <= 0.05]
+        print(f"[DIAG] {len(good)}/{len(df_diag)} entries have normalized_rmse ≤ 5% "
+              f"(good background quality)")
+
     print("\n" + "="*80)
     print("FSOI Inference Complete")
     print("="*80)
@@ -1244,8 +1983,9 @@ def main():
     # Only print stats if we have data
     if not df_all_instrument.empty and 'instrument' in df_all_instrument.columns:
         print(f"Total instruments: {df_all_instrument['instrument'].nunique()}")
-        print("\nTop 5 instruments by mean impact:")
-        print(df_all_instrument.groupby('instrument')['sum_impact'].mean().sort_values(ascending=False).head())
+        impact_col = 'sum_impact_scaled' if 'sum_impact_scaled' in df_all_instrument.columns else 'sum_impact'
+        print(f"\nTop 5 instruments by mean {impact_col}:")
+        print(df_all_instrument.groupby('instrument')[impact_col].mean().sort_values(ascending=False).head())
     else:
         print("\n[WARNING] No FSOI data computed - check logs for errors")
 

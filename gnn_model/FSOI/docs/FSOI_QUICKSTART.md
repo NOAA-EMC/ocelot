@@ -72,11 +72,12 @@ One row per instrument per time window:
 | Column | Meaning |
 |--------|---------|
 | `instrument` | Instrument name (e.g., "atms") |
-| `sum_impact` | Total FSOI (negative = helpful) |
+| `sum_impact` | Total FSOI over processed observations (negative = helpful) |
+| `sum_impact_scaled` | Estimated full total when decoder subsampling was used |
 | `mean_impact` | Average FSOI per observation |
 | `positive_frac` | % of observations that increased error |
 
-**Key metric**: `sum_impact`
+**Key metric**: use `sum_impact_scaled` for total-impact plots when present; use `mean_impact` for date-to-date/instrument comparisons.
 - **Negative = Good**: Observations reduced forecast error
 - **Positive = Bad**: Observations increased forecast error
 - **Large magnitude**: High impact (important observations)
@@ -145,7 +146,8 @@ import matplotlib.pyplot as plt
 df = pd.read_csv('FSOI/fsoi_outputs/csv/fsoi_by_instrument.csv')
 
 # Plot total impact by instrument
-impacts = df.groupby('instrument')['sum_impact'].sum().sort_values()
+impact_col = 'sum_impact_scaled' if 'sum_impact_scaled' in df.columns else 'sum_impact'
+impacts = df.groupby('instrument')[impact_col].sum().sort_values()
 impacts.plot(kind='barh')
 plt.xlabel('Total FSOI Impact (negative = helpful)')
 plt.title('Observation Impact on Forecast Error')
@@ -156,10 +158,10 @@ plt.savefig('fsoi_by_instrument.png')
 2. **Time series analysis**:
 ```python
 # Extract dates from bin names
-df['date'] = pd.to_datetime(df['curr_bin'].str[:10])
+df['date'] = pd.to_datetime(df['curr_bin'].str.replace('bin', '').str[:10], format='%Y%m%d%H')
 
 # Plot impact over time
-daily = df.groupby(['date', 'instrument'])['sum_impact'].sum().unstack()
+daily = df.groupby(['date', 'instrument'])[impact_col].sum().unstack()
 daily.plot(figsize=(12, 6))
 plt.ylabel('Daily FSOI Impact')
 plt.title('Observation Impact Time Series')

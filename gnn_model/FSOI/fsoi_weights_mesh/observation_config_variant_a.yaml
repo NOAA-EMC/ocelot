@@ -1,0 +1,854 @@
+pipeline:
+  subsample:
+    seed: 12345
+    satellite:
+      _default: 30
+      avhrr: 100
+    conventional:
+      _default: 1
+      surface_obs: 1
+      radiosonde: 1
+      aircraft: 1
+    mode:
+      satellite:
+        _default: random
+        atms: random
+        amsua: random
+        avhrr: random
+        ascat: random
+        seviri_asr: random
+        seviri_csr: random
+      conventional:
+        _default: random
+instrument_weights:
+  atms: 0.093872
+  amsua: 0.093872
+  avhrr: 0.093872
+  surface_obs: 0.116537
+  radiosonde: 8.16603
+  ascat: 0.093872
+  aircraft: 0.154201
+  ssmis: 0.093872
+  seviri_asr: 0.093872
+  seviri_csr: 1.0
+channel_weights:
+  atms:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  amsua:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  avhrr:
+  - 1.0
+  - 1.0
+  - 1.0
+  surface_obs:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  radiosonde:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  aircraft:
+  - 1.0
+  - 1.0
+  - 1.0
+  ascat:
+  - 1.0
+  - 1.0
+  - 1.0
+  ssmis:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  seviri_asr:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  seviri_csr:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+observation_config:
+  satellite:
+    atms:
+      sat_ids:
+      - 224
+      - 225
+      scan_angle_channels: 1
+      features:
+      - bt_channel_1
+      - bt_channel_2
+      - bt_channel_3
+      - bt_channel_4
+      - bt_channel_5
+      - bt_channel_6
+      - bt_channel_7
+      - bt_channel_8
+      - bt_channel_9
+      - bt_channel_10
+      - bt_channel_11
+      - bt_channel_12
+      - bt_channel_13
+      - bt_channel_14
+      - bt_channel_15
+      - bt_channel_16
+      - bt_channel_17
+      - bt_channel_18
+      - bt_channel_19
+      - bt_channel_20
+      - bt_channel_21
+      - bt_channel_22
+      metadata:
+      - sensorZenithAngle
+      - solarZenithAngle
+      - solarAzimuthAngle
+      input_dim: 34
+      target_dim: 22
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    amsua:
+      sat_ids:
+      - 3
+      - 5
+      - 206
+      - 209
+      - 223
+      scan_angle_channels: 1
+      features:
+      - bt_channel_1
+      - bt_channel_2
+      - bt_channel_3
+      - bt_channel_4
+      - bt_channel_5
+      - bt_channel_6
+      - bt_channel_7
+      - bt_channel_8
+      - bt_channel_9
+      - bt_channel_10
+      - bt_channel_11
+      - bt_channel_12
+      - bt_channel_13
+      - bt_channel_14
+      - bt_channel_15
+      metadata:
+      - sensorZenithAngle
+      - solarZenithAngle
+      - solarAzimuthAngle
+      input_dim: 30
+      target_dim: 15
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    ssmis:
+      sat_ids:
+      - 285
+      scan_angle_channels: 2
+      features:
+      - bt_ch_1
+      - bt_ch_2
+      - bt_ch_3
+      - bt_ch_4
+      - bt_ch_5
+      - bt_ch_6
+      - bt_ch_7
+      - bt_ch_8
+      - bt_ch_9
+      - bt_ch_10
+      - bt_ch_11
+      - bt_ch_12
+      - bt_ch_13
+      - bt_ch_14
+      - bt_ch_15
+      - bt_ch_16
+      - bt_ch_17
+      - bt_ch_18
+      - bt_ch_19
+      - bt_ch_20
+      - bt_ch_21
+      - bt_ch_22
+      - bt_ch_23
+      - bt_ch_24
+      metadata:
+      - sensorScanPosition
+      - satelliteAscendingFlag
+      input_dim: 34
+      target_dim: 24
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    seviri_asr:
+      sat_ids:
+      - 56
+      - 57
+      scan_angle_channels: 1
+      features:
+      - bt_ch_4
+      - bt_ch_5
+      - bt_ch_6
+      - bt_ch_7
+      - bt_ch_8
+      - bt_ch_9
+      - bt_ch_10
+      - bt_ch_11
+      metadata:
+      - satelliteZenithAngle
+      - solarZenithAngle
+      input_dim: 17
+      target_dim: 8
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    seviri_csr:
+      sat_ids:
+      - 56
+      - 57
+      scan_angle_channels: 1
+      features:
+      - bt_ch_4
+      - bt_ch_5
+      - bt_ch_6
+      - bt_ch_7
+      - bt_ch_8
+      - bt_ch_9
+      - bt_ch_10
+      - bt_ch_11
+      metadata:
+      - satelliteZenithAngle
+      - solarZenithAngle
+      input_dim: 17
+      target_dim: 8
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    avhrr:
+      sat_ids:
+      - 3
+      - 5
+      - 209
+      - 223
+      scan_angle_channels: 1
+      features:
+      - brightnessTemperature_ch_50
+      - brightnessTemperature_ch_51
+      - brightnessTemperature_ch_52
+      metadata:
+      - satelliteZenithAngle
+      - solarZenithAngle
+      input_dim: 16
+      target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    ascat:
+      sat_ids:
+      - 3
+      - 4
+      - 5
+      scan_angle_channels: 3
+      features:
+      - backscatter_ch_1
+      - backscatter_ch_2
+      - backscatter_ch_3
+      metadata:
+      - radarIncidenceAngle_ch_1
+      - radarIncidenceAngle_ch_2
+      - radarIncidenceAngle_ch_3
+      - antennaBeamAzimuthAngle_ch_1
+      - antennaBeamAzimuthAngle_ch_2
+      - antennaBeamAzimuthAngle_ch_3
+      input_dim: 19
+      target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_strict_flags: true
+      qc_filters:
+        backscatter_ch_1:
+          range:
+          - -55.0
+          - 3.0
+          qm_flag_col: ascatSigma0Usability_ch_1
+          keep:
+          - 0
+        backscatter_ch_2:
+          range:
+          - -55.0
+          - 5.0
+          qm_flag_col: ascatSigma0Usability_ch_2
+          keep:
+          - 0
+        backscatter_ch_3:
+          range:
+          - -55.0
+          - 3.2
+          qm_flag_col: ascatSigma0Usability_ch_3
+          keep:
+          - 0
+        radarIncidenceAngle_ch_1:
+          range:
+          - 20.0
+          - 70.0
+          clip: true
+        radarIncidenceAngle_ch_2:
+          range:
+          - 20.0
+          - 70.0
+          clip: true
+        radarIncidenceAngle_ch_3:
+          range:
+          - 20.0
+          - 70.0
+          clip: true
+        antennaBeamAzimuthAngle_ch_1:
+          range:
+          - 0.0
+          - 360.0
+          clip: true
+        antennaBeamAzimuthAngle_ch_2:
+          range:
+          - 0.0
+          - 360.0
+          clip: true
+        antennaBeamAzimuthAngle_ch_3:
+          range:
+          - 0.0
+          - 360.0
+          clip: true
+  conventional:
+    surface_obs:
+      source: zarr
+      zarr_name: raw_surface_obs
+      features:
+      - pressureMeanSeaLevel_prepbufr
+      - airTemperature
+      - dewPointTemperature
+      - wind_u
+      - wind_v
+      metadata:
+      - height_prepbufr_event_1
+      input_dim: 13
+      target_dim: 5
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        pressureMeanSeaLevel_prepbufr:
+          range:
+          - 800
+          - 1100
+        airTemperature:
+          range:
+          - -90
+          - 60
+          qm_flag_col: airTemperatureQuality_event_1
+          keep:
+          - 0
+          - 1
+          - 2
+          - 4
+          - 9
+        dewPointTemperature:
+          range:
+          - -100
+          - 50
+          qm_flag_col: dewPointTemperatureQuality_event_1
+          keep:
+          - 1
+          - 2
+          - 4
+          - 9
+        windSpeed:
+          range:
+          - 0
+          - 150
+        windDirection:
+          range:
+          - 0
+          - 6.2832
+        height_prepbufr_event_1:
+          range:
+          - -500
+          - 9000
+          clip: true
+          qm_flag_col: heightQuality_event_1
+          keep:
+          - 1
+          - 2
+          strict_flags: true
+      qc_relations:
+        dewpoint_le_temp: true
+        max_temp_dewpoint_spread: 60
+        rh_from_td_consistency_pct: 25
+    radiosonde:
+      source: zarr
+      zarr_name: raw_radiosonde
+      features:
+      - airTemperature
+      - dewPointTemperature
+      - wind_u
+      - wind_v
+      metadata:
+      - log_pressure_height
+      input_dim: 12
+      target_dim: 4
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      level_selection:
+        filter_col: airPressure
+        matching_mode: all
+      qc_filters:
+        airPressure:
+          range:
+          - 1
+          - 1100
+          qm_flag_col: airPressureQuality
+          keep:
+          - 0
+          - 1
+          - 2
+        airTemperature:
+          range:
+          - -90
+          - 50
+          qm_flag_col: airTemperatureQuality
+          reject:
+          - 13
+          - 14
+          - 15
+        dewPointTemperature:
+          range:
+          - -120
+          - 50
+          qm_flag_col: dewPointTemperatureQuality
+          reject:
+          - 13
+          - 14
+          - 15
+        windSpeed:
+          range:
+          - 0
+          - 150
+          qm_flag_col: windQuality
+          keep:
+          - 2
+        windDirection:
+          range:
+          - 0
+          - 6.2832
+          qm_flag_col: windQuality
+          keep:
+          - 2
+    aircraft:
+      source: zarr
+      zarr_name: aircraft
+      features:
+      - airTemperature
+      - windU
+      - windV
+      metadata:
+      - log_pressure_height
+      input_dim: 11
+      target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        airPressure:
+          range:
+          - 100
+          - 1100
+          qm_flag_col: airPressureQuality
+          keep:
+          - 0
+          - 1
+          - 2
+        airTemperature:
+          range:
+          - -90
+          - 50
+          qm_flag_col: airTemperatureQuality
+          keep:
+          - 0
+          - 1
+          - 2
+        windU:
+          range:
+          - -150
+          - 150
+          qm_flag_col: windQuality
+          keep:
+          - 0
+          - 1
+          - 2
+        windV:
+          range:
+          - -150
+          - 150
+          qm_flag_col: windQuality
+          keep:
+          - 0
+          - 1
+          - 2
+feature_stats:
+  surface_obs:
+    pressureMeanSeaLevel_prepbufr:
+    - 1014.39
+    - 13.63
+    airTemperature:
+    - 13.99
+    - 12.14
+    dewPointTemperature:
+    - 7.94
+    - 11.47
+    wind_u:
+    - 0.03
+    - 3.3
+    wind_v:
+    - -0.03
+    - 3.37
+  radiosonde:
+    airPressure:
+    - 319.23
+    - 296.08
+    airTemperature:
+    - -32.49
+    - 28.82
+    dewPointTemperature:
+    - -47.4
+    - 34.48
+    wind_u:
+    - 4.95
+    - 13.71
+    wind_v:
+    - -0.31
+    - 8.13
+  aircraft:
+    airPressure:
+    - 505.53
+    - 274.24
+    airTemperature:
+    - -18.56
+    - 27.68
+    windU:
+    - 11.28
+    - 15.43
+    windV:
+    - 0.27
+    - 11.46
+  atms:
+    bt_channel_1:
+    - 211.0
+    - 40.6
+    bt_channel_2:
+    - 201.65
+    - 42.08
+    bt_channel_3:
+    - 239.09
+    - 22.24
+    bt_channel_4:
+    - 248.58
+    - 17.55
+    bt_channel_5:
+    - 252.58
+    - 14.32
+    bt_channel_6:
+    - 245.75
+    - 11.47
+    bt_channel_7:
+    - 231.98
+    - 8.21
+    bt_channel_8:
+    - 222.52
+    - 6.76
+    bt_channel_9:
+    - 216.1
+    - 7.3
+    bt_channel_10:
+    - 211.99
+    - 9.49
+    bt_channel_11:
+    - 215.01
+    - 9.37
+    bt_channel_12:
+    - 221.0
+    - 10.17
+    bt_channel_13:
+    - 229.26
+    - 11.3
+    bt_channel_14:
+    - 240.06
+    - 11.97
+    bt_channel_15:
+    - 250.28
+    - 11.52
+    bt_channel_16:
+    - 237.76
+    - 28.61
+    bt_channel_17:
+    - 258.29
+    - 29.35
+    bt_channel_18:
+    - 260.31
+    - 22.15
+    bt_channel_19:
+    - 258.26
+    - 18.46
+    bt_channel_20:
+    - 255.12
+    - 15.34
+    bt_channel_21:
+    - 250.24
+    - 12.39
+    bt_channel_22:
+    - 245.38
+    - 10.41
+  amsua:
+    bt_channel_1:
+    - 209.92
+    - 40.44
+    bt_channel_2:
+    - 201.16
+    - 42.14
+    bt_channel_3:
+    - 239.63
+    - 20.68
+    bt_channel_4:
+    - 252.44
+    - 14.2
+    bt_channel_5:
+    - 245.45
+    - 11.31
+    bt_channel_6:
+    - 231.1
+    - 7.86
+    bt_channel_7:
+    - 222.16
+    - 6.51
+    bt_channel_8:
+    - 216.24
+    - 7.12
+    bt_channel_9:
+    - 211.48
+    - 9.39
+    bt_channel_10:
+    - 214.51
+    - 9.34
+    bt_channel_11:
+    - 220.23
+    - 10.18
+    bt_channel_12:
+    - 228.57
+    - 11.32
+    bt_channel_13:
+    - 239.08
+    - 11.94
+    bt_channel_14:
+    - 249.39
+    - 11.47
+    bt_channel_15:
+    - 237.78
+    - 28.23
+  avhrr:
+    brightnessTemperature_ch_50:
+    - 284.58
+    - 17.52
+    brightnessTemperature_ch_51:
+    - 283.07
+    - 15.83
+    brightnessTemperature_ch_52:
+    - 281.21
+    - 15.2
+  ascat:
+    backscatter_ch_1:
+    - -17.84
+    - 5.77
+    backscatter_ch_2:
+    - -14.84
+    - 5.12
+    backscatter_ch_3:
+    - -17.81
+    - 5.73
+  ssmis:
+    bt_ch_1:
+    - 238.43
+    - 20.42
+    bt_ch_10:
+    - 252.93
+    - 11.01
+    bt_ch_11:
+    - 241.98
+    - 9.31
+    bt_ch_12:
+    - 182.48
+    - 53.52
+    bt_ch_13:
+    - 224.26
+    - 34.52
+    bt_ch_14:
+    - 237.05
+    - 29.52
+    bt_ch_15:
+    - 194.48
+    - 44.93
+    bt_ch_16:
+    - 231.97
+    - 26.43
+    bt_ch_17:
+    - 250.07
+    - 26.02
+    bt_ch_18:
+    - 231.07
+    - 32.5
+    bt_ch_19:
+    - 229.95
+    - 7.91
+    bt_ch_2:
+    - 250.4
+    - 16.73
+    bt_ch_20:
+    - 212.22
+    - 9.38
+    bt_ch_21:
+    - 247.08
+    - 6.36
+    bt_ch_22:
+    - 247.2
+    - 9.42
+    bt_ch_23:
+    - 237.59
+    - 8.08
+    bt_ch_24:
+    - 225.99
+    - 5.44
+    bt_ch_3:
+    - 241.66
+    - 13.37
+    bt_ch_4:
+    - 228.59
+    - 5.36
+    bt_ch_5:
+    - 216.18
+    - 8.4
+    bt_ch_6:
+    - 213.07
+    - 8.51
+    bt_ch_7:
+    - 217.33
+    - 6.51
+    bt_ch_8:
+    - 250.04
+    - 35.18
+    bt_ch_9:
+    - 257.22
+    - 22.09
+  seviri_asr:
+    bt_ch_10:
+    - 276.59
+    - 20.07
+    bt_ch_11:
+    - 257.99
+    - 14.21
+    bt_ch_4:
+    - 280.87
+    - 17.44
+    bt_ch_5:
+    - 237.38
+    - 9.03
+    bt_ch_6:
+    - 254.14
+    - 12.27
+    bt_ch_7:
+    - 276.28
+    - 18.76
+    bt_ch_8:
+    - 257.31
+    - 14.28
+    bt_ch_9:
+    - 278.26
+    - 19.92
+  seviri_csr:
+    bt_ch_10:
+    - 288.54
+    - 8.77
+    bt_ch_11:
+    - 265.76
+    - 6.91
+    bt_ch_4:
+    - 289.44
+    - 10.47
+    bt_ch_5:
+    - 240.56
+    - 6.74
+    bt_ch_6:
+    - 259.72
+    - 6.67
+    bt_ch_7:
+    - 287.38
+    - 8.72
+    bt_ch_8:
+    - 264.54
+    - 10.17
+    bt_ch_9:
+    - 290.17
+    - 8.95

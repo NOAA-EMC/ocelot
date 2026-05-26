@@ -9,8 +9,103 @@ Author: Azadeh Gholoubi
 """
 
 import torch
+import numpy as np
 from typing import Dict
 from torch_geometric.data import HeteroData, Batch
+
+
+def _stratified_spatial_subsample(
+    lat: torch.Tensor,
+    lon: torch.Tensor,
+    n_raw: int,
+    max_n: int,
+    seed: int = 42,
+    grid_deg: float = 10.0,
+) -> torch.Tensor:
+    """Return a sorted index tensor of length max_n drawn by stratified spatial sampling.
+
+    The globe is divided into grid_deg × grid_deg cells.  Slots are allocated
+    proportionally to the number of observations per non-empty cell, then filled
+    by random sampling within each cell.  This ensures the subsample is
+    geographically representative, preventing swath-concentration bias when
+    scaling totals via sum_impact_scaled.
+
+    Falls back to uniform random sampling when lat/lon are unavailable or
+    when fewer than 4 non-empty cells exist (too sparse to stratify).
+    """
+    rng = np.random.default_rng(seed)
+
+    if lat is None or lon is None or lat.numel() != n_raw or lon.numel() != n_raw:
+        idx = torch.from_numpy(
+            np.sort(rng.choice(n_raw, size=max_n, replace=False))
+        ).long()
+        return idx
+
+    lat_np = lat.detach().cpu().float().numpy()
+    lon_np = lon.detach().cpu().float().numpy()
+
+    # Assign each observation to a lat/lon grid cell
+    lat_edges = np.arange(-90, 90 + grid_deg, grid_deg)
+    lon_edges = np.arange(-180, 180 + grid_deg, grid_deg)
+    lat_idx = np.clip(np.digitize(lat_np, lat_edges) - 1, 0, len(lat_edges) - 2)
+    lon_idx = np.clip(np.digitize(lon_np, lon_edges) - 1, 0, len(lon_edges) - 2)
+    cell_id = lat_idx * len(lon_edges) + lon_idx
+
+    unique_cells, cell_counts = np.unique(cell_id, return_counts=True)
+    n_cells = len(unique_cells)
+
+    if n_cells < 4:
+        # Too sparse to stratify: fall back to uniform sampling
+        idx = torch.from_numpy(
+            np.sort(rng.choice(n_raw, size=max_n, replace=False))
+        ).long()
+        return idx
+
+    # Proportional allocation: at least 1 slot per non-empty cell
+    alloc = np.maximum(1, np.round(max_n * cell_counts / n_raw).astype(int))
+    # Trim or extend so total == max_n
+    diff = max_n - int(alloc.sum())
+    if diff > 0:
+        # Add extra slots to the largest cells
+        order = np.argsort(-cell_counts)
+        for i in range(diff):
+            alloc[order[i % n_cells]] += 1
+    elif diff < 0:
+        # Remove slots from the smallest cells (but keep >= 1)
+        order = np.argsort(cell_counts)
+        for i in range(-diff):
+            ci = order[i % n_cells]
+            if alloc[ci] > 1:
+                alloc[ci] -= 1
+
+    # Sample within each cell
+    selected = []
+    for c, take in zip(unique_cells, alloc):
+        obs_in_cell = np.where(cell_id == c)[0]
+        take = min(take, len(obs_in_cell))
+        if take > 0:
+            chosen = rng.choice(obs_in_cell, size=take, replace=False)
+            selected.append(chosen)
+
+    if not selected:
+        idx = torch.from_numpy(
+            np.sort(rng.choice(n_raw, size=max_n, replace=False))
+        ).long()
+        return idx
+
+    all_selected = np.concatenate(selected)
+    # Deduplicate and trim to max_n (rounding may have given slightly more)
+    all_selected = np.unique(all_selected)[:max_n]
+    # If somehow we have fewer than max_n, top up uniformly from remaining obs
+    if len(all_selected) < max_n:
+        remaining = np.setdiff1d(np.arange(n_raw), all_selected)
+        extra = rng.choice(remaining, size=min(max_n - len(all_selected), len(remaining)),
+                           replace=False)
+        all_selected = np.sort(np.concatenate([all_selected, extra]))
+    else:
+        all_selected = np.sort(all_selected)
+
+    return torch.from_numpy(all_selected.astype(np.int64)).long()
 
 
 def predict_at_targets(
@@ -168,15 +263,20 @@ def predict_at_targets(
                 subsample_indices[inst_name] = None
                 continue
 
-            # ---- optional subsample ----------------------------------------
+            # ---- optional subsample (geographically stratified) -----------
             N_raw = curr_input.x.shape[0] if hasattr(curr_input, 'x') else 0
             max_n = max_decoder_nodes.get(inst_name, None)
             if max_n is not None and N_raw > max_n:
-                torch.manual_seed(42)
-                idx = torch.randperm(N_raw, device=curr_input.x.device)[:max_n]
-                idx = idx.sort()[0]
+                lat_for_strat = getattr(curr_input, 'lat', None)
+                lon_for_strat = getattr(curr_input, 'lon', None)
+                idx = _stratified_spatial_subsample(
+                    lat_for_strat, lon_for_strat,
+                    n_raw=N_raw, max_n=max_n, seed=42,
+                )
+                idx = idx.to(curr_input.x.device)
                 subsample_indices[inst_name] = idx
-                print(f"[Background] {inst_name}: subsampling decoder {N_raw} → {max_n} nodes")
+                print(f"[Background] {inst_name}: stratified spatial subsample "
+                      f"{N_raw} → {max_n} nodes (geographically representative)")
             else:
                 idx = None  # no subsampling
                 subsample_indices[inst_name] = None
@@ -203,16 +303,19 @@ def predict_at_targets(
                 # Get scan_angle_channels from config (satellites only)
                 scan_angle_channels = inst_cfg.get('scan_angle_channels', 0)
 
-                # Extract metadata portion (everything after channels)
-                if x_input.shape[1] > n_channels:
-                    metadata = x_input[:, n_channels:]
+                # x_input layout: [7 geo/time | n_meta inst-metadata | n_channels obs | trailing]
+                # Instrument metadata (cols 7..7+n_meta) holds scan/solar angles for satellites.
+                n_meta = len(inst_cfg.get('metadata', []))
+                bt_start = 7 + n_meta
+
+                if n_meta > 0:
+                    metadata = x_input[:, 7:bt_start]  # actual instrument metadata (scan angles etc.)
 
                     # For satellites: decoder expects scan angles
-                    # Use first scan_angle_channels from metadata
+                    # Use first scan_angle_channels from instrument metadata
                     if scan_angle_channels > 0 and metadata.shape[1] >= scan_angle_channels:
                         decoder_x = metadata[:, :scan_angle_channels].clone()
                     else:
-                        # Use all metadata or create minimal dummy
                         decoder_x = metadata.clone() if metadata.shape[1] > 0 else torch.zeros(
                             (x_input.shape[0], 1), dtype=torch.float32, device=device
                         )

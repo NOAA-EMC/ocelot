@@ -18,6 +18,83 @@ import pandas as pd
 from collections import defaultdict
 
 
+STANDARD_PRESSURE_LEVELS = np.array(
+    [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10],
+    dtype=float,
+)
+
+
+def _normalize_loss_reduction(loss_reduction: str) -> str:
+    """Normalize loss-reduction names used by FSOI forecast-error metrics."""
+    reduction = (loss_reduction or 'sum').lower()
+    if reduction in {'mean', 'mse', 'normalized', 'average', 'avg'}:
+        return 'mean'
+    if reduction in {'sum', 'sse', 'total'}:
+        return 'sum'
+    raise ValueError(f"Unsupported FSOI loss_reduction={loss_reduction!r}; use 'mean' or 'sum'")
+
+
+def _reduce_weighted_error(
+    squared_error: torch.Tensor,
+    weights: torch.Tensor,
+    inst_weight: float = 1.0,
+    loss_reduction: str = 'sum',
+) -> torch.Tensor:
+    """Reduce weighted squared error with either sum or normalized mean."""
+    reduction = _normalize_loss_reduction(loss_reduction)
+    error_sum = squared_error.sum()
+    if reduction == 'mean':
+        denom = weights.sum().clamp_min(1.0)
+        return (error_sum / denom) * inst_weight
+    return error_sum * inst_weight
+
+
+def _requested_pressure_indices(target_pressure_levels: Optional[List[float]]) -> Optional[set]:
+    """Convert requested hPa levels to stored pressure-level indices when possible."""
+    if target_pressure_levels is None:
+        return None
+
+    indices = set()
+    for target_p in target_pressure_levels:
+        try:
+            p_val = float(target_p)
+        except (TypeError, ValueError):
+            continue
+
+        matches = np.where(np.isclose(STANDARD_PRESSURE_LEVELS, p_val, atol=1.0))[0]
+        if matches.size:
+            indices.add(int(matches[0]))
+        elif float(p_val).is_integer():
+            # Allow explicit pressure-level indices as a fallback.
+            p_idx = int(p_val)
+            if 0 <= p_idx < len(STANDARD_PRESSURE_LEVELS):
+                indices.add(p_idx)
+
+    return indices
+
+
+def _sampling_record(
+    sampling_info: Optional[Dict[str, dict]],
+    inst_name: str,
+    sampled_n: int,
+) -> dict:
+    """Return per-instrument sampling metadata used for scaled impact totals."""
+    info = (sampling_info or {}).get(inst_name, {}) or {}
+    raw_n = int(info.get('raw_n_observations', sampled_n))
+    sampled_n_info = int(info.get('sampled_n_observations', sampled_n))
+    if sampled_n_info <= 0:
+        sampled_n_info = sampled_n
+    scale = float(info.get('sample_scale', 1.0))
+    if not np.isfinite(scale) or scale <= 0:
+        scale = float(raw_n / sampled_n_info) if sampled_n_info > 0 else 1.0
+    return {
+        'raw_n_observations': raw_n,
+        'sampled_n_observations': sampled_n_info,
+        'sample_scale': scale,
+        'is_subsampled': bool(info.get('is_subsampled', scale != 1.0)),
+    }
+
+
 def _default_target_channel_names(inst_name: str, n_channels: int) -> dict[int, str]:
     """Default channel→variable names for common conventional targets."""
     inst = (inst_name or '').lower()
@@ -38,8 +115,18 @@ def _default_target_channel_names(inst_name: str, n_channels: int) -> dict[int, 
             3: 'v_wind',
         }
         return {k: v for k, v in base.items() if k < n_channels}
-    # Fallback: generic
-    return {i: f'channel_{i}' for i in range(n_channels)}
+    if inst in ('surface_obs', 'surface', 'synop', 'metar', 'sfcship'):
+        base = {
+            0: 'temperature',
+            1: 'specific_humidity',
+            2: 'u_wind',
+            3: 'v_wind',
+            4: 'surface_pressure',
+        }
+        return {k: v for k, v in base.items() if k < n_channels}
+    # Fallback: keep internal tensor indices zero-based, but expose names as
+    # human-facing 1-based channel numbers.
+    return {i: f'channel_{i + 1}' for i in range(n_channels)}
 
 
 def sample_innovation_vs_fsoi(
@@ -47,11 +134,22 @@ def sample_innovation_vs_fsoi(
     innovations: Dict[str, torch.Tensor],
     max_points: int = 200000,
     seed: int = 0,
+    obs_coords: Optional[Dict[str, Tuple]] = None,
 ) -> pd.DataFrame:
     """Return a lightweight random sample of (innovation, fsoi) pairs.
 
     This is used for innovation-vs-FSOI scatter plots without storing full tensors.
     Sample is taken across all instruments/channels available.
+
+    Args:
+        fsoi_values: Per-instrument FSOI tensors [N_obs, C].
+        innovations: Per-instrument innovation tensors [N_obs, C].
+        max_points: Maximum total rows in output.
+        seed: RNG seed (use pair_idx for reproducibility).
+        obs_coords: Optional dict mapping instrument name to (lat_1d, lon_1d)
+            numpy arrays of shape [N_obs], already aligned with fsoi_values
+            (i.e., subsampling already applied). When provided, 'lat' and 'lon'
+            columns are added to the output so scatter samples can be gridded.
     """
     if max_points is None or max_points <= 0:
         return pd.DataFrame()
@@ -92,20 +190,29 @@ def sample_innovation_vs_fsoi(
         inn = innovations[inst].detach().cpu().reshape(-1)
 
         idx = rng.choice(n, size=take, replace=False)
-        # Recover channel index
+        # Recover channel index. Internal tensors are zero-based; report
+        # human-facing channels as 1-based in CSV outputs.
         C = int(fsoi_values[inst].shape[1])
-        ch = (idx % C).astype(np.int64)
+        ch = (idx % C).astype(np.int64) + 1
+        # Observation index (row) from the flattened sample index
+        obs_idx = (idx // C).astype(np.int64)
 
-        frames.append(
-            pd.DataFrame(
-                {
-                    'instrument': inst,
-                    'channel': ch,
-                    'innovation': inn.numpy()[idx],
-                    'fsoi': f.numpy()[idx],
-                }
-            )
-        )
+        row: dict = {
+            'instrument': inst,
+            'channel': ch,
+            'innovation': inn.numpy()[idx],
+            'fsoi': f.numpy()[idx],
+        }
+
+        # Attach lat/lon when available (obs_coords already subsampled to match fsoi_values)
+        if obs_coords and inst in obs_coords:
+            lat_arr, lon_arr = obs_coords[inst]
+            if lat_arr is not None and len(lat_arr) > 0:
+                row['lat'] = lat_arr[obs_idx]
+            if lon_arr is not None and len(lon_arr) > 0:
+                row['lon'] = lon_arr[obs_idx]
+
+        frames.append(pd.DataFrame(row))
         remaining -= take
 
     if not frames:
@@ -126,10 +233,13 @@ def compute_per_level_fsoi_by_variable(
     target_instruments: Optional[List[str]] = None,
     replace_indices: Optional[Dict[str, torch.Tensor]] = None,
     requested_target_variables: Optional[List[str]] = None,
+    target_pressure_levels: Optional[List[float]] = None,
+    loss_reduction: str = 'sum',
+    impact_factor: float = 0.5,
 ) -> List[Dict]:
     """Compute per-(pressure level, target variable) FSOI and return aggregates.
 
-    This is the closest analogue to the paper’s Fig. 5 workflow: define a family
+    This is the closest analogue to the paper's Fig. 5 workflow: define a family
     of forecast-error metrics that select one (variable, pressure) at a time,
     then compute FSOI attribution for all input observations.
 
@@ -157,8 +267,6 @@ def compute_per_level_fsoi_by_variable(
 
     if target_nt not in batch_xa.node_types:
         raise ValueError(f"[PerLevelVar] Target node '{target_nt}' not found in batch")
-    if not hasattr(batch_xa[target_nt], 'pressure_level'):
-        raise ValueError(f"[PerLevelVar] '{target_nt}' has no pressure_level attribute")
 
     if not hasattr(batch_xa[target_nt], 'y') or batch_xa[target_nt].y is None:
         raise ValueError(f"[PerLevelVar] '{target_nt}' has no y targets")
@@ -168,11 +276,20 @@ def compute_per_level_fsoi_by_variable(
         raise ValueError(f"[PerLevelVar] Expected y to be [N,C], got {tuple(y_ref.shape)}")
     n_target_channels = int(y_ref.shape[1])
 
-    # Pressure levels
-    pl = batch_xa[target_nt].pressure_level
-    if pl.dim() > 1:
-        pl = pl.squeeze(1)
-    unique_levels = sorted(int(p) for p in torch.unique(pl).tolist())
+    # Pressure levels — surface obs (e.g. surface_obs) have no pressure_level attribute.
+    # In that case we treat the entire set as a single "surface" level (p_idx=None).
+    _HAS_PRESSURE = hasattr(batch_xa[target_nt], 'pressure_level')
+    if _HAS_PRESSURE:
+        pl = batch_xa[target_nt].pressure_level
+        if pl.dim() > 1:
+            pl = pl.squeeze(1)
+        unique_levels = sorted(int(p) for p in torch.unique(pl).tolist())
+        requested_indices = _requested_pressure_indices(target_pressure_levels)
+        if requested_indices is not None:
+            unique_levels = [p for p in unique_levels if p in requested_indices]
+    else:
+        print(f"[PerLevelVar] '{target_nt}' has no pressure_level; treating as single surface level")
+        unique_levels = [None]  # sentinel: no level mask → use all observations
 
     # Determine target channels to compute
     ch_name_map = _default_target_channel_names(target_inst, n_target_channels)
@@ -199,8 +316,9 @@ def compute_per_level_fsoi_by_variable(
         print(f"[PerLevelVar] No target channels matched requested variables {requested_target_variables}; defaulting to all")
         keep_channels = list(range(n_target_channels))
 
-    # Helper: loss for a single pressure and single target channel
-    def _loss_for(preds, batch, p_idx: int, ch_idx: int):
+    # Helper: loss for a single pressure level (or all obs) and single target channel.
+    # p_idx=None means no level filtering (used for surface obs without pressure_level).
+    def _loss_for(preds, batch, p_idx, ch_idx: int):
         preds_list = preds.get(target_nt) or preds.get(f"{target_inst}_target")
         if preds_list is None or len(preds_list) <= forecast_lead_step:
             return None
@@ -211,18 +329,27 @@ def compute_per_level_fsoi_by_variable(
         if y_pred.shape != y_ref_loc.shape:
             return None
 
+        N = y_pred.shape[0]
         sq = (y_pred[:, ch_idx:ch_idx+1] - y_ref_loc[:, ch_idx:ch_idx+1]) ** 2  # [N,1]
-        pl_loc = batch[target_nt].pressure_level.to(device)
-        if pl_loc.dim() > 1:
-            pl_loc = pl_loc.squeeze(1)
-        pmask = (pl_loc == p_idx).float().view(-1, 1)
-        if pmask.sum() == 0:
-            return None
-        sq = sq * pmask
+
+        _fdtype = y_pred.dtype
+        if p_idx is None:
+            # Surface obs: no pressure masking — include all observations
+            pmask = torch.ones(N, 1, device=device, dtype=_fdtype)
+        else:
+            pl_loc = batch[target_nt].pressure_level.to(device)
+            if pl_loc.dim() > 1:
+                pl_loc = pl_loc.squeeze(1)
+            pmask = (pl_loc == p_idx).to(dtype=_fdtype).view(-1, 1)
+            if pmask.sum() == 0:
+                return None
+
+        weights = pmask
         if use_area_weights and hasattr(batch[target_nt], 'lat'):
-            lat = batch[target_nt].lat.to(device)
-            sq = sq * torch.cos(torch.deg2rad(lat)).abs().view(-1, 1)
-        return sq.sum()
+            lat = batch[target_nt].lat.to(device=device, dtype=_fdtype)
+            weights = weights * torch.cos(torch.deg2rad(lat)).abs().view(-1, 1)
+        sq = sq * weights
+        return _reduce_weighted_error(sq, weights, inst_weight=1.0, loss_reduction=loss_reduction)
 
     xa_list = list(xa.values())
     xb_list = list(xb.values())
@@ -288,9 +415,11 @@ def compute_per_level_fsoi_by_variable(
     # Combine to FSOI per observation
     results = []
     for p_idx in unique_levels:
-        # Map to hPa for readability
-        _HPa = np.array([1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10])
-        p_hpa = float(_HPa[p_idx]) if 0 <= int(p_idx) < len(_HPa) else float('nan')
+        # Map to hPa for readability; p_idx=None means surface (no pressure level)
+        if p_idx is None:
+            p_hpa = float('nan')
+        else:
+            p_hpa = float(STANDARD_PRESSURE_LEVELS[p_idx]) if 0 <= int(p_idx) < len(STANDARD_PRESSURE_LEVELS) else float('nan')
         for ch in keep_channels:
             key = (p_idx, ch)
             if key not in ga_map or key not in gb_map:
@@ -309,7 +438,7 @@ def compute_per_level_fsoi_by_variable(
                 gs = ga[inst] + gb[inst]
                 if dx.shape != gs.shape:
                     continue
-                fsoi_values[inst] = dx * gs
+                fsoi_values[inst] = impact_factor * dx * gs
                 innovations[inst] = dx
                 gradient_sums[inst] = gs
 
@@ -317,10 +446,10 @@ def compute_per_level_fsoi_by_variable(
                 continue
             results.append(
                 {
-                    'p_idx': int(p_idx),
+                    'p_idx': None if p_idx is None else int(p_idx),
                     'p_hpa': p_hpa,
-                    'target_channel': int(ch),
-                    'target_variable': ch_name_map.get(int(ch), f'channel_{ch}'),
+                    'target_channel': int(ch) + 1,
+                    'target_variable': ch_name_map.get(int(ch), f'channel_{ch + 1}'),
                     'ea_p': ea_map.get(key, 0.0),
                     'eb_p': eb_map.get(key, 0.0),
                     'fsoi_values': fsoi_values,
@@ -342,6 +471,144 @@ def _unwrap_predictions(forward_output):
     if isinstance(forward_output, tuple):
         return forward_output[0]
     return forward_output
+
+
+def _unwrap_predictions_and_mesh(forward_output):
+    """Return (predictions, mesh_features_per_step), padding None if not present."""
+    if isinstance(forward_output, tuple) and len(forward_output) == 2:
+        return forward_output[0], forward_output[1]
+    return forward_output, None
+
+
+def compute_forecast_error_on_mesh(
+    model,
+    batch,
+    gfs_reference: torch.Tensor,
+    mesh_instrument: str,
+    forecast_lead_step: int,
+    init_time_unix: int,
+    use_area_weights: bool = True,
+    loss_reduction: str = 'mean',
+) -> torch.Tensor:
+    """Compute forecast error at OCELOT mesh nodes against GFS analysis.
+
+    This is the mesh-space analogue of compute_forecast_error():
+
+        ea_mesh = MSE( OCELOT_mesh_pred(xa),  GFS_analysis_on_mesh )
+
+    Unlike obs-space FSOI, this verification is:
+      - Globally uniform (40,962 icosahedral nodes)
+      - Independent of any instrument's background field quality
+      - Comparable to traditional NWP FSOI which uses gridded state as reference
+
+    The gradient flows: observation inputs → encoder → mesh processor →
+    mesh decoder → MSE vs GFS → scalar error.
+
+    Parameters
+    ----------
+    model            : GNNLightning model (frozen, enable_mesh_pred must be True).
+    batch            : HeteroData observation batch.
+    gfs_reference    : [N_mesh, C] normalized GFS analysis tensor; NaN channels
+                       are automatically excluded from the MSE.
+    mesh_instrument  : 'radiosonde' or 'surface_obs'.
+    forecast_lead_step : Which processor step to decode (0 = first ~+1.5h step).
+    init_time_unix   : Unix timestamp of the window end (for time conditioning).
+    use_area_weights : Apply cos(lat) weighting over mesh nodes (recommended).
+    loss_reduction   : 'mean' or 'sum'.
+
+    Returns
+    -------
+    Scalar differentiable tensor — gradients flow to observation inputs.
+    """
+    import numpy as np
+
+    device = model.device
+    gfs_ref = gfs_reference.to(device)  # [N_mesh, C]
+
+    # ── 1. Forward pass — keep gradients through encoder+processor ──────────
+    # The mesh decoder is normally called under no_grad; we bypass that by
+    # calling _decode_one_step_to_mesh directly after the forward pass.
+    original_enable_mesh = model.enable_mesh_pred
+
+    # Temporarily enable mesh feature collection without the no_grad decoder
+    model.enable_mesh_pred = True
+    with torch.enable_grad():
+        fwd_out = model(batch)
+    model.enable_mesh_pred = original_enable_mesh
+
+    _, mesh_features_per_step = _unwrap_predictions_and_mesh(fwd_out)
+
+    if mesh_features_per_step is None or len(mesh_features_per_step) == 0:
+        print("[MeshFSOI] WARNING: model did not return mesh_features_per_step. "
+              "Ensure enable_mesh_pred=True in mesh_config.yaml.")
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    if forecast_lead_step >= len(mesh_features_per_step):
+        print(f"[MeshFSOI] WARNING: requested lead_step={forecast_lead_step} "
+              f"but only {len(mesh_features_per_step)} steps available.")
+        forecast_lead_step = len(mesh_features_per_step) - 1
+
+    mesh_feat = mesh_features_per_step[forecast_lead_step]  # [N_mesh, D]
+
+    # ── 2. Decode to mesh — WITH gradients (bypass _decode_all_steps_to_mesh) ─
+    mesh_pred_edges = model._get_mesh_pred_edges()
+    if mesh_instrument not in mesh_pred_edges:
+        raise ValueError(
+            f"[MeshFSOI] No mesh prediction edges for '{mesh_instrument}'. "
+            f"Available: {list(mesh_pred_edges.keys())}. "
+            "Check mesh_config.yaml variables and precompute_mesh_edges.py."
+        )
+
+    with torch.enable_grad():
+        mesh_pred = model._decode_one_step_to_mesh(
+            mesh_feat,
+            mesh_instrument,
+            mesh_pred_edges[mesh_instrument],
+            step_idx=forecast_lead_step,
+            init_time_unix=init_time_unix,
+        )
+    # mesh_pred: [N_mesh, C]
+
+    if mesh_pred.shape != gfs_ref.shape:
+        raise ValueError(
+            f"[MeshFSOI] Shape mismatch: mesh_pred={tuple(mesh_pred.shape)}, "
+            f"gfs_reference={tuple(gfs_ref.shape)}. "
+            "Ensure GFS tensor was built with the same target_dim as the model."
+        )
+
+    # ── 3. NaN-masked MSE against GFS reference ──────────────────────────────
+    # Channels with NaN in gfs_ref are excluded (e.g., dewPointTemperature)
+    valid_mask = torch.isfinite(gfs_ref)  # [N_mesh, C], True where GFS valid
+    n_valid_channels = int(valid_mask.any(dim=0).sum())
+    if n_valid_channels == 0:
+        print("[MeshFSOI] WARNING: all GFS channels are NaN — no valid channels to score.")
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    sq_err = (mesh_pred - gfs_ref) ** 2  # [N_mesh, C]
+    _fdtype = sq_err.dtype
+    sq_err = sq_err * valid_mask.to(_fdtype)  # zero out NaN channels
+
+    # ── 4. Area weighting (cosine latitude) ──────────────────────────────────
+    if use_area_weights:
+        edges = mesh_pred_edges[mesh_instrument]
+        lats = edges.get('lats')
+        if lats is not None:
+            lat_t = torch.from_numpy(np.asarray(lats)).to(dtype=_fdtype, device=device)  # [N_mesh]
+            area_w = torch.cos(torch.deg2rad(lat_t)).abs().clamp(min=1e-6)  # [N_mesh]
+            area_w = area_w.view(-1, 1)  # [N_mesh, 1]
+            sq_err = sq_err * area_w
+            weights_sum = (area_w * valid_mask.to(_fdtype)).sum()
+        else:
+            weights_sum = valid_mask.to(_fdtype).sum()
+    else:
+        weights_sum = valid_mask.to(_fdtype).sum()
+
+    if loss_reduction == 'mean':
+        loss = sq_err.sum() / weights_sum.clamp(min=1.0)
+    else:
+        loss = sq_err.sum()
+
+    return loss
 
 
 # ==============================================================================
@@ -456,44 +723,6 @@ def subsample_target_nodes_inplace(
     print(f"[SUBSAMPLE] {nt}: {N} → {max_n} targets ({100*max_n/N:.1f}%)")
 
 
-# ==============================================================================
-# Channel/Metadata Splitting
-# ==============================================================================
-
-def split_input_channels_and_meta(
-    x_input: torch.Tensor,
-    n_obs_channels: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Split INPUT .x into observation channels and metadata.
-
-    INPUT .x typically contains: [obs_channels | metadata]
-    - obs_channels: The actual observation values (e.g., 22 for ATMS, 4 for radiosonde)
-    - metadata: Auxiliary features like scan angles, sin/cos lat/lon, etc.
-
-    For FSOI, innovation δx = xa - xb must be computed in observation space only.
-    Metadata should remain fixed in the batch.
-
-    Args:
-        x_input: Full input tensor [N, input_dim]
-        n_obs_channels: Number of observation channels (from observation_config)
-
-    Returns:
-        channels: [N, n_obs_channels] - observation values only
-        metadata: [N, n_meta] - auxiliary features
-    """
-    if x_input.shape[1] < n_obs_channels:
-        raise ValueError(
-            f"Input has {x_input.shape[1]} columns but config specifies "
-            f"{n_obs_channels} observation channels"
-        )
-
-    channels = x_input[:, :n_obs_channels]
-    metadata = x_input[:, n_obs_channels:]
-
-    return channels, metadata
-
-
 def zero_feature_columns(
     inputs: Dict[str, torch.Tensor],
     observation_config: dict,
@@ -533,27 +762,6 @@ def zero_feature_columns(
                     cloned[:, idx] = 0.0
         cloned.requires_grad_(req_grad)
         inputs[inst_name] = cloned
-
-
-def merge_channels_and_meta(
-    channels: torch.Tensor,
-    metadata: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Merge observation channels and metadata back into full input format.
-
-    This is used when replacing batch inputs with xa or xb:
-    - Replace the observation channels (xa or xb)
-    - Keep the original metadata unchanged
-
-    Args:
-        channels: [N, n_obs_channels] - observation values (xa or xb)
-        metadata: [N, n_meta] - auxiliary features (from original batch)
-
-    Returns:
-        x_input: [N, input_dim] - full input tensor
-    """
-    return torch.cat([channels, metadata], dim=1)
 
 
 def get_fsoi_inputs(
@@ -601,8 +809,11 @@ def get_fsoi_inputs(
                 print(f"[WARNING] {inst_name}: No channels in config, skipping")
                 continue
 
-            # Extract channels only (first n_channels columns)
-            x_channels = x_input[:, :n_channels]
+            # x_input layout: [7 geo/time | n_meta instrument-metadata | n_channels obs | optional trailing]
+            # Skip the leading geo/time + metadata columns to reach actual observation channels.
+            n_meta = len(cfg.get('metadata', []))
+            bt_start = 7 + n_meta
+            x_channels = x_input[:, bt_start:bt_start + n_channels]
 
             # Clone, detach, enable gradients
             x_obs = x_channels.clone().detach()
@@ -679,19 +890,25 @@ def get_fsoi_metadata(
                 metadata['pressure_level'] = None
                 metadata['pressure_hpa'] = None
 
-            # Extract lat/lon if available
-            if hasattr(node_data, 'metadata'):
-                # metadata is typically [N, 2] with [lat, lon]
+            # Extract lat/lon — try direct attributes first (most batch stores
+            # keep lat/lon as separate tensors), fall back to a combined
+            # .metadata tensor of shape [N, >=2] if present.
+            lat_t, lon_t = None, None
+            if hasattr(node_data, 'lat') and node_data.lat is not None:
+                lat_t = node_data.lat.detach().cpu().float()
+                if lat_t.dim() > 1:
+                    lat_t = lat_t.squeeze(1)
+            if hasattr(node_data, 'lon') and node_data.lon is not None:
+                lon_t = node_data.lon.detach().cpu().float()
+                if lon_t.dim() > 1:
+                    lon_t = lon_t.squeeze(1)
+            if lat_t is None and hasattr(node_data, 'metadata'):
                 node_metadata = node_data.metadata.detach().cpu()
                 if node_metadata.shape[1] >= 2:
-                    metadata['lat'] = node_metadata[:, 0]
-                    metadata['lon'] = node_metadata[:, 1]
-                else:
-                    metadata['lat'] = None
-                    metadata['lon'] = None
-            else:
-                metadata['lat'] = None
-                metadata['lon'] = None
+                    lat_t = node_metadata[:, 0]
+                    lon_t = node_metadata[:, 1]
+            metadata['lat'] = lat_t
+            metadata['lon'] = lon_t
 
             fsoi_metadata[inst_name] = metadata
 
@@ -750,8 +967,9 @@ def replace_batch_inputs(
             if x_orig is None or x_orig.numel() == 0:
                 continue
 
-            # Extract metadata (everything after channels)
-            metadata = x_orig[:, n_channels:].detach()
+            # x_input layout: [7 geo/time | n_meta | n_channels obs | optional trailing]
+            n_meta = len(cfg.get('metadata', []))
+            bt_start = 7 + n_meta
 
             # Get new channels (xa or xb)
             new_channels = new_inputs[inst_name]
@@ -762,9 +980,10 @@ def replace_batch_inputs(
                     f"but config specifies {n_channels} channels"
                 )
 
-            # Detached base channels (non-subsampled rows act as constants)
-            channels_base = x_orig[:, :n_channels].detach()
-            metadata_full = x_orig[:, n_channels:].detach()
+            # Split: prefix (geo/time + inst-metadata) | channels | suffix (e.g. sat-id one-hot)
+            channels_base = x_orig[:, bt_start:bt_start + n_channels].detach()
+            prefix = x_orig[:, :bt_start].detach()
+            metadata_full = x_orig[:, bt_start + n_channels:].detach()
 
             # Determine whether this is a partial (indexed) or full replacement
             idx = None
@@ -796,7 +1015,7 @@ def replace_batch_inputs(
                 full_channels = channels_base.scatter(0, idx_mat, new_channels)
                 n_replaced = idx.numel()
 
-            batch[node_type_input].x = torch.cat([full_channels, metadata_full], dim=1)
+            batch[node_type_input].x = torch.cat([prefix, full_channels, metadata_full], dim=1)
             print(
                 f"[Replace Inputs] {inst_name}: replaced "
                 f"{('ALL' if idx is None else n_replaced)} rows; "
@@ -814,6 +1033,7 @@ def compute_forecast_error(
     target_instruments: Optional[List[str]] = None,
     target_variables: Optional[List[str]] = None,
     target_pressure_levels: Optional[List[float]] = None,
+    loss_reduction: str = 'sum',
 ) -> torch.Tensor:
     """
     Compute scalar forecast error e(x) for a given lead time.
@@ -921,7 +1141,7 @@ def compute_forecast_error(
 
                 if keep_channels:
                     # Create boolean mask [1, C]
-                    channel_mask = torch.zeros(1, y_pred.shape[1], device=y_pred.device)
+                    channel_mask = torch.zeros(1, y_pred.shape[1], device=y_pred.device, dtype=y_pred.dtype)
                     channel_mask[:, keep_channels] = 1.0
                     print(f"[Forecast Error] {inst_name}: Selected {len(keep_channels)}/{y_pred.shape[1]} channels "
                           f"for variables {target_variables}")
@@ -943,14 +1163,18 @@ def compute_forecast_error(
                 if pressure.dim() == 2:
                     pressure = pressure.squeeze(1)
 
-                # Create mask for desired levels (with tolerance)
+                requested_indices = _requested_pressure_indices(target_pressure_levels)
+                if not requested_indices:
+                    print(f"[Forecast Error] {inst_name}: No valid requested pressure levels {target_pressure_levels}, skipping")
+                    continue
+
+                # Stored pressure values are pressure-level indices (0..15).
                 level_mask = torch.zeros_like(pressure, dtype=torch.bool)
-                for target_p in target_pressure_levels:
-                    # Match within 1 hPa tolerance
-                    level_mask |= (torch.abs(pressure - target_p) < 1.0)
+                for target_idx in requested_indices:
+                    level_mask |= (pressure.long() == int(target_idx))
 
                 if level_mask.any():
-                    pressure_mask = level_mask.view(-1, 1).float()  # [N, 1]
+                    pressure_mask = level_mask.view(-1, 1).to(dtype=y_pred.dtype)  # [N, 1]
                     print(f"[Forecast Error] {inst_name}: Selected {level_mask.sum()}/{len(pressure)} obs "
                           f"at pressure levels {target_pressure_levels} hPa")
                 else:
@@ -971,7 +1195,7 @@ def compute_forecast_error(
 
                 if keep_channels_p:
                     # Combine with variable mask if exists
-                    p_mask = torch.zeros(1, y_pred.shape[1], device=y_pred.device)
+                    p_mask = torch.zeros(1, y_pred.shape[1], device=y_pred.device, dtype=y_pred.dtype)
                     p_mask[:, keep_channels_p] = 1.0
 
                     if channel_mask is not None:
@@ -1004,7 +1228,7 @@ def compute_forecast_error(
         C = y_pred.shape[1]  # Number of channels in prediction
 
         if inst_id in channel_weights:
-            ch_weights = channel_weights[inst_id].to(y_pred.device)
+            ch_weights = channel_weights[inst_id].to(device=y_pred.device, dtype=y_pred.dtype)
             # Broadcast to [1, C]
             ch_weights = ch_weights.view(1, -1)
 
@@ -1025,7 +1249,7 @@ def compute_forecast_error(
                     f"This indicates instrument ID mapping inconsistency. "
                     f"Falling back to uniform weights."
                 )
-                ch_weights = torch.ones(1, C, device=y_pred.device)
+                ch_weights = torch.ones(1, C, device=y_pred.device, dtype=y_pred.dtype)
 
             # Combine with channel mask if exists
             if channel_mask is not None:
@@ -1035,10 +1259,12 @@ def compute_forecast_error(
 
         # Compute squared error
         squared_error = (y_pred - y_ref) ** 2  # [N, C]
+        element_weights = torch.ones_like(squared_error)
 
         # Apply channel weights
         if ch_weights is not None:
             squared_error = squared_error * ch_weights
+            element_weights = element_weights * ch_weights
 
         # Apply area weights (latitude-based)
         if use_area_weights and hasattr(batch[target_node_type], 'lat'):
@@ -1047,18 +1273,26 @@ def compute_forecast_error(
             area_weight = torch.cos(torch.deg2rad(lat)).abs()
             area_weight = area_weight.view(-1, 1)  # [N, 1]
             squared_error = squared_error * area_weight
+            element_weights = element_weights * area_weight
 
         # Apply pressure mask if created (observation-level filtering)
         if pressure_mask is not None:
             squared_error = squared_error * pressure_mask
+            element_weights = element_weights * pressure_mask
 
         # Apply valid mask if available
         if hasattr(batch[target_node_type], 'valid_mask'):
             valid_mask = batch[target_node_type].valid_mask
-            squared_error = squared_error * valid_mask.float()
+            squared_error = squared_error * valid_mask.to(squared_error.dtype)
+            element_weights = element_weights * valid_mask.to(element_weights.dtype)
 
-        # Sum over observations and channels, apply instrument weight
-        error_contribution = squared_error.sum() * inst_weight
+        # Reduce over observations/channels, apply instrument weight.
+        error_contribution = _reduce_weighted_error(
+            squared_error,
+            element_weights,
+            inst_weight=inst_weight,
+            loss_reduction=loss_reduction,
+        )
 
         # Accumulate error (first contribution initializes, rest adds)
         if num_contributions == 0:
@@ -1069,7 +1303,8 @@ def compute_forecast_error(
         num_contributions += 1
 
         print(f"[Forecast Error] {inst_name}: error={error_contribution.item():.6f}, "
-              f"inst_weight={inst_weight:.3f}, n_obs={y_pred.shape[0]}")
+              f"inst_weight={inst_weight:.3f}, reduction={_normalize_loss_reduction(loss_reduction)}, "
+              f"n_obs={y_pred.shape[0]}")
 
     if num_contributions == 0:
         print("[WARNING] No forecast error computed - no valid targets found")
@@ -1144,11 +1379,12 @@ def compute_fsoi_per_observation(
     ga: Dict[str, torch.Tensor],
     gb: Dict[str, torch.Tensor],
     return_components: bool = False,
+    impact_factor: float = 0.5,
 ) -> Dict[str, torch.Tensor]:
     """
-    Compute per-observation FSOI using the formula:
+    Compute per-observation FSOI using the trapezoidal formula:
 
-    FSOI = δx ⊙ (ga + gb)
+    FSOI = impact_factor * δx ⊙ (ga + gb)
 
     where:
     - δx = xa - xb (innovation)
@@ -1198,7 +1434,7 @@ def compute_fsoi_per_observation(
         g_sum = ga[inst_name] + gb[inst_name]
 
         # Elementwise product
-        fsoi = delta_x * g_sum
+        fsoi = impact_factor * delta_x * g_sum
 
         fsoi_values[inst_name] = fsoi
         innovations[inst_name] = delta_x
@@ -1230,6 +1466,9 @@ def compute_per_level_fsoi(
     target_instruments: Optional[List[str]] = None,
     target_variables: Optional[List[str]] = None,
     replace_indices: Optional[Dict[str, torch.Tensor]] = None,
+    target_pressure_levels: Optional[List[float]] = None,
+    loss_reduction: str = 'sum',
+    impact_factor: float = 0.5,
 ) -> List[Dict]:
     """
     Compute FSOI with a separate loss per radiosonde pressure level.
@@ -1250,7 +1489,7 @@ def compute_per_level_fsoi(
     List of dicts, one per level:
         {p_idx, p_hpa, ea_p, eb_p, fsoi_values, innovations, gradient_sums}
     """
-    _HPa = np.array([1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10])
+    _HPa = STANDARD_PRESSURE_LEVELS
 
     device = model.device
     target_inst = (target_instruments or ['radiosonde'])[0]
@@ -1285,6 +1524,9 @@ def compute_per_level_fsoi(
     if pl_tensor_cpu.dim() > 1:
         pl_tensor_cpu = pl_tensor_cpu.squeeze(1)
     unique_levels = sorted(int(p) for p in torch.unique(pl_tensor_cpu).tolist())
+    requested_indices = _requested_pressure_indices(target_pressure_levels)
+    if requested_indices is not None:
+        unique_levels = [p for p in unique_levels if p in requested_indices]
     print(f"[PerLevel] {len(unique_levels)} unique pressure levels: {unique_levels}")
 
     # ── Pre-compute channel mask (same for all levels) ────────────────────
@@ -1315,26 +1557,31 @@ def compute_per_level_fsoi(
             return None
 
         sq = (y_pred - y_ref) ** 2  # [N, C]
+        weights = torch.ones_like(sq)
 
         # Apply channel (variable) mask
         if ch_mask is not None and ch_mask.shape[1] == sq.shape[1]:
             sq = sq * ch_mask
+            weights = weights * ch_mask
 
         # Apply pressure-level mask
         pl = batch[target_nt].pressure_level.to(device)
         if pl.dim() > 1:
             pl = pl.squeeze(1)
-        pmask = (pl == p_idx).float().view(-1, 1)
+        pmask = (pl == p_idx).to(dtype=sq.dtype).view(-1, 1)
         if pmask.sum() == 0:
             return None
         sq = sq * pmask
+        weights = weights * pmask
 
         # Area weighting
         if use_area_weights and hasattr(batch[target_nt], 'lat'):
-            lat = batch[target_nt].lat.to(device)
-            sq = sq * torch.cos(torch.deg2rad(lat)).abs().view(-1, 1)
+            lat = batch[target_nt].lat.to(device=device, dtype=sq.dtype)
+            area_weight = torch.cos(torch.deg2rad(lat)).abs().view(-1, 1)
+            sq = sq * area_weight
+            weights = weights * area_weight
 
-        return sq.sum()
+        return _reduce_weighted_error(sq, weights, inst_weight=1.0, loss_reduction=loss_reduction)
 
     # ── xa: one forward pass, N_levels backward passes ───────────────────
     xa_list = list(xa.values())
@@ -1445,7 +1692,7 @@ def compute_per_level_fsoi(
                       f"shape mismatch, skipping")
                 continue
 
-            fsoi_p[inst] = dx * gs
+            fsoi_p[inst] = impact_factor * dx * gs
             innov_p[inst] = dx
             gsum_p[inst] = gs
 
@@ -1638,6 +1885,7 @@ def aggregate_fsoi_by_channel(
     metadata: Optional[Dict[str, Dict[str, torch.Tensor]]] = None,
     innovations: Optional[Dict[str, torch.Tensor]] = None,
     gradient_sums: Optional[Dict[str, torch.Tensor]] = None,
+    sampling_info: Optional[Dict[str, dict]] = None,
 ) -> pd.DataFrame:
     """
     Aggregate FSOI values by instrument and channel, optionally stratified by pressure level.
@@ -1658,12 +1906,17 @@ def aggregate_fsoi_by_channel(
           - alignment_cosine (cosine between δx and g)
           - alignment_frac (fraction where δx and g have same sign)
     """
-    STANDARD_PRESSURE_LEVELS = np.array([
-        1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10
-    ])
-
     EPS = 1e-12
     records = []
+
+    def _attach_sampling(record, inst, sampled_count):
+        sample = _sampling_record(sampling_info, inst, sampled_count)
+        scale = sample['sample_scale']
+        record.update(sample)
+        record['sum_impact_scaled'] = record['sum_impact'] * scale
+        if 'total_count' in record:
+            record['total_count_scaled'] = record['total_count'] * scale
+        return record
 
     def _attach_stats(record, inst, ch, mask=None):
         """Attach innovation/gradient stats to a record if available."""
@@ -1737,6 +1990,7 @@ def aggregate_fsoi_by_channel(
         N, C = fsoi_tensor.shape
 
         inst_id = instrument_name_to_id.get(inst_name, -1)
+        sample = _sampling_record(sampling_info, inst_name, N)
 
         # Get pressure level info if available
         pressure_levels = None
@@ -1798,7 +2052,7 @@ def aggregate_fsoi_by_channel(
                     record = {
                         'instrument': inst_name,
                         'instrument_id': inst_id,
-                        'channel': ch,
+                        'channel': ch + 1,
                         'pressure_level_idx': press_idx_int,
                         'pressure_hpa': press_hpa,
                         'mean_impact': level_impacts.mean().item(),
@@ -1810,6 +2064,7 @@ def aggregate_fsoi_by_channel(
                         'positive_frac': (level_impacts > 0).float().mean().item(),
                     }
 
+                    record = _attach_sampling(record, inst_name, mask.sum().item())
                     records.append(_attach_stats(record, inst_name, ch, mask))
         else:
             # No pressure stratification - aggregate over all observations
@@ -1819,7 +2074,7 @@ def aggregate_fsoi_by_channel(
                 record = {
                     'instrument': inst_name,
                     'instrument_id': inst_id,
-                    'channel': ch,
+                    'channel': ch + 1,
                     'mean_impact': ch_impacts.mean().item(),
                     'sum_impact': ch_impacts.sum().item(),
                     'positive_count': (ch_impacts > 0).sum().item(),
@@ -1829,6 +2084,7 @@ def aggregate_fsoi_by_channel(
                     'positive_frac': (ch_impacts > 0).float().mean().item(),
                 }
 
+                record = _attach_sampling(record, inst_name, N)
                 records.append(_attach_stats(record, inst_name, ch))
 
     return pd.DataFrame(records)
@@ -1839,6 +2095,7 @@ def aggregate_fsoi_by_instrument(
     instrument_name_to_id: Dict[str, int],
     innovations: Optional[Dict[str, torch.Tensor]] = None,
     gradient_sums: Optional[Dict[str, torch.Tensor]] = None,
+    sampling_info: Optional[Dict[str, dict]] = None,
 ) -> pd.DataFrame:
     """
     Aggregate FSOI values by instrument (sum over all channels).
@@ -1866,14 +2123,20 @@ def aggregate_fsoi_by_instrument(
         mean_impact = fsoi_tensor.mean().item()
         n_obs = fsoi_tensor.shape[0]
         n_channels = fsoi_tensor.shape[1]
+        sample = _sampling_record(sampling_info, inst_name, n_obs)
 
         record = {
             'instrument': inst_name,
             'instrument_id': inst_id,
             'n_observations': n_obs,
             'n_channels': n_channels,
+            'raw_n_observations': sample['raw_n_observations'],
+            'sampled_n_observations': sample['sampled_n_observations'],
+            'sample_scale': sample['sample_scale'],
+            'is_subsampled': sample['is_subsampled'],
             'mean_impact': mean_impact,
             'sum_impact': total_impact,
+            'sum_impact_scaled': total_impact * sample['sample_scale'],
             'positive_frac': (fsoi_tensor > 0).float().mean().item(),
         }
 
