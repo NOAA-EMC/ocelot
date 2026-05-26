@@ -38,9 +38,9 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
 # ── Plot 2: Time series ───────────────────────────────────────────────────────
 
 def plot_ose_vs_fsoi_timeseries(comp: pd.DataFrame, ose_raw: pd.DataFrame,
-                                 out_dir: Path) -> None:
+                                out_dir: Path) -> None:
     """Time series of OSE impact and FSOI prediction over the evaluation window."""
     print("Creating OSE vs FSOI time series...")
 
@@ -170,7 +170,7 @@ def plot_ose_vs_fsoi_timeseries(comp: pd.DataFrame, ose_raw: pd.DataFrame,
 
     # Per-instrument subplots
     instruments = sorted(comp.get("denied_instrument",
-                                   pd.Series(dtype=str)).dropna().unique())
+                                  pd.Series(dtype=str)).dropna().unique())
     if not instruments:
         instruments = ["all"]
         comp["denied_instrument"] = "all"
@@ -320,8 +320,8 @@ def main() -> None:
             "validation_flag": (
                 "PASS"
                 if abs(stats.get("r", 0)) >= 0.85
-                   and abs(stats.get("slope", 0) - 1.0) <= 0.30
-                   and stats.get("sign_agree", 0) >= 0.90
+                and abs(stats.get("slope", 0) - 1.0) <= 0.30
+                and stats.get("sign_agree", 0) >= 0.90
                 else "WARN"
             ),
         }])

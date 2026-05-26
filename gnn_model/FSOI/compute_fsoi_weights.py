@@ -244,7 +244,7 @@ def main() -> None:
             labels = info['channel_labels']
             weights = info['weights']
             print(f"    {inst}: " +
-                  "  ".join(f"{l}={w:.3f}" for l, w in zip(labels, weights)))
+                  "  ".join(f"{lbl}={w:.3f}" for lbl, w in zip(labels, weights)))
 
     # ── 3. Load base config ───────────────────────────────────────────────
     obs_config_path = Path(args.obs_config)
@@ -283,9 +283,9 @@ def main() -> None:
         print(f"Saved channel-weighted config: {path_ch}")
 
     # ── 7. Print usage instructions ──────────────────────────────────────
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Next steps — fine-tune with FSOI weights:")
-    print("="*60)
+    print("=" * 60)
     print(f"""
 # Variant A (magnitude only):
 python train_gnn.py \\
@@ -302,7 +302,7 @@ python train_gnn.py \\
 # Evaluate RMSE comparison:
 python evaluation/run_pred_eval_gfs.py --checkpoint <finetuned.ckpt>
 """)
-    print("="*60)
+    print("=" * 60)
 
 
 if __name__ == "__main__":

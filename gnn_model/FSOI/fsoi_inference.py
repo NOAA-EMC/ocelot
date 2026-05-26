@@ -315,12 +315,12 @@ def compute_fsoi_for_pair(
         Dict with FSOI results and metadata
     """
     if verbose:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"Computing FSOI for pair {pair_idx}")
         # Note: bin_name will be unwrapped to scalar in results dict
         print(f"Previous: {prev_batch.bin_name} (type: {type(prev_batch.bin_name)})")
         print(f"Current:  {curr_batch.bin_name} (type: {type(curr_batch.bin_name)})")
-        print(f"{'='*80}\n")
+        print(f"{'=' * 80}\n")
 
     device = next(model.parameters()).device
 
@@ -375,7 +375,7 @@ def compute_fsoi_for_pair(
         'fsoi_by_step': {},
         'scatter_samples': [],
         'fd_records': [],          # finite-difference validation records for this pair
-        'directional_records': [], # Rademacher directional-derivative records
+        'directional_records': [],  # Rademacher directional-derivative records
         'float64_records': [],     # float64 per-obs FD records
         'diag_records': [],        # innovation diagnostic records for this pair
         'ose_records': [],         # OSE cross-check records for this pair
@@ -604,7 +604,7 @@ def compute_fsoi_for_pair(
                 # for ea/eb inside the non-stratified path below.
                 # We store as a closure; the stratified path is not supported
                 # in mesh mode (would need one GFS load per level, very expensive).
-                _mesh_ea_fn = lambda batch_: compute_forecast_error_on_mesh(
+                def _mesh_ea_fn(batch_): return compute_forecast_error_on_mesh(
                     model=model,
                     batch=batch_,
                     gfs_reference=gfs_tensor,
@@ -684,8 +684,8 @@ def compute_fsoi_for_pair(
                 from fsoi_utils import get_fsoi_inputs as _get_inputs
                 _HIGH_N = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua', 'seviri_asr', 'seviri_csr'}
                 n_trials = fsoi_config['validation'].get('directional_n_trials', 5)
-                eps_dir  = fsoi_config['validation'].get('directional_epsilon',
-                                                         fsoi_config['validation'].get('fd_epsilon', 1e-2))
+                eps_dir = fsoi_config['validation'].get('directional_epsilon',
+                                                        fsoi_config['validation'].get('fd_epsilon', 1e-2))
                 _xa_dir = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
                 for inst in sorted(_xa_dir.keys()):
                     if inst not in _HIGH_N:
@@ -724,7 +724,7 @@ def compute_fsoi_for_pair(
                 from fsoi_validation import finite_difference_check_float64
                 from fsoi_utils import get_fsoi_inputs as _get_inputs
                 _HIGH_N = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua', 'seviri_asr', 'seviri_csr'}
-                n_f64  = fsoi_config['validation'].get('float64_num_samples', 3)
+                n_f64 = fsoi_config['validation'].get('float64_num_samples', 3)
                 eps_f64 = fsoi_config['validation'].get('float64_epsilon', 1e-4)
                 _xa_f64 = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
                 rng_f64 = np.random.default_rng(pair_idx * 1009 + 13)
@@ -734,7 +734,7 @@ def compute_fsoi_for_pair(
                     x = _xa_f64[inst]
                     for _ in range(n_f64):
                         obs_i = int(rng_f64.integers(x.shape[0]))
-                        ch_i  = int(rng_f64.integers(x.shape[1]))
+                        ch_i = int(rng_f64.integers(x.shape[1]))
                         rec = finite_difference_check_float64(
                             model, curr_batch, inst, obs_i, ch_i,
                             epsilon=eps_f64,
@@ -926,16 +926,16 @@ def compute_fsoi_for_pair(
 
             # EARLY CHECK: No verification targets
             if ea.item() == 0.0:
-                print("\n" + "="*80)
+                print("\n" + "=" * 80)
                 print("SKIPPING FSOI PAIR: No verification targets found")
-                print("="*80)
+                print("=" * 80)
                 print(f"  Lead step: {lead_step}")
                 print(f"  Target instruments: {target_instruments}")
                 print(f"  Target variables: {target_variables}")
                 print(f"  Target pressure levels: {target_pressure_levels}")
                 print(f"  This is normal if verification data is sparse or filtered.")
                 print(f"  Gradients will be zero, but this is NOT a gradient error.")
-                print("="*80 + "\n")
+                print("=" * 80 + "\n")
                 continue  # Skip this lead step
 
             # Compute gradients
@@ -1008,12 +1008,12 @@ def compute_fsoi_for_pair(
                     require_satellite=require_satellite
                 )
             except ValueError as e:
-                print(f"\n{'='*80}")
+                print(f"\n{'=' * 80}")
                 print("FATAL: Gradient validation FAILED!")
-                print(f"{'='*80}")
+                print(f"{'=' * 80}")
                 print(str(e))
                 print(f"\nSkipping FSOI pair: pair_idx={pair_idx}")
-                print(f"{'='*80}\n")
+                print(f"{'=' * 80}\n")
                 continue  # Skip this FSOI pair
 
             # ========================================
@@ -1256,9 +1256,9 @@ def main():
 
     args = parser.parse_args()
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FSOI INFERENCE - Forecast Sensitivity to Observations Impact")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     # Find checkpoint file (handles both files and directories)
     try:
@@ -1505,7 +1505,7 @@ def main():
 
         print(f"\n[MESH FSOI] Mesh-space verification enabled")
         print(f"  Mesh instrument   : {args.mesh_instrument}")
-        hpa = [1000,925,850,700,500,400,300,250,200,150,100,70,50,30,20,10]
+        hpa = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
         print(f"  Pressure level    : idx={args.mesh_pressure_level_idx} "
               f"({hpa[args.mesh_pressure_level_idx]} hPa)")
         print(f"  GFS root          : {args.gfs_root}")
@@ -1541,9 +1541,9 @@ def main():
         print("[OSE] Adds 1 no-grad forward pass per pair per denial group.")
 
     # Main FSOI computation loop
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Starting FSOI Computation")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     all_results = []
     scatter_frames = []
@@ -1633,9 +1633,9 @@ def main():
     print(f"\n✓ FSOI computation complete for {len(all_results)} pairs")
 
     # Aggregate results
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Aggregating FSOI Results")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     # Aggregate across all pairs and steps
     aggregated_by_channel = []
@@ -1974,9 +1974,9 @@ def main():
         print(f"[DIAG] {len(good)}/{len(df_diag)} entries have normalized_rmse ≤ 5% "
               f"(good background quality)")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FSOI Inference Complete")
-    print("="*80)
+    print("=" * 80)
     print(f"\nResults saved to: {output_path}")
     print(f"Total pairs processed: {len(all_results)}")
 

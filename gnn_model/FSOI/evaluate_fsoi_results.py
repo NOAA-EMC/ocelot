@@ -289,7 +289,7 @@ def write_closure_diagnostics(
         )[display_per].to_string(index=False))
 
         flag_counts = per_level_rows["quality_flag"].value_counts().to_dict()
-        n_low  = flag_counts.get("LOW_SIGNAL", 0)
+        n_low = flag_counts.get("LOW_SIGNAL", 0)
         n_pass = flag_counts.get("PASS", 0)
         n_warn = flag_counts.get("WARN", 0)
         n_fail = flag_counts.get("FAIL", 0)
@@ -403,11 +403,11 @@ def compute_beneficial_fraction(
 
 
 _DEFAULT_REGIONS = {
-    "tropics":          (-30,  30),
-    "mid_lat_nh":       ( 30,  60),
-    "mid_lat_sh":       (-60, -30),
-    "polar_nh":         ( 60,  90),
-    "polar_sh":         (-90, -60),
+    "tropics": (-30, 30),
+    "mid_lat_nh": (30, 60),
+    "mid_lat_sh": (-60, -30),
+    "polar_nh": (60, 90),
+    "polar_sh": (-90, -60),
 }
 
 

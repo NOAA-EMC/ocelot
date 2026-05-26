@@ -554,7 +554,7 @@ def plot_time_series(df_inst, output_dir):
 
 
 def plot_positive_frac_timeseries(df_inst: pd.DataFrame, output_dir: Path,
-                                   warn_std_threshold: float = 0.15) -> None:
+                                  warn_std_threshold: float = 0.15) -> None:
     """Time series of beneficial-observation fraction per instrument.
 
     positive_frac = fraction of FSOI > 0 observations (detrimental).
@@ -618,7 +618,7 @@ def plot_positive_frac_timeseries(df_inst: pd.DataFrame, output_dir: Path,
     ax.set_title('Sign Consistency: Fraction of Detrimental Observations Over Time')
     ax.grid(True, alpha=0.25)
     ax.legend(title='Instrument', bbox_to_anchor=(1.01, 1), loc='upper left',
-               fontsize=8)
+              fontsize=8)
 
     if unstable:
         note = 'Dashed = high temporal variability (std > {:.0%}): {}'.format(
@@ -754,9 +754,9 @@ def plot_positive_negative_scatter(df_inst, output_dir):
     cbar.set_label('Total Impact')
 
     # Add quadrant labels
-    ax.text(0.25, ax.get_ylim()[1]*0.9, 'Mostly Helpful\n(Negative Impact)',
+    ax.text(0.25, ax.get_ylim()[1] * 0.9, 'Mostly Helpful\n(Negative Impact)',
             ha='center', fontsize=10, alpha=0.5)
-    ax.text(0.75, ax.get_ylim()[1]*0.9, 'Mostly Harmful\n(Positive Impact)',
+    ax.text(0.75, ax.get_ylim()[1] * 0.9, 'Mostly Harmful\n(Positive Impact)',
             ha='center', fontsize=10, alpha=0.5)
 
     plt.tight_layout()
@@ -930,9 +930,9 @@ def create_summary_table(df_inst, output_dir):
 
     # Save as formatted text
     with open(output_dir / 'summary_statistics.txt', 'w') as f:
-        f.write("="*80 + "\n")
+        f.write("=" * 80 + "\n")
         f.write("FSOI SUMMARY STATISTICS\n")
-        f.write("="*80 + "\n\n")
+        f.write("=" * 80 + "\n\n")
         f.write(summary.to_string(index=False))
         f.write("\n\n")
         f.write("Interpretation:\n")
@@ -969,12 +969,12 @@ def main():
     output_dir = Path(args.output) if args.output else (input_dir / "plots")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FSOI VISUALIZATION")
-    print("="*80)
+    print("=" * 80)
     print(f"Input:  {input_dir}")
     print(f"Output: {output_dir}")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     # Load data
     print("Loading FSOI results...")
@@ -1031,9 +1031,9 @@ def main():
 
     create_summary_table(df_inst, output_dir)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("VISUALIZATION COMPLETE")
-    print("="*80)
+    print("=" * 80)
     print(f"\nPlots saved to: {output_dir}")
     print("\nGenerated files:")
     print("  - instrument_impacts.png")
@@ -1048,7 +1048,7 @@ def main():
     print("  - summary_statistics.txt")
     print("  - positive_frac_timeseries.png  (sign stability per instrument)")
     print("  - positive_frac_timeseries.csv  (numeric time series)")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":

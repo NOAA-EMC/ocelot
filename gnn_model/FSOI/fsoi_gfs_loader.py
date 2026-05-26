@@ -118,7 +118,7 @@ def _load_gfs_radiosonde(
                      lat, lon360)
     return {
         "airTemperature": T,        # ch 0
-        "dewPointTemperature": None, # ch 1 — excluded
+        "dewPointTemperature": None,  # ch 1 — excluded
         "wind_u": u,                 # ch 2
         "wind_v": v,                 # ch 3
     }
@@ -130,7 +130,8 @@ def _load_gfs_surface_obs(
     lon360: np.ndarray,
 ) -> dict[str, np.ndarray | None]:
     """Load MSLP, 2m temperature, 10m winds from GFS surface analysis."""
-    import cfgrib, xarray as xr
+    import cfgrib
+    import xarray as xr
 
     # MSLP (Pa → hPa)
     try:

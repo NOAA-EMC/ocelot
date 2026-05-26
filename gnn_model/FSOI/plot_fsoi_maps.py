@@ -40,10 +40,10 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.colors as mcolors  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
 # Try to import cartopy for proper geographic projections; fall back to plain
 # pcolormesh on a rectangular grid if cartopy is not installed.
@@ -185,7 +185,7 @@ def plot_absolute_fsoi(df: pd.DataFrame, out_dir: Path, title: str,
 
 
 def plot_relative_contribution(df: pd.DataFrame, out_dir: Path, title: str,
-                                grid_deg: float, min_count: int):
+                               grid_deg: float, min_count: int):
     """Per-cell |FSOI| as % of the global total — relative contribution map."""
     lats = df['lat'].values
     lons = df['lon'].values
@@ -212,7 +212,7 @@ def plot_relative_contribution(df: pd.DataFrame, out_dir: Path, title: str,
 
 
 def plot_beneficial_fraction(df: pd.DataFrame, out_dir: Path, title: str,
-                              grid_deg: float, min_count: int):
+                             grid_deg: float, min_count: int):
     """Fraction of helpful (FSOI < 0) observations per grid cell.
 
     Interpretation:
@@ -277,7 +277,7 @@ def plot_instrument_maps(df: pd.DataFrame, out_dir: Path, title: str,
 # ---------------------------------------------------------------------------
 
 def plot_per_variable_maps(df: pd.DataFrame, out_dir: Path, title: str,
-                            grid_deg: float, min_count: int):
+                           grid_deg: float, min_count: int):
     """If 'target_variable' column is present, plot one global map per variable."""
     if 'target_variable' not in df.columns:
         return

@@ -12,44 +12,47 @@ doc = Document()
 
 # ── Page margins ────────────────────────────────────────────────
 section = doc.sections[0]
-section.page_width  = Inches(8.5)
+section.page_width = Inches(8.5)
 section.page_height = Inches(11)
-section.left_margin   = Inches(1.0)
-section.right_margin  = Inches(1.0)
-section.top_margin    = Inches(1.0)
+section.left_margin = Inches(1.0)
+section.right_margin = Inches(1.0)
+section.top_margin = Inches(1.0)
 section.bottom_margin = Inches(1.0)
 
 # ── Helpers ──────────────────────────────────────────────────────
-DARK_BLUE  = RGBColor(0x1F, 0x49, 0x7D)
-MID_BLUE   = RGBColor(0x2E, 0x74, 0xB5)
+DARK_BLUE = RGBColor(0x1F, 0x49, 0x7D)
+MID_BLUE = RGBColor(0x2E, 0x74, 0xB5)
 LIGHT_BLUE = RGBColor(0xDF, 0xEC, 0xF8)
-GREEN      = RGBColor(0x00, 0x70, 0x00)
-RED        = RGBColor(0xC0, 0x00, 0x00)
-ORANGE     = RGBColor(0xC5, 0x5A, 0x11)
-GRAY_BG    = RGBColor(0xF2, 0xF2, 0xF2)
-DARK_GRAY  = RGBColor(0x40, 0x40, 0x40)
-WHITE      = RGBColor(0xFF, 0xFF, 0xFF)
-CODE_BG    = RGBColor(0x1E, 0x1E, 0x1E)
-CODE_FG    = RGBColor(0xD4, 0xD4, 0xD4)
+GREEN = RGBColor(0x00, 0x70, 0x00)
+RED = RGBColor(0xC0, 0x00, 0x00)
+ORANGE = RGBColor(0xC5, 0x5A, 0x11)
+GRAY_BG = RGBColor(0xF2, 0xF2, 0xF2)
+DARK_GRAY = RGBColor(0x40, 0x40, 0x40)
+WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+CODE_BG = RGBColor(0x1E, 0x1E, 0x1E)
+CODE_FG = RGBColor(0xD4, 0xD4, 0xD4)
+
 
 def set_cell_bg(cell, rgb: RGBColor):
-    tc   = cell._tc
+    tc = cell._tc
     tcPr = tc.get_or_add_tcPr()
-    shd  = OxmlElement("w:shd")
+    shd = OxmlElement("w:shd")
     hex_color = f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
-    shd.set(qn("w:val"),   "clear")
+    shd.set(qn("w:val"), "clear")
     shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"),  hex_color)
+    shd.set(qn("w:fill"), hex_color)
     tcPr.append(shd)
 
+
 def set_para_bg(para, rgb: RGBColor):
-    pPr  = para._p.get_or_add_pPr()
-    shd  = OxmlElement("w:shd")
+    pPr = para._p.get_or_add_pPr()
+    shd = OxmlElement("w:shd")
     hex_color = f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
-    shd.set(qn("w:val"),   "clear")
+    shd.set(qn("w:val"), "clear")
     shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"),  hex_color)
+    shd.set(qn("w:fill"), hex_color)
     pPr.append(shd)
+
 
 def heading(text, level=1, color=DARK_BLUE):
     p = doc.add_heading(text, level=level)
@@ -64,15 +67,17 @@ def heading(text, level=1, color=DARK_BLUE):
             run.font.size = Pt(12)
     return p
 
+
 def body(text, bold=False, italic=False, color=None, size=11):
     p = doc.add_paragraph()
     run = p.add_run(text)
-    run.bold   = bold
+    run.bold = bold
     run.italic = italic
     run.font.size = Pt(size)
     if color:
         run.font.color.rgb = color
     return p
+
 
 def bullet(text, level=0, bold_prefix=None):
     p = doc.add_paragraph(style="List Bullet")
@@ -88,6 +93,7 @@ def bullet(text, level=0, bold_prefix=None):
         run.font.size = Pt(11)
     return p
 
+
 def code_block(lines):
     """Mono-spaced dark code block rendered as a table."""
     tbl = doc.add_table(rows=1, cols=1)
@@ -99,23 +105,25 @@ def code_block(lines):
     for line in lines:
         p = cell.add_paragraph()
         run = p.add_run(line if line else " ")
-        run.font.name  = "Courier New"
-        run.font.size  = Pt(9)
+        run.font.name = "Courier New"
+        run.font.size = Pt(9)
         run.font.color.rgb = CODE_FG
         p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after  = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
     doc.add_paragraph()  # spacer
+
 
 def formula_block(text):
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     set_para_bg(p, LIGHT_BLUE)
     run = p.add_run(text)
-    run.font.name  = "Courier New"
-    run.font.size  = Pt(13)
-    run.font.bold  = True
+    run.font.name = "Courier New"
+    run.font.size = Pt(13)
+    run.font.bold = True
     run.font.color.rgb = DARK_BLUE
     doc.add_paragraph()
+
 
 def callout(text, bg=LIGHT_BLUE, text_color=DARK_BLUE):
     tbl = doc.add_table(rows=1, cols=1)
@@ -124,15 +132,17 @@ def callout(text, bg=LIGHT_BLUE, text_color=DARK_BLUE):
     set_cell_bg(cell, bg)
     p = cell.paragraphs[0]
     run = p.add_run(text)
-    run.font.size  = Pt(11)
+    run.font.size = Pt(11)
     run.font.color.rgb = text_color
     run.font.italic = True
     doc.add_paragraph()
 
+
 def spacer():
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(4)
-    p.paragraph_format.space_after  = Pt(4)
+    p.paragraph_format.space_after = Pt(4)
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  TITLE PAGE
@@ -140,15 +150,15 @@ def spacer():
 title_p = doc.add_paragraph()
 title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 run = title_p.add_run("FSOI: Forecast Sensitivity to\nObservation Impact")
-run.font.size  = Pt(26)
-run.font.bold  = True
+run.font.size = Pt(26)
+run.font.bold = True
 run.font.color.rgb = DARK_BLUE
 
 spacer()
 sub_p = doc.add_paragraph()
 sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 run = sub_p.add_run("Implementation Guide — OCELOT GNN Weather Model")
-run.font.size  = Pt(13)
+run.font.size = Pt(13)
 run.font.color.rgb = MID_BLUE
 run.font.italic = True
 
@@ -156,7 +166,7 @@ spacer()
 date_p = doc.add_paragraph()
 date_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 run = date_p.add_run("May 2026  •  gnn_model/FSOI/")
-run.font.size  = Pt(11)
+run.font.size = Pt(11)
 run.font.color.rgb = DARK_GRAY
 
 doc.add_page_break()
@@ -204,11 +214,11 @@ for i, h in enumerate(headers):
     run.font.size = Pt(11)
 
 rows_data = [
-    ("k",           "Observation index",      "A single measurement from any sensor"),
-    ("δx(k) = xa(k) − xb(k)", "Innovation",  "How much the analysis differed from background"),
-    ("ga(k)",       "Analysis adjoint",        "∂J/∂xa — gradient of forecast error w.r.t. analysis obs"),
-    ("gb(k)",       "Background adjoint",      "∂J/∂xb — gradient of forecast error w.r.t. background obs"),
-    ("⊙",           "Element-wise product",    "Multiply innovation × average gradient component-wise"),
+    ("k", "Observation index", "A single measurement from any sensor"),
+    ("δx(k) = xa(k) − xb(k)", "Innovation", "How much the analysis differed from background"),
+    ("ga(k)", "Analysis adjoint", "∂J/∂xa — gradient of forecast error w.r.t. analysis obs"),
+    ("gb(k)", "Background adjoint", "∂J/∂xb — gradient of forecast error w.r.t. background obs"),
+    ("⊙", "Element-wise product", "Multiply innovation × average gradient component-wise"),
 ]
 for r_idx, (sym, name, meaning) in enumerate(rows_data, start=1):
     row = tbl.rows[r_idx]
@@ -339,15 +349,15 @@ for i, label in enumerate(["δx > 0  (analysis went UP)", "δx < 0  (analysis we
 
 dir_data = [
     ("ga+gb > 0\n(model wants obs LOWER)", "DETRIMENTAL  +", "BENEFICIAL  −"),
-    ("ga+gb < 0\n(model wants obs HIGHER)",  "BENEFICIAL  −",  "DETRIMENTAL  +"),
+    ("ga+gb < 0\n(model wants obs HIGHER)", "BENEFICIAL  −", "DETRIMENTAL  +"),
 ]
 cell_colors = {
-    "BENEFICIAL  −":   RGBColor(0xE2, 0xEF, 0xDA),
-    "DETRIMENTAL  +":  RGBColor(0xFF, 0xEB, 0xEB),
+    "BENEFICIAL  −": RGBColor(0xE2, 0xEF, 0xDA),
+    "DETRIMENTAL  +": RGBColor(0xFF, 0xEB, 0xEB),
 }
 cell_text_colors = {
-    "BENEFICIAL  −":   GREEN,
-    "DETRIMENTAL  +":  RED,
+    "BENEFICIAL  −": GREEN,
+    "DETRIMENTAL  +": RED,
 }
 for r_idx, (row_label, c1, c2) in enumerate(dir_data, start=1):
     row = tbl2.rows[r_idx]
@@ -599,15 +609,15 @@ for i, h in enumerate(["Module", "Pipeline Step", "Responsibility"]):
     run.font.size = Pt(10)
 
 modules = [
-    ("fsoi_dataset.py",          "Step 0",   "Build chronological (prev, curr) pairs; verify 12-hr spacing"),
-    ("fsoi_model_extensions.py", "Step 1",   "Decode background xb at observation locations; freeze model"),
-    ("fsoi_utils.py",            "Steps 1–5","Extract obs columns, compute δx, ga, gb, FSOI, aggregate"),
-    ("fsoi_validation.py",       "Step 0+6", "FD gradient check, alignment verification"),
-    ("fsoi_inference.py",        "Orchestrator","Main entry point — runs all steps, writes CSVs"),
-    ("evaluate_fsoi_results.py", "Step 6",   "Closure, helpful fraction, innovation diagnostics"),
-    ("fsoi_ose.py",              "Step 7",   "OSE denial experiments, compare vs FSOI"),
-    ("visualize_fsoi.py",        "Post-run", "Impact bar charts, time series, scatter plots"),
-    ("compute_fsoi_weights.py",  "Post-run", "Convert FSOI rankings → training loss weights"),
+    ("fsoi_dataset.py", "Step 0", "Build chronological (prev, curr) pairs; verify 12-hr spacing"),
+    ("fsoi_model_extensions.py", "Step 1", "Decode background xb at observation locations; freeze model"),
+    ("fsoi_utils.py", "Steps 1–5", "Extract obs columns, compute δx, ga, gb, FSOI, aggregate"),
+    ("fsoi_validation.py", "Step 0+6", "FD gradient check, alignment verification"),
+    ("fsoi_inference.py", "Orchestrator", "Main entry point — runs all steps, writes CSVs"),
+    ("evaluate_fsoi_results.py", "Step 6", "Closure, helpful fraction, innovation diagnostics"),
+    ("fsoi_ose.py", "Step 7", "OSE denial experiments, compare vs FSOI"),
+    ("visualize_fsoi.py", "Post-run", "Impact bar charts, time series, scatter plots"),
+    ("compute_fsoi_weights.py", "Post-run", "Convert FSOI rankings → training loss weights"),
 ]
 for r_idx, (mod, step, resp) in enumerate(modules, start=1):
     row = tbl.rows[r_idx]
@@ -680,15 +690,15 @@ for i, h in enumerate(["Rank", "Instrument", "FSOI (sum)", "Interpretation"]):
     run.font.size = Pt(10)
 
 results = [
-    ("1", "radiosonde",  "−1667", "Strongly beneficial  ✓"),
-    ("2", "aircraft",    "−84",   "Beneficial  ✓"),
-    ("3", "ascat",       "−7.2",  "Slightly beneficial  ✓"),
-    ("4", "avhrr",       "−6.8",  "Slightly beneficial  ✓"),
-    ("5", "seviri_asr",  "−4.2",  "Slightly beneficial  ✓"),
-    ("6", "surface_obs", "+115",  "Net detrimental  ✗"),
-    ("7", "atms",        "+27.7", "Net detrimental  ✗"),
-    ("8", "amsua",       "+17.5", "Net detrimental  ✗"),
-    ("9", "ssmis",       "+16.6", "Net detrimental  ✗"),
+    ("1", "radiosonde", "−1667", "Strongly beneficial  ✓"),
+    ("2", "aircraft", "−84", "Beneficial  ✓"),
+    ("3", "ascat", "−7.2", "Slightly beneficial  ✓"),
+    ("4", "avhrr", "−6.8", "Slightly beneficial  ✓"),
+    ("5", "seviri_asr", "−4.2", "Slightly beneficial  ✓"),
+    ("6", "surface_obs", "+115", "Net detrimental  ✗"),
+    ("7", "atms", "+27.7", "Net detrimental  ✗"),
+    ("8", "amsua", "+17.5", "Net detrimental  ✗"),
+    ("9", "ssmis", "+16.6", "Net detrimental  ✗"),
 ]
 for r_idx, (rank, inst, fsoi, interp) in enumerate(results, start=1):
     row = tbl.rows[r_idx]
@@ -710,7 +720,11 @@ bullet("Helpful fraction: 82.2%  (target 50–80%) — most observations reduce 
 bullet("Global closure ratio: 1.524  (FAIL, ideal = 1.0) — nonlinearity due to large innovations")
 bullet("Sign agreement: 66.5% — rankings qualitatively reliable")
 bullet("Tier 1 FD (per-obs): 1 WARNING (radiosonde ch2, 1%), 29 SKIP (satellites — float32 noise floor, expected for 50k+ obs instruments)")
-bullet("Tier 2 FD (Rademacher vector): ALL PASS — 6 satellite instruments, max rel_error 2.2%, Pearson r > 0.9999. Definitively validates gradient computation (see Section 8.2)")
+bullet(
+    "Tier 2 FD (Rademacher vector): ALL PASS — 6 satellite instruments, "
+    "max rel_error 2.2%, Pearson r > 0.9999. Definitively validates gradient "
+    "computation (see Section 8.2)"
+)
 
 spacer()
 
@@ -783,24 +797,28 @@ tbl_inno.alignment = WD_TABLE_ALIGNMENT.CENTER
 for i, h in enumerate(["Instrument", "Innov. RMS", "Status", "Implication for FSOI"]):
     set_cell_bg(tbl_inno.rows[0].cells[i], MID_BLUE)
     run = tbl_inno.rows[0].cells[i].paragraphs[0].add_run(h)
-    run.bold = True; run.font.color.rgb = WHITE; run.font.size = Pt(10)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
 inno_data = [
-    ("satellites",    "0.3–0.6σ", "✓ Well-behaved", "Linear approx valid, magnitudes reliable"),
-    ("aircraft",      "1.26σ",    "~ Moderate",     "Some nonlinearity, signs reliable"),
-    ("radiosonde",    "3.21σ",    "✗ Very large",   "Magnitudes approximate, signs still valid"),
-    ("surface_obs",   "4.01σ",    "✗ Extreme",      "Nonlinear — ranking direction valid only"),
+    ("satellites", "0.3–0.6σ", "✓ Well-behaved", "Linear approx valid, magnitudes reliable"),
+    ("aircraft", "1.26σ", "~ Moderate", "Some nonlinearity, signs reliable"),
+    ("radiosonde", "3.21σ", "✗ Very large", "Magnitudes approximate, signs still valid"),
+    ("surface_obs", "4.01σ", "✗ Extreme", "Nonlinear — ranking direction valid only"),
 ]
 inno_bgs = [
-    RGBColor(0xE2,0xEF,0xDA), RGBColor(0xFF,0xF8,0xE1),
-    RGBColor(0xFF,0xEB,0xEB), RGBColor(0xFF,0xD0,0xD0),
+    RGBColor(0xE2, 0xEF, 0xDA), RGBColor(0xFF, 0xF8, 0xE1),
+    RGBColor(0xFF, 0xEB, 0xEB), RGBColor(0xFF, 0xD0, 0xD0),
 ]
 for r_idx, (inst, rms, status, impl) in enumerate(inno_data, start=1):
     row = tbl_inno.rows[r_idx]
-    for c in row.cells: set_cell_bg(c, inno_bgs[r_idx-1])
+    for c in row.cells:
+        set_cell_bg(c, inno_bgs[r_idx - 1])
     for c_idx, val in enumerate([inst, rms, status, impl]):
         run = row.cells[c_idx].paragraphs[0].add_run(val)
         run.font.size = Pt(10)
-        if c_idx == 0: run.font.name = "Courier New"
+        if c_idx == 0:
+            run.font.name = "Courier New"
 
 doc.add_paragraph()
 
@@ -874,20 +892,24 @@ tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
 for i, h in enumerate(["Instrument", "Channels", "Tier 1 runs  vs  Tier 2 runs"]):
     set_cell_bg(tbl.rows[0].cells[i], MID_BLUE)
     run = tbl.rows[0].cells[i].paragraphs[0].add_run(h)
-    run.bold = True; run.font.color.rgb = WHITE; run.font.size = Pt(10)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
 cost_data = [
-    ("atms",       "22",  "44 runs  vs  2 runs"),
-    ("amsua",      "15",  "30 runs  vs  2 runs"),
-    ("radiosonde", " 4",  " 8 runs  vs  2 runs"),
+    ("atms", "22", "44 runs  vs  2 runs"),
+    ("amsua", "15", "30 runs  vs  2 runs"),
+    ("radiosonde", " 4", " 8 runs  vs  2 runs"),
 ]
 for r_idx, (inst, ch, cost) in enumerate(cost_data, start=1):
     row = tbl.rows[r_idx]
     if r_idx % 2 == 0:
-        for c in row.cells: set_cell_bg(c, LIGHT_BLUE)
+        for c in row.cells:
+            set_cell_bg(c, LIGHT_BLUE)
     for c_idx, val in enumerate([inst, ch, cost]):
         run = row.cells[c_idx].paragraphs[0].add_run(val)
         run.font.size = Pt(10)
-        if c_idx == 0: run.font.name = "Courier New"
+        if c_idx == 0:
+            run.font.name = "Courier New"
 
 doc.add_paragraph()
 body("What is a Rademacher Vector?", bold=True)
@@ -968,9 +990,11 @@ tbl2.alignment = WD_TABLE_ALIGNMENT.CENTER
 for i, h in enumerate(["Direction type", "Property", "Effect on test"]):
     set_cell_bg(tbl2.rows[0].cells[i], MID_BLUE)
     run = tbl2.rows[0].cells[i].paragraphs[0].add_run(h)
-    run.bold = True; run.font.color.rgb = WHITE; run.font.size = Pt(10)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
 why_data = [
-    ("Gaussian v ~ N(0,1)",  "Large entries dominate dot product",
+    ("Gaussian v ~ N(0,1)", "Large entries dominate dot product",
      "Channels with small gradient are tested weakly — bugs can hide"),
     ("Rademacher v ∈ {±1}ⁿ", "Every entry has magnitude exactly 1",
      "All channels tested with equal weight — minimum estimator variance"),
@@ -978,7 +1002,8 @@ why_data = [
 for r_idx, (t, p, e) in enumerate(why_data, start=1):
     row = tbl2.rows[r_idx]
     if r_idx % 2 == 0:
-        for c in row.cells: set_cell_bg(c, LIGHT_BLUE)
+        for c in row.cells:
+            set_cell_bg(c, LIGHT_BLUE)
     for c_idx, val in enumerate([t, p, e]):
         run = row.cells[c_idx].paragraphs[0].add_run(val)
         run.font.size = Pt(10)
@@ -1026,15 +1051,17 @@ tbl_t2.alignment = WD_TABLE_ALIGNMENT.CENTER
 for i, h in enumerate(["Instrument", "Max rel_error", "Min Pearson r", "Result"]):
     set_cell_bg(tbl_t2.rows[0].cells[i], MID_BLUE)
     run = tbl_t2.rows[0].cells[i].paragraphs[0].add_run(h)
-    run.bold = True; run.font.color.rgb = WHITE; run.font.size = Pt(10)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
 
 t2_data = [
-    ("amsua",      "0.46%", "0.9999997", "PASS — all 5 trials"),
-    ("ascat",      "0.12%", "0.9999999", "PASS — all 5 trials"),
-    ("atms",       "0.53%", "0.9999999", "PASS — all 5 trials"),
-    ("avhrr",      "0.57%", "0.9999994", "PASS — all 5 trials"),
+    ("amsua", "0.46%", "0.9999997", "PASS — all 5 trials"),
+    ("ascat", "0.12%", "0.9999999", "PASS — all 5 trials"),
+    ("atms", "0.53%", "0.9999999", "PASS — all 5 trials"),
+    ("avhrr", "0.57%", "0.9999994", "PASS — all 5 trials"),
     ("seviri_asr", "0.47%", "0.9999985", "PASS — all 5 trials"),
-    ("ssmis",      "2.2%",  "0.9999991", "PASS — all 5 trials"),
+    ("ssmis", "2.2%", "0.9999991", "PASS — all 5 trials"),
 ]
 for r_idx, (inst, rel_err, pearson, result) in enumerate(t2_data, start=1):
     row = tbl_t2.rows[r_idx]
@@ -1193,7 +1220,9 @@ tbl_ose.alignment = WD_TABLE_ALIGNMENT.CENTER
 for i, h in enumerate(["Question", "OSE answer", "FSOI answer"]):
     set_cell_bg(tbl_ose.rows[0].cells[i], MID_BLUE)
     run = tbl_ose.rows[0].cells[i].paragraphs[0].add_run(h)
-    run.bold = True; run.font.color.rgb = WHITE; run.font.size = Pt(10)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
 ose_rows = [
     ("Is this instrument beneficial or harmful?",
      "✓ Definitive ground truth",
@@ -1208,7 +1237,8 @@ ose_rows = [
 for r_idx, (q, o, f) in enumerate(ose_rows, start=1):
     row = tbl_ose.rows[r_idx]
     if r_idx % 2 == 0:
-        for c in row.cells: set_cell_bg(c, LIGHT_BLUE)
+        for c in row.cells:
+            set_cell_bg(c, LIGHT_BLUE)
     for c_idx, val in enumerate([q, o, f]):
         run = row.cells[c_idx].paragraphs[0].add_run(val)
         run.font.size = Pt(10)
@@ -1231,15 +1261,17 @@ tbl_ose_actual.alignment = WD_TABLE_ALIGNMENT.CENTER
 for i, h in enumerate(["Metric", "July 2025", "January 2025"]):
     set_cell_bg(tbl_ose_actual.rows[0].cells[i], MID_BLUE)
     run = tbl_ose_actual.rows[0].cells[i].paragraphs[0].add_run(h)
-    run.bold = True; run.font.color.rgb = WHITE; run.font.size = Pt(10)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
 
 ose_actual_rows = [
-    ("Pairs evaluated",                     "59",                   "~30"),
-    ("ATMS detrimental (OSE confirms)",     "55 / 59  (93%)",       "~70%"),
-    ("Sign agreement with FSOI",            "55 / 59  (93%  True)", "mostly True"),
-    ("OSE relative impact per pair",        "−0.01% to −0.08%",     "−0.06% to −0.08%"),
-    ("Closure ratio  |FSOI| / |ΔJ_ose|",   "77 – 2451  (med ~150)","34 – 92"),
-    ("FSOI predicted magnitude per pair",   "0.08 – 2.79",          "0.05 – 0.52"),
+    ("Pairs evaluated", "59", "~30"),
+    ("ATMS detrimental (OSE confirms)", "55 / 59  (93%)", "~70%"),
+    ("Sign agreement with FSOI", "55 / 59  (93%  True)", "mostly True"),
+    ("OSE relative impact per pair", "−0.01% to −0.08%", "−0.06% to −0.08%"),
+    ("Closure ratio  |FSOI| / |ΔJ_ose|", "77 – 2451  (med ~150)", "34 – 92"),
+    ("FSOI predicted magnitude per pair", "0.08 – 2.79", "0.05 – 0.52"),
 ]
 for r_idx, (metric, jul, jan) in enumerate(ose_actual_rows, start=1):
     row = tbl_ose_actual.rows[r_idx]
@@ -1328,10 +1360,10 @@ for i, h in enumerate(["Instrument", "Weight A", "Weight B"]):
     run.font.size = Pt(10)
 
 weight_data = [
-    ("radiosonde",        "8.178", "8.179"),
-    ("aircraft",          "0.153", "0.146"),
-    ("surface_obs",       "0.106", "0.111"),
-    ("all satellites",    "0.094", "0.094"),
+    ("radiosonde", "8.178", "8.179"),
+    ("aircraft", "0.153", "0.146"),
+    ("surface_obs", "0.106", "0.111"),
+    ("all satellites", "0.094", "0.094"),
 ]
 for r_idx, (inst, wa, wb) in enumerate(weight_data, start=1):
     row = tbl.rows[r_idx]
@@ -1437,7 +1469,7 @@ run = footer_p.add_run(
     "gnn_model/FSOI/  •  Branch: feature/FSOI_evaluation\n"
     "Generated May 2026"
 )
-run.font.size  = Pt(9)
+run.font.size = Pt(9)
 run.font.color.rgb = DARK_GRAY
 run.font.italic = True
 

@@ -31,10 +31,10 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from scipy.stats import norm as scipy_norm
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from scipy.stats import norm as scipy_norm  # noqa: E402
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ def plot_innovation_histograms(df_scatter: pd.DataFrame, out_dir: Path) -> None:
     ncols = min(4, n)
     nrows = (n + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows),
-                              squeeze=False)
+                             squeeze=False)
 
     for i, inst in enumerate(instruments):
         ax = axes[i // ncols][i % ncols]

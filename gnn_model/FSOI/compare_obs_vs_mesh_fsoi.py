@@ -28,30 +28,30 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.patches as mpatches  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
 
 # ── Color palette consistent across all plots ─────────────────────────────────
 
 INST_COLORS = {
-    "atms":       "#1f77b4",   # blue
-    "amsua":      "#aec7e8",   # light blue
-    "ssmis":      "#17becf",   # teal
-    "avhrr":      "#9edae5",   # light teal
+    "atms": "#1f77b4",   # blue
+    "amsua": "#aec7e8",   # light blue
+    "ssmis": "#17becf",   # teal
+    "avhrr": "#9edae5",   # light teal
     "seviri_asr": "#ff7f0e",   # orange
-    "ascat":      "#ffbb78",   # light orange
+    "ascat": "#ffbb78",   # light orange
     "radiosonde": "#2ca02c",   # green
-    "aircraft":   "#98df8a",   # light green
-    "surface_obs":"#d62728",   # red
+    "aircraft": "#98df8a",   # light green
+    "surface_obs": "#d62728",   # red
 }
 
 PRESSURE_COLORS = {850: "#e377c2", 500: "#7f7f7f", 250: "#bcbd22"}
-SEASON_MARKERS  = {"jan2025": "o", "apr2025": "s", "jul2025": "^", "oct2025": "D"}
-SEASON_LABELS   = {"jan2025": "Winter (Jan)", "apr2025": "Spring (Apr)",
-                   "jul2025": "Summer (Jul)", "oct2025": "Fall (Oct)"}
+SEASON_MARKERS = {"jan2025": "o", "apr2025": "s", "jul2025": "^", "oct2025": "D"}
+SEASON_LABELS = {"jan2025": "Winter (Jan)", "apr2025": "Spring (Apr)",
+                 "jul2025": "Summer (Jul)", "oct2025": "Fall (Oct)"}
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ def load_mesh_space(base: Path) -> pd.DataFrame:
         except (IndexError, ValueError):
             pressure_hpa, season = None, dir_name
         frames.append(_load_summary(p, verification="mesh",
-                                     season=season, pressure_hpa=pressure_hpa))
+                                    season=season, pressure_hpa=pressure_hpa))
 
     if not frames:
         print(f"[WARN] No mesh-space evaluation summaries found under {base}")
@@ -130,7 +130,7 @@ def seasonal_mean(df: pd.DataFrame) -> pd.DataFrame:
 # ── Plot 1: Scatter obs vs mesh at 500 hPa ────────────────────────────────────
 
 def plot_obs_vs_mesh_scatter(obs: pd.DataFrame, mesh: pd.DataFrame,
-                              out_dir: Path, pressure_hpa: int = 500) -> None:
+                             out_dir: Path, pressure_hpa: int = 500) -> None:
     """Scatter: obs-space mean impact (x) vs mesh-space mean impact (y) per instrument.
 
     One point per (instrument, season). The diagonal y=0 and x=0 lines
@@ -166,10 +166,10 @@ def plot_obs_vs_mesh_scatter(obs: pd.DataFrame, mesh: pd.DataFrame,
     # Quadrant labels
     xlim = merged[["impact_mean_per_pair_obs", "impact_mean_per_pair_mesh"]].abs().max().max() * 1.15
     xlim = max(xlim, 0.1)
-    for text, xy in [("Beneficial\nboth", (-xlim*0.6, -xlim*0.75)),
-                     ("Detrimental\nboth", (xlim*0.4, xlim*0.65)),
-                     ("Obs bias?", (-xlim*0.65, xlim*0.65)),
-                     ("Background\nbias?", (xlim*0.35, -xlim*0.75))]:
+    for text, xy in [("Beneficial\nboth", (-xlim * 0.6, -xlim * 0.75)),
+                     ("Detrimental\nboth", (xlim * 0.4, xlim * 0.65)),
+                     ("Obs bias?", (-xlim * 0.65, xlim * 0.65)),
+                     ("Background\nbias?", (xlim * 0.35, -xlim * 0.75))]:
         ax.text(*xy, text, fontsize=8, color="gray", ha="center", va="center",
                 style="italic", alpha=0.6)
 
@@ -219,14 +219,14 @@ def plot_obs_vs_mesh_scatter(obs: pd.DataFrame, mesh: pd.DataFrame,
 # ── Plot 2: Side-by-side bar chart at 500 hPa ────────────────────────────────
 
 def plot_side_by_side_bars(obs: pd.DataFrame, mesh: pd.DataFrame,
-                            out_dir: Path, pressure_hpa: int = 500) -> None:
+                           out_dir: Path, pressure_hpa: int = 500) -> None:
     """Bar chart: obs-space vs mesh-space seasonal-mean impact per instrument."""
     obs_mean = (obs.groupby("instrument")["impact_mean_per_pair"]
                    .mean().sort_values())
     mesh_p = mesh[mesh["pressure_hpa"] == pressure_hpa]
     mesh_mean = mesh_p.groupby("instrument")["impact_mean_per_pair"].mean()
-    mesh_std  = mesh_p.groupby("instrument")["impact_mean_per_pair"].std()
-    obs_std   = obs.groupby("instrument")["impact_mean_per_pair"].std()
+    mesh_std = mesh_p.groupby("instrument")["impact_mean_per_pair"].std()
+    obs_std = obs.groupby("instrument")["impact_mean_per_pair"].std()
 
     instruments = obs_mean.index.tolist()
     x = np.arange(len(instruments))
@@ -234,13 +234,13 @@ def plot_side_by_side_bars(obs: pd.DataFrame, mesh: pd.DataFrame,
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    bars_obs = ax.bar(x - w/2,
+    bars_obs = ax.bar(x - w / 2,
                       [obs_mean.get(i, np.nan) for i in instruments],
                       w, label="Obs-space (radiosonde targets)",
                       yerr=[obs_std.get(i, 0) for i in instruments],
                       color=[INST_COLORS.get(i, "gray") for i in instruments],
                       alpha=0.9, capsize=3, error_kw={"lw": 1})
-    bars_mesh = ax.bar(x + w/2,
+    bars_mesh = ax.bar(x + w / 2,
                        [mesh_mean.get(i, np.nan) for i in instruments],
                        w, label=f"Mesh-space ({pressure_hpa} hPa vs GFS)",
                        yerr=[mesh_std.get(i, 0) for i in instruments],
@@ -269,9 +269,9 @@ def plot_side_by_side_bars(obs: pd.DataFrame, mesh: pd.DataFrame,
 # ── Plot 3: Sign-flip table ───────────────────────────────────────────────────
 
 def plot_sign_flip_table(obs: pd.DataFrame, mesh: pd.DataFrame,
-                          out_dir: Path) -> None:
+                         out_dir: Path) -> None:
     """Table showing which instruments flip sign between obs-space and mesh-space."""
-    obs_mean  = obs.groupby("instrument")["impact_mean_per_pair"].mean()
+    obs_mean = obs.groupby("instrument")["impact_mean_per_pair"].mean()
     levels = sorted(mesh["pressure_hpa"].dropna().unique())
 
     records = []
@@ -354,10 +354,10 @@ def plot_vertical_profile(mesh: pd.DataFrame, out_dir: Path) -> None:
     for inst in instruments:
         sub = mesh[mesh["instrument"] == inst]
         means = sub.groupby("pressure_hpa")["impact_mean_per_pair"].mean()
-        stds  = sub.groupby("pressure_hpa")["impact_mean_per_pair"].std()
-        lvls  = sorted(means.index)
-        vals  = [float(means.get(l, np.nan)) for l in lvls]
-        errs  = [float(stds.get(l, 0)) for l in lvls]
+        stds = sub.groupby("pressure_hpa")["impact_mean_per_pair"].std()
+        lvls = sorted(means.index)
+        vals = [float(means.get(lvl, np.nan)) for lvl in lvls]
+        errs = [float(stds.get(lvl, 0)) for lvl in lvls]
 
         color = INST_COLORS.get(inst, "gray")
         ax.plot(vals, lvls, "o-", color=color, lw=2, ms=7, label=inst)
@@ -370,7 +370,7 @@ def plot_vertical_profile(mesh: pd.DataFrame, out_dir: Path) -> None:
     ax.set_yscale("log")
     ax.invert_yaxis()
     ax.set_yticks(levels)
-    ax.set_yticklabels([f"{int(l)} hPa" for l in levels])
+    ax.set_yticklabels([f"{int(lvl)} hPa" for lvl in levels])
     ax.set_xlabel("Mean FSOI impact per pair  (negative = beneficial)")
     ax.set_ylabel("Pressure level (hPa)")
     ax.set_title("Vertical Profile of Observation Impact\n"
@@ -387,7 +387,7 @@ def plot_vertical_profile(mesh: pd.DataFrame, out_dir: Path) -> None:
 # ── Plot 5: Seasonal stability ────────────────────────────────────────────────
 
 def plot_seasonal_stability(obs: pd.DataFrame, mesh: pd.DataFrame,
-                             out_dir: Path, pressure_hpa: int = 500) -> None:
+                            out_dir: Path, pressure_hpa: int = 500) -> None:
     """Does instrument ranking stay consistent across seasons?"""
     seasons = sorted(set(obs["season"].unique()) | set(mesh[mesh["pressure_hpa"] == pressure_hpa]["season"].unique()))
     instruments = sorted(obs["instrument"].unique())
@@ -395,7 +395,7 @@ def plot_seasonal_stability(obs: pd.DataFrame, mesh: pd.DataFrame,
     n_i = len(instruments)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, max(5, n_i * 0.5)),
-                              sharey=True)
+                             sharey=True)
 
     for ax, (df, label, extra_filter) in zip(axes, [
         (obs, "Obs-space (radiosonde targets)", {}),
@@ -438,7 +438,7 @@ def plot_seasonal_stability(obs: pd.DataFrame, mesh: pd.DataFrame,
 # ── Summary table ─────────────────────────────────────────────────────────────
 
 def write_summary_table(obs: pd.DataFrame, mesh: pd.DataFrame,
-                         out_dir: Path) -> None:
+                        out_dir: Path) -> None:
     """CSV with obs-space and mesh-space mean ± std per instrument per level."""
     obs_g = obs.groupby("instrument")["impact_mean_per_pair"].agg(
         obs_mean="mean", obs_std="std", obs_n_seasons="count")
@@ -494,7 +494,7 @@ def main() -> None:
     print()
 
     # Load data
-    obs  = load_obs_space(args.base)
+    obs = load_obs_space(args.base)
     mesh = load_mesh_space(args.base)
 
     if obs.empty and mesh.empty:

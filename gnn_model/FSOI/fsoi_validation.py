@@ -75,12 +75,12 @@ def finite_difference_check(
     device = next(model.parameters()).device
     batch = batch.to(device)
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"FINITE DIFFERENCE VALIDATION")
     print(f"  Instrument: {inst_name}")
     print(f"  Observation: {obs_idx}, Channel: {channel_idx}")
     print(f"  Epsilon: {epsilon}")
-    print(f"{'='*80}\n")
+    print(f"{'=' * 80}\n")
 
     # Get original inputs
     xa_original = get_fsoi_inputs(
@@ -197,9 +197,9 @@ def finite_difference_check(
     # ============================================================================
     # STEP 4: Compare results
     # ============================================================================
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("VALIDATION RESULTS")
-    print("="*80)
+    print("=" * 80)
 
     # Finite difference approximations
     fd_forward = (error_plus - error_grad.item()) / epsilon
@@ -233,7 +233,7 @@ def finite_difference_check(
         print(f"\n✓ PASS: Gradient validation successful (error < {tolerance})")
         status = "PASS"
     elif rel_error_central < 0.05:
-        print(f"\n⚠ WARNING: Gradient error {rel_error_central:.2%} exceeds {tolerance*100}% but < 5%")
+        print(f"\n⚠ WARNING: Gradient error {rel_error_central:.2%} exceeds {tolerance * 100}% but < 5%")
         print("  Likely float32 rounding at this error scale — validate via closure.")
         status = "WARNING"
     else:
@@ -241,7 +241,7 @@ def finite_difference_check(
         print("  Check implementation: graph structure, metadata, gradient flow")
         status = "FAIL"
 
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     return {
         'inst_name': inst_name,
@@ -283,11 +283,11 @@ def validate_fsoi_gradients(
     """
     from fsoi_utils import get_fsoi_inputs
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FSOI GRADIENT VALIDATION - FINITE DIFFERENCE TESTS")
-    print("="*80)
+    print("=" * 80)
     print(f"Testing {num_samples} random observations")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     # Get inputs from current batch
     xa = get_fsoi_inputs(
@@ -327,9 +327,9 @@ def validate_fsoi_gradients(
         results.append(result)
 
     # Summary
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("VALIDATION SUMMARY")
-    print("="*80)
+    print("=" * 80)
 
     passed = sum(1 for r in results if r.get('status') == 'PASS')
     warned = sum(1 for r in results if r.get('status') == 'WARNING')
@@ -393,14 +393,14 @@ def directional_derivative_check(
     device = next(model.parameters()).device
     batch = batch.to(device)
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"DIRECTIONAL DERIVATIVE VALIDATION  (Rademacher, {n_trials} trials)")
     print(f"  Instrument : {inst_name}")
     print(f"  Epsilon    : {epsilon}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     xa_original = get_fsoi_inputs(batch, model.observation_config,
-                                   model.instrument_name_to_id)
+                                  model.instrument_name_to_id)
     if inst_name not in xa_original:
         print(f"[ERROR] {inst_name} not in batch")
         return {'inst_name': inst_name, 'status': 'ERROR', 'n_trials': 0}
@@ -471,8 +471,8 @@ def directional_derivative_check(
         fd_dd = (e_plus - e_minus) / (2.0 * epsilon)
         rel_err = abs(autograd_dd - fd_dd) / (abs(autograd_dd) + 1e-12)
         trials.append({'trial': k, 'autograd_dd': autograd_dd, 'fd_dd': fd_dd,
-                        'rel_error': rel_err, 'e_plus': e_plus, 'e_minus': e_minus})
-        print(f"  Trial {k+1:2d}: autograd={autograd_dd:+.4e}  fd={fd_dd:+.4e}  "
+                       'rel_error': rel_err, 'e_plus': e_plus, 'e_minus': e_minus})
+        print(f"  Trial {k + 1:2d}: autograd={autograd_dd:+.4e}  fd={fd_dd:+.4e}  "
               f"rel_err={rel_err:.3f}")
 
     # Pearson correlation between autograd_dd and fd_dd across trials
@@ -499,7 +499,7 @@ def directional_derivative_check(
     else:
         status = 'FAIL'
         print(f"  → FAIL: gradient direction inconsistent (r={pearson_r:.4f})")
-    print('='*80)
+    print('=' * 80)
 
     return {
         'inst_name': inst_name,
@@ -552,11 +552,11 @@ def finite_difference_check_float64(
     from fsoi_utils import get_fsoi_inputs, compute_forecast_error, replace_batch_inputs
     from fsoi_model_extensions import freeze_model_for_fsoi
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"FLOAT64 FD VALIDATION")
     print(f"  Instrument : {inst_name}  obs={obs_idx}  ch={channel_idx}")
     print(f"  Epsilon    : {epsilon}  (float64)")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     # ── Cast model to float64 ─────────────────────────────────────────────────
     model_was_float32 = next(model.parameters()).dtype == torch.float32
@@ -605,7 +605,7 @@ def finite_difference_check_float64(
         _cast_batch_f64(batch64)
 
         xa_original = get_fsoi_inputs(batch64, model.observation_config,
-                                       model.instrument_name_to_id)
+                                      model.instrument_name_to_id)
         if inst_name not in xa_original:
             print(f"[ERROR] {inst_name} not in batch")
             return {'inst_name': inst_name, 'status': 'ERROR', 'precision': 'float64'}
@@ -641,7 +641,8 @@ def finite_difference_check_float64(
 
         # FD forward
         xa_p = xa_original.copy()
-        xp = x_orig.clone().detach(); xp[obs_idx, channel_idx] += epsilon
+        xp = x_orig.clone().detach()
+        xp[obs_idx, channel_idx] += epsilon
         xa_p[inst_name] = xp
         batch_p = batch64.clone()
         replace_batch_inputs(batch_p, xa_p, model.observation_config)
@@ -650,7 +651,8 @@ def finite_difference_check_float64(
 
         # FD backward
         xa_m = xa_original.copy()
-        xm = x_orig.clone().detach(); xm[obs_idx, channel_idx] -= epsilon
+        xm = x_orig.clone().detach()
+        xm[obs_idx, channel_idx] -= epsilon
         xa_m[inst_name] = xm
         batch_m = batch64.clone()
         replace_batch_inputs(batch_m, xa_m, model.observation_config)
@@ -674,7 +676,7 @@ def finite_difference_check_float64(
         else:
             status = 'FAIL'
         print(f"  → {status}")
-        print('='*80)
+        print('=' * 80)
 
         return {
             'inst_name': inst_name,
@@ -755,9 +757,9 @@ def validate_fsoi_gradients_all(
     rows = []
 
     # ── Test 1: Scalar FD (existing function) ──────────────────────────────
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TEST 1 — SCALAR PER-OBS FINITE DIFFERENCE  (float32)")
-    print("="*80)
+    print("=" * 80)
     np.random.seed(seed)
     for inst in instruments_scalar_fd:
         x = xa.get(inst)
@@ -775,9 +777,9 @@ def validate_fsoi_gradients_all(
 
     # ── Test 2: Directional derivative (Rademacher) ─────────────────────────
     if instruments_directional:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 2 — DIRECTIONAL DERIVATIVE  (Rademacher, float32)")
-        print("="*80)
+        print("=" * 80)
         for inst in instruments_directional:
             if inst not in xa:
                 continue
@@ -806,9 +808,9 @@ def validate_fsoi_gradients_all(
 
     # ── Test 3: Float64 FD ─────────────────────────────────────────────────
     if instruments_float64:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 3 — SCALAR PER-OBS FINITE DIFFERENCE  (float64)")
-        print("="*80)
+        print("=" * 80)
         np.random.seed(seed + 1)
         for inst in instruments_float64:
             x = xa.get(inst)
@@ -828,10 +830,10 @@ def validate_fsoi_gradients_all(
     df = pd.DataFrame(rows)
     if not df.empty and 'status' in df.columns:
         counts = df.drop_duplicates(subset=[c for c in ['inst_name', 'test', 'trial']
-                                             if c in df.columns])['status'].value_counts()
-        print("\n" + "="*80)
+                                            if c in df.columns])['status'].value_counts()
+        print("\n" + "=" * 80)
         print("GRADIENT VALIDATION SUMMARY")
-        print("="*80)
+        print("=" * 80)
         for status, n in counts.items():
             sym = {'PASS': '✓', 'WARN': '⚠', 'FAIL': '✗',
                    'SKIP': '~', 'INSUF_SIGNAL': '?', 'ERROR': '!'}.get(status, ' ')
@@ -864,14 +866,14 @@ def validate_fsoi_gradients(
     """
     from fsoi_utils import get_fsoi_inputs
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("FSOI GRADIENT VALIDATION - FINITE DIFFERENCE TESTS")
-    print("="*80)
+    print("=" * 80)
     print(f"Testing {num_samples} random observations")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
     xa = get_fsoi_inputs(curr_batch, model.observation_config,
-                          model.instrument_name_to_id)
+                         model.instrument_name_to_id)
     if not xa:
         print("[ERROR] No inputs found in batch")
         return False
@@ -888,12 +890,12 @@ def validate_fsoi_gradients(
         )
         results.append(result)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("VALIDATION SUMMARY")
-    print("="*80)
-    passed  = sum(1 for r in results if r.get('status') == 'PASS')
-    warned  = sum(1 for r in results if r.get('status') == 'WARNING')
-    failed  = sum(1 for r in results if r.get('status') == 'FAIL')
+    print("=" * 80)
+    passed = sum(1 for r in results if r.get('status') == 'PASS')
+    warned = sum(1 for r in results if r.get('status') == 'WARNING')
+    failed = sum(1 for r in results if r.get('status') == 'FAIL')
     skipped = sum(1 for r in results if r.get('status') == 'SKIP')
     print(f"\nTests run:    {len(results)}")
     print(f"✓ Passed:     {passed}")
