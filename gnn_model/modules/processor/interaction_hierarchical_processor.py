@@ -10,7 +10,7 @@ preferred for large OCELOT v1 runs.
 import torch
 import torch.nn as nn
 from typing import Dict, List, Tuple
-from interaction_network import InteractionNetwork
+from ..coder.interaction_network import InteractionNetwork
 from interaction_net import InteractionNet
 import torch.utils.checkpoint as checkpoint
 

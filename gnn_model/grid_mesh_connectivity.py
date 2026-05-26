@@ -18,7 +18,7 @@ Author: Azadeh Gholoubi
 Adapted from GraphCast mesh-connectivity utilities for the OCELOT model.
 """
 
-import icosahedral_mesh
+from modules.mesh import icosahedral_mesh
 import numpy as np
 import scipy
 import trimesh

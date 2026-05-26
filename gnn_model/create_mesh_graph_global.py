@@ -17,7 +17,7 @@ import torch
 import torch_geometric as pyg
 from graphcast_aux import _get_max_edge_distance
 import grid_mesh_connectivity as gc_gm
-import icosahedral_mesh as gc_im
+import modules.mesh.icosahedral_mesh as gc_im
 import model_utils as gc_mu
 from utils import DEFAULT_DTYPE
 

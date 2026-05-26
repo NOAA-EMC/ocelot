@@ -21,8 +21,8 @@ import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from processor import Processor
-from interaction_hierarchical_processor import HierarchicalProcessor
+from modules.processor.processor import Processor
+from modules.processor.interaction_hierarchical_processor import HierarchicalProcessor
 from utils import make_mlp
 from interaction_net import InteractionNet
 from create_mesh_graph_global import create_mesh
@@ -30,9 +30,9 @@ from torch_geometric.data import HeteroData
 from typing import Dict, Tuple, List, Optional
 from torch_geometric.utils import scatter
 from loss import weighted_huber_loss, weighted_mse_loss
-from processor_transformer import SlidingWindowTransformerProcessor
-from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
-from attn_bipartite import BipartiteGAT
+from modules.transformer.processor_transformer import SlidingWindowTransformerProcessor
+from modules.transformer.processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
+from modules.coder.attn_bipartite import BipartiteGAT
 from process_timeseries import _encode_target_time_features
 from datetime import datetime
 

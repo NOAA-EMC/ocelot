@@ -7,7 +7,7 @@ Only the active mesh-distance helper is kept for the v1.0 model path.
 
 import numpy as np
 
-import icosahedral_mesh
+from modules.mesh import icosahedral_mesh
 
 
 def _get_max_edge_distance(mesh):

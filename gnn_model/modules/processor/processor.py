@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData
 from typing import Dict, List, Tuple
-from interaction_network import InteractionNetwork
+from ..coder.interaction_network import InteractionNetwork
 import torch.utils.checkpoint as checkpoint
 
 
