@@ -7,12 +7,13 @@ experiments and compatibility. The transformer-based hierarchical processor is
 preferred for large OCELOT v1 runs.
 """
 
+from typing import Dict, List, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Dict, List, Tuple
-from ..coder.interaction_network import InteractionNetwork
-from interaction_net import InteractionNet
 import torch.utils.checkpoint as checkpoint
+
+from ..coder.interaction_net import InteractionNet
 
 
 class HierarchicalProcessor(nn.Module):

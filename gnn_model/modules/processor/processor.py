@@ -3,12 +3,13 @@
 Author: Azadeh Gholoubi
 """
 
+from typing import Dict, List, Tuple
+
 import torch
 import torch.nn as nn
-from torch_geometric.data import HeteroData
-from typing import Dict, List, Tuple
-from ..coder.interaction_network import InteractionNetwork
 import torch.utils.checkpoint as checkpoint
+
+from .interaction_network import InteractionNetwork
 
 
 class Processor(nn.Module):

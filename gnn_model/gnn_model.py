@@ -7,35 +7,34 @@ output utilities used during training, validation, and prediction.
 Author: Azadeh Gholoubi
 """
 
-import lightning.pytorch as pl
 import os
-import time
+import matplotlib.pyplot as plt
+import pandas as pd
+from gnn_model.modules.mesh import mesh_factory
+import numpy as np
+from datetime import datetime
+from typing import Dict, Tuple, List, Optional
+
+import lightning.pytorch as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributed import is_initialized
-from torch.optim import Adam
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-import torch.utils.checkpoint as checkpoint
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
+from torch_geometric.data import HeteroData
+
+from modules.coder.attn_bipartite import BipartiteGAT
+from modules.coder.interaction_net import InteractionNet
 from modules.processor.processor import Processor
 from modules.processor.interaction_hierarchical_processor import HierarchicalProcessor
+from modules.processor.processor_transformer import SlidingWindowTransformerProcessor
+from modules.processor.processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from utils import make_mlp
-from interaction_net import InteractionNet
-from create_mesh_graph_global import create_mesh
-from torch_geometric.data import HeteroData
-from typing import Dict, Tuple, List, Optional
-from torch_geometric.utils import scatter
+from modules.mesh.create_mesh_graph_global import create_mesh
 from loss import weighted_huber_loss, weighted_mse_loss
-from modules.transformer.processor_transformer import SlidingWindowTransformerProcessor
-from modules.transformer.processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
-from modules.coder.attn_bipartite import BipartiteGAT
 from process_timeseries import _encode_target_time_features
-from datetime import datetime
 
+####
+from modules.mesh.mesh import Mesh
+from modules.mesh.mesh_factory import MeshFactory
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
     order = []
@@ -273,48 +272,9 @@ class GNNLightning(pl.LightningModule):
         print(f"  - Decoder type: {decoder_type}")
         print(f"{'='*70}\n")
 
-        # --- Create and store the mesh structure as part of the model ---
-        # mesh_type determines how the mesh is structured:
-        # - "fixed": Single merged mesh (GraphCast's multiscale merged mesh) - hierarchical=False
-        # - "hierarchical": Multiple mesh levels with up/down connections (U-Net-style latent hierarchy)
-        hierarchical_mode = (mesh_type == "hierarchical")
+        self.mesh = mesh_factory.build(mesh_type, mesh_levels, mesh_resolution)
 
-        self.mesh_structure = create_mesh(
-            splits=mesh_resolution,
-            levels=mesh_levels,
-            hierarchical=hierarchical_mode,
-            plot=False
-        )
-
-        # Store whether we're in hierarchical mode
-        self.is_hierarchical = hierarchical_mode
-
-        # Get mesh feature dimension from the first mesh
-        mesh_feature_dim = self.mesh_structure["mesh_features_torch"][0].shape[1]
-
-        # --- Prepare mesh data for registration ---
-        # For fixed mode: use only the first (finest) mesh - GraphCast's merged multiscale mesh
-        # For hierarchical mode: we'll need to handle multiple mesh levels
-        if self.is_hierarchical:
-            # Store all mesh levels
-            # NOTE: create_mesh returns mesh_features_torch as [finest, ..., coarsest] (built from mesh_list_rev)
-            # We keep this ordering for hierarchical processing
-            self.num_mesh_levels = len(self.mesh_structure["mesh_features_torch"])
-            mesh_x_list = self.mesh_structure["mesh_features_torch"]  # [finest, ..., coarsest]
-            mesh_edge_index_list = self.mesh_structure["m2m_edge_index_torch"]
-            mesh_edge_attr_list = self.mesh_structure["m2m_features_torch"]
-
-            # For backward compatibility, also use the finest mesh as default
-            mesh_x = mesh_x_list[0]  # Finest is at index 0
-            mesh_edge_index = mesh_edge_index_list[0]
-            mesh_edge_attr = mesh_edge_attr_list[0]
-        else:
-            # Fixed mode: use single merged mesh (GraphCast approach)
-            mesh_x = self.mesh_structure["mesh_features_torch"][0]
-            mesh_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-            mesh_edge_attr = self.mesh_structure["m2m_features_torch"][0]
-
-        # --- Initialize Network Dictionaries ---
+        # # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
         self.observation_encoders = nn.ModuleDict()  # For obs -> mesh GNNs
         self.observation_decoders = nn.ModuleDict()
@@ -324,6 +284,10 @@ class GNNLightning(pl.LightningModule):
         hidden_layers = first_instrument_config.get("encoder_hidden_layers", 2)
 
         self.mlp_blueprint_end = [hidden_dim] * (hidden_layers + 1)
+        
+        # Get mesh feature dimension from the first mesh
+        mesh_feature_dim = self.mesh_structure["mesh_features_torch"][0].shape[1]
+
         self.mesh_embedder = make_mlp([mesh_feature_dim] + self.mlp_blueprint_end)
 
         # Create scan-angle embedders once to avoid loop-order surprises

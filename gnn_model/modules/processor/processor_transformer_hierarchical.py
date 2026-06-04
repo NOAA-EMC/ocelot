@@ -11,7 +11,9 @@ from collections import deque
 from typing import List, Optional
 import torch
 import torch.nn as nn
-import math
+
+from .processor_base import ProcessorBase
+from ..mesh.heiarchical_mesh import HierarchicalMesh
 
 
 class TemporalPositionalEncoding(nn.Module):
@@ -156,7 +158,7 @@ class SpatialMixBlock(nn.Module):
         return self.norm(x + self.drop(msg))
 
 
-class HierarchicalSlidingWindowTransformer(nn.Module):
+class HierarchicalSlidingWindowTransformer(ProcessorBase):
     """
     Hierarchical temporal transformer that processes multiple mesh resolution levels.
 
@@ -172,6 +174,7 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
     - Temporal processing: transformer over time at each level
     """
     def __init__(self,
+                 mesh: HierarchicalMesh,
                  hidden_dim: int,
                  num_levels: int = 4,
                  window: int = 4,
@@ -192,7 +195,8 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
             use_causal_mask: Whether to use causal masking (for autoregressive)
             use_cross_scale: Whether to use cross-scale attention between levels
         """
-        super().__init__()
+        super().__init__(mesh)
+        
         self.hidden_dim = hidden_dim
         self.num_levels = num_levels
         self.window = window
@@ -482,69 +486,3 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
         output_list = [x_seq[:, -1, :] for x_seq in processed_list]
 
         return output_list
-
-
-class SlidingWindowTransformerProcessor(nn.Module):
-    """
-    Temporal transformer over a rolling window of latent mesh states.
-    Call reset() at the start of each new sequence/bin;
-    then call forward() each rollout step.
-
-    NOTE: This is the single-level version. For hierarchical meshes,
-    use HierarchicalSlidingWindowTransformer instead.
-    """
-    def __init__(self,
-                 hidden_dim: int,
-                 window: int = 4,
-                 depth: int = 2,
-                 num_heads: int = 4,
-                 dropout: float = 0.0,
-                 use_causal_mask: bool = True):
-        super().__init__()
-        self.window = window
-        self.use_causal_mask = use_causal_mask
-        self.blocks = nn.ModuleList([
-            TemporalBlock(hidden_dim, num_heads, dropout) for _ in range(depth)
-        ])
-        self.posenc = TemporalPositionalEncoding(hidden_dim, max_len=window)
-        self.register_buffer("_dummy", torch.empty(0))  # for device inference
-        self.cache: deque[torch.Tensor] = deque(maxlen=window)
-
-    def reset(self):
-        self.cache.clear()
-
-    @torch.no_grad()
-    def warm_start(self, states: List[torch.Tensor]):
-        """Optionally pre-fill with historical mesh states
-        (no gradient through history)."""
-        self.cache.clear()
-        for s in states[-self.window:]:
-            self.cache.append(s.detach())
-
-    def forward(self, x_mesh: torch.Tensor) -> torch.Tensor:
-        """
-        x_mesh: [N_mesh, H] current latent mesh state
-        returns: [N_mesh, H] updated latent mesh state
-        """
-        # ensure device consistency
-        device = x_mesh.device
-        dtype = x_mesh.dtype
-
-        self.cache.append(x_mesh)
-        x_seq = torch.stack(list(self.cache), dim=1).to(
-            device=device, dtype=dtype
-        )  # [N, T, H]
-
-        # add temporal positional encoding
-        x_seq = self.posenc(x_seq)
-
-        # causal mask (time x time), broadcasted across batch
-        attn_mask = (
-            _causal_mask(x_seq.size(1), device)
-            if self.use_causal_mask else None
-        )
-
-        for blk in self.blocks:
-            x_seq = blk(x_seq, attn_mask)
-
-        return x_seq[:, -1, :]
