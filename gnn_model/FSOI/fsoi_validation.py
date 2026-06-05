@@ -731,7 +731,7 @@ def validate_fsoi_gradients_all(
     instruments_scalar_fd : list of instrument names for per-obs scalar FD test.
         Instruments with very small per-obs gradients will auto-SKIP.
     instruments_directional : list of instrument names for Rademacher direction test.
-        Recommended for: atms, avhrr, ssmis, ascat, amsua, seviri_asr.
+        Recommended for: atms, avhrr, ssmis, ascat, amsua, seviri_asr, seviri_csr.
     instruments_float64 : list of instrument names for float64 per-obs FD test.
         Recommended for: atms, avhrr, ssmis (any SKIP from scalar test).
     output_csv : if provided, write merged results to this path.

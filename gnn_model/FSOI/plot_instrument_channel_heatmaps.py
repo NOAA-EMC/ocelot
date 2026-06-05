@@ -209,6 +209,7 @@ def plot_instrument_heatmap(
     value_col: str,
     title_suffix: str,
     mode: str,
+    verification_target: str = "Radiosonde",
 ) -> tuple[Path, pd.DataFrame]:
     inst_df = agg[agg["instrument"] == instrument].copy()
     if inst_df.empty:
@@ -261,10 +262,10 @@ def plot_instrument_heatmap(
     ax.set_yticklabels(labels, fontsize=8)
     ax.set_xticks(np.arange(len(xlabels)))
     ax.set_xticklabels(xlabels, rotation=45, ha="right", fontsize=8)
-    ax.set_ylabel("(Radiosonde Target Variable, Pressure)")
+    ax.set_ylabel(f"({verification_target} Target Variable, Pressure)")
     ax.set_xlabel(f"{DISPLAY_NAMES.get(instrument, instrument)} channels / variables")
     ax.set_title(
-        f"{DISPLAY_NAMES.get(instrument, instrument)}: {mode_title} by Radiosonde Target\n"
+        f"{DISPLAY_NAMES.get(instrument, instrument)}: {mode_title} by {verification_target} Target\n"
         f"{title_suffix}"
     )
 

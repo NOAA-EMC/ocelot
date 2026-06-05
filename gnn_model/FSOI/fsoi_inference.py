@@ -1253,6 +1253,20 @@ def main():
         help="Pressure level index 0-15 for radiosonde mesh verification "
              "(0=1000hPa … 4=500hPa … 15=10hPa, default: 4=500hPa).",
     )
+    parser.add_argument(
+        "--encoding_order",
+        type=str,
+        default="default",
+        choices=["default", "reversed"],
+        help=(
+            "Observation encoding order into the shared mesh.\n"
+            "  default:  YAML config order — satellite instruments first (ATMS, AMSU-A, ...),\n"
+            "            then conventional (surface_obs, radiosonde, aircraft last).\n"
+            "  reversed: Reverse of config order — conventional first, satellite last.\n"
+            "Use 'reversed' to test whether encoding position drives FSOI rankings\n"
+            "(ENCODING_ORDER_INVESTIGATION.md, Hypothesis H1). No retraining needed."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1314,6 +1328,20 @@ def main():
     print(f"\nLoading model from checkpoint: {checkpoint_path}")
     model = GNNLightning.load_from_checkpoint(checkpoint_path)
     model.to(device)
+
+    # Set encoding order BEFORE freezing — this is a runtime-only attribute,
+    # not a trained parameter. It changes the order instruments write to the
+    # shared mesh during the forward pass without altering any weights.
+    model.encoding_order = args.encoding_order
+    if args.encoding_order != "default":
+        print(f"\n[ENCODING ORDER] Using '{args.encoding_order}' encoding order.")
+        print("  This is the H1 test from ENCODING_ORDER_INVESTIGATION.md:")
+        print("  If FSOI rankings shift substantially, encoding position is a confound.")
+        if args.encoding_order == "reversed":
+            print("  Reversed: conventional obs encode FIRST, satellites encode LAST.")
+    else:
+        print("\n[ENCODING ORDER] Using default (config YAML) encoding order.")
+        print("  Satellite instruments encode first, conventional obs encode last.")
 
     # Freeze model for FSOI
     freeze_model_for_fsoi(model)

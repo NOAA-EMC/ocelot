@@ -84,7 +84,7 @@ validation:
 
   # ── Step 1b: directional derivative (Rademacher, float32) ───────────────
   # Runs for high-N satellite instruments (atms, avhrr, ssmis, ascat, amsua,
-  # seviri_asr). 5 random sign vectors per instrument per check pair.
+  # seviri_asr, seviri_csr). 5 random sign vectors per instrument per check pair.
   # Expected |Δe| for ATMS ~ 90 float32 ULP at ε=0.01.
   directional_derivative_check: true
   directional_n_trials: 5
