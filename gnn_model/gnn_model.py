@@ -1034,13 +1034,30 @@ class GNNLightning(pl.LightningModule):
 
         # --------------------------------------------------------------------
         # STAGE 2: ENCODE (Pass information from observations TO the mesh)
+        # encoding_order can be set at runtime (without retraining) to test
+        # the effect of encoding sequence on FSOI rankings:
+        #   "default"  — YAML config order (satellite → conventional)
+        #   "reversed" — reverse of config order (conventional → satellite)
+        #   "random"   — shuffled each forward pass (training only; not for FSOI)
         # --------------------------------------------------------------------
         encoded_mesh_features = embedded_features["mesh"]
 
-        for edge_type, edge_index in data.edge_index_dict.items():
+        _enc_order = getattr(self, "encoding_order", "default")
+        _enc_edges = [
+            (et, ei) for et, ei in data.edge_index_dict.items()
+            if et[2] == "mesh" and et[0] != "mesh"
+        ]
+        if _enc_order == "reversed":
+            _enc_edges = list(reversed(_enc_edges))
+        elif _enc_order == "random":
+            import random as _random
+            _random.shuffle(_enc_edges)
+        # "default" keeps config YAML order unchanged
+
+        for edge_type, edge_index in _enc_edges:
             src_type, _, dst_type = edge_type
-            print(f"encode: [edge_type] {edge_type}: {edge_index.shape}")
-            if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
+            print(f"encode[{_enc_order}]: [edge_type] {edge_type}: {edge_index.shape}")
+            if True:  # filter already applied above
                 obs_features = embedded_features[src_type]
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
                 device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device

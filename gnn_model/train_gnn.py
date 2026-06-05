@@ -224,6 +224,20 @@ def main():
     parser.add_argument("--data_window_hours", type=int, default=12)
     parser.add_argument("--latent_step_hours", type=int, default=3)
     parser.add_argument(
+        "--encoding_order",
+        type=str,
+        default="default",
+        choices=["default", "reversed", "random"],
+        help=(
+            "Order in which instruments are encoded into the shared mesh.\n"
+            "  default:  YAML config order (satellite-first).\n"
+            "  reversed: Reverse of config order (conventional-first).\n"
+            "  random:   Shuffle per-batch during training; removes positional bias.\n"
+            "Use 'random' for fine-tuning to eliminate the encoding-order gradient asymmetry\n"
+            "identified by the H1 FSOI experiment (ENCODING_ORDER_INVESTIGATION.md)."
+        ),
+    )
+    parser.add_argument(
         "--spatial_mixing_steps",
         type=int,
         default=1,
@@ -511,6 +525,13 @@ def main():
         )
     else:
         model = GNNLightning(**model_kwargs)
+
+    # Apply encoding order (runtime attribute — not a trained parameter).
+    # "random" shuffles instrument encoding order each forward pass to remove
+    # the positional gradient-path bias identified in ENCODING_ORDER_INVESTIGATION.md.
+    model.encoding_order = str(args.encoding_order)
+    if args.encoding_order != "default":
+        print(f"[ENCODING ORDER] '{args.encoding_order}' — gradient-path bias mitigation active.")
 
     data_module = GNNDataModule(
         data_path=data_path,
