@@ -515,14 +515,26 @@ def main():
     )
 
     if resume_path and args.load_weights_only:
-        print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
+        # Load weights only on rank 0 to avoid 8-rank simultaneous torch.load
+        # which spikes CPU RAM and can cause OOM during DDP init.
+        # All other ranks start with random init; Lightning's DDP broadcast
+        # then synchronises weights from rank 0 before the first step.
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        global_rank = int(os.environ.get("SLURM_PROCID", os.environ.get("RANK", 0)))
+
         model = GNNLightning(**model_kwargs)
-        ckpt = torch.load(resume_path, map_location="cpu")
-        state = ckpt.get("state_dict", ckpt)
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(
-            f"[INFO] Weights-only load complete. missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
-        )
+
+        if global_rank == 0:
+            print(f"[INFO] Rank 0: loading weights from {resume_path}")
+            ckpt = torch.load(resume_path, map_location="cpu")
+            state = ckpt.get("state_dict", ckpt)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(
+                f"[INFO] Weights-only load complete. missing={len(missing)} unexpected={len(unexpected)}"
+            )
+            del ckpt, state  # free CPU RAM before DDP init
+        else:
+            print(f"[INFO] Rank {global_rank}: waiting for rank-0 weight broadcast.")
     else:
         model = GNNLightning(**model_kwargs)
 

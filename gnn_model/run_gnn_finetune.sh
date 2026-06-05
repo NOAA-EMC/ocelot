@@ -85,15 +85,16 @@ CKPT_LAST="${CKPT_DIR}/last.ckpt"
 if [ -f "$CKPT_LAST" ]; then
     echo "[INFO] Resuming fine-tune from: $CKPT_LAST"
     RESUME_ARGS=(--resume_from_latest)
-    WEIGHTS_ARGS=()
 else
-    echo "[INFO] Starting fresh fine-tune from baseline checkpoint."
+    echo "[INFO] Starting fresh fine-tune from baseline checkpoint (weights only)."
+    # --load_weights_only uses Lightning's DDP-safe loading (rank-0 loads, broadcasts)
+    # rather than all ranks loading simultaneously, which avoids the OOM spike.
     RESUME_ARGS=(--resume_from_checkpoint "$BASELINE_CKPT" --load_weights_only)
-    WEIGHTS_ARGS=()
 fi
 
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
     --run_name "$RUN_NAME" \
+    --num_nodes "${SLURM_NNODES:-4}" \
     "${RESUME_ARGS[@]}" \
     \
     `# ── Architecture (must match M0 checkpoint exactly) ──` \
