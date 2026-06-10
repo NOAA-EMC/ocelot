@@ -51,12 +51,47 @@ class InteractionProcessor(FlatProcessorBase):
                 )
             )
 
-    def forward(
-        self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
+
+    def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
+        """
+        Forward pass through hierarchical temporal transformer.
+
+        Args:
+            data: HeteroData containing mesh edge indices and attributes for all levels
+            encoded_features: dict of encoded features for the finest level (level 0)
+
+        Returns:
+            List of [N_level, H] updated mesh states per level
+        """
+
+        step_info = self._get_latent_step_info(data)
+        num_latent_steps = step_info["num_steps"]
+        step_mapping = step_info["step_mapping"]
+        edge_mapping = self._map_step_edges(data, step_mapping)
+
+        self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
+        self.debug(f"[LATENT] Step mapping: {step_mapping}")
+        
+        for step in range(num_latent_steps):
+            processed_x_dict = self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
+
+        current_mesh_features = processed_x_dict["mesh"]
+
+        return output_list
+    
+    
+    def _do_forward_step(self, step, num_latent_steps, x_seq):
         """
         Processes the graph through multiple message-passing steps.
         """
+        # Remove decoder edges (mesh → target), but keep encoder edges (input → mesh)
+        processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
+                           if "_target" not in et[2]}
+
+        # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
+        step_features = encoded_features.copy()
+        step_features["mesh"] = current_mesh_features
+        
         processed_x_dict = x_dict
         for i in range(self.num_message_passing_steps):
             residual_x_dict = processed_x_dict
@@ -71,5 +106,4 @@ class InteractionProcessor(FlatProcessorBase):
                 processed_x_dict[node_type] = self.norms[i][node_type](
                     processed_x_dict[node_type] + residual_x_dict[node_type]
                 )
-
         return processed_x_dict

@@ -25,7 +25,7 @@ from modules.coder.attn_bipartite import BipartiteGAT
 from modules.coder.interaction_net import InteractionNet
 from modules.processor.interaction_processor import InteractionProcessor
 from modules.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
-from modules.processor.sliding_window_transform_processor import SlidingWindowTransformerProcessor
+from gnn_model.modules.processor.sliding_window_transformer import SlidingWindowTransformerProcessor
 from modules.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
 from modules.mesh.hierarchical_mesh import HierarchicalMesh
 
@@ -275,6 +275,7 @@ class GNNLightning(pl.LightningModule):
         print(f"  - Decoder type: {decoder_type}")
         print(f"{'='*70}\n")
 
+        self.mesh_resolution = mesh_resolution
         self.mesh = mesh_factory.build(mesh_type, mesh_levels, mesh_resolution)
 
         # # --- Initialize Network Dictionaries ---
@@ -1106,396 +1107,172 @@ class GNNLightning(pl.LightningModule):
         # Local list for mesh features
         mesh_features_per_step = [] if self.enable_mesh_pred else None
 
-        processed_levels = self.swt(data, encoded_features)
+        self.swt = HierarchicalSlidingWindowTransformer(HierarchicalMesh(self.mesh_levels, self.mesh_resolution, False), 
+                                                        self.hidden_dim, 
+                                                        self.num_layers, 
+                                                        self.num_heads, 
+                                                        self.dropout)
 
-        for step in range(num_latent_steps):
-            self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
-            # --- PROCESS: evolve mesh one step ---
-            if self.processor_type == "sliding_transformer":
-                if self.is_hierarchical:
-                    # # Hierarchical transformer: process all mesh levels with cross-scale attention
-                    # print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
-                    # # Prepare mesh features for all levels
-                    # # NOTE: Level ordering is [finest, ..., coarsest] (level 0 = finest, level -1 = coarsest)
-                    # mesh_features_list = []
+        # for step in range(num_latent_steps):
+        #     self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
 
-                    # for level in range(self.num_mesh_levels):
-                    #     level_mesh_x = getattr(self, f"mesh_x_level_{level}")
 
-                    #     # Only the FINEST level (level 0) receives encoded features
-                    #     # Coarser levels start with zeros
-                    #     # TODO: Could distribute encoded features across levels based on spatial scale
-                    #     if level == 0:  # Finest level
-                    #         mesh_features_list.append(current_mesh_features)
-                    #     else:
-                    #         # Initialize coarser levels with zeros
-                    #         num_nodes_this_level = level_mesh_x.shape[0]
-                    #         mesh_features_list.append(
-                    #             torch.zeros(num_nodes_this_level, self.hidden_dim,
-                    #                         device=current_mesh_features.device)
-                    #         )
+        #     ###### DELETED SECTION #######
 
-                    # print(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
 
-                    # # Prepare up/down edge indices for cross-scale attention
-                    # up_edge_index_list = []
-                    # down_edge_index_list = []
+        #     # Save mesh features if needed (independent of self.training check here)
+        #     if self.enable_mesh_pred:
+        #         mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
 
-                    # for level in range(self.num_mesh_levels - 1):
-                    #     up_ei = getattr(self, f"mesh_up_edge_index_{level}")
-                    #     down_ei = getattr(self, f"mesh_down_edge_index_{level}")
-                    #     up_edge_index_list.append(up_ei)
-                    #     down_edge_index_list.append(down_ei)
+        #     self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
 
-                    # print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
+        #     # STAGE 4B: DECODE - Generate predictions for this latent step
+        #     mesh_features_processed = current_mesh_features
 
-                    # # Process through hierarchical transformer
-                    # mesh_edge_index_list = [
-                    #     getattr(self, f"mesh_edge_index_level_{lvl}")
-                    #     for lvl in range(self.num_mesh_levels)
-                    # ]
-                    # mesh_edge_attr_list = [
-                    #     getattr(self, f"mesh_edge_attr_level_{lvl}")
-                    #     for lvl in range(self.num_mesh_levels)
-                    # ]
-                    # processed_levels = self.swt(step, num_latent_steps, current_mesh_features)
+        #     # Process all instruments for this step
+        #     for base_type, steps_dict in step_mapping.items():
+        #         if step in steps_dict:
+        #             step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
 
-                    print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
+        #             # Find the corresponding edge
+        #             step_edge_type = None
+        #             step_edge_index = None
+        #             for edge_type, edge_index in data.edge_index_dict.items():
+        #                 src_type, _, dst_type = edge_type
+        #                 if src_type == "mesh" and dst_type == step_node_type:
+        #                     step_edge_type = edge_type
+        #                     step_edge_index = edge_index
+        #                     print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
+        #                     break
 
-                    # COARSE→FINE CONDITIONING: Add hierarchical information flow
-                    # Gather coarse features (L1) to fine nodes (L0) for better multi-scale learning
-                    if self.num_mesh_levels > 1:
-                        fine_features = processed_levels[0]  # [N_fine, H] - finest level (L0)
-                        coarse_features = processed_levels[1]  # [N_coarse, H] - coarse level (L1)
+        #             if step_edge_type is None or step_edge_index is None:
+        #                 self.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
+        #                 continue
 
-                        # DIRECTION CHECK: down_edges should be coarse→fine
-                        # mesh_down_edge_index_0: L1→L0 (coarse to fine)
-                        # Shape: [2, E] where [0, :] = source (coarse), [1, :] = target (fine)
-                        down_edge_index = getattr(self, "mesh_down_edge_index_0")
+        #             # Get the decoder (mapped to base instrument)
+        #             decoder_key = edge_mapping.get(step_edge_type)
+        #             if decoder_key not in self.observation_decoders:
+        #                 self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
+        #                 continue
 
-                        # Verify directionality: source indices should be < N_coarse
-                        if step == 0 and self.global_step == 0:
-                            src_max = down_edge_index[0].max().item()
-                            dst_max = down_edge_index[1].max().item()
-                            print(f"[COARSE→FINE] Edge direction check: src_max={src_max} (expect <{coarse_features.shape[0]}), "
-                                  f"dst_max={dst_max} (expect <{fine_features.shape[0]})")
+        #             decoder = self.observation_decoders[decoder_key]
+        #             decoder.edge_index = step_edge_index
 
-                        # Gather: each edge gets coarse features from source
-                        coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]
+        #             # Condition decoder on viewing geometry at initialization
+        #             # - For satellites: viewing zenith angle (scan angle)
+        #             # - For radiosonde/aircraft: pressure level (vertical viewing geometry)
+        #             reference_device = mesh_features_processed.device
+        #             N = data[step_node_type].num_nodes
 
-                        # Aggregate to fine nodes using mean (stable across variable degree)
-                        fine_conditioned = torch.zeros_like(fine_features)
-                        fine_conditioned.scatter_reduce_(
-                            0,
-                            down_edge_index[1].unsqueeze(-1).expand(-1, self.hidden_dim),
-                            coarse_gathered,
-                            reduce='mean'  # Mean is safest - keeps scale stable
-                        )
+        #             # Embed viewing geometry information FIRST (before decoder initialization)
+        #             sa_emb = None
+        #             pressure_emb = None
+        #             time_emb = None
+        #             if base_type == "ascat_target":
+        #                 scan_angle = data[step_node_type].x  # [N,3] for ASCAT
+        #                 sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
+        #             elif base_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
+        #                 scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR/CrIS-PCA
+        #                 sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
 
-                        # Normalize coarse signal before projection
-                        fine_conditioned_norm = self.coarse_to_fine_norm(fine_conditioned)
+        #                 # Diagnostic: verify scan angle varies
+        #                 if base_type == "atms_target" and self.global_step % 200 == 0:
+        #                     sa = data[step_node_type].x
+        #                     if sa.numel() == 0:
+        #                         print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
+        #                     else:
+        #                         sa_f = sa.float()
+        #                         mean_v = sa_f.mean().item()
+        #                         std_v = sa_f.std(unbiased=False).item()
+        #                         min_v = sa_f.min().item()
+        #                         max_v = sa_f.max().item()
+        #                         print(
+        #                             f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={mean_v:.4f}, "
+        #                             f"std={std_v:.4f}, min={min_v:.4f}, max={max_v:.4f}"
+        #                         )
+        #             elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
+        #                 # For radiosonde and aircraft: condition on pressure level (vertical geometry)
+        #                 pressure_level_idx = data[step_node_type].pressure_level  # [N]
+        #                 pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
 
-                        # Project to delta
-                        delta = self.coarse_to_fine_proj(fine_conditioned_norm)
+        #             if hasattr(data[step_node_type], "target_metadata"):
+        #                 target_metadata = data[step_node_type].target_metadata
+        #                 if (
+        #                     target_metadata is not None
+        #                     and target_metadata.numel() > 0
+        #                     and target_metadata.size(1) >= (2 + self.target_time_feature_dim)
+        #                 ):
+        #                     time_feat = target_metadata[:, -self.target_time_feature_dim:].to(reference_device)
+        #                     time_emb = self.target_time_embedder(time_feat)
 
-                        # Gated residual: model learns how much coarse info to use
-                        gate_input = torch.cat([fine_features, fine_conditioned_norm], dim=-1)  # [N, 2H]
-                        gate = self.coarse_to_fine_gate(gate_input)  # [N, H] in [0, 1]
+        #             # Decoder initialization: CONDITION on viewing geometry
+        #             # Instead of zeros, initialize decoder WITH geometry information
+        #             if sa_emb is not None:
+        #                 # Satellite: condition decoder on scan angle (viewing zenith angle)
+        #                 if self.scan_angle_projector is not None:
+        #                     target_features_initial = self.scan_angle_projector(sa_emb)
+        #                 else:
+        #                     # Backward-compatible behavior: scan info only in the last dims.
+        #                     padding_dim = self.hidden_dim - self.scan_angle_embed_dim
+        #                     target_features_initial = torch.cat([
+        #                         torch.zeros(N, padding_dim, device=reference_device),
+        #                         sa_emb
+        #                     ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
+        #             elif pressure_emb is not None:
+        #                 # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
+        #                 # Make prediction explicitly depend on geometry
+        #                 if self.pressure_level_projector is not None:
+        #                     target_features_initial = self.pressure_level_projector(pressure_emb)
+        #                 else:
+        #                     padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+        #                     target_features_initial = torch.cat([
+        #                         torch.zeros(N, padding_dim, device=reference_device),
+        #                         pressure_emb
+        #                     ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+        #             else:
+        #                 # Conventional obs without viewing geometry: use zeros
+        #                 target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
 
-                        # Final: fine + gated coarse contribution
-                        current_mesh_features = fine_features + gate * delta
+        #             # Add target-time conditioning as an additive bias over the full hidden_dim.
+        #             if time_emb is not None:
+        #                 target_features_initial = target_features_initial + self.target_time_projector(time_emb)
 
-                        if step == 0:  # Diagnostics once per batch
-                            delta_norm = delta.norm(dim=-1).mean().item()
-                            gate_mean = gate.mean().item()
-                            print(f"[COARSE→FINE] L1({coarse_features.shape[0]})→L0({fine_features.shape[0]}) | "
-                                  f"δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
-                    else:
-                        # Use the finest level output (level 0)
-                        current_mesh_features = processed_levels[0]
-                else:
-                    # Single-level transformer for fixed mesh
-                    print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
-                    current_mesh_features = self.swt(
-                        current_mesh_features,
-                        mesh_edge_index=data[("mesh", "to", "mesh")].edge_index,
-                        mesh_edge_attr=data[("mesh", "to", "mesh")].edge_attr,
-                    )
-            elif self.is_hierarchical and self.processor_type == "interaction":
-                # Hierarchical processor with InteractionNet: process across multiple mesh levels
-                # Prepare mesh features for all levels (replicate for batch)
-                mesh_features_list = []
-                mesh_edge_index_list = []
-                mesh_edge_attr_list = []
+        #             edge_attr = self._edge_features(
+        #                 data=data,
+        #                 edge_type=step_edge_type,
+        #                 edge_index=step_edge_index,
+        #                 device=reference_device,
+        #                 dtype=mesh_features_processed.dtype,
+        #             )
 
-                for level in range(self.num_mesh_levels):
-                    level_mesh_x = getattr(self, f"mesh_x_level_{level}")
-                    level_mesh_ei = getattr(self, f"mesh_edge_index_level_{level}")
-                    level_mesh_ea = getattr(self, f"mesh_edge_attr_level_{level}")
+        #             # Decoder now receives GEOMETRY-CONDITIONED initialization
+        #             # This ensures the model CANNOT make predictions without knowing viewing geometry
+        #             decoded_target_features = decoder(
+        #                 send_rep=mesh_features_processed,
+        #                 rec_rep=target_features_initial,  # NOW conditioned on viewing geometry!
+        #                 edge_rep=edge_attr,
+        #             )
 
-                    # Only the FINEST level (level 0) receives encoded features
-                    # Future: distribute features across levels
-                    if level == 0:
-                        mesh_features_list.append(current_mesh_features)
-                    else:
-                        # Initialize coarser levels with zeros for now
-                        num_nodes_this_level = level_mesh_x.shape[0]
-                        mesh_features_list.append(
-                            torch.zeros(num_nodes_this_level, self.hidden_dim,
-                                        device=current_mesh_features.device)
-                        )
+        #             # Decoder output goes directly to output mapper
+        #             # The model learns to use the geometry information that's embedded in target_features_initial
 
-                    # Batch the edge indices
-                    num_nodes_this_level = level_mesh_x.shape[0]
-                    batched_ei = [level_mesh_ei + i * num_nodes_this_level for i in range(num_graphs)]
-                    mesh_edge_index_list.append(torch.cat(batched_ei, dim=1))
-                    mesh_edge_attr_list.append(level_mesh_ea.repeat(num_graphs, 1))
+        #             # Diagnostic logging for radiosonde
+        #             if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
+        #                 print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
 
-                # Prepare up/down connections
-                up_edge_index_list = []
-                up_edge_attr_list = []
-                down_edge_index_list = []
-                down_edge_attr_list = []
+        #             # Diagnostic logging for satellites
+        #             if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
+        #                 print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
 
-                for level in range(self.num_mesh_levels - 1):
-                    up_ei = getattr(self, f"mesh_up_edge_index_{level}")
-                    up_ea = getattr(self, f"mesh_up_edge_attr_{level}")
-                    down_ei = getattr(self, f"mesh_down_edge_index_{level}")
-                    down_ea = getattr(self, f"mesh_down_edge_attr_{level}")
+        #             # Safety: verify mapper exists before using
+        #             assert base_type in self.output_mappers, f"Missing output mapper for {base_type}"
+        #             step_prediction = self.output_mappers[base_type](decoded_target_features)
 
-                    # Batch the hierarchical edges
-                    num_nodes_fine = getattr(self, f"mesh_x_level_{level}").shape[0]
-                    num_nodes_coarse = getattr(self, f"mesh_x_level_{level+1}").shape[0]
+        #             # Store prediction for this step
+        #             predictions[base_type].append(step_prediction)
+        #             print(f"predict: [node_type] {base_type}: {step_prediction.shape}")
 
-                    batched_up_ei = []
-                    batched_down_ei = []
-                    for i in range(num_graphs):
-                        batched_up_ei.append(up_ei + torch.tensor([[i * num_nodes_fine], [i * num_nodes_coarse]], device=up_ei.device))
-                        batched_down_ei.append(down_ei + torch.tensor([[i * num_nodes_coarse], [i * num_nodes_fine]], device=down_ei.device))
-
-                    up_edge_index_list.append(torch.cat(batched_up_ei, dim=1))
-                    up_edge_attr_list.append(up_ea.repeat(num_graphs, 1))
-                    down_edge_index_list.append(torch.cat(batched_down_ei, dim=1))
-                    down_edge_attr_list.append(down_ea.repeat(num_graphs, 1))
-
-                # Process through hierarchical processor
-                processed_levels = self.processor(
-                    mesh_features_list,
-                    mesh_edge_index_list,
-                    mesh_edge_attr_list,
-                    up_edge_index_list,
-                    up_edge_attr_list,
-                    down_edge_index_list,
-                    down_edge_attr_list,
-                )
-
-                # COARSE→FINE CONDITIONING: Add hierarchical information flow (InteractionNet path)
-                if self.num_mesh_levels > 1:
-                    fine_features = processed_levels[0]  # [N_fine * batch, H]
-                    coarse_features = processed_levels[1]  # [N_coarse * batch, H]
-
-                    # Use batched down edges (L1→L0) for conditioning
-                    # Already batched for multiple graphs
-                    down_edge_index = down_edge_index_list[0]  # Already batched
-
-                    # Direction check (only once at start)
-                    if step == 0 and self.global_step == 0:
-                        src_max = down_edge_index[0].max().item()
-                        dst_max = down_edge_index[1].max().item()
-                        print(f"[COARSE→FINE] InteractionNet edge check: src_max={src_max}, dst_max={dst_max}")
-
-                    # Gather coarse features to fine nodes
-                    coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]
-
-                    # Aggregate to fine nodes (mean for stability)
-                    fine_conditioned = torch.zeros_like(fine_features)
-                    fine_conditioned.scatter_reduce_(
-                        0,
-                        down_edge_index[1].unsqueeze(-1).expand(-1, self.hidden_dim),
-                        coarse_gathered,
-                        reduce='mean'
-                    )
-
-                    # Normalize → Project → Gate
-                    fine_conditioned_norm = self.coarse_to_fine_norm(fine_conditioned)
-                    delta = self.coarse_to_fine_proj(fine_conditioned_norm)
-                    gate_input = torch.cat([fine_features, fine_conditioned_norm], dim=-1)
-                    gate = self.coarse_to_fine_gate(gate_input)
-
-                    # Gated residual
-                    current_mesh_features = fine_features + gate * delta
-
-                    if step == 0:  # Diagnostics
-                        delta_norm = delta.norm(dim=-1).mean().item()
-                        gate_mean = gate.mean().item()
-                        print(f"[COARSE→FINE] InteractionNet: δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
-                else:
-                    # Use the finest level output (level 0)
-                    current_mesh_features = processed_levels[0]
-            else:  # standard processor (fixed mesh or hierarchical with transformer)
-                # Remove decoder edges (mesh → target), but keep encoder edges (input → mesh)
-                processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
-                                   if "_target" not in et[2]}
-
-                # STAGE 4A: PROCESS - Evolve mesh state forward one latent step
-                step_features = encoded_features.copy()
-                step_features["mesh"] = current_mesh_features
-                processed = self.processor(step_features, processor_edges)
-                current_mesh_features = processed["mesh"]
-
-            # Save mesh features if needed (independent of self.training check here)
-            if self.enable_mesh_pred:
-                mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
-
-            self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
-
-            # STAGE 4B: DECODE - Generate predictions for this latent step
-            mesh_features_processed = current_mesh_features
-
-            # Process all instruments for this step
-            for base_type, steps_dict in step_mapping.items():
-                if step in steps_dict:
-                    step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
-
-                    # Find the corresponding edge
-                    step_edge_type = None
-                    step_edge_index = None
-                    for edge_type, edge_index in data.edge_index_dict.items():
-                        src_type, _, dst_type = edge_type
-                        if src_type == "mesh" and dst_type == step_node_type:
-                            step_edge_type = edge_type
-                            step_edge_index = edge_index
-                            print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
-                            break
-
-                    if step_edge_type is None or step_edge_index is None:
-                        self.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
-                        continue
-
-                    # Get the decoder (mapped to base instrument)
-                    decoder_key = edge_mapping.get(step_edge_type)
-                    if decoder_key not in self.observation_decoders:
-                        self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
-                        continue
-
-                    decoder = self.observation_decoders[decoder_key]
-                    decoder.edge_index = step_edge_index
-
-                    # Condition decoder on viewing geometry at initialization
-                    # - For satellites: viewing zenith angle (scan angle)
-                    # - For radiosonde/aircraft: pressure level (vertical viewing geometry)
-                    reference_device = mesh_features_processed.device
-                    N = data[step_node_type].num_nodes
-
-                    # Embed viewing geometry information FIRST (before decoder initialization)
-                    sa_emb = None
-                    pressure_emb = None
-                    time_emb = None
-                    if base_type == "ascat_target":
-                        scan_angle = data[step_node_type].x  # [N,3] for ASCAT
-                        sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
-                    elif base_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
-                        scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR/CrIS-PCA
-                        sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
-
-                        # Diagnostic: verify scan angle varies
-                        if base_type == "atms_target" and self.global_step % 200 == 0:
-                            sa = data[step_node_type].x
-                            if sa.numel() == 0:
-                                print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
-                            else:
-                                sa_f = sa.float()
-                                mean_v = sa_f.mean().item()
-                                std_v = sa_f.std(unbiased=False).item()
-                                min_v = sa_f.min().item()
-                                max_v = sa_f.max().item()
-                                print(
-                                    f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={mean_v:.4f}, "
-                                    f"std={std_v:.4f}, min={min_v:.4f}, max={max_v:.4f}"
-                                )
-                    elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
-                        # For radiosonde and aircraft: condition on pressure level (vertical geometry)
-                        pressure_level_idx = data[step_node_type].pressure_level  # [N]
-                        pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
-
-                    if hasattr(data[step_node_type], "target_metadata"):
-                        target_metadata = data[step_node_type].target_metadata
-                        if (
-                            target_metadata is not None
-                            and target_metadata.numel() > 0
-                            and target_metadata.size(1) >= (2 + self.target_time_feature_dim)
-                        ):
-                            time_feat = target_metadata[:, -self.target_time_feature_dim:].to(reference_device)
-                            time_emb = self.target_time_embedder(time_feat)
-
-                    # Decoder initialization: CONDITION on viewing geometry
-                    # Instead of zeros, initialize decoder WITH geometry information
-                    if sa_emb is not None:
-                        # Satellite: condition decoder on scan angle (viewing zenith angle)
-                        if self.scan_angle_projector is not None:
-                            target_features_initial = self.scan_angle_projector(sa_emb)
-                        else:
-                            # Backward-compatible behavior: scan info only in the last dims.
-                            padding_dim = self.hidden_dim - self.scan_angle_embed_dim
-                            target_features_initial = torch.cat([
-                                torch.zeros(N, padding_dim, device=reference_device),
-                                sa_emb
-                            ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
-                    elif pressure_emb is not None:
-                        # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
-                        # Make prediction explicitly depend on geometry
-                        if self.pressure_level_projector is not None:
-                            target_features_initial = self.pressure_level_projector(pressure_emb)
-                        else:
-                            padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-                            target_features_initial = torch.cat([
-                                torch.zeros(N, padding_dim, device=reference_device),
-                                pressure_emb
-                            ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
-                    else:
-                        # Conventional obs without viewing geometry: use zeros
-                        target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
-
-                    # Add target-time conditioning as an additive bias over the full hidden_dim.
-                    if time_emb is not None:
-                        target_features_initial = target_features_initial + self.target_time_projector(time_emb)
-
-                    edge_attr = self._edge_features(
-                        data=data,
-                        edge_type=step_edge_type,
-                        edge_index=step_edge_index,
-                        device=reference_device,
-                        dtype=mesh_features_processed.dtype,
-                    )
-
-                    # Decoder now receives GEOMETRY-CONDITIONED initialization
-                    # This ensures the model CANNOT make predictions without knowing viewing geometry
-                    decoded_target_features = decoder(
-                        send_rep=mesh_features_processed,
-                        rec_rep=target_features_initial,  # NOW conditioned on viewing geometry!
-                        edge_rep=edge_attr,
-                    )
-
-                    # Decoder output goes directly to output mapper
-                    # The model learns to use the geometry information that's embedded in target_features_initial
-
-                    # Diagnostic logging for radiosonde
-                    if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
-                        print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
-
-                    # Diagnostic logging for satellites
-                    if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
-                        print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
-
-                    # Safety: verify mapper exists before using
-                    assert base_type in self.output_mappers, f"Missing output mapper for {base_type}"
-                    step_prediction = self.output_mappers[base_type](decoded_target_features)
-
-                    # Store prediction for this step
-                    predictions[base_type].append(step_prediction)
-                    print(f"predict: [node_type] {base_type}: {step_prediction.shape}")
-
-                    self.debug(f"[LATENT] Step {step} - {base_type}: {step_prediction.shape}")
+        #             self.debug(f"[LATENT] Step {step} - {base_type}: {step_prediction.shape}")
 
         # Verify all instruments have correct number of predictions
         for base_type, pred_list in predictions.items():

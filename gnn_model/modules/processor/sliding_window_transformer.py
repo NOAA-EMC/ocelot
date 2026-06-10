@@ -149,7 +149,7 @@ class SpatialMixBlock(nn.Module):
         return self.norm(x + self.drop(msg))
 
 
-class SlidingWindowTransformerProcessor(FlatProcessorBase):
+class SlidingWindowTransformer(FlatProcessorBase):
     """
     Temporal transformer over a rolling window of latent mesh states.
     Call reset() at the start of each new sequence/bin;
@@ -187,12 +187,27 @@ class SlidingWindowTransformerProcessor(FlatProcessorBase):
         for s in states[-self.window:]:
             self.cache.append(s.detach())
 
-    def forward(
-        self,
-        x_mesh: torch.Tensor,
-        mesh_edge_index: Optional[torch.Tensor] = None,
-        mesh_edge_attr: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
+        """
+        x_mesh: [N_mesh, H] current latent mesh state
+        returns: [N_mesh, H] updated latent mesh state
+        """
+
+        step_info = self._get_latent_step_info(data)
+        num_latent_steps = step_info["num_steps"]
+        step_mapping = step_info["step_mapping"]
+        edge_mapping = self._map_step_edges(data, step_mapping)
+
+        self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
+        self.debug(f"[LATENT] Step mapping: {step_mapping}")
+        
+        for step in range(num_latent_steps):
+            self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
+
+        return x_seq[:, -1, :]
+    
+    
+    def _do_forward_step(self, x_mesh: torch.Tensor) -> torch.Tensor:
         """
         x_mesh: [N_mesh, H] current latent mesh state
         returns: [N_mesh, H] updated latent mesh state
