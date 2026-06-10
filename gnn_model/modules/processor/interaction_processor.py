@@ -9,10 +9,13 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 
+from ..mesh.fixed_mesh import FixedMesh
+
 from .interaction_network import InteractionNetwork
+from .flat_processor_base import FlatProcessorBase
 
 
-class Processor(nn.Module):
+class InteractionProcessor(FlatProcessorBase):
     """
     A Processor module that applies multiple steps of message passing using
     InteractionNetwork blocks, inspired by graphcast's processor.
@@ -22,12 +25,17 @@ class Processor(nn.Module):
 
     def __init__(
         self,
+        mesh: FixedMesh,
         hidden_dim: int,
         node_types: List[str],
         edge_types: List[Tuple[str, str, str]],
         num_message_passing_steps: int,
     ):
-        super().__init__()
+        super().__init__(mesh)
+
+        if not isinstance(mesh, FixedMesh):
+            raise ValueError("InteractionProcessor requires a FixedMesh instance")
+
         self.num_message_passing_steps = num_message_passing_steps
 
         self.layers = nn.ModuleList()

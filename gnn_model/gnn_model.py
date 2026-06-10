@@ -23,14 +23,17 @@ from torch_geometric.data import HeteroData
 
 from modules.coder.attn_bipartite import BipartiteGAT
 from modules.coder.interaction_net import InteractionNet
-from modules.processor.processor import Processor
-from modules.processor.interaction_hierarchical_processor import HierarchicalProcessor
-from modules.processor.processor_transformer import SlidingWindowTransformerProcessor
-from modules.processor.processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
+from modules.processor.interaction_processor import InteractionProcessor
+from modules.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
+from modules.processor.sliding_window_transform_processor import SlidingWindowTransformerProcessor
+from modules.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
+from modules.mesh.hierarchical_mesh import HierarchicalMesh
+
 from utils import make_mlp
 from modules.mesh.create_mesh_graph_global import create_mesh
 from loss import weighted_huber_loss, weighted_mse_loss
 from process_timeseries import _encode_target_time_features
+
 
 ####
 from modules.mesh.mesh import Mesh
@@ -334,6 +337,7 @@ class GNNLightning(pl.LightningModule):
                 print(f"[PROCESSOR INIT] Creating HierarchicalSlidingWindowTransformer")
                 print(f"[PROCESSOR INIT]   - Levels: {self.num_mesh_levels}, Window: {processor_window}, Depth: {processor_depth}")
                 self.swt = HierarchicalSlidingWindowTransformer(
+                    mesh=HierarchicalMesh(self.num_mesh_levels, self.mesh_resolution),
                     hidden_dim=self.hidden_dim,
                     num_levels=self.num_mesh_levels,
                     window=processor_window,
@@ -1102,63 +1106,59 @@ class GNNLightning(pl.LightningModule):
         # Local list for mesh features
         mesh_features_per_step = [] if self.enable_mesh_pred else None
 
+        processed_levels = self.swt(data, encoded_features)
+
         for step in range(num_latent_steps):
             self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
             # --- PROCESS: evolve mesh one step ---
             if self.processor_type == "sliding_transformer":
                 if self.is_hierarchical:
-                    # Hierarchical transformer: process all mesh levels with cross-scale attention
-                    print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
-                    # Prepare mesh features for all levels
-                    # NOTE: Level ordering is [finest, ..., coarsest] (level 0 = finest, level -1 = coarsest)
-                    mesh_features_list = []
+                    # # Hierarchical transformer: process all mesh levels with cross-scale attention
+                    # print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using HIERARCHICAL transformer")
+                    # # Prepare mesh features for all levels
+                    # # NOTE: Level ordering is [finest, ..., coarsest] (level 0 = finest, level -1 = coarsest)
+                    # mesh_features_list = []
 
-                    for level in range(self.num_mesh_levels):
-                        level_mesh_x = getattr(self, f"mesh_x_level_{level}")
+                    # for level in range(self.num_mesh_levels):
+                    #     level_mesh_x = getattr(self, f"mesh_x_level_{level}")
 
-                        # Only the FINEST level (level 0) receives encoded features
-                        # Coarser levels start with zeros
-                        # TODO: Could distribute encoded features across levels based on spatial scale
-                        if level == 0:  # Finest level
-                            mesh_features_list.append(current_mesh_features)
-                        else:
-                            # Initialize coarser levels with zeros
-                            num_nodes_this_level = level_mesh_x.shape[0]
-                            mesh_features_list.append(
-                                torch.zeros(num_nodes_this_level, self.hidden_dim,
-                                            device=current_mesh_features.device)
-                            )
+                    #     # Only the FINEST level (level 0) receives encoded features
+                    #     # Coarser levels start with zeros
+                    #     # TODO: Could distribute encoded features across levels based on spatial scale
+                    #     if level == 0:  # Finest level
+                    #         mesh_features_list.append(current_mesh_features)
+                    #     else:
+                    #         # Initialize coarser levels with zeros
+                    #         num_nodes_this_level = level_mesh_x.shape[0]
+                    #         mesh_features_list.append(
+                    #             torch.zeros(num_nodes_this_level, self.hidden_dim,
+                    #                         device=current_mesh_features.device)
+                    #         )
 
-                    print(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
+                    # print(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
 
-                    # Prepare up/down edge indices for cross-scale attention
-                    up_edge_index_list = []
-                    down_edge_index_list = []
+                    # # Prepare up/down edge indices for cross-scale attention
+                    # up_edge_index_list = []
+                    # down_edge_index_list = []
 
-                    for level in range(self.num_mesh_levels - 1):
-                        up_ei = getattr(self, f"mesh_up_edge_index_{level}")
-                        down_ei = getattr(self, f"mesh_down_edge_index_{level}")
-                        up_edge_index_list.append(up_ei)
-                        down_edge_index_list.append(down_ei)
+                    # for level in range(self.num_mesh_levels - 1):
+                    #     up_ei = getattr(self, f"mesh_up_edge_index_{level}")
+                    #     down_ei = getattr(self, f"mesh_down_edge_index_{level}")
+                    #     up_edge_index_list.append(up_ei)
+                    #     down_edge_index_list.append(down_ei)
 
-                    print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
+                    # print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
 
-                    # Process through hierarchical transformer
-                    mesh_edge_index_list = [
-                        getattr(self, f"mesh_edge_index_level_{lvl}")
-                        for lvl in range(self.num_mesh_levels)
-                    ]
-                    mesh_edge_attr_list = [
-                        getattr(self, f"mesh_edge_attr_level_{lvl}")
-                        for lvl in range(self.num_mesh_levels)
-                    ]
-                    processed_levels = self.swt(
-                        mesh_features_list,
-                        up_edge_index_list,
-                        down_edge_index_list,
-                        mesh_edge_index_list=mesh_edge_index_list,
-                        mesh_edge_attr_list=mesh_edge_attr_list,
-                    )
+                    # # Process through hierarchical transformer
+                    # mesh_edge_index_list = [
+                    #     getattr(self, f"mesh_edge_index_level_{lvl}")
+                    #     for lvl in range(self.num_mesh_levels)
+                    # ]
+                    # mesh_edge_attr_list = [
+                    #     getattr(self, f"mesh_edge_attr_level_{lvl}")
+                    #     for lvl in range(self.num_mesh_levels)
+                    # ]
+                    # processed_levels = self.swt(step, num_latent_steps, current_mesh_features)
 
                     print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
 
@@ -1554,34 +1554,34 @@ class GNNLightning(pl.LightningModule):
             # "fixed"
             return self.max_rollout_steps
 
-    def _get_latent_step_info(self, data: HeteroData) -> dict:
-        """
-        Extract information about latent steps from the batch.
-        Returns dict with step mapping and number of steps.
-        """
-        step_info = {}
-        max_step = -1
+    # def _get_latent_step_info(self, data: HeteroData) -> dict:
+    #     """
+    #     Extract information about latent steps from the batch.
+    #     Returns dict with step mapping and number of steps.
+    #     """
+    #     step_info = {}
+    #     max_step = -1
 
-        # Find all step-specific target nodes and map them to base instruments
-        for node_type in data.node_types:
-            if "_target_step" in node_type:
-                # Extract: atms_target_step0 -> (atms_target, 0)
-                parts = node_type.split("_step")
-                if len(parts) == 2:
-                    base_type = parts[0]  # e.g., "atms_target"
-                    try:
-                        step_num = int(parts[1])
-                        if base_type not in step_info:
-                            step_info[base_type] = {}
-                        step_info[base_type][step_num] = node_type
-                        max_step = max(max_step, step_num)
-                    except ValueError:
-                        continue
+    #     # Find all step-specific target nodes and map them to base instruments
+    #     for node_type in data.node_types:
+    #         if "_target_step" in node_type:
+    #             # Extract: atms_target_step0 -> (atms_target, 0)
+    #             parts = node_type.split("_step")
+    #             if len(parts) == 2:
+    #                 base_type = parts[0]  # e.g., "atms_target"
+    #                 try:
+    #                     step_num = int(parts[1])
+    #                     if base_type not in step_info:
+    #                         step_info[base_type] = {}
+    #                     step_info[base_type][step_num] = node_type
+    #                     max_step = max(max_step, step_num)
+    #                 except ValueError:
+    #                     continue
 
-        return {
-            "step_mapping": step_info,
-            "num_steps": max_step + 1 if max_step >= 0 else 0
-        }
+    #     return {
+    #         "step_mapping": step_info,
+    #         "num_steps": max_step + 1 if max_step >= 0 else 0
+    #     }
 
     def _map_step_edges(self, data: HeteroData, step_mapping: dict) -> dict:
         """

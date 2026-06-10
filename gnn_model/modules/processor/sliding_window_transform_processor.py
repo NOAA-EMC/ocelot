@@ -11,6 +11,9 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
+from ..mesh.fixed_mesh import FixedMesh
+from .flat_processor_base import FlatProcessorBase
+
 
 class TemporalPositionalEncoding(nn.Module):
     def __init__(self, hidden_dim: int, max_len: int):
@@ -146,13 +149,14 @@ class SpatialMixBlock(nn.Module):
         return self.norm(x + self.drop(msg))
 
 
-class SlidingWindowTransformerProcessor(nn.Module):
+class SlidingWindowTransformerProcessor(FlatProcessorBase):
     """
     Temporal transformer over a rolling window of latent mesh states.
     Call reset() at the start of each new sequence/bin;
     then call forward() each rollout step.
     """
     def __init__(self,
+                 mesh: FixedMesh,
                  hidden_dim: int,
                  window: int = 4,
                  depth: int = 2,
