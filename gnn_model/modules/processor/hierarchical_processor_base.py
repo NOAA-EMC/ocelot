@@ -7,18 +7,23 @@ Author: Azadeh Gholoubi
 
 import torch.nn as nn
 
+from gnn_model.modules import mesh
+
 from .processor_base import ProcessorBase
-from ..mesh.hierarchical_mesh import HierarchyMesh
+from ..mesh.hierarchical_mesh import HierarchicalMesh
 
 
 class HierarchicalProcessorBase(ProcessorBase):
     def __init__(
         self,
-        mesh: HierarchyMesh,
+        mesh: HierarchicalMesh,
         hidden_dim: int,
         num_levels: int,
         num_message_passing_steps: int = 4,
     ):
+        if not isinstance(mesh, HierarchicalMesh):
+            raise TypeError(f"Expected HierarchicalMesh, got {type(mesh).__name__}")
+
         super().__init__(hidden_dim, num_levels, num_message_passing_steps)
 
         # Coarse→fine conditioning: project coarse features to fine level

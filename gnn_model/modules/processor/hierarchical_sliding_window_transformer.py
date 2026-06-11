@@ -196,10 +196,6 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
             use_causal_mask: Whether to use causal masking (for autoregressive)
             use_cross_scale: Whether to use cross-scale attention between levels
         """
-        
-        if not isinstance(mesh, HierarchicalMesh):
-            raise TypeError(f"Expected HierarchicalMesh, got {type(mesh).__name__}")
-    
         super().__init__(mesh)
         
         self.hidden_dim = hidden_dim

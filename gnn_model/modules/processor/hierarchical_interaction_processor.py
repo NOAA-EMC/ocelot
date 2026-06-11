@@ -58,10 +58,6 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
             num_levels: Number of mesh hierarchy levels
             num_message_passing_steps: Number of message passing steps per level
         """
-
-        if not isinstance(mesh, HierarchicalMesh):
-            raise TypeError(f"Expected HierarchicalMesh, got {type(mesh).__name__}")
-    
         super().__init__(mesh, hidden_dim, num_levels, num_message_passing_steps)
 
         self.hidden_dim = hidden_dim
