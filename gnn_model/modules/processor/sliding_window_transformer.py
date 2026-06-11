@@ -8,6 +8,7 @@ Author: Azadeh Gholoubi
 
 from collections import deque
 from typing import List, Optional
+
 import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData

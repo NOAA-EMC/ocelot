@@ -10,8 +10,10 @@ Author: Azadeh Gholoubi
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional
+
 import torch
 import torch.nn as nn
+from torch_geometric.data import HeteroData
 
 from .processor_base import ProcessorBase
 from ..mesh.hierarchical_mesh import HierarchicalMesh
