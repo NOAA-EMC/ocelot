@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 
 from .processor_base import ProcessorBase
-from ..mesh import HierarchicalMesh
+from ..mesh.hierarchical_mesh import HierarchicalMesh
 
 
 class TemporalPositionalEncoding(nn.Module):
