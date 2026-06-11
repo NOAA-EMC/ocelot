@@ -24,7 +24,7 @@ from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from process_timeseries import extract_features, organize_bins_times
-from modules.mesh.create_mesh_graph_global import obs_mesh_conn
+from modules.mesh.mesh import obs_mesh_conn
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2

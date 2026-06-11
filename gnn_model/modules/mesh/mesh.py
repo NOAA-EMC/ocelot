@@ -14,6 +14,106 @@ GC_SPATIAL_FEATURES_KWARGS = {
     "relative_latitude_local_coordinates": True,
 }
 
+def obs_mesh_conn(
+    grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, o2m=True
+):
+    """Build observation-to-mesh or mesh-to-observation connectivity.
+
+    Args:
+        grid_lat: Observation/target latitudes in degrees.
+        grid_lon: Observation/target longitudes in degrees.
+        m2m_graphs: Mesh graph list from `create_mesh`.
+        mesh_lat_lon_list: Mesh latitude/longitude arrays from `create_mesh`.
+        mesh_list: Full mesh hierarchy from `create_mesh`.
+        o2m: If true, build radius-query obs-to-mesh edges. If false, build
+            mesh-to-target edges using containing mesh triangles.
+
+    Returns:
+        Tuple of `(edge_index, edge_attr)` as torch tensors.
+    """
+
+    # Create lat-lon grid
+    grid_lat_lon_flat = np.stack((grid_lat, grid_lon), axis=1)  # shape (N, 2)
+    num_grid_nodes = grid_lat_lon_flat.shape[0]
+    # flattened, (num_grid_nodes, 2)
+
+    # Because GC code returns indexes into flattened lat-lon matrix, we have to
+    # re-map grid indices. We always work with lon-lat order, to be consistent
+    # with WB2 data.
+    # This creates the correct mapping for the grid indices
+
+    # Grid2Mesh: Radius-based
+    grid_con_mesh = m2m_graphs[0]  # Mesh graph that should be connected to grid
+    grid_con_mesh_lat_lon = mesh_lat_lon_list[0]
+
+    if o2m:
+        # Compute maximum edge distance in finest mesh
+        # pylint: disable-next=protected-access
+        max_mesh_edge_len = _get_max_edge_distance(mesh_list[-1])
+        g2m_connect_radius = 0.6 * max_mesh_edge_len
+        g2m_grid_mesh_indices = gc_gm.radius_query_indices(
+            grid_latitude=grid_lat,
+            grid_longitude=grid_lon,
+            mesh=grid_con_mesh,
+            radius=g2m_connect_radius,
+        )
+        # Returns two arrays of node indices, each [num_edges]
+
+        g2m_edge_index = np.stack(g2m_grid_mesh_indices, axis=0)
+        g2m_edge_index_torch = torch.tensor(g2m_edge_index, dtype=torch.long)
+
+        if g2m_edge_index.shape[1] == 0:
+            g2m_features_torch = torch.empty((0, 4), dtype=DEFAULT_DTYPE)
+        else:
+            # Only care about edge features here
+            _, _, g2m_features = gc_mu.get_bipartite_graph_spatial_features(
+                senders_node_lat=grid_lat_lon_flat[:, 0],
+                senders_node_lon=grid_lat_lon_flat[:, 1],
+                senders=g2m_edge_index[0, :],
+                receivers_node_lat=grid_con_mesh_lat_lon[:, 0],
+                receivers_node_lon=grid_con_mesh_lat_lon[:, 1],
+                receivers=g2m_edge_index[1, :],
+                **GC_SPATIAL_FEATURES_KWARGS,
+            )
+            g2m_features_torch = torch.tensor(g2m_features, dtype=DEFAULT_DTYPE)
+
+    else:
+
+        # Mesh2Grid: Connect to containing mesh triangle
+        m2g_grid_mesh_indices = gc_gm.in_mesh_triangle_indices(
+            grid_latitude=grid_lat,
+            grid_longitude=grid_lon,
+            mesh=mesh_list[-1],
+        )  # Note: Still returned in order (grid, mesh), need to inverse
+        m2g_edge_index = np.stack(m2g_grid_mesh_indices[::-1], axis=0)
+        m2g_edge_index_torch = torch.tensor(m2g_edge_index, dtype=torch.long)
+
+        if m2g_edge_index.shape[1] == 0:
+            m2g_features_torch = torch.empty((0, 4), dtype=DEFAULT_DTYPE)
+        else:
+            # Only care about edge features here
+            _, _, m2g_features = gc_mu.get_bipartite_graph_spatial_features(
+                senders_node_lat=grid_con_mesh_lat_lon[:, 0],
+                senders_node_lon=grid_con_mesh_lat_lon[:, 1],
+                senders=m2g_edge_index[0, :],
+                receivers_node_lat=grid_lat_lon_flat[:, 0],
+                receivers_node_lon=grid_lat_lon_flat[:, 1],
+                receivers=m2g_edge_index[1, :],
+                **GC_SPATIAL_FEATURES_KWARGS,
+            )
+            m2g_features_torch = torch.tensor(m2g_features, dtype=DEFAULT_DTYPE)
+
+    num_mesh_nodes = grid_con_mesh_lat_lon.shape[0]
+    print(
+        f"Created graph with {num_grid_nodes} grid nodes "
+        f"connected to {num_mesh_nodes}"
+    )
+    print(f"#grid / #mesh = {num_grid_nodes/num_mesh_nodes:.2f}")
+    if o2m:
+        return (g2m_edge_index_torch, g2m_features_torch)
+    else:
+        return (m2g_edge_index_torch, m2g_features_torch)
+
 class Mesh(torch.nn.Module):
     def __init__(self, levels: int, resolution: int):
         super().__init__()
