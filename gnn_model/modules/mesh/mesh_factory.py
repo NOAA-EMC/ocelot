@@ -10,8 +10,9 @@ MeshTypes = {
     "hierarchical": HierarchicalMesh
 }
 
-class MeshFactory():
-    def build(self, mesh_type: str, splits: int, mesh_levels: int, plot: bool = False) -> Mesh:
+class MeshFactory:
+        @staticmethod
+    def build(mesh_type: str, splits: int, mesh_levels: int, plot: bool = False) -> Mesh:
         mesh = MeshTypes[mesh_type](levels=mesh_levels, splits=splits)
 
         if plot:

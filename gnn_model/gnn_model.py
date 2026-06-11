@@ -274,7 +274,7 @@ class GNNLightning(pl.LightningModule):
         print(f"{'='*70}\n")
 
         self.mesh_resolution = mesh_resolution
-        self.mesh = mesh_factory.build(mesh_type, mesh_levels, mesh_resolution)
+        self.mesh = MeshFactory.build(mesh_type, mesh_levels, mesh_resolution)
 
         # # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
