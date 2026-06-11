@@ -10,6 +10,7 @@ from collections import deque
 from typing import List, Optional
 import torch
 import torch.nn as nn
+from torch_geometric.data import HeteroData
 
 from ..mesh.fixed_mesh import FixedMesh
 from .flat_processor_base import FlatProcessorBase
