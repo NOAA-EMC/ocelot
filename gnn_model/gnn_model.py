@@ -10,7 +10,6 @@ Author: Azadeh Gholoubi
 import os
 import matplotlib.pyplot as plt
 import pandas as pd
-from gnn_model.modules.mesh import mesh_factory
 import numpy as np
 from datetime import datetime
 from typing import Dict, Tuple, List, Optional
@@ -25,7 +24,7 @@ from modules.coder.attn_bipartite import BipartiteGAT
 from modules.coder.interaction_net import InteractionNet
 from modules.processor.interaction_processor import InteractionProcessor
 from modules.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
-from gnn_model.modules.processor.sliding_window_transformer import SlidingWindowTransformerProcessor
+from modules.processor.sliding_window_transformer import SlidingWindowTransformerProcessor
 from modules.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
 from modules.mesh.hierarchical_mesh import HierarchicalMesh
 
@@ -35,8 +34,8 @@ from process_timeseries import _encode_target_time_features
 
 
 ####
-from .modules.mesh.mesh import Mesh
-from .modules.mesh.mesh_factory import MeshFactory
+from modules.mesh.mesh import Mesh
+from modules.mesh.mesh_factory import MeshFactory
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
     order = []
