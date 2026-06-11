@@ -24,7 +24,7 @@ from modules.coder.attn_bipartite import BipartiteGAT
 from modules.coder.interaction_net import InteractionNet
 from modules.processor.interaction_processor import InteractionProcessor
 from modules.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
-from modules.processor.sliding_window_transformer import SlidingWindowTransformerProcessor
+from modules.processor.sliding_window_transformer import SlidingWindowTransformer
 from modules.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
 from modules.mesh.hierarchical_mesh import HierarchicalMesh
 
