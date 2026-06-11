@@ -1,5 +1,6 @@
 
 import torch.nn as nn
+from torch_geometric.data import HeteroData
 
 
 class ProcessorBase(nn.Module):

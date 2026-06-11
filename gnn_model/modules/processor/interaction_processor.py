@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+from torch_geometric.data import HeteroData
 
 from ..mesh.fixed_mesh import FixedMesh
 

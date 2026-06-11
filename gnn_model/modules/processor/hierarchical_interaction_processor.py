@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+from torch_geometric.data import HeteroData
 
 from .hierarchical_processor_base import HierarchicalProcessorBase
 from ..mesh.hierarchical_mesh import HierarchicalMesh
