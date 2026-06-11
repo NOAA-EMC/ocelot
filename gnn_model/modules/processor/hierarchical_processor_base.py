@@ -7,8 +7,6 @@ Author: Azadeh Gholoubi
 
 import torch.nn as nn
 
-from gnn_model.modules import mesh
-
 from .processor_base import ProcessorBase
 from ..mesh.hierarchical_mesh import HierarchicalMesh
 
