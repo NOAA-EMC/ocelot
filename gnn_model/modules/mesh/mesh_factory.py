@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 
-from .mesh.mesh import Mesh
+from .mesh import Mesh
 from .fixed_mesh import FixedMesh
 from .hierarchical_mesh import HierarchicalMesh
 

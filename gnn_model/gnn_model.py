@@ -30,14 +30,13 @@ from modules.processor.hierarchical_sliding_window_transformer import Hierarchic
 from modules.mesh.hierarchical_mesh import HierarchicalMesh
 
 from utils import make_mlp
-from modules.mesh.create_mesh_graph_global import create_mesh
 from loss import weighted_huber_loss, weighted_mse_loss
 from process_timeseries import _encode_target_time_features
 
 
 ####
-from modules.mesh.mesh import Mesh
-from modules.mesh.mesh_factory import MeshFactory
+from .modules.mesh.mesh import Mesh
+from .modules.mesh.mesh_factory import MeshFactory
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
     order = []
