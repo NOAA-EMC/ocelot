@@ -141,7 +141,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
     
     
     def _do_forward_step(self, step: int, processed_levels: list) -> torch.Tensor:
-                """
+        """
         Forward pass through hierarchical mesh levels.
 
         Args:
@@ -156,9 +156,11 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         Returns:
             List of updated mesh features for each level
         """
+                
+        mesh_data = self._prep_mesh_data(step, num_latent_steps, current_mesh_features)
 
         # Store features at each level
-        level_features = [feat.clone() for feat in mesh_features_list]
+        level_features = [feat.clone() for feat in mesh_data.mesh_features_list]
 
         # ============================================================
         # PHASE 1: Intra-level message passing
@@ -168,11 +170,11 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
             # Perform message passing within this level
             for step in range(self.num_message_passing_steps):
-                self.intra_level_layers[level][step].edge_index = mesh_edge_index_list[level]
+                self.intra_level_layers[level][step].edge_index = mesh_data.mesh_edge_index_list[level]
                 level_features[level] = self.intra_level_layers[level][step](
                     send_rep=level_features[level],
                     rec_rep=level_features[level],
-                    edge_rep=mesh_edge_attr_list[level] if mesh_edge_attr_list[level] is not None else None,
+                    edge_rep=mesh_data.mesh_edge_attr_list[level] if mesh_data.mesh_edge_attr_list[level] is not None else None,
                 )
 
             # Residual connection and normalization
@@ -185,13 +187,13 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         # ============================================================
         for level in range(self.num_levels - 1):
             # level is the finer level, level+1 is the coarser level
-            self.up_layers[level].edge_index = up_edge_index_list[level]
+            self.up_layers[level].edge_index = mesh_data.up_edge_index_list[level]
 
             # Aggregate information from finer to coarser level
             coarse_update = self.up_layers[level](
                 send_rep=level_features[level],  # from finer level
                 rec_rep=level_features[level + 1],  # to coarser level
-                edge_rep=up_edge_attr_list[level] if up_edge_attr_list[level] is not None else None,
+                edge_rep=mesh_data.up_edge_attr_list[level] if mesh_data.up_edge_attr_list[level] is not None else None,
             )
 
             # Add to coarser level with residual
@@ -202,13 +204,13 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         # ============================================================
         for level in reversed(range(self.num_levels - 1)):
             # level+1 is the coarser level, level is the finer level
-            self.down_layers[level].edge_index = down_edge_index_list[level]
+            self.down_layers[level].edge_index = mesh_data.down_edge_index_list[level]
 
             # Refine finer level with information from coarser level
             fine_update = self.down_layers[level](
                 send_rep=level_features[level + 1],  # from coarser level
                 rec_rep=level_features[level],  # to finer level
-                edge_rep=down_edge_attr_list[level] if down_edge_attr_list[level] is not None else None,
+                edge_rep=mesh_data.down_edge_attr_list[level] if mesh_data.down_edge_attr_list[level] is not None else None,
             )
 
             # Add to finer level with residual
