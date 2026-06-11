@@ -11,7 +11,7 @@ MeshTypes = {
 }
 
 class MeshFactory:
-        @staticmethod
+    @staticmethod
     def build(mesh_type: str, splits: int, mesh_levels: int, plot: bool = False) -> Mesh:
         mesh = MeshTypes[mesh_type](levels=mesh_levels, splits=splits)
 
