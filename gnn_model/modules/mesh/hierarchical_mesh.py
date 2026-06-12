@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from .mesh import Mesh, GC_SPATIAL_FEATURES_KWARGS, DEFAULT_DTYPE
-from . import icosahedral_mesh_builder as gc_im
+from .deepmind import icosahedral_mesh as gc_im
 
 
 class HierarchicalMesh(Mesh):

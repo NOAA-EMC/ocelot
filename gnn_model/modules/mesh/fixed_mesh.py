@@ -1,7 +1,7 @@
 import numpy as np
 
 from .mesh import Mesh
-from . import icosahedral_mesh_builder as gc_im
+from .deepmind import icosahedral_mesh as gc_im
 
 
 class FixedMesh(Mesh):

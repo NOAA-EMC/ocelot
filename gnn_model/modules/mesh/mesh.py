@@ -1,4 +1,7 @@
+import numpy as np
 from matplotlib import pyplot as plt
+
+import gnn_model.modules.mesh.deepmind.icosahedral_mesh as gc_im
 
 import torch
 
