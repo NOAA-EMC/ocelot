@@ -166,7 +166,7 @@ class SlidingWindowTransformer(FlatProcessorBase):
                  dropout: float = 0.0,
                  use_causal_mask: bool = True,
                  spatial_mixing_steps: int = 1):
-        super().__init__()
+        super().__init__(mesh)
         self.window = window
         self.use_causal_mask = use_causal_mask
         self.spatial_mixing_steps = int(spatial_mixing_steps)
@@ -189,22 +189,26 @@ class SlidingWindowTransformer(FlatProcessorBase):
         for s in states[-self.window:]:
             self.cache.append(s.detach())
 
-    def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
+    def forward(self, latent_step_info: dict, encoded_mesh_features: dict) -> List[torch.Tensor]:
         """
-        x_mesh: [N_mesh, H] current latent mesh state
-        returns: [N_mesh, H] updated latent mesh state
+        Args:
+            latent_step_info: dict containing latent step information (step mapping and number of steps)
+            encoded_mesh_features: dict of encoded features for the finest level (level 0)
+        Returns:
+            List of [N_mesh, H] updated mesh states per latent step
         """
 
-        step_info = self._get_latent_step_info(data)
-        num_latent_steps = step_info["num_steps"]
-        step_mapping = step_info["step_mapping"]
-        edge_mapping = self._map_step_edges(data, step_mapping)
+        self.reset()
 
+        step_mapping = latent_step_info["step_mapping"]
+        
         self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         self.debug(f"[LATENT] Step mapping: {step_mapping}")
-        
+
+        num_latent_steps = latent_step_info["num_steps"]
+
         for step in range(num_latent_steps):
-            self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
+            self._do_forward_step(step, num_latent_steps, encoded_mesh_features)
 
         return x_seq[:, -1, :]
     

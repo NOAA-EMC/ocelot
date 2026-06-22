@@ -1,9 +1,10 @@
 import numpy as np
+import torch
 from matplotlib import pyplot as plt
 
-import gnn_model.modules.mesh.deepmind.icosahedral_mesh as gc_im
-
-import torch
+from .deepmind import icosahedral_mesh as gc_im
+from .deepmind import grid_mesh_connectivity as gc_gm
+from .deepmind import model_utils as gc_mu
 
 
 DEFAULT_DTYPE = torch.float32
@@ -121,6 +122,9 @@ class Mesh(torch.nn.Module):
     def __init__(self, levels: int, resolution: int):
         super().__init__()
 
+        self.num_levels = levels
+        self.resolution = resolution
+    
         self.m2m_graphs: torch.tensor = None
         self.mesh_lat_lon_list: list = None
         self.mesh_list: torch.tensor = None
@@ -129,7 +133,7 @@ class Mesh(torch.nn.Module):
         self.mesh_features_torch: torch.tensor = None
         self.mesh_lat_lon_torch: torch.tensor = None
 
-        self._create_mesh(levels, resolution)
+        self._create_mesh(levels=levels, splits=resolution)
 
     def plot():
         """
@@ -196,6 +200,19 @@ class Mesh(torch.nn.Module):
 
 
     def _create_mesh(self, levels: int, splits: int):
+        """Create the mesh hierarchy and spatial features used by OCELOT.
+
+        Args:
+            splits: Number of icosahedral refinement splits.
+            levels: Optional number of finest hierarchy levels to retain.
+            hierarchical: If true, return explicit coarse/fine hierarchy edges.
+            plot: If true, render diagnostic plots of mesh connectivity.
+
+        Returns:
+            Dictionary containing mesh objects, mesh lat/lon coordinates, processor
+            edge indices, edge features, and optional hierarchy edges.
+        """
+    
         mesh_list = gc_im.get_hierarchy_of_triangular_meshes_for_sphere(splits)
         if levels is not None:
             assert (levels <= splits + 1), \
@@ -208,12 +225,12 @@ class Mesh(torch.nn.Module):
         m2m_features_list = []
         mesh_features_list = []
         mesh_lat_lon_list = []
-        for mesh_graph in m2m_graphs:
+        for mesh_graph in self.m2m_graphs:
             mesh_edge_index = np.stack(gc_im.faces_to_edges(mesh_graph.faces), axis=0)
             m2m_edge_index_list.append(mesh_edge_index)
 
             # Compute features
-            mesh_lat_lon = vertice_cart_to_lat_lon(mesh_graph.vertices)  # (N, 2)
+            mesh_lat_lon = self._vertice_cart_to_lat_lon(mesh_graph.vertices)  # (N, 2)
             mesh_features, m2m_features = gc_mu.get_graph_spatial_features(
                 node_lat=mesh_lat_lon[:, 0],
                 node_lon=mesh_lat_lon[:, 1],
@@ -267,4 +284,21 @@ class Mesh(torch.nn.Module):
         import torch
 
         return x.clone().detach().to(torch.long) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.long)
-    
+
+    @staticmethod
+    def _vertice_cart_to_lat_lon(vertices):
+        """
+        Convert vertice positions to lat-lon
+
+        vertices: (N_vert, 3), cartesian coordinates
+        Returns: (N_vert, 2), lat-lon coordinates
+        """
+        phi, theta = gc_mu.cartesian_to_spherical(
+            vertices[:, 0], vertices[:, 1], vertices[:, 2]
+        )
+        (
+            nodes_lat,
+            nodes_lon,
+        ) = gc_mu.spherical_to_lat_lon(phi=phi, theta=theta)
+        return np.stack((nodes_lat, nodes_lon), axis=1)  # (N, 2)
+        

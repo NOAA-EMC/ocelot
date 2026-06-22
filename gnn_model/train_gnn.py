@@ -512,12 +512,31 @@ def main():
     else:
         model = GNNLightning(**model_kwargs)
 
+    # TODO: Remove this when you've refactored the data model
+    mesh_structure = {
+        "m2m_graphs": model.mesh.m2m_graphs,
+        "mesh_lat_lon_list": model.mesh.mesh_lat_lon_list,
+        "mesh_list": model.mesh.mesh_list,
+        "m2m_edge_index_torch": model.mesh.m2m_edge_index_torch,
+        "m2m_features_torch": model.mesh.m2m_features_torch,
+        "mesh_features_torch": model.mesh.mesh_features_torch,
+        "mesh_lat_lon_torch": model.mesh.mesh_lat_lon_torch,
+    }
+
+    # Add hierarchical connections if in hierarchical mode
+    if args.mesh_type == "hierarchical":
+        mesh_structure["mesh_up_ei_list"] = model.mesh.mesh_up_ei_list
+        mesh_structure["mesh_down_ei_list"] = model.mesh.mesh_down_ei_list
+        mesh_structure["mesh_up_features_list"] = model.mesh.mesh_up_features_list
+        mesh_structure["mesh_down_features_list"] = model.mesh.mesh_down_features_list
+
+
     data_module = GNNDataModule(
         data_path=data_path,
         start_date=initial_start_date,
         end_date=initial_end_date,
         observation_config=observation_config,
-        mesh_structure=model.mesh_structure,
+        mesh_structure=mesh_structure,
         batch_size=batch_size,
         num_neighbors=3,
         feature_stats=feature_stats,

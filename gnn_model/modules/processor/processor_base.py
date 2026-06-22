@@ -4,9 +4,10 @@ from torch_geometric.data import HeteroData
 
 
 class ProcessorBase(nn.Module):
-    def __init__(self, mesh):
+    def __init__(self, mesh, enable_mesh_pred: bool = False):
         super().__init__()
         self.mesh = mesh
+        self.enable_mesh_pred = enable_mesh_pred
 
     @staticmethod
     def _get_latent_step_info(data: HeteroData) -> dict:

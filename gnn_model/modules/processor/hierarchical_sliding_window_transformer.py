@@ -371,13 +371,13 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
 
         return fine_features
 
-    def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
+    def forward(self, data: HeteroData, encoded_mesh_features) -> List[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
         Args:
             data: HeteroData containing mesh edge indices and attributes for all levels
-            encoded_features: dict of encoded features for the finest level (level 0)
+            encoded_mesh_features: tensor of encoded features for the finest level (level 0)
 
         Returns:
             List of [N_level, H] updated mesh states per level
@@ -392,7 +392,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
         self.debug(f"[LATENT] Step mapping: {step_mapping}")
         
         for step in range(num_latent_steps):
-            self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
+            self._do_forward_step(step, num_latent_steps, encoded_mesh_features)
 
         return output_list
     

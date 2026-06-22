@@ -27,6 +27,7 @@ from modules.processor.hierarchical_interaction_processor import HierarchicalInt
 from modules.processor.sliding_window_transformer import SlidingWindowTransformer
 from modules.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
 from modules.mesh.hierarchical_mesh import HierarchicalMesh
+from modules.processor.processor_factory import ProcessorFactory
 
 from utils import make_mlp
 from loss import weighted_huber_loss, weighted_mse_loss
@@ -276,6 +277,8 @@ class GNNLightning(pl.LightningModule):
         self.mesh_resolution = mesh_resolution
         self.mesh = MeshFactory.build(mesh_type, mesh_levels, mesh_resolution)
 
+        self.is_hierarchical = (mesh_type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
+
         # # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
         self.observation_encoders = nn.ModuleDict()  # For obs -> mesh GNNs
@@ -288,7 +291,7 @@ class GNNLightning(pl.LightningModule):
         self.mlp_blueprint_end = [hidden_dim] * (hidden_layers + 1)
         
         # Get mesh feature dimension from the first mesh
-        mesh_feature_dim = self.mesh_structure["mesh_features_torch"][0].shape[1]
+        mesh_feature_dim = self.mesh.mesh_features_torch[0].shape[1]
 
         self.mesh_embedder = make_mlp([mesh_feature_dim] + self.mlp_blueprint_end)
 
@@ -327,43 +330,6 @@ class GNNLightning(pl.LightningModule):
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
-        # --- wire processor choice ---
-        self.processor_type = processor_type  # "interaction" | "sliding_transformer"
-
-        if self.processor_type == "sliding_transformer":
-            if self.is_hierarchical:
-                # Use hierarchical transformer for multi-level processing
-                print(f"[PROCESSOR INIT] Creating HierarchicalSlidingWindowTransformer")
-                print(f"[PROCESSOR INIT]   - Levels: {self.num_mesh_levels}, Window: {processor_window}, Depth: {processor_depth}")
-                self.swt = HierarchicalSlidingWindowTransformer(
-                    mesh=HierarchicalMesh(self.num_mesh_levels, self.mesh_resolution),
-                    hidden_dim=self.hidden_dim,
-                    num_levels=self.num_mesh_levels,
-                    window=processor_window,
-                    depth=processor_depth,
-                    num_heads=processor_heads,
-                    dropout=processor_dropout,
-                    use_causal_mask=True,
-                    use_cross_scale=True,  # Enable cross-scale attention
-                    spatial_mixing_steps=spatial_mixing_steps,
-                )
-            else:
-                # Use single-level transformer for fixed mesh
-                print(f"[PROCESSOR INIT] Creating SlidingWindowTransformerProcessor (single-level)")
-                print(f"[PROCESSOR INIT]   - Window: {processor_window}, Depth: {processor_depth}")
-                self.swt = SlidingWindowTransformerProcessor(
-                    hidden_dim=self.hidden_dim,
-                    window=processor_window,
-                    depth=processor_depth,
-                    num_heads=processor_heads,
-                    dropout=processor_dropout,
-                    use_causal_mask=True,
-                    spatial_mixing_steps=spatial_mixing_steps,
-                )
-        elif self.processor_type == "interaction":
-            pass  # processor will be built later
-        else:
-            raise ValueError(f"Unknown processor_type: {processor_type!r}")
 
         for obs_type, instruments in observation_config.items():
             for inst_name, cfg in instruments.items():
@@ -438,82 +404,19 @@ class GNNLightning(pl.LightningModule):
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
-        # --- Create processor based on mesh type ---
-        if self.is_hierarchical:
-            # Use hierarchical processor for multi-level mesh
-            print(f"[MESH INIT] ✓ HIERARCHICAL MODE ENABLED")
-            print(f"[MESH INIT]   - Number of mesh levels: {self.num_mesh_levels}")
-            print(f"[MESH INIT]   - Mesh sizes (finest→coarsest): {[m.shape[0] for m in mesh_x_list]}")
-            print(f"[MESH INIT]   - Processor type: {processor_type}")
-            self.processor = HierarchicalProcessor(
-                hidden_dim=hidden_dim,
-                num_levels=self.num_mesh_levels,
-                num_message_passing_steps=num_layers,
-            )
 
-            # Coarse→fine conditioning: project coarse features to fine level
-            # This gives coarse levels indirect supervision through fine level's loss
-            self.coarse_to_fine_norm = nn.LayerNorm(hidden_dim)  # Normalize coarse features
-            self.coarse_to_fine_proj = nn.Linear(hidden_dim, hidden_dim)  # Project to delta
-            # Gating: allows model to control how much coarse info to use
-            self.coarse_to_fine_gate = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim),  # [fine; coarse] → gate
-                nn.Sigmoid()  # Gate values in [0, 1]
-            )
-            print(f"[MESH INIT]   - Coarse→Fine conditioning enabled (gated + normalized)")
-        else:
-            # Use standard processor for fixed mesh (GraphCast baseline)
-            print(f"[MESH INIT] ✓ FIXED MESH MODE (GraphCast baseline)")
-            print(f"[MESH INIT]   - Mesh size: {mesh_x.shape[0]} nodes")
-            print(f"[MESH INIT]   - Processor type: {processor_type}")
-            self.processor = Processor(
-                hidden_dim=hidden_dim,
-                node_types=node_types,
-                edge_types=edge_types,
-                num_message_passing_steps=num_layers,
-            )
+        self.processor = ProcessorFactory().build('hierarchical_sliding_window', self.mesh, {'hidden_dim':self.hidden_dim,
+                                                                                             'num_levels':self.mesh.num_levels,
+                                                                                             'window':processor_window,
+                                                                                             'depth':processor_depth,
+                                                                                             'num_heads':processor_heads,
+                                                                                             'dropout':processor_dropout,
+                                                                                             'use_causal_mask':True,
+                                                                                             'use_cross_scale':True,  # Enable cross-scale attention
+                                                                                             'spatial_mixing_steps':spatial_mixing_steps})
 
-        def _as_f32(x):
-            import torch
+        print ("**** ", self.processor)
 
-            return x.clone().detach().to(torch.float32) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.float32)
-
-        def _as_i64(x):
-            import torch
-
-            return x.clone().detach().to(torch.long) if isinstance(x, torch.Tensor) else torch.tensor(x, dtype=torch.long)
-
-        # Register primary mesh buffers (finest level for hierarchical, only mesh for fixed)
-        self.register_buffer("mesh_x", _as_f32(mesh_x))
-        self.register_buffer("mesh_edge_index", _as_i64(mesh_edge_index))
-        self.register_buffer("mesh_edge_attr", _as_f32(mesh_edge_attr))
-
-        # Register hierarchical mesh buffers if in hierarchical mode
-        if self.is_hierarchical:
-            # Register mesh levels as lists (will be accessed by index during forward pass)
-            for i, (mx, mei, mea) in enumerate(zip(mesh_x_list, mesh_edge_index_list, mesh_edge_attr_list)):
-                self.register_buffer(f"mesh_x_level_{i}", _as_f32(mx))
-                self.register_buffer(f"mesh_edge_index_level_{i}", _as_i64(mei))
-                self.register_buffer(f"mesh_edge_attr_level_{i}", _as_f32(mea))
-
-            # Also store up/down connections if available
-            # NOTE: Edges were built for mesh_list_rev [finest,...,coarsest] which matches our mesh_x_list
-            #   mesh_up[i]: connects level i → level i+1 (fine→coarse in current ordering)
-            #   mesh_down[i]: connects level i+1 → level i (coarse→fine in current ordering)
-            if "mesh_up_ei_list" in self.mesh_structure:
-                mesh_up_ei_list = self.mesh_structure["mesh_up_ei_list"]
-                mesh_up_features_list = self.mesh_structure["mesh_up_features_list"]
-                mesh_down_ei_list = self.mesh_structure["mesh_down_ei_list"]
-                mesh_down_features_list = self.mesh_structure["mesh_down_features_list"]
-
-                for i, up_ei in enumerate(mesh_up_ei_list):
-                    self.register_buffer(f"mesh_up_edge_index_{i}", _as_i64(up_ei))
-                for i, up_feat in enumerate(mesh_up_features_list):
-                    self.register_buffer(f"mesh_up_edge_attr_{i}", _as_f32(up_feat))
-                for i, down_ei in enumerate(mesh_down_ei_list):
-                    self.register_buffer(f"mesh_down_edge_index_{i}", _as_i64(down_ei))
-                for i, down_feat in enumerate(mesh_down_features_list):
-                    self.register_buffer(f"mesh_down_edge_attr_{i}", _as_f32(down_feat))
 
     def _safe_trainer(self):
         try:
@@ -1079,207 +982,11 @@ class GNNLightning(pl.LightningModule):
         Processor₄ → mesh_state₄ → Decoder₄ → Predictions [T+9 to T+12)
         """
 
-        # Get latent step information
-        step_info = self._get_latent_step_info(data)
-        num_latent_steps = step_info["num_steps"]
-        step_mapping = step_info["step_mapping"]
-        edge_mapping = self._map_step_edges(data, step_mapping)
-
-        self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        self.debug(f"[LATENT] Step mapping: {step_mapping}")
-
-        # Initialize predictions dict with lists for each base instrument
-        predictions = {}
-        for base_type in step_mapping.keys():
-            predictions[base_type] = []
-
-        # Initialize mesh state for latent rollout
-        current_mesh_features = encoded_features["mesh"]
-
-        # --------------------------------------------------------------------
-        # LATENT ROLLOUT LOOP: Sequential processor → decoder steps
-        # --------------------------------------------------------------------
-        if self.processor_type == "sliding_transformer":
-            self.swt.reset()
-
-        # Local list for mesh features
-        mesh_features_per_step = [] if self.enable_mesh_pred else None
-
-        self.swt = HierarchicalSlidingWindowTransformer(HierarchicalMesh(self.mesh_levels, self.mesh_resolution, False), 
-                                                        self.hidden_dim, 
-                                                        self.num_layers, 
-                                                        self.num_heads, 
-                                                        self.dropout)
-
-        # for step in range(num_latent_steps):
-        #     self.debug(f"[LATENT] Processing step {step+1}/{num_latent_steps}")
+        predictions, mesh_features_per_step = self.processor(data, encoded_features['mesh'])
 
 
-        #     ###### DELETED SECTION #######
-
-
-        #     # Save mesh features if needed (independent of self.training check here)
-        #     if self.enable_mesh_pred:
-        #         mesh_features_per_step.append(current_mesh_features.detach())  # Always detach for output
-
-        #     self.debug(f"[LATENT] Step {step} - mesh after processor: {current_mesh_features.shape}")
-
-        #     # STAGE 4B: DECODE - Generate predictions for this latent step
-        #     mesh_features_processed = current_mesh_features
-
-        #     # Process all instruments for this step
-        #     for base_type, steps_dict in step_mapping.items():
-        #         if step in steps_dict:
-        #             step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
-
-        #             # Find the corresponding edge
-        #             step_edge_type = None
-        #             step_edge_index = None
-        #             for edge_type, edge_index in data.edge_index_dict.items():
-        #                 src_type, _, dst_type = edge_type
-        #                 if src_type == "mesh" and dst_type == step_node_type:
-        #                     step_edge_type = edge_type
-        #                     step_edge_index = edge_index
-        #                     print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
-        #                     break
-
-        #             if step_edge_type is None or step_edge_index is None:
-        #                 self.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
-        #                 continue
-
-        #             # Get the decoder (mapped to base instrument)
-        #             decoder_key = edge_mapping.get(step_edge_type)
-        #             if decoder_key not in self.observation_decoders:
-        #                 self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
-        #                 continue
-
-        #             decoder = self.observation_decoders[decoder_key]
-        #             decoder.edge_index = step_edge_index
-
-        #             # Condition decoder on viewing geometry at initialization
-        #             # - For satellites: viewing zenith angle (scan angle)
-        #             # - For radiosonde/aircraft: pressure level (vertical viewing geometry)
-        #             reference_device = mesh_features_processed.device
-        #             N = data[step_node_type].num_nodes
-
-        #             # Embed viewing geometry information FIRST (before decoder initialization)
-        #             sa_emb = None
-        #             pressure_emb = None
-        #             time_emb = None
-        #             if base_type == "ascat_target":
-        #                 scan_angle = data[step_node_type].x  # [N,3] for ASCAT
-        #                 sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
-        #             elif base_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
-        #                 scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR/CrIS-PCA
-        #                 sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
-
-        #                 # Diagnostic: verify scan angle varies
-        #                 if base_type == "atms_target" and self.global_step % 200 == 0:
-        #                     sa = data[step_node_type].x
-        #                     if sa.numel() == 0:
-        #                         print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
-        #                     else:
-        #                         sa_f = sa.float()
-        #                         mean_v = sa_f.mean().item()
-        #                         std_v = sa_f.std(unbiased=False).item()
-        #                         min_v = sa_f.min().item()
-        #                         max_v = sa_f.max().item()
-        #                         print(
-        #                             f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={mean_v:.4f}, "
-        #                             f"std={std_v:.4f}, min={min_v:.4f}, max={max_v:.4f}"
-        #                         )
-        #             elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
-        #                 # For radiosonde and aircraft: condition on pressure level (vertical geometry)
-        #                 pressure_level_idx = data[step_node_type].pressure_level  # [N]
-        #                 pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
-
-        #             if hasattr(data[step_node_type], "target_metadata"):
-        #                 target_metadata = data[step_node_type].target_metadata
-        #                 if (
-        #                     target_metadata is not None
-        #                     and target_metadata.numel() > 0
-        #                     and target_metadata.size(1) >= (2 + self.target_time_feature_dim)
-        #                 ):
-        #                     time_feat = target_metadata[:, -self.target_time_feature_dim:].to(reference_device)
-        #                     time_emb = self.target_time_embedder(time_feat)
-
-        #             # Decoder initialization: CONDITION on viewing geometry
-        #             # Instead of zeros, initialize decoder WITH geometry information
-        #             if sa_emb is not None:
-        #                 # Satellite: condition decoder on scan angle (viewing zenith angle)
-        #                 if self.scan_angle_projector is not None:
-        #                     target_features_initial = self.scan_angle_projector(sa_emb)
-        #                 else:
-        #                     # Backward-compatible behavior: scan info only in the last dims.
-        #                     padding_dim = self.hidden_dim - self.scan_angle_embed_dim
-        #                     target_features_initial = torch.cat([
-        #                         torch.zeros(N, padding_dim, device=reference_device),
-        #                         sa_emb
-        #                     ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
-        #             elif pressure_emb is not None:
-        #                 # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
-        #                 # Make prediction explicitly depend on geometry
-        #                 if self.pressure_level_projector is not None:
-        #                     target_features_initial = self.pressure_level_projector(pressure_emb)
-        #                 else:
-        #                     padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-        #                     target_features_initial = torch.cat([
-        #                         torch.zeros(N, padding_dim, device=reference_device),
-        #                         pressure_emb
-        #                     ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
-        #             else:
-        #                 # Conventional obs without viewing geometry: use zeros
-        #                 target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
-
-        #             # Add target-time conditioning as an additive bias over the full hidden_dim.
-        #             if time_emb is not None:
-        #                 target_features_initial = target_features_initial + self.target_time_projector(time_emb)
-
-        #             edge_attr = self._edge_features(
-        #                 data=data,
-        #                 edge_type=step_edge_type,
-        #                 edge_index=step_edge_index,
-        #                 device=reference_device,
-        #                 dtype=mesh_features_processed.dtype,
-        #             )
-
-        #             # Decoder now receives GEOMETRY-CONDITIONED initialization
-        #             # This ensures the model CANNOT make predictions without knowing viewing geometry
-        #             decoded_target_features = decoder(
-        #                 send_rep=mesh_features_processed,
-        #                 rec_rep=target_features_initial,  # NOW conditioned on viewing geometry!
-        #                 edge_rep=edge_attr,
-        #             )
-
-        #             # Decoder output goes directly to output mapper
-        #             # The model learns to use the geometry information that's embedded in target_features_initial
-
-        #             # Diagnostic logging for radiosonde
-        #             if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
-        #                 print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
-
-        #             # Diagnostic logging for satellites
-        #             if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
-        #                 print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
-
-        #             # Safety: verify mapper exists before using
-        #             assert base_type in self.output_mappers, f"Missing output mapper for {base_type}"
-        #             step_prediction = self.output_mappers[base_type](decoded_target_features)
-
-        #             # Store prediction for this step
-        #             predictions[base_type].append(step_prediction)
-        #             print(f"predict: [node_type] {base_type}: {step_prediction.shape}")
-
-        #             self.debug(f"[LATENT] Step {step} - {base_type}: {step_prediction.shape}")
-
-        # Verify all instruments have correct number of predictions
-        for base_type, pred_list in predictions.items():
-            expected_steps = len(step_mapping[base_type])
-            if len(pred_list) != expected_steps:
-                self.debug(f"[LATENT] Warning: {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
-
-        self.debug(f"[LATENT] Completed {num_latent_steps} sequential processor steps")
         return predictions, mesh_features_per_step
+
 
     def get_current_rollout_steps(self):
         """
@@ -1329,34 +1036,35 @@ class GNNLightning(pl.LightningModule):
             # "fixed"
             return self.max_rollout_steps
 
-    # def _get_latent_step_info(self, data: HeteroData) -> dict:
-    #     """
-    #     Extract information about latent steps from the batch.
-    #     Returns dict with step mapping and number of steps.
-    #     """
-    #     step_info = {}
-    #     max_step = -1
+    @staticmethod
+    def _get_latent_step_info(self, data: HeteroData) -> dict:
+        """
+        Extract information about latent steps from the batch.
+        Returns dict with step mapping and number of steps.
+        """
+        step_info = {}
+        max_step = -1
 
-    #     # Find all step-specific target nodes and map them to base instruments
-    #     for node_type in data.node_types:
-    #         if "_target_step" in node_type:
-    #             # Extract: atms_target_step0 -> (atms_target, 0)
-    #             parts = node_type.split("_step")
-    #             if len(parts) == 2:
-    #                 base_type = parts[0]  # e.g., "atms_target"
-    #                 try:
-    #                     step_num = int(parts[1])
-    #                     if base_type not in step_info:
-    #                         step_info[base_type] = {}
-    #                     step_info[base_type][step_num] = node_type
-    #                     max_step = max(max_step, step_num)
-    #                 except ValueError:
-    #                     continue
+        # Find all step-specific target nodes and map them to base instruments
+        for node_type in data.node_types:
+            if "_target_step" in node_type:
+                # Extract: atms_target_step0 -> (atms_target, 0)
+                parts = node_type.split("_step")
+                if len(parts) == 2:
+                    base_type = parts[0]  # e.g., "atms_target"
+                    try:
+                        step_num = int(parts[1])
+                        if base_type not in step_info:
+                            step_info[base_type] = {}
+                        step_info[base_type][step_num] = node_type
+                        max_step = max(max_step, step_num)
+                    except ValueError:
+                        continue
 
-    #     return {
-    #         "step_mapping": step_info,
-    #         "num_steps": max_step + 1 if max_step >= 0 else 0
-    #     }
+        return {
+            "step_mapping": step_info,
+            "num_steps": max_step + 1 if max_step >= 0 else 0
+        }
 
     def _map_step_edges(self, data: HeteroData, step_mapping: dict) -> dict:
         """

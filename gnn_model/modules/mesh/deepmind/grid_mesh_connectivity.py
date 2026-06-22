@@ -18,10 +18,10 @@ Author: Azadeh Gholoubi
 Adapted from GraphCast mesh-connectivity utilities for the OCELOT model.
 """
 
-from modules.mesh import icosahedral_mesh
 import numpy as np
 import scipy
 import trimesh
+from . import icosahedral_mesh
 
 
 def _grid_lat_lon_to_coordinates(

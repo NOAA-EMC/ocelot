@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 
 from .mesh import Mesh
 from .fixed_mesh import FixedMesh
@@ -12,8 +11,8 @@ MeshTypes = {
 
 class MeshFactory:
     @staticmethod
-    def build(mesh_type: str, splits: int, mesh_levels: int, plot: bool = False) -> Mesh:
-        mesh = MeshTypes[mesh_type](levels=mesh_levels, splits=splits)
+    def build(mesh_type: str, levels: int, splits: int, plot: bool = False) -> Mesh:
+        mesh = MeshTypes[mesh_type](levels=levels, splits=splits)
 
         if plot:
             mesh.plot()
