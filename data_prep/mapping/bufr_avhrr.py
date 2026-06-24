@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""AVHRR BUFR mapping for OCELOT data preparation.
+
+"""
 
 import os
 

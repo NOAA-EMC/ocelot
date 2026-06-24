@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Plot mesh-grid OCELOT vs GFS comparisons.
+"""Plot mesh-grid OCELOT vs GFS comparisons, with analysis when available.
 
 Author: Azadeh Gholoubi
 
@@ -7,9 +7,14 @@ Input CSV is produced by compare_mesh_to_gfs.py and should contain:
 - lat, lon
 - pred_* columns
 - gfs_* columns
+- optional anl_* columns
 
-Outputs a 3-panel scatter map on the *same* mesh points:
+Outputs a 3-panel scatter map when analysis is unavailable:
   [OCELOT] [GFS] [OCELOT - GFS]
+
+Outputs a 6-panel scatter map when analysis is available:
+  [OCELOT forecast] [GFS forecast] [GFS analysis]
+  [OCELOT - GFS]   [OCELOT - analysis] [GFS - analysis]
 
 If --gfs_root is provided, also writes a diagnostic 2-panel plot to visualize
 the *native* GRIB GFS field (0.25°) alongside the GFS values interpolated to
@@ -26,6 +31,36 @@ import re
 
 import numpy as np
 import pandas as pd
+
+
+def _surface_pressure_pred_col(df: pd.DataFrame) -> str | None:
+    for col in (
+        "pred_airPressure_prepbufr_event_1",
+        "pred_airPressure",
+        "pred_pressureMeanSeaLevel_prepbufr",
+    ):
+        if col in df.columns:
+            return col
+    return None
+
+
+def _open_gfs_mean_sea_pressure(path: str):
+    import cfgrib
+
+    errors: list[str] = []
+    for short_name in ("prmsl", "msl"):
+        try:
+            return cfgrib.open_dataset(
+                path,
+                indexpath="",
+                filter_by_keys={"typeOfLevel": "meanSea", "shortName": short_name},
+            )
+        except Exception as exc:
+            errors.append(f"{short_name}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        "Could not open GFS mean sea-level pressure (meanSea/prmsl or meanSea/msl). "
+        + " | ".join(errors)
+    )
 
 
 _CARTOPY_FEATURES_WARNED = False
@@ -130,6 +165,15 @@ def _add_land(ax):
     mode = os.environ.get("OCELOT_CARTOPY_FEATURES", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
         return
+    if mode == "auto" and not _cartopy_natural_earth_cached():
+        if not _CARTOPY_FEATURES_WARNED:
+            _CARTOPY_FEATURES_WARNED = True
+            print(
+                "[WARN] Cartopy NaturalEarth coastlines/borders are not cached; "
+                "skipping map features to avoid network download on compute nodes. "
+                "Set OCELOT_CARTOPY_FEATURES=1 to force."
+            )
+        return
 
     try:
         import cartopy.feature as cfeature
@@ -166,7 +210,7 @@ def _gfs_path(gfs_root: str, init_ymdh: str, fhr: int) -> str:
     return os.path.join(str(gfs_root), ymd, f"gfs.{ymd}.t{hh}z.pgrb2.0p25.f{int(fhr):03d}")
 
 
-def _open_gfs(path: str, var: str):
+def _open_gfs(path: str, var: str, *, level_hpa: int | None = None):
     import cfgrib
 
     if var == "u10":
@@ -188,10 +232,15 @@ def _open_gfs(path: str, var: str):
             filter_by_keys={"typeOfLevel": "heightAboveGround", "level": 2, "shortName": "2t"},
         )
     if var == "sp":
+        return _open_gfs_mean_sea_pressure(path)
+    if var in {"u", "v", "temp"}:
+        if level_hpa is None:
+            raise ValueError("isobaric plotting requires level_hpa")
+        short = {"u": "u", "v": "v", "temp": "t"}[var]
         return cfgrib.open_dataset(
             path,
             indexpath="",
-            filter_by_keys={"typeOfLevel": "surface", "shortName": "sp"},
+            filter_by_keys={"typeOfLevel": "isobaricInhPa", "level": int(level_hpa), "shortName": short},
         )
     raise ValueError(f"Unsupported var={var!r}")
 
@@ -227,6 +276,7 @@ def plot_gfs_native_vs_mesh_interp(
     out_png: str,
     point_size: int,
     grid_stride: int,
+    level_hpa: int | None = None,
 ):
     import cartopy.crs as ccrs
     import matplotlib
@@ -238,8 +288,8 @@ def plot_gfs_native_vs_mesh_interp(
     if not os.path.exists(gfs_path):
         raise FileNotFoundError(f"Missing GFS file: {gfs_path}")
 
-    ds = _open_gfs(gfs_path, var=var)
-    ds_var = {"u10": "u10", "v10": "v10", "t2m": "t2m", "sp": "sp"}[var]
+    ds = _open_gfs(gfs_path, var=var, level_hpa=level_hpa)
+    ds_var = {"u10": "u10", "v10": "v10", "t2m": "t2m", "sp": "prmsl", "u": "u", "v": "v", "temp": "t"}[var]
     if ds_var not in ds:
         # cfgrib sometimes exposes a single unknown var name; fall back to that.
         keys = list(getattr(ds, "data_vars", {}).keys())
@@ -251,7 +301,7 @@ def plot_gfs_native_vs_mesh_interp(
     glat = np.asarray(ds["latitude"].values, dtype=np.float64)
     glon = np.asarray(ds["longitude"].values, dtype=np.float64)
 
-    if var == "t2m":
+    if var in {"t2m", "temp"}:
         field = field - 273.15
     elif var == "sp":
         field = field / 100.0
@@ -350,6 +400,100 @@ def plot_tripanel(lon, lat, pred, gfs, title, out_png, units: str | None, point_
     print(f"Wrote: {out_png}")
 
 
+def plot_sixpanel(
+    lon: np.ndarray,
+    lat: np.ndarray,
+    pred: np.ndarray,
+    gfs: np.ndarray,
+    anl: np.ndarray,
+    title: str,
+    out_png: str,
+    units: str | None,
+    point_size: int,
+):
+    import cartopy.crs as ccrs
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt  # noqa: E402
+    from matplotlib.colors import TwoSlopeNorm  # noqa: E402
+
+    diff_og = pred - gfs
+    diff_oa = pred - anl
+    diff_ga = gfs - anl
+
+    m_og = _metrics(pred, gfs)
+    m_oa = _metrics(pred, anl)
+    m_ga = _metrics(gfs, anl)
+
+    vmin, vmax = _robust_limits(np.concatenate([pred, gfs, anl]), 1.0, 99.0)
+    all_diffs = np.concatenate([
+        diff_og[np.isfinite(diff_og)],
+        diff_oa[np.isfinite(diff_oa)],
+        diff_ga[np.isfinite(diff_ga)],
+    ])
+    dmin, dmax = _robust_sym(all_diffs, 99.0)
+    diff_norm = TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)
+
+    fig, axes = plt.subplots(
+        2,
+        3,
+        figsize=(20, 10),
+        subplot_kw={"projection": ccrs.PlateCarree()},
+        sharex=True,
+        sharey=True,
+    )
+
+    val_label = f"Value{f' ({units})' if units else ''}"
+    diff_label = f"Delta{f' ({units})' if units else ''}"
+
+    row0 = [
+        ("OCELOT forecast", pred),
+        ("GFS forecast", gfs),
+        ("GFS analysis", anl),
+    ]
+    for ax, (ttl, field) in zip(axes[0], row0):
+        ax.set_title(ttl, fontsize=13)
+        sc = ax.scatter(lon, lat, c=field, s=point_size, cmap="turbo", vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
+        fig.colorbar(sc, ax=ax, orientation="vertical", pad=0.02).set_label(val_label)
+        _add_land(ax)
+        ax.set_global()
+
+    row1 = [
+        (f"OCELOT - GFS  (RMSE={m_og['rmse']:.3g}  Bias={m_og['bias']:.3g})", diff_og),
+        (f"OCELOT - analysis  (RMSE={m_oa['rmse']:.3g}  Bias={m_oa['bias']:.3g})", diff_oa),
+        (f"GFS - analysis  (RMSE={m_ga['rmse']:.3g}  Bias={m_ga['bias']:.3g})", diff_ga),
+    ]
+    for ax, (ttl, field) in zip(axes[1], row1):
+        ax.set_title(ttl, fontsize=11)
+        sc = ax.scatter(lon, lat, c=field, s=point_size, cmap="bwr", norm=diff_norm, transform=ccrs.PlateCarree())
+        fig.colorbar(sc, ax=ax, orientation="vertical", pad=0.02).set_label(diff_label)
+        _add_land(ax)
+        ax.set_global()
+
+    fig.suptitle(f"{title}  |  N={m_og['n']}", fontsize=14, y=1.01)
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote: {out_png}")
+
+
+def _col_map(var: str, df: pd.DataFrame) -> tuple[str | None, str, str, str | None]:
+    if var == "u10":
+        return "pred_wind_u", "gfs_u10", "anl_u10", "m/s"
+    if var == "v10":
+        return "pred_wind_v", "gfs_v10", "anl_v10", "m/s"
+    if var == "t2m":
+        return "pred_airTemperature", "gfs_t2m_C", "anl_t2m_C", "deg C"
+    if var == "sp":
+        return _surface_pressure_pred_col(df), "gfs_mslp_hPa", "anl_mslp_hPa", "hPa"
+    if var == "u":
+        return "pred_wind_u", "gfs_u", "anl_u", "m/s"
+    if var == "v":
+        return "pred_wind_v", "gfs_v", "anl_v", "m/s"
+    return "pred_airTemperature", "gfs_airTemperature_C", "anl_airTemperature_C", "deg C"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -361,7 +505,7 @@ def main() -> int:
         ),
     )
     ap.add_argument("--plot_dir", required=True)
-    ap.add_argument("--var", required=True, choices=["u10", "v10", "t2m", "sp"])
+    ap.add_argument("--var", required=True, choices=["u10", "v10", "t2m", "sp", "u", "v", "temp"])
     ap.add_argument("--point_size", type=int, default=5)
     ap.add_argument(
         "--gfs_root",
@@ -379,35 +523,56 @@ def main() -> int:
     lon = pd.to_numeric(df["lon"], errors="coerce").to_numpy(dtype=np.float64)
     lat = pd.to_numeric(df["lat"], errors="coerce").to_numpy(dtype=np.float64)
 
-    if args.var == "u10":
-        pred_col, gfs_col, units = "pred_wind_u", "gfs_u10", "m/s"
-    elif args.var == "v10":
-        pred_col, gfs_col, units = "pred_wind_v", "gfs_v10", "m/s"
-    elif args.var == "t2m":
-        pred_col, gfs_col, units = "pred_airTemperature", "gfs_t2m_C", "°C"
-    else:
-        pred_col = "pred_airPressure_prepbufr_event_1" if "pred_airPressure_prepbufr_event_1" in df.columns else "pred_airPressure"
-        gfs_col, units = "gfs_sp_hPa", "hPa"
+    pred_col, gfs_col, anl_col, units = _col_map(args.var, df)
 
-    if pred_col not in df.columns or gfs_col not in df.columns:
+    level_tag = ""
+    level_hpa = None
+    if "pressure_level_label" in df.columns and df["pressure_level_label"].notna().any():
+        level_tag = str(df["pressure_level_label"].dropna().iloc[0])
+    elif "pressure_hPa" in df.columns and pd.to_numeric(df["pressure_hPa"], errors="coerce").notna().any():
+        level_hpa = int(round(float(pd.to_numeric(df["pressure_hPa"], errors="coerce").dropna().iloc[0])))
+        level_tag = f"{level_hpa}hPa"
+    if level_hpa is None and level_tag.endswith("hPa"):
+        try:
+            level_hpa = int(level_tag.replace("hPa", ""))
+        except Exception:
+            level_hpa = None
+
+    if pred_col is None or pred_col not in df.columns or gfs_col not in df.columns:
         raise SystemExit(f"Missing columns for {args.var}: need {pred_col} and {gfs_col}")
 
     pred = pd.to_numeric(df[pred_col], errors="coerce").to_numpy(dtype=np.float64)
     gfs = pd.to_numeric(df[gfs_col], errors="coerce").to_numpy(dtype=np.float64)
-    valid = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(pred) & np.isfinite(gfs)
-    lon, lat, pred, gfs = lon[valid], lat[valid], pred[valid], gfs[valid]
+    has_analysis = anl_col in df.columns and pd.to_numeric(df[anl_col], errors="coerce").notna().any()
+    anl = pd.to_numeric(df[anl_col], errors="coerce").to_numpy(dtype=np.float64) if has_analysis else None
 
-    title = f"mesh-grid {args.var} • OCELOT_on_mesh vs GFS_on_mesh"
-    out_png = os.path.join(args.plot_dir, f"mesh_OCELOT_on_mesh_vs_GFS_on_mesh_{args.var}.png")
-    plot_tripanel(lon, lat, pred, gfs, title, out_png, units=units, point_size=int(args.point_size))
+    lvl = f" • {level_tag}" if level_tag else ""
+    level_suffix = f"{'_' + level_tag if level_tag else ''}"
+    instrument = os.path.basename(args.csv).split("_init_")[0]
+
+    if has_analysis:
+        valid = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(pred) & np.isfinite(gfs) & np.isfinite(anl)
+        _lon, _lat, _pred, _gfs, _anl = lon[valid], lat[valid], pred[valid], gfs[valid], anl[valid]
+        title = f"mesh-grid {args.var}{lvl} • vs GFS forecast + analysis"
+        out_png = os.path.join(args.plot_dir, f"{instrument}_mesh_6panel_{args.var}{level_suffix}.png")
+        plot_sixpanel(_lon, _lat, _pred, _gfs, _anl, title, out_png, units=units, point_size=int(args.point_size))
+    else:
+        valid = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(pred) & np.isfinite(gfs)
+        _lon, _lat, _pred, _gfs = lon[valid], lat[valid], pred[valid], gfs[valid]
+        title = f"mesh-grid {args.var}{lvl} • OCELOT_on_mesh vs GFS_on_mesh"
+        out_png = os.path.join(args.plot_dir, f"mesh_OCELOT_on_mesh_vs_GFS_on_mesh_{args.var}{level_suffix}.png")
+        plot_tripanel(_lon, _lat, _pred, _gfs, title, out_png, units=units, point_size=int(args.point_size))
 
     if args.gfs_root:
         init_ymdh, fhr = _infer_init_fhr(df, csv_path=str(args.csv))
-        out_png2 = os.path.join(args.plot_dir, f"mesh_GFS_native_vs_GFS_on_mesh_{args.var}_init_{init_ymdh}_f{int(fhr):03d}.png")
+        out_png2 = os.path.join(
+            args.plot_dir,
+            f"mesh_GFS_native_vs_GFS_on_mesh_{args.var}{level_suffix}_init_{init_ymdh}_f{int(fhr):03d}.png",
+        )
         plot_gfs_native_vs_mesh_interp(
-            lon=lon,
-            lat=lat,
-            gfs_on_mesh=gfs,
+            lon=_lon,
+            lat=_lat,
+            gfs_on_mesh=_gfs,
             var=str(args.var),
             units=units,
             init_ymdh=str(init_ymdh),
@@ -417,6 +582,7 @@ def main() -> int:
             out_png=str(out_png2),
             point_size=int(args.point_size),
             grid_stride=int(args.grid_stride),
+            level_hpa=level_hpa,
         )
     return 0
 

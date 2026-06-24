@@ -1,7 +1,7 @@
-"""
-GNN prediction/inference script.
+"""OCELOT prediction and inference entry point.
 
-Loads a trained checkpoint and runs predictions on specified date range.
+Loads a trained checkpoint and runs obs-space evaluation or mesh-grid inference
+over a requested date range.
 """
 
 import argparse
@@ -108,6 +108,16 @@ def main():
     with open('configs/mesh_config.yaml', 'r') as f:
         mesh_config = yaml.safe_load(f)
 
+    # Optional runtime override for mesh pressure level without editing repo config.
+    _mesh_idx_env = os.environ.get("MESH_PRESSURE_LEVEL_IDX", "").strip()
+    if _mesh_idx_env != "":
+        try:
+            mesh_config = dict(mesh_config or {})
+            mesh_config["mesh_pressure_level_idx"] = int(_mesh_idx_env)
+            print(f"[MESH CONFIG] Overriding mesh_pressure_level_idx via env: {mesh_config['mesh_pressure_level_idx']}")
+        except Exception as exc:
+            raise ValueError(f"Invalid MESH_PRESSURE_LEVEL_IDX={_mesh_idx_env!r}: {exc}")
+
     pipeline_cfg = _raw_cfg.get("pipeline", {})
 
     # Data path
@@ -116,7 +126,8 @@ def main():
         if region == "conus":
             data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
         else:
-            data_path = "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v6/global"
+            # Keep prediction defaults aligned with train/val (multi-year merged Zarrs).
+            data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7"
     else:
         data_path = args.data_path
 

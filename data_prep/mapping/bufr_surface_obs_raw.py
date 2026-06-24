@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""Raw surface-observation BUFR mapping for OCELOT data preparation.
+
+"""
 
 import os
 import numpy as np

@@ -1,3 +1,12 @@
+"""Training callbacks for OCELOT GNN experiments.
+
+Author: Azadeh Gholoubi
+
+This module contains PyTorch Lightning callbacks used by the OCELOT training
+workflow, including random/sequential data-window resampling and checkpoint
+resume handling for the v1 training setup.
+"""
+
 import os
 import random
 import pandas as pd
@@ -582,8 +591,11 @@ class ValWindowCallback(pl.Callback):
             return start, end
 
         if self.mode == "sequential":
+            # `_seq_cursor` is treated as the NEXT window start.
+            # On a fresh run, the datamodule already starts at `val_pool_start`,
+            # so the first scheduled update should advance to the *second* window.
             if self._seq_cursor is None:
-                self._seq_cursor = self.val_pool_start
+                self._seq_cursor = self.val_pool_start + self.stride
             start = self._seq_cursor
             end = self._clip_end(start + self.window, self.val_pool_end)
             next_start = start + self.stride

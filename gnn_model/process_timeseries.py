@@ -1,3 +1,12 @@
+"""Time-series feature engineering and graph-data preparation for OCELOT.
+
+Author: Azadeh Gholoubi
+
+This module bins observations into model windows, applies QC/feature
+transforms, builds target-time features, and prepares the arrays consumed by the
+OCELOT data module.
+"""
+
 import hashlib
 import numpy as np
 import pandas as pd
@@ -6,11 +15,54 @@ from timing_utils import timing_resource_decorator
 
 # Maximum number of channels supported for per-channel variable mapping
 MAX_SUPPORTED_CHANNELS = 9
+TARGET_TIME_FEATURE_DIM = 5
 
 # Standard pressure levels for radiosonde embeddings (hPa)
 STANDARD_PRESSURE_LEVELS = np.array([
     1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10
 ])
+
+
+def _encode_target_time_features(target_times_unix: np.ndarray, lon_deg: np.ndarray) -> np.ndarray:
+    """Build deterministic target valid-time features for decoder conditioning.
+
+    Features are: sin/cos(UTC valid time), fractional day-of-year, and
+    sin/cos(local solar time estimated from longitude).
+    """
+    n_rows = int(len(lon_deg))
+    if n_rows == 0:
+        return np.empty((0, TARGET_TIME_FEATURE_DIM), dtype=np.float32)
+
+    try:
+        times = np.asarray(target_times_unix, dtype=np.int64)
+    except Exception:
+        times = np.empty((0,), dtype=np.int64)
+
+    if times.size != n_rows:
+        return np.zeros((n_rows, TARGET_TIME_FEATURE_DIM), dtype=np.float32)
+
+    ts = pd.to_datetime(times, unit="s", utc=True)
+    utc_time_fraction = np.array(
+        [(t.hour * 3600 + t.minute * 60 + t.second) / 86400.0 for t in ts],
+        dtype=np.float32,
+    )
+    day_of_year = np.array(
+        [
+            (t.timetuple().tm_yday - 1 + (t.hour * 3600 + t.minute * 60 + t.second) / 86400.0)
+            / 365.24219
+            for t in ts
+        ],
+        dtype=np.float32,
+    )
+    local_time_fraction = np.mod(utc_time_fraction + np.asarray(lon_deg, dtype=np.float32) / 360.0, 1.0)
+
+    return np.column_stack([
+        np.sin(2 * np.pi * utc_time_fraction),
+        np.cos(2 * np.pi * utc_time_fraction),
+        day_of_year,
+        np.sin(2 * np.pi * local_time_fraction),
+        np.cos(2 * np.pi * local_time_fraction),
+    ]).astype(np.float32)
 
 
 def _stable_conventional_metadata_scale(meta: np.ndarray, meta_keys: list[str]) -> np.ndarray:
@@ -329,9 +381,16 @@ def organize_bins_times(
             # --- Build window labels without a big DataFrame ---
             win = time_ts.floor(window_size)  # tz-aware
 
+            if win.isna().any():
+                continue
+
+            # keep only valid windows
+            valid_mask = win.notna()
+            win_valid = win[valid_mask]
+
             # unique ordered windows + integer codes for each row's window
-            uniq_win = pd.Index(win).unique().sort_values()
-            codes = pd.Categorical(win, categories=uniq_win, ordered=True).codes
+            uniq_win = pd.Index(win_valid).unique().sort_values()
+            codes = pd.Categorical(win_valid, categories=uniq_win, ordered=True).codes
 
             if require_targets:
                 n_bins = len(uniq_win) - 1
@@ -469,7 +528,15 @@ def _stats_from_cfg(feature_stats, inst_name, feat_keys):
 
 
 @timing_resource_decorator
-def extract_features(z_dict, data_summary, bin_name, observation_config, feature_stats=None, require_targets=True):
+def extract_features(
+    z_dict,
+    data_summary,
+    bin_name,
+    observation_config,
+    feature_stats=None,
+    require_targets=True,
+    include_persistence_inputs=False,
+):
     """
     Loads and normalizes features for each time bin.
     Adds per-channel masks for inputs and targets so features can be missing independently.
@@ -1119,7 +1186,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     if target_data['features'].shape[0] == 0:
                         scan_cols = obs_cfg.get("scan_angle_channels", 1)
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
-                        target_metadata_list.append(torch.empty(0, len(meta_keys) + 2, dtype=torch.float32))
+                        target_metadata_list.append(torch.empty(0, len(meta_keys) + 2 + TARGET_TIME_FEATURE_DIM, dtype=torch.float32))
                         scan_angle_list.append(torch.empty(0, scan_cols, dtype=torch.float32))
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
@@ -1150,7 +1217,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     else:
                         scan_angle = np.zeros((target_features_final.shape[0], scan_cols), dtype=np.float32)
 
-                    target_metadata_final = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_cos])
+                    target_time_features = _encode_target_time_features(target_data.get('times', []), target_data['lon'])
+                    target_metadata_final = np.column_stack([
+                        lat_rad_target,
+                        lon_rad_target,
+                        target_metadata_cos,
+                        target_time_features,
+                    ])
 
                     target_features_final_list.append(torch.tensor(target_features_final, dtype=torch.float32))
                     target_metadata_list.append(torch.tensor(target_metadata_final, dtype=torch.float32))
@@ -1199,7 +1272,7 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
 
                     if target_data['features'].shape[0] == 0:
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
-                        target_metadata_list.append(torch.empty(0, len(meta_keys) + 2, dtype=torch.float32))
+                        target_metadata_list.append(torch.empty(0, len(meta_keys) + 2 + TARGET_TIME_FEATURE_DIM, dtype=torch.float32))
                         scan_angle_list.append(torch.empty(0, 1, dtype=torch.float32))
                         target_channel_mask_list.append(torch.empty(0, n_ch, dtype=torch.bool))
                         target_lat_deg_list.append(np.array([], dtype=np.float32))
@@ -1225,7 +1298,13 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
                     else:
                         target_metadata_norm = np.empty((target_features_final.shape[0], 0), dtype=np.float32)
 
-                    target_metadata_final = np.column_stack([lat_rad_target, lon_rad_target, target_metadata_norm])
+                    target_time_features = _encode_target_time_features(target_data.get('times', []), target_data['lon'])
+                    target_metadata_final = np.column_stack([
+                        lat_rad_target,
+                        lon_rad_target,
+                        target_metadata_norm,
+                        target_time_features,
+                    ])
                     scan_angle = np.zeros((target_features_final.shape[0], 1), dtype=np.float32)
 
                     target_features_final_list.append(torch.tensor(target_features_final, dtype=torch.float32))
@@ -1241,6 +1320,14 @@ def extract_features(z_dict, data_summary, bin_name, observation_config, feature
             data_summary_bin["input_metadata"] = torch.tensor(np.column_stack([lat_rad_input, lon_rad_input]), dtype=torch.float32)
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
+            if include_persistence_inputs:
+                data_summary_bin["input_features_raw"] = input_features_raw_clean.astype(np.float32)
+                data_summary_bin["input_channel_mask"] = input_valid_ch_clean.astype(bool)
+                data_summary_bin["input_time_unix"] = np.asarray(input_times_clean, dtype=np.int64)
+            else:
+                data_summary_bin.pop("input_features_raw", None)
+                data_summary_bin.pop("input_channel_mask", None)
+                data_summary_bin.pop("input_time_unix", None)
 
             # Store pressure level indices for radiosonde and aircraft
             if inst_name in ['radiosonde', 'aircraft'] and input_pressure_level is not None:

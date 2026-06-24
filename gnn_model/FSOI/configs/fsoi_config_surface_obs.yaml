@@ -1,0 +1,127 @@
+# FSOI Configuration - Surface Observations Impact Study
+# Objective:
+#   Measure how ALL observation types impact forecast error of SURFACE OBS
+#   verification targets: 2-m temperature, specific humidity, 10-m u/v wind,
+#   and surface pressure.
+#
+# Scientific notes:
+# - Surface obs have no vertical pressure structure, so stratify_by_pressure is
+#   disabled. A single global error metric is computed over all surface targets.
+# - Area weighting is enabled: surface obs are dense in the tropics and NH,
+#   so cosine-latitude weights prevent geographic density from biasing totals.
+# - Finite-difference check is enabled (10 samples) to verify gradient accuracy
+#   against a tangent-linear approximation for this target type.
+# - Aircraft humidity is NOT masked here (aircraft is not the verification target).
+
+forecast:
+  lead_steps: [0]
+
+  # Decode/score only surface_obs verification targets
+  target_instruments: ["surface_obs"]
+
+  # All surface channels (T, q, u, v, ps)
+  target_variables: "all"
+
+  # Surface obs have no pressure level → stratify_by_pressure must be false
+  target_pressure_levels: "all"
+
+  use_instrument_weights: false
+  use_channel_weights: false
+
+  # Cosine-latitude area weighting: essential for global totals when obs are
+  # geographically uneven (dense NH mid-latitudes, sparse tropics/SH).
+  use_area_weights: true
+
+  # Normalized metric so date windows with different target counts are comparable.
+  loss_reduction: "mean"
+
+  # Trapezoidal FSOI factor (standard 0.5 from Langland & Baker 2004).
+  impact_factor: 0.5
+
+  # Surface obs have no vertical structure → no pressure stratification.
+  stratify_by_pressure: false
+
+  # Separate backward pass per target variable enables per-variable attribution
+  # (one map/plot per surface variable).
+  stratify_by_variable: true
+
+plots:
+  save_scatter_samples: true
+  scatter_max_points: 200000
+
+data:
+  start_date: "2025-06-01"
+  end_date: "2025-06-30"
+
+  batch_size: 1
+  num_workers: 1
+
+  output_dir: "./FSOI/fsoi_outputs/surface_obs_impact"
+  save_per_obs_impacts: false
+  store_full_tensors: false
+
+  # No feature masking: surface_obs is the target, not the source instrument
+  feature_masks: {}
+
+memory:
+  max_decoder_nodes:
+    avhrr: 30000
+    atms: 50000
+    amsua: 30000
+    ssmis: 30000
+    seviri_asr: 30000
+    seviri_csr: 30000
+
+model:
+  checkpoint_path: "checkpoints/"
+
+aggregation:
+  by_instrument: true
+  by_channel: true
+  by_time: true
+  by_region: false
+  by_pressure_level: false
+
+  regions:
+    tropics:
+      lat_range: [-30, 30]
+    mid_latitudes_nh:
+      lat_range: [30, 60]
+    mid_latitudes_sh:
+      lat_range: [-60, -30]
+    polar_nh:
+      lat_range: [60, 90]
+    polar_sh:
+      lat_range: [-90, -60]
+
+validation:
+  check_reproducibility: true
+  check_gradients: true
+  check_alignment: true
+
+  require_instruments: null
+  require_satellite: false
+
+  # FD check with 10 samples — surface obs are well-behaved (no pressure masking)
+  # so relative errors should be <0.1%. Set require_fd_pass: true to enforce.
+  finite_difference_check: true
+  fd_num_samples: 10
+  fd_epsilon: 1.0e-4
+  require_fd_pass: false
+
+  min_pairs_warning: 20
+  verbose: true
+
+output:
+  save_csv: true
+  save_zarr: false
+  save_netcdf: false
+
+experiment:
+  name: "surface_obs_impact"
+  description: |
+    FSOI analysis: how do all observation types (satellite radiances,
+    radiosondes, aircraft, surface obs) impact forecast error scored at
+    SURFACE OBS verification targets?
+    Variables: 2-m T, specific humidity, 10-m u, 10-m v, surface pressure.
+    Area-weighted; no vertical stratification (surface-only targets).

@@ -1,5 +1,4 @@
-"""
-Pre-compute mesh prediction edges offline to avoid rtree multiprocessing issues.
+"""Precompute mesh prediction edges for OCELOT.
 
 This script creates the mesh→grid connections once and saves them to a file.
 The training script then loads these pre-computed edges instead of calling
@@ -77,11 +76,14 @@ def precompute_edges(mesh_config_path, output_path, mesh_resolution=6):
 
     # Convert to numpy once and reuse for each instrument
     edge_index_np = edge_index.cpu().numpy()
+    edge_attr_np = edge_attr.cpu().numpy()
     for inst_name in mesh_instruments:
         print(f"\nStoring edges for {inst_name}...")
         # Use the same mesh→grid edges for each instrument
         edges_data[f'{inst_name}_edge_index'] = edge_index_np
-        # Note: We don't save edge_attr because model creates zeros with hidden_dim
+        edges_data[f'{inst_name}_edge_attr'] = edge_attr_np
+        # Note: edge_attr contains 4D GraphCast-style spatial features
+        # These are consumed by BipartiteGAT with edge_dim=bipartite_edge_attr_dim
 
     # Save to file
     print(f"\nSaving to {output_path}...")

@@ -4,10 +4,12 @@ Author: Azadeh Gholoubi
 
 Note: Commands below assume your working directory is `gnn_model/`.
 
-Note: On HPC systems, run these scripts inside the conda env that has the dependencies installed (e.g. `gnn-env`) to avoid `ModuleNotFoundError` issues:
+Note: On HPC systems, run these scripts inside the Conda environment used for OCELOT v1 training and validation to avoid `ModuleNotFoundError` issues.
 
 ```bash
-conda run -n gnn-env python evaluation/scripts/evaluations.py --help
+source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
+conda activate gnn-env
+python evaluation/scripts/evaluations.py --help
 ```
 
 This guide explains how to generate evaluation plots and summaries using:
@@ -51,6 +53,7 @@ Important columns used by plotting/metrics:
 
 - `lat`, `lon`
 - `pred_<var>`, `true_<var>`
+- optional persistence baseline: `persist_<var>`
 - optional QC: `mask_<var>`
 - time metadata (newer format): `init_datetime` and `datetime` (valid time) and/or unix time columns
 - lead metadata (newer format): `lead_hours_nominal`
@@ -81,7 +84,8 @@ These contain OCELOT predictions at fixed OCELOT mesh points, with strict alignm
 
 ### D) Mesh-grid comparison CSVs (GFS_on_mesh)
 
-To compare OCELOT and GFS **on the same mesh points**, an additional CSV is produced:
+To compare OCELOT and GFS **on the same mesh points**, an additional CSV is produced.
+The mesh comparison script preserves OCELOT columns, including `persist_*`, and adds GFS forecast and optional GFS analysis columns.
 
 - **GFS_on_mesh** (GFS interpolated onto the OCELOT mesh points)
   - Current name:
@@ -89,6 +93,9 @@ To compare OCELOT and GFS **on the same mesh points**, an additional CSV is prod
   - Legacy names that may exist from older runs:
     - `..._mesh_vs_gfs.csv`
     - `..._ocelot_vs_gfs_mesh.csv`
+- GFS forecast columns: `gfs_*`
+- GFS analysis columns, when available: `anl_*`
+- valid-time metadata: `valid_time`, `analysis_time_mode`
 
 ---
 
@@ -131,6 +138,7 @@ done
 
 ### C) Pointwise metrics (RMSE/MAE/bias) from `val_csv`
 This produces a single CSV with aggregated metrics grouped by keys like instrument and lead time.
+If `persist_*` columns are present, metrics include a `persistence` baseline in addition to OCELOT.
 
 ```bash
 conda run -n gnn-env python evaluation/scripts/evaluations.py --mode metrics \
@@ -250,8 +258,15 @@ conda run -n gnn-env python evaluation/scripts/compare_mesh_to_gfs.py \
   --mesh_csv predictions/<experiment>/pred_csv/mesh-grid/<instrument>_init_<YYYYMMDDHH>_f<FFF>.csv \
   --gfs_root /path/to/gfs-rt25 \
   --out_csv  predictions/<experiment>/pred_csv/mesh-grid/<instrument>_init_<YYYYMMDDHH>_f<FFF>_gfs_on_ocelot_mesh.csv \
-  --interp nearest
+  --interp nearest \
+  --analysis_time_mode exact
 ```
+
+`--analysis_time_mode` controls how `anl_*` fields are populated:
+- `exact`: add analysis only at native 00/06/12/18Z valid times.
+- `nearest`: use the nearest native f000 analysis cycle.
+- `time_interp`: linearly interpolate between neighboring f000 analysis cycles.
+- `none`: skip analysis columns.
 
 2) Plot maps (u10/v10/t2m/sp):
 
@@ -264,6 +279,7 @@ conda run -n gnn-env python evaluation/scripts/plot_mesh_vs_gfs_maps.py \
 
 Outputs include files like:
 - `mesh_OCELOT_on_mesh_vs_GFS_on_mesh_t2m.png`
+- `<instrument>_mesh_6panel_t2m.png` when `anl_*` analysis columns are present.
 
 Mesh map note:
 - On offline nodes, Cartopy NaturalEarth shapefiles may not be pre-cached; mesh map scripts will skip coastlines/land/borders

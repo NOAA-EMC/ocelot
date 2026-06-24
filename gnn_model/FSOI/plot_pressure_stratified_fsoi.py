@@ -5,6 +5,8 @@ Plot FSOI impact by pressure level for radiosonde and aircraft observations.
 This script creates visualizations showing the relative contribution of each
 observation type to forecast error at different pressure levels, using the
 pressure-stratified FSOI data.
+
+Author: Azadeh Gholoubi
 """
 
 import pandas as pd
@@ -19,17 +21,17 @@ STANDARD_PRESSURE_LEVELS = np.array([
 
 # Variable name mapping
 VARIABLE_NAMES = {
-    0: 'temperature',
-    1: 'dewpoint',      # radiosonde
-    2: 'u_wind',
-    3: 'v_wind',
+    1: 'temperature',
+    2: 'dewpoint',      # radiosonde
+    3: 'u_wind',
+    4: 'v_wind',
 }
 
 AIRCRAFT_VARIABLE_NAMES = {
-    0: 'temperature',
-    1: 'humidity',  # aircraft
-    2: 'u_wind',
-    3: 'v_wind',
+    1: 'temperature',
+    2: 'humidity',  # aircraft
+    3: 'u_wind',
+    4: 'v_wind',
 }
 
 

@@ -1,5 +1,7 @@
 # FSOI Radiosonde Temperature Impact Study - Quick Reference
 
+Author: Azadeh Gholoubi
+
 ## Objective
 Determine how **all observation types** (satellite + conventional) impact **radiosonde temperature forecast error**.
 
@@ -264,7 +266,7 @@ data:
 
 **FSOI Formula:**
 ```
-FSOI(k) = δx(k) ⊙ (ga(k) + gb(k))
+FSOI(k) = 0.5 * δx(k) ⊙ (ga(k) + gb(k))
 
 where:
   δx(k) = innovation (xa - xb)

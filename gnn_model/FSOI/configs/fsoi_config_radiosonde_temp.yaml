@@ -80,7 +80,8 @@ memory:
     atms: 50000     # raw ~200k  → 50k
     amsua: 30000    # raw ~30k   → 30k (usually already small, extra safety)
     ssmis: 30000    # raw ~50k   → 30k
-    seviri: 30000   # raw ~36k   → 30k
+    seviri_asr: 30000  # split SEVIRI: ASR stream
+    seviri_csr: 30000  # split SEVIRI: CSR stream
 
 # Model parameters
 model:

@@ -1,0 +1,113 @@
+# FSOI Configuration — Enhanced Gradient Validation
+#
+# Runs three gradient validation tests on a 3-day window (Jul 1–3 2025):
+#   1a. Scalar float32 FD per obs (existing; satellites SKIP at this precision)
+#   1b. Directional-derivative test using Rademacher ±1 vectors (float32)
+#       Expected signal for ATMS: ε × Σ|g_i| ~ 1.1e-4 ≈ 90 float32 ULP
+#   1c. Per-obs FD in float64 (casts model + batch to double precision)
+#       Float64 ULP ~2e-15 resolves perturbations down to 1e-10
+#
+# Output: FSOI/fsoi_outputs/fd_check_enhanced/evaluation/
+#   fd_validation.csv              — scalar float32 results
+#   fd_directional_validation.csv  — directional results (per trial per instrument)
+#   fd_float64_validation.csv      — float64 per-obs results
+
+forecast:
+  lead_steps: [0]
+  target_instruments: ["radiosonde"]
+  target_variables: "all"
+  target_pressure_levels: "all"
+  use_instrument_weights: false
+  use_channel_weights: false
+  use_area_weights: true
+  loss_reduction: "mean"
+  impact_factor: 0.5
+  stratify_by_pressure: true
+  stratify_by_variable: true
+
+data:
+  start_date: "2025-07-01"
+  end_date: "2025-07-03"
+  batch_size: 1
+  num_workers: 1
+  output_dir: "FSOI/fsoi_outputs/fd_check_enhanced"
+  save_per_obs_impacts: false
+  feature_masks:
+    aircraft: [specificHumidity]
+  store_full_tensors: false
+
+memory:
+  max_decoder_nodes:
+    avhrr: 30000
+    atms: 50000
+    amsua: 30000
+    ssmis: 30000
+    seviri_asr: 30000
+    seviri_csr: 30000
+
+model:
+  checkpoint_path: "checkpoints/"
+
+aggregation:
+  by_instrument: true
+  by_channel: true
+  by_time: true
+  by_region: false
+  by_pressure_level: true
+  regions:
+    tropics:
+      lat_range: [-30, 30]
+    mid_latitudes_nh:
+      lat_range: [30, 60]
+    mid_latitudes_sh:
+      lat_range: [-60, -30]
+    polar_nh:
+      lat_range: [60, 90]
+    polar_sh:
+      lat_range: [-90, -60]
+
+validation:
+  check_reproducibility: false
+  check_gradients: true
+  check_alignment: true
+  require_instruments: null
+  require_satellite: false
+  min_pairs_warning: 3
+  verbose: true
+
+  # ── Step 1a: scalar float32 FD ─────────────────────────────────────────
+  # Fires on pair indices 0, 2, 4 (auto-spaced across 3-day window).
+  # Instruments with per-obs gradient < float32 ULP threshold auto-SKIP.
+  finite_difference_check: true
+  fd_num_samples: 5
+  fd_epsilon: 0.01
+
+  # ── Step 1b: directional derivative (Rademacher, float32) ───────────────
+  # Runs for high-N satellite instruments (atms, avhrr, ssmis, ascat, amsua,
+  # seviri_asr). 5 random sign vectors per instrument per check pair.
+  # Expected |Δe| for ATMS ~ 90 float32 ULP at ε=0.01.
+  directional_derivative_check: true
+  directional_n_trials: 5
+  directional_epsilon: 0.01
+
+  # ── Step 1c: per-obs FD in float64 ─────────────────────────────────────
+  # Casts model + batch to float64, resolves gradients down to ~1e-10.
+  # 3 random obs per instrument per check pair.
+  float64_fd_check: true
+  float64_num_samples: 3
+  float64_epsilon: 0.0001
+
+output:
+  save_csv: true
+  save_zarr: false
+  save_netcdf: false
+
+plots:
+  save_scatter_samples: false
+
+experiment:
+  name: "fd_gradient_validation_enhanced"
+  description: |
+    Three-tier gradient validation for FSOI:
+    scalar float32 FD, Rademacher directional test, and float64 FD.
+    Covers all instrument types including high-N satellites.

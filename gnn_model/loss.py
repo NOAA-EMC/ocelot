@@ -1,4 +1,8 @@
-# loss.py
+"""Loss functions for OCELOT training and evaluation.
+
+Author: Azadeh Gholoubi
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -140,6 +144,103 @@ def weighted_huber_loss(
             denom_total = denom_total + 1.0
         else:
             total = total + h_i.sum()
+            denom_total = denom_total + denom_i
+
+    if denom_total <= 0:
+        return torch.tensor(0.0, device=device)
+    return total / (denom_total + eps)
+
+
+def weighted_mse_loss(
+    pred: torch.Tensor,  # [N, C]
+    target: torch.Tensor,  # [N, C]
+    instrument_ids: Optional[torch.Tensor] = None,  # [N] or None
+    channel_weights=None,  # dict[int|str->Tensor[C]] or Tensor[C] or None
+    rebalancing: bool = True,  # average equally across instruments if True
+    valid_mask: Optional[torch.Tensor] = None,  # [N, C] bool; False = ignore element
+) -> torch.Tensor:
+    """
+    MSE loss with optional per-instrument, per-channel weights and an optional [N, C] mask.
+    When valid_mask is provided, loss is averaged ONLY over True elements.
+    """
+    device = pred.device
+    _, C = pred.shape
+
+    mse = (pred - target) ** 2
+
+    if valid_mask is not None:
+        if valid_mask.shape != mse.shape:
+            raise ValueError(f"valid_mask shape {valid_mask.shape} must match pred/target {mse.shape}.")
+        vm = valid_mask.to(dtype=mse.dtype, device=device)
+    else:
+        vm = None
+
+    def _broadcast_w(w: torch.Tensor) -> torch.Tensor:
+        w = w.to(device=device, dtype=mse.dtype).flatten()
+        if w.numel() != C:
+            if w.numel() < C:
+                w = torch.cat([w, torch.ones(C - w.numel(), device=device, dtype=mse.dtype)], dim=0)
+            else:
+                w = w[:C]
+        return w.view(1, C)
+
+    def _get_weights_for_inst(inst_key) -> torch.Tensor:
+        if isinstance(channel_weights, dict):
+            w = channel_weights.get(inst_key)
+            if w is None:
+                w = channel_weights.get(str(inst_key))
+            if w is None:
+                w = channel_weights.get("global")
+        else:
+            w = channel_weights
+        if w is None:
+            w = torch.ones(C, device=device, dtype=mse.dtype)
+        w = torch.as_tensor(w, device=device, dtype=mse.dtype)
+        w = torch.clamp(w, min=0)
+        return _broadcast_w(w)
+
+    eps = torch.finfo(mse.dtype).eps
+
+    if instrument_ids is None:
+        w = _get_weights_for_inst("global")
+        loss_mat = mse * w
+        if vm is not None:
+            active = vm * (w > 0).to(vm.dtype)
+            loss_mat = loss_mat * active
+            denom = active.sum()
+        else:
+            active = (w > 0).to(loss_mat.dtype, device=device).expand_as(loss_mat)
+            denom = active.sum()
+        if denom <= 0:
+            return torch.tensor(0.0, device=device)
+        return loss_mat.sum() / (denom + eps)
+
+    total = torch.tensor(0.0, device=device, dtype=mse.dtype)
+    denom_total = torch.tensor(0.0, device=device, dtype=mse.dtype)
+
+    for inst in torch.unique(instrument_ids):
+        mask_rows = instrument_ids == inst
+        if not mask_rows.any():
+            continue
+        w = _get_weights_for_inst(int(inst.item()))
+        mse_i = mse[mask_rows] * w
+        if vm is not None:
+            vm_i = vm[mask_rows]
+            active_i = vm_i * (w > 0).to(vm_i.dtype)
+            mse_i = mse_i * active_i
+            denom_i = active_i.sum()
+        else:
+            active_i = (w > 0).to(mse_i.dtype).expand_as(mse_i)
+            denom_i = active_i.sum()
+
+        if denom_i <= 0:
+            continue
+
+        if rebalancing:
+            total = total + mse_i.sum() / (denom_i + eps)
+            denom_total = denom_total + 1.0
+        else:
+            total = total + mse_i.sum()
             denom_total = denom_total + denom_i
 
     if denom_total <= 0:

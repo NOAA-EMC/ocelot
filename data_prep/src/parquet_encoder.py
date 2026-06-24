@@ -1,3 +1,7 @@
+"""Parquet encoder for OCELOT data-preparation outputs.
+
+"""
+
 import os
 import re
 from typing import Dict, Union

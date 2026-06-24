@@ -1,3 +1,7 @@
+"""Zarr encoder for OCELOT data-preparation outputs.
+
+"""
+
 import re
 from typing import Union
 import zarr

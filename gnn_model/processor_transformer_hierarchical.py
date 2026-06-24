@@ -1,3 +1,12 @@
+"""Hierarchical sliding-window transformer processor for multi-scale mesh rollout.
+
+This module defines temporal attention, cross-scale interactions, spatial
+mixing, and the hierarchical transformer processor used to evolve latent mesh
+states across multiple resolution levels.
+
+Author: Azadeh Gholoubi
+"""
+
 from collections import deque
 from typing import List, Optional
 import torch
@@ -84,6 +93,69 @@ class CrossScaleAttention(nn.Module):
         return self.norm(query + self.drop(attn_out))
 
 
+class SpatialMixBlock(nn.Module):
+    """One explicit within-level neighbor mixing step using `edge_index`."""
+
+    def __init__(self, hidden_dim: int, dropout: float = 0.0):
+        super().__init__()
+        # See processor_transformer.SpatialMixBlock for rationale.
+        self.distance_scale: float = 4.0
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: Optional[torch.Tensor],
+        edge_attr: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if edge_index is None:
+            return x
+        if not torch.is_tensor(edge_index) or edge_index.numel() == 0:
+            return x
+
+        src = edge_index[0]
+        dst = edge_index[1]
+        N = int(x.size(0))
+        device = x.device
+        dtype = x.dtype
+
+        if edge_attr is None:
+            agg = torch.zeros((N, x.size(1)), device=device, dtype=dtype)
+            agg.index_add_(0, dst, x[src])
+
+            deg = torch.zeros((N,), device=device, dtype=dtype)
+            deg.index_add_(0, dst, torch.ones((dst.numel(),), device=device, dtype=dtype))
+            agg = agg / deg.clamp(min=1).unsqueeze(-1)
+        else:
+            if edge_attr.dim() == 1:
+                w = edge_attr
+            elif edge_attr.dim() == 2 and edge_attr.size(1) == 1:
+                w = edge_attr[:, 0]
+            else:
+                feat = edge_attr.to(device=device, dtype=torch.float32)
+                feat_norm = torch.sqrt((feat * feat).sum(dim=1) + 1e-12)
+                w = torch.exp(-float(self.distance_scale) * feat_norm).to(dtype=dtype)
+
+            w = w.to(device=device, dtype=dtype).clamp(min=0)
+
+            agg = torch.zeros((N, x.size(1)), device=device, dtype=dtype)
+            agg.index_add_(0, dst, x[src] * w.unsqueeze(-1))
+
+            wsum = torch.zeros((N,), device=device, dtype=dtype)
+            wsum.index_add_(0, dst, w)
+            agg = agg / wsum.clamp(min=1e-6).unsqueeze(-1)
+
+        msg = self.mlp(agg)
+        return self.norm(x + self.drop(msg))
+
+
 class HierarchicalSlidingWindowTransformer(nn.Module):
     """
     Hierarchical temporal transformer that processes multiple mesh resolution levels.
@@ -107,7 +179,8 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
                  num_heads: int = 4,
                  dropout: float = 0.0,
                  use_causal_mask: bool = True,
-                 use_cross_scale: bool = True):
+                 use_cross_scale: bool = True,
+                 spatial_mixing_steps: int = 1):
         """
         Args:
             hidden_dim: Hidden dimension for all levels
@@ -125,6 +198,7 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
         self.window = window
         self.use_causal_mask = use_causal_mask
         self.use_cross_scale = use_cross_scale
+        self.spatial_mixing_steps = int(spatial_mixing_steps)
 
         # Temporal transformers for each level (intra-level)
         self.level_transformers = nn.ModuleList()
@@ -180,6 +254,11 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
 
         # Cache for each level (stores temporal history)
         self.caches: List[deque] = [deque(maxlen=window) for _ in range(num_levels)]
+
+        # Optional within-level spatial neighbor mixing after temporal+cross-scale attention.
+        self.level_spatial_mix = nn.ModuleList(
+            [SpatialMixBlock(hidden_dim, dropout=dropout) for _ in range(num_levels)]
+        )
 
     def reset(self):
         """Clear all temporal caches"""
@@ -288,7 +367,9 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
     def forward(self,
                 mesh_features_list: List[torch.Tensor],
                 up_edge_index_list: Optional[List[torch.Tensor]] = None,
-                down_edge_index_list: Optional[List[torch.Tensor]] = None) -> List[torch.Tensor]:
+                down_edge_index_list: Optional[List[torch.Tensor]] = None,
+                mesh_edge_index_list: Optional[List[torch.Tensor]] = None,
+                mesh_edge_attr_list: Optional[List[torch.Tensor]] = None) -> List[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
@@ -328,6 +409,29 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
             x_seq = x_seq_list[level]
             for block in self.level_transformers[level]:
                 x_seq = block(x_seq, attn_mask)
+
+                # Interleave explicit within-level spatial mixing with temporal layers.
+                if (
+                    self.spatial_mixing_steps > 0
+                    and mesh_edge_index_list is not None
+                    and isinstance(mesh_edge_index_list, (list, tuple))
+                    and len(mesh_edge_index_list) == self.num_levels
+                ):
+                    ei = mesh_edge_index_list[level]
+                    ea = None
+                    if (
+                        mesh_edge_attr_list is not None
+                        and isinstance(mesh_edge_attr_list, (list, tuple))
+                        and len(mesh_edge_attr_list) == self.num_levels
+                    ):
+                        ea = mesh_edge_attr_list[level]
+                    mixed = []
+                    for t in range(x_seq.size(1)):
+                        xt = x_seq[:, t, :]
+                        for _ in range(self.spatial_mixing_steps):
+                            xt = self.level_spatial_mix[level](xt, ei, ea)
+                        mixed.append(xt)
+                    x_seq = torch.stack(mixed, dim=1)
             processed_list.append(x_seq)
             print(f"  - Level {level}: {x_seq.shape[0]} nodes, temporal shape {x_seq.shape}")
 

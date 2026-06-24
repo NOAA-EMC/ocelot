@@ -1,3 +1,12 @@
+"""Core Lightning model for Ocelot graph neural network training and inference.
+
+This module defines the end-to-end GNN model, including observation encoders,
+latent mesh processors, target decoders, rollout logic, losses, and diagnostic
+output utilities used during training, validation, and prediction.
+
+Author: Azadeh Gholoubi
+"""
+
 import lightning.pytorch as pl
 import os
 import time
@@ -18,12 +27,14 @@ from utils import make_mlp
 from interaction_net import InteractionNet
 from create_mesh_graph_global import create_mesh
 from torch_geometric.data import HeteroData
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 from torch_geometric.utils import scatter
-from loss import weighted_huber_loss
+from loss import weighted_huber_loss, weighted_mse_loss
 from processor_transformer import SlidingWindowTransformerProcessor
 from processor_transformer_hierarchical import HierarchicalSlidingWindowTransformer
 from attn_bipartite import BipartiteGAT
+from process_timeseries import _encode_target_time_features
+from datetime import datetime
 
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
@@ -61,6 +72,8 @@ def _canonical_variable_name(feature_name: str) -> str:
         # Pressure
         "airpressure": "pressure",
         "airpressure_prepbufr_event_1": "pressure",
+        "pressuremeansealevel_pb": "pressure",
+        "pressuremeansealevel_prepbufr": "pressure",
     }
 
     return mapping.get(key, feature_name)
@@ -93,6 +106,7 @@ class GNNLightning(pl.LightningModule):
         instrument_weights=None,
         channel_weights=None,
         huber_delta: float = 0.1,
+        loss_type: str = "mse",
         verbose=False,
         detect_anomaly=False,
         max_rollout_steps=1,
@@ -103,6 +117,7 @@ class GNNLightning(pl.LightningModule):
         processor_window: int = 4,
         processor_depth: int = 2,
         processor_heads: int = 4,
+        spatial_mixing_steps: int = 1,
         processor_dropout: float = 0.0,
         encoder_type: str = "interaction",     # "interaction" | "gat"
         decoder_type: str = "interaction",     # "interaction" | "gat"
@@ -126,7 +141,8 @@ class GNNLightning(pl.LightningModule):
         val_csv_sample_seed: int = 0,
         scan_angle_conditioning: str = "project",  # "pad" | "project"
         pressure_level_conditioning: str = "project",  # "pad" | "project"
-        surface_meta_conditioning: str = "project",  # "pad" | "project"
+        use_bipartite_edge_attr: bool = True,
+        bipartite_edge_attr_dim: int = 4,
         **kwargs,
     ):
         """
@@ -149,6 +165,9 @@ class GNNLightning(pl.LightningModule):
         self.lr = lr
         self.weight_decay = float(weight_decay)
         self.huber_delta = float(huber_delta)
+        self.loss_type = str(loss_type).lower()
+        if self.loss_type not in ("huber", "mse"):
+            raise ValueError(f"loss_type must be 'huber' or 'mse' (got: {self.loss_type!r})")
         self.lr_schedule = str(lr_schedule)
         self.warmup_pct = float(warmup_pct)
         self.warmup_start_factor = float(warmup_start_factor)
@@ -179,13 +198,10 @@ class GNNLightning(pl.LightningModule):
                 f"pressure_level_conditioning must be 'pad' or 'project' (got: {self.pressure_level_conditioning!r})"
             )
 
-        self.surface_meta_conditioning = str(surface_meta_conditioning)
-        if self.surface_meta_conditioning not in ("pad", "project"):
-            raise ValueError(
-                f"surface_meta_conditioning must be 'pad' or 'project' (got: {self.surface_meta_conditioning!r})"
-            )
-
         self.observation_config = observation_config
+
+        self.use_bipartite_edge_attr = bool(use_bipartite_edge_attr)
+        self.bipartite_edge_attr_dim = int(bipartite_edge_attr_dim)
 
         # Backward compatibility: older checkpoints may not have mesh_config in hparams.
         # Lightning will pass mesh_config=None in that case.
@@ -241,6 +257,12 @@ class GNNLightning(pl.LightningModule):
         self.mesh_type = mesh_type
         self.mesh_levels = mesh_levels
 
+        # bipartite GATs consume the computed spatial edge_attr
+        # directly, with edge_dim=bipartite_edge_attr_dim (GraphCast-style features are 4-dim).
+        if self.bipartite_edge_attr_dim <= 0:
+            raise ValueError(
+                f"bipartite_edge_attr_dim must be > 0 (got: {self.bipartite_edge_attr_dim})"
+            )
         print(f"\n{'='*70}")
         print(f"[GNN MODEL] Initializing with configuration:")
         print(f"  - Mesh type: {mesh_type}")
@@ -330,42 +352,11 @@ class GNNLightning(pl.LightningModule):
         else:
             self.pressure_level_projector = None
 
-        # Surface obs: embed target metadata (e.g. station height) for decoder conditioning.
-        # This lets the surface pressure decoder depend explicitly on elevation.
-        self.surface_target_meta_embed_dim = 8
-        self.surface_target_meta_dim = 0
-        self.surface_target_meta_names = []
-        self.surface_target_meta_embedder = None
-        try:
-            for _, instruments in observation_config.items():
-                if isinstance(instruments, dict) and "surface_obs" in instruments:
-                    surface_cfg = instruments.get("surface_obs") or {}
-                    self.surface_target_meta_names = list(surface_cfg.get("metadata", []) or [])
-                    self.surface_target_meta_dim = int(len(self.surface_target_meta_names))
-                    if self.surface_target_meta_dim > 0:
-                        self.surface_target_meta_embedder = make_mlp(
-                            [self.surface_target_meta_dim, self.surface_target_meta_embed_dim]
-                        )
-                    break
-        except Exception:
-            # Keep embedder disabled if config parsing fails; training will surface it.
-            self.surface_target_meta_dim = 0
-            self.surface_target_meta_names = []
-            self.surface_target_meta_embedder = None
-
-        # Optional: project surface metadata embedding across the full hidden_dim.
-        if self.surface_meta_conditioning == "project":
-            self.surface_meta_projector = nn.Linear(self.surface_target_meta_embed_dim, self.hidden_dim)
-        else:
-            self.surface_meta_projector = None
-
-        if self.surface_target_meta_embedder is not None:
-            print(
-                f"[GNN MODEL] surface_obs decoder conditioning: ENABLED "
-                f"(meta_dim={self.surface_target_meta_dim}, embed_dim={self.surface_target_meta_embed_dim})"
-            )
-        else:
-            print("[GNN MODEL] surface_obs decoder conditioning: DISABLED")
+        # Target valid-time + local solar time conditioning lives in the last 5 target_metadata columns.
+        self.target_time_feature_dim = 5
+        self.target_time_embed_dim = 8
+        self.target_time_embedder = make_mlp([self.target_time_feature_dim, self.target_time_embed_dim])
+        self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.hidden_dim)
 
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
@@ -387,6 +378,7 @@ class GNNLightning(pl.LightningModule):
                     dropout=processor_dropout,
                     use_causal_mask=True,
                     use_cross_scale=True,  # Enable cross-scale attention
+                    spatial_mixing_steps=spatial_mixing_steps,
                 )
             else:
                 # Use single-level transformer for fixed mesh
@@ -399,6 +391,7 @@ class GNNLightning(pl.LightningModule):
                     num_heads=processor_heads,
                     dropout=processor_dropout,
                     use_causal_mask=True,
+                    spatial_mixing_steps=spatial_mixing_steps,
                 )
         elif self.processor_type == "interaction":
             pass  # processor will be built later
@@ -421,7 +414,7 @@ class GNNLightning(pl.LightningModule):
                 enc_key = self._edge_key(edge_type_tuple_enc)
 
                 if encoder_type == "gat":
-                    enc_edge_dim = hidden_dim   # <- match the zeros you already pass in forward
+                    enc_edge_dim = self.bipartite_edge_attr_dim
                     self.observation_encoders[enc_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
@@ -429,7 +422,7 @@ class GNNLightning(pl.LightningModule):
                         layers=encoder_layers,
                         heads=encoder_heads,
                         dropout=encoder_dropout,
-                        edge_dim=enc_edge_dim,   # <- use edge_attr exactly like InteractionNet path
+                        edge_dim=enc_edge_dim,
                     )
                 else:
                     self.observation_encoders[enc_key] = InteractionNet(
@@ -444,7 +437,7 @@ class GNNLightning(pl.LightningModule):
                 dec_key = self._edge_key(edge_type_tuple_dec)
 
                 if decoder_type == "gat":
-                    dec_edge_dim = hidden_dim   # <- same idea for decoder
+                    dec_edge_dim = self.bipartite_edge_attr_dim
                     self.observation_decoders[dec_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
@@ -555,11 +548,122 @@ class GNNLightning(pl.LightningModule):
                 for i, down_feat in enumerate(mesh_down_features_list):
                     self.register_buffer(f"mesh_down_edge_attr_{i}", _as_f32(down_feat))
 
+    def _safe_trainer(self):
+        try:
+            return self.trainer
+        except RuntimeError:
+            return None
+
+    def _is_global_zero_safe(self) -> bool:
+        trainer = self._safe_trainer()
+        return getattr(trainer, "is_global_zero", True)
+
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         # PyG Data/HeteroData implements .to()
         if hasattr(batch, "to"):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
+    def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
+        if edge_attr is None:
+            return edge_attr
+        if edge_attr.dim() == 1:
+            edge_attr = edge_attr.unsqueeze(-1)
+        if edge_attr.size(-1) == dim:
+            return edge_attr
+        if edge_attr.size(-1) < dim:
+            pad = dim - edge_attr.size(-1)
+            return torch.cat(
+                [
+                    edge_attr,
+                    torch.zeros(
+                        edge_attr.size(0),
+                        pad,
+                        device=edge_attr.device,
+                        dtype=edge_attr.dtype,
+                    ),
+                ],
+                dim=-1,
+            )
+        return edge_attr[:, :dim]
+
+    def _edge_features(
+        self,
+        data: HeteroData,
+        edge_type,
+        edge_index: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
+        E = int(edge_index.size(1))
+
+        # Debug printing: show whether we used real edge_attr or fell back to zeros.
+        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
+        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
+            if not getattr(self, "verbose", False):
+                return
+            if not self._is_global_zero_safe():
+                return
+            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
+                self._edge_attr_debug_seen = set()
+            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
+            if key in self._edge_attr_debug_seen:
+                return
+            self._edge_attr_debug_seen.add(key)
+
+            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
+            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
+                try:
+                    t = edge_rep_tensor.detach()
+                    mean_v = t.mean().item()
+                    std_v = t.std(unbiased=False).item()
+                    min_v = t.min().item()
+                    max_v = t.max().item()
+                    msg += (
+                        f" edge_attr_shape={tuple(t.shape)} "
+                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
+                    )
+                except Exception:
+                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
+            print(msg)
+
+        if not self.use_bipartite_edge_attr:
+            _maybe_print("disabled")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        edge_rep = None
+        try:
+            if "edge_attr" in data[edge_type]:
+                edge_rep = data[edge_type].edge_attr
+        except Exception:
+            edge_rep = None
+
+        if edge_rep is None:
+            _maybe_print("missing")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if torch.is_tensor(edge_rep) and edge_rep.numel() == 0:
+            _maybe_print("empty")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if not torch.is_tensor(edge_rep):
+            _maybe_print("non_tensor")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if edge_rep.size(0) != E:
+            _maybe_print(f"edge_count_mismatch(edge_attr={int(edge_rep.size(0))})")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        edge_rep = edge_rep.to(device=device, dtype=dtype)
+        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.bipartite_edge_attr_dim)
+
+        if edge_rep.size(-1) != self.bipartite_edge_attr_dim:
+            _maybe_print(f"dim_mismatch(edge_attr={int(edge_rep.size(-1))})", edge_rep)
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        _maybe_print("ok", edge_rep)
+        return edge_rep
 
     def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
         """
@@ -622,10 +726,30 @@ class GNNLightning(pl.LightningModule):
 
             print(f"[MESH PRED] {inst_name}: {edge_index.shape[1]} edges")
 
+            edge_attr_key = f'{inst_name}_edge_attr'
+            if edge_attr_key in data:
+                edge_attr = torch.from_numpy(data[edge_attr_key]).float()
+                if edge_attr.shape[0] != edge_index.shape[1]:
+                    raise ValueError(
+                        f"[MESH PRED] {inst_name}: edge_attr row count ({edge_attr.shape[0]}) "
+                        f"!= edge_index edge count ({edge_index.shape[1]})"
+                    )
+                if edge_attr.shape[1] != self.bipartite_edge_attr_dim:
+                    raise ValueError(
+                        f"[MESH PRED] {inst_name}: edge_attr dim ({edge_attr.shape[1]}) "
+                        f"!= bipartite_edge_attr_dim ({self.bipartite_edge_attr_dim})"
+                    )
+            else:
+                print(
+                    f"[MESH PRED] WARNING: No edge_attr found for {inst_name} in {edges_path}. "
+                    f"Falling back to zeros — re-run precompute_mesh_edges.py to fix this."
+                )
+                edge_attr = torch.zeros((edge_index.size(1), self.bipartite_edge_attr_dim))
+
             # Store on CPU - will move to device when used
             mesh_pred_edges[inst_name] = {
                 'edge_index': edge_index,  # CPU tensor (no .to(device))
-                'edge_attr': torch.zeros((edge_index.size(1), self.hidden_dim)),  # CPU
+                'edge_attr': edge_attr,
                 'lats': torch.from_numpy(mesh_lats).float(),  # CPU
                 'lons': torch.from_numpy(mesh_lons).float(),  # CPU
                 'num_nodes': num_nodes
@@ -711,11 +835,39 @@ class GNNLightning(pl.LightningModule):
                 return instruments[inst_name].get("features", None)
         return None
 
+    def _compute_channel_loss(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+        instrument_ids: Optional[torch.Tensor],
+        valid_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if self.loss_type == "mse":
+            return weighted_mse_loss(
+                y_pred,
+                y_true,
+                instrument_ids=instrument_ids,
+                channel_weights=self.channel_weights,
+                rebalancing=True,
+                valid_mask=valid_mask,
+            )
+        return weighted_huber_loss(
+            y_pred,
+            y_true,
+            instrument_ids=instrument_ids,
+            channel_weights=self.channel_weights,
+            delta=self.huber_delta,
+            rebalancing=True,
+            valid_mask=valid_mask,
+        )
+
     def debug(self, *args, **kwargs):
         if getattr(self, "verbose", False) and (not hasattr(self, "trainer") or self.trainer.is_global_zero):
             print(*args, **kwargs)
 
     def on_fit_start(self):
+        # Reset one-time debug cache each run.
+        self._edge_attr_debug_seen = set()
         if getattr(self, "detect_anomaly", False):
             # enable once per run, not every batch
             torch.autograd.set_detect_anomaly(True)
@@ -892,15 +1044,17 @@ class GNNLightning(pl.LightningModule):
                 obs_features = embedded_features[src_type]
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
                 device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device
-                edge_attr = torch.zeros((edge_index.size(1), self.hidden_dim), device=device)
 
                 encoder = self.observation_encoders[self._edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
-                use_edge_attr = getattr(encoder, "expects_edge_attr", False)  # set on init, see below
-                edge_rep = None
-                if use_edge_attr:
-                    edge_rep = data[edge_type].edge_attr if "edge_attr" in data[edge_type] else None
+                edge_features = self._edge_features(
+                    data=data,
+                    edge_type=edge_type,
+                    edge_index=edge_index,
+                    device=device,
+                    dtype=obs_features.dtype,
+                )
 
                 # --- Debugging ---
                 self.debug(f"\n[ENC] edge type: {edge_type}")
@@ -908,8 +1062,6 @@ class GNNLightning(pl.LightningModule):
                 self.debug(f"  edge_index {edge_index.shape}")
                 # --- End Debugging ---
 
-                # Use computed edge_rep if available, otherwise fall back to zero edge_attr
-                edge_features = edge_rep if edge_rep is not None else edge_attr
                 encoded_mesh_features = encoder(
                     send_rep=obs_features,
                     rec_rep=encoded_mesh_features,
@@ -1028,10 +1180,20 @@ class GNNLightning(pl.LightningModule):
                     print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
 
                     # Process through hierarchical transformer
+                    mesh_edge_index_list = [
+                        getattr(self, f"mesh_edge_index_level_{lvl}")
+                        for lvl in range(self.num_mesh_levels)
+                    ]
+                    mesh_edge_attr_list = [
+                        getattr(self, f"mesh_edge_attr_level_{lvl}")
+                        for lvl in range(self.num_mesh_levels)
+                    ]
                     processed_levels = self.swt(
                         mesh_features_list,
                         up_edge_index_list,
-                        down_edge_index_list
+                        down_edge_index_list,
+                        mesh_edge_index_list=mesh_edge_index_list,
+                        mesh_edge_attr_list=mesh_edge_attr_list,
                     )
 
                     print(f"[FORWARD]   - Output shapes: {[p.shape for p in processed_levels]}")
@@ -1090,7 +1252,11 @@ class GNNLightning(pl.LightningModule):
                 else:
                     # Single-level transformer for fixed mesh
                     print(f"[FORWARD] Step {step+1}/{num_latent_steps}: Using FIXED mesh transformer")
-                    current_mesh_features = self.swt(current_mesh_features)
+                    current_mesh_features = self.swt(
+                        current_mesh_features,
+                        mesh_edge_index=data[("mesh", "to", "mesh")].edge_index,
+                        mesh_edge_attr=data[("mesh", "to", "mesh")].edge_attr,
+                    )
             elif self.is_hierarchical and self.processor_type == "interaction":
                 # Hierarchical processor with InteractionNet: process across multiple mesh levels
                 # Prepare mesh features for all levels (replicate for batch)
@@ -1260,13 +1426,12 @@ class GNNLightning(pl.LightningModule):
                     # Embed viewing geometry information FIRST (before decoder initialization)
                     sa_emb = None
                     pressure_emb = None
-                    surface_meta_emb = None
-
+                    time_emb = None
                     if base_type == "ascat_target":
                         scan_angle = data[step_node_type].x  # [N,3] for ASCAT
                         sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
-                    elif base_type in ("atms_target", "amsua_target", "avhrr_target"):
-                        scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR
+                    elif base_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
+                        scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR/CrIS-PCA
                         sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
 
                         # Diagnostic: verify scan angle varies
@@ -1289,18 +1454,15 @@ class GNNLightning(pl.LightningModule):
                         pressure_level_idx = data[step_node_type].pressure_level  # [N]
                         pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
 
-                    # Surface obs: condition on target metadata (elevation) if available
-                    if (
-                        surface_meta_emb is None
-                        and base_type == "surface_obs_target"
-                        and self.surface_target_meta_embedder is not None
-                        and self.surface_target_meta_dim > 0
-                        and hasattr(data[step_node_type], "target_metadata")
-                    ):
-                        tm = data[step_node_type].target_metadata
-                        if tm is not None and tm.numel() > 0 and tm.size(1) > 2:
-                            meta = tm[:, 2:2 + self.surface_target_meta_dim].to(reference_device)
-                            surface_meta_emb = self.surface_target_meta_embedder(meta)
+                    if hasattr(data[step_node_type], "target_metadata"):
+                        target_metadata = data[step_node_type].target_metadata
+                        if (
+                            target_metadata is not None
+                            and target_metadata.numel() > 0
+                            and target_metadata.size(1) >= (2 + self.target_time_feature_dim)
+                        ):
+                            time_feat = target_metadata[:, -self.target_time_feature_dim:].to(reference_device)
+                            time_emb = self.target_time_embedder(time_feat)
 
                     # Decoder initialization: CONDITION on viewing geometry
                     # Instead of zeros, initialize decoder WITH geometry information
@@ -1326,21 +1488,21 @@ class GNNLightning(pl.LightningModule):
                                 torch.zeros(N, padding_dim, device=reference_device),
                                 pressure_emb
                             ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
-                    elif surface_meta_emb is not None:
-                        # Surface obs: condition decoder on station metadata (elevation)
-                        if self.surface_meta_projector is not None:
-                            target_features_initial = self.surface_meta_projector(surface_meta_emb)
-                        else:
-                            padding_dim = self.hidden_dim - self.surface_target_meta_embed_dim
-                            target_features_initial = torch.cat([
-                                torch.zeros(N, padding_dim, device=reference_device),
-                                surface_meta_emb
-                            ], dim=-1)
                     else:
                         # Conventional obs without viewing geometry: use zeros
                         target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
 
-                    edge_attr = torch.zeros((step_edge_index.size(1), self.hidden_dim), device=reference_device)
+                    # Add target-time conditioning as an additive bias over the full hidden_dim.
+                    if time_emb is not None:
+                        target_features_initial = target_features_initial + self.target_time_projector(time_emb)
+
+                    edge_attr = self._edge_features(
+                        data=data,
+                        edge_type=step_edge_type,
+                        edge_index=step_edge_index,
+                        device=reference_device,
+                        dtype=mesh_features_processed.dtype,
+                    )
 
                     # Decoder now receives GEOMETRY-CONDITIONED initialization
                     # This ensures the model CANNOT make predictions without knowing viewing geometry
@@ -1586,15 +1748,7 @@ class GNNLightning(pl.LightningModule):
                     print(f"  Skipping this prediction to avoid crash")
                     continue
 
-                channel_loss = weighted_huber_loss(
-                    y_pred,
-                    y_true,
-                    instrument_ids=instrument_ids,
-                    channel_weights=self.channel_weights,  # dict keyed by int ids
-                    delta=self.huber_delta,
-                    rebalancing=True,
-                    valid_mask=valid_mask,
-                )
+                channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
 
                 if not torch.isfinite(channel_loss):
                     if self.trainer.is_global_zero:
@@ -1718,14 +1872,11 @@ class GNNLightning(pl.LightningModule):
                         continue  # nothing valid for this node_type/step
 
                 # Get the channel-weighted loss
-                channel_loss = weighted_huber_loss(
+                channel_loss = self._compute_channel_loss(
                     y_pred,
                     y_true,
-                    instrument_ids=instrument_ids,
-                    channel_weights=self.channel_weights,
-                    delta=self.huber_delta,
-                    rebalancing=True,
-                    valid_mask=valid_mask,
+                    instrument_ids,
+                    valid_mask,
                 )
 
                 if not torch.isfinite(channel_loss):
@@ -1911,9 +2062,11 @@ class GNNLightning(pl.LightningModule):
         try:
             with torch.no_grad():
                 temp_mesh_pred_edges = self._get_mesh_pred_edges()
+                init_time_unix = self._extract_init_time_unix(self._last_val_batch)
                 mesh_predictions = self._decode_all_steps_to_mesh(
                     self._last_val_mesh_features,
-                    temp_mesh_pred_edges
+                    temp_mesh_pred_edges,
+                    init_time_unix
                 )
                 if mesh_predictions:
                     self._save_mesh_predictions(
@@ -1934,75 +2087,68 @@ class GNNLightning(pl.LightningModule):
             self._last_val_mesh_features = None
             self._last_val_batch = None
 
-    def _extract_init_time_str(self, batch):
-        """
-        Extract initialization time string from batch in YYYYMMDDHH format.
-        Handles multiple formats: pandas Timestamp, list/tuple, Unix timestamp, tensor.
-
-        Args:
-            batch: Batch data containing input_time or time attribute
-
-        Returns:
-            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
-        """
-        from datetime import datetime
-        import pandas as pd
-
-        if batch is None:
-            return 'unknown'
-
-        # Prefer forecast init (start of target window) when available.
-        # `GNNDataModule` attaches:
-        # - init_time: start of the target window (forecast init / cycle time)
-        # - input_time: start of the input window
-        ts = None
-
-        def _pick_attr(name: str):
+    def _resolve_init_ts(self, batch):
+        """Return raw init timestamp (int/float unix, pd.Timestamp, or datetime), or None."""
+        def _pick_attr(name):
             if not hasattr(batch, name):
                 return None
             v = getattr(batch, name)
+            if isinstance(v, (list, tuple)):
+                v = v[0] if len(v) > 0 else None
             if v is None:
                 return None
-            if isinstance(v, (list, tuple)):
-                return v[0] if len(v) > 0 else None
-            # Treat scalar tensors and numeric sentinels as missing.
+
             if hasattr(v, 'item'):
                 try:
+                    if hasattr(v, 'numel') and v.numel() > 1:
+                        flat = v.reshape(-1)
+                        if not torch.all(flat == flat[0]):
+                            import warnings
+                            warnings.warn(
+                                f"[_pick_attr] '{name}' has {v.numel()} non-identical "
+                                f"values; using first ({flat[0].item()!r}) for timestamp.",
+                                RuntimeWarning, stacklevel=2,
+                            )
+                        v = flat[0]
                     vv = v.item()
-                    if isinstance(vv, (int, float)) and float(vv) < 0:
-                        return None
-                    return vv
+                    return None if float(vv) < 0 else vv
                 except Exception:
-                    return v
-            if isinstance(v, (int, float)) and float(v) < 0:
-                return None
-            return v
+                    return None
+
+            return None if isinstance(v, (int, float)) and float(v) < 0 else v
 
         init_ts = _pick_attr('init_time')
         input_ts = _pick_attr('input_time')
         time_ts = _pick_attr('time')
 
         if init_ts is not None:
-            ts = init_ts
+            return init_ts
         elif input_ts is not None:
-            # In inference mode the datamodule may not populate init_time (no targets).
-            # In our binning logic, input_time is the *start* of the input window, so
-            # forecast init ≈ input_time + data_window_hours.
             try:
                 window_h = self.hparams.get('data_window_hours', None)
                 if window_h is not None and isinstance(window_h, (int, float)):
-                    ts = float(input_ts) + float(window_h) * 3600.0
+                    return float(input_ts) + float(window_h) * 3600.0
                 else:
-                    ts = input_ts
+                    return input_ts
             except Exception:
-                ts = input_ts
+                return input_ts
         else:
-            ts = time_ts
+            return time_ts
 
-        # Now convert ts to string based on its type
+    def _extract_init_time_str(self, batch):
+        """
+        Extract initialization time string from batch in YYYYMMDDHH format.
+        Args:
+            batch: Batch data containing input_time or time attribute
+
+        Returns:
+            str: Init time as 'YYYYMMDDHH' or 'unknown' if unavailable
+        """
+        if batch is None:
+            return 'unknown'
+        ts = self._resolve_init_ts(batch)
         if ts is None:
             return 'unknown'
-
         try:
             # Handle pandas Timestamp
             if isinstance(ts, pd.Timestamp):
@@ -2024,6 +2170,20 @@ class GNNLightning(pl.LightningModule):
         except Exception as e:
             print(f"[INIT_TIME] Error converting time: {e}, type: {type(ts)}")
             return 'unknown'
+
+    def _extract_init_time_unix(self, batch) -> int:
+        ts = self._resolve_init_ts(batch)
+        if ts is None:
+            raise ValueError(
+                "[MESH PRED] Cannot determine init_time_unix from batch — "
+                "batch has no valid init_time or input_time. "
+                "Target-time conditioning requires a valid analysis time."
+            )
+        if isinstance(ts, pd.Timestamp):
+            return int(ts.timestamp())
+        if isinstance(ts, datetime):
+            return int(ts.timestamp())
+        return int(float(ts))
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
                                       valid_mask_list, out_dir, batch_idx, mode='val'):
@@ -2049,22 +2209,76 @@ class GNNLightning(pl.LightningModule):
         all_mask = []
         all_pressure = []  # Pressure in hPa for radiosonde/aircraft evaluation
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
+        all_persist = []
 
         # Persist scan-angle conditioning inputs for satellite-style targets.
         # For these node types, batch[step_node_type].x stores scan angle(s).
         scan_angle_expected_dim = 0
         if node_type == "ascat_target":
             scan_angle_expected_dim = 3
-        elif node_type in ("atms_target", "amsua_target", "avhrr_target"):
+        elif node_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
             scan_angle_expected_dim = 1
 
         all_scan_angle_cols = [list() for _ in range(scan_angle_expected_dim)] if scan_angle_expected_dim > 0 else []
 
-        # For surface_obs_target, also persist the metadata that the decoder conditions on
-        # (e.g., station height) so we can directly verify pressure error vs height.
-        surface_meta_names = list(getattr(self, "surface_target_meta_names", []) or [])
-        surface_meta_dim = int(getattr(self, "surface_target_meta_dim", 0) or 0)
-        all_surface_meta_cols = [list() for _ in range(surface_meta_dim)] if node_type == "surface_obs_target" and surface_meta_dim > 0 else []
+        def _rounded_loc_keys(lat_deg, lon_deg, pressure_level=None):
+            lat_key = np.round(np.asarray(lat_deg, dtype=np.float64), 4)
+            lon_key = np.round(np.asarray(lon_deg, dtype=np.float64), 4)
+            if pressure_level is None:
+                return list(zip(lat_key.tolist(), lon_key.tolist()))
+            pressure_key = np.asarray(pressure_level, dtype=np.int64)
+            return list(zip(lat_key.tolist(), lon_key.tolist(), pressure_key.tolist()))
+
+        def _build_persistence_lookup():
+            input_node = node_type.replace("_target", "_input")
+            if input_node not in batch.node_types:
+                return None
+            store = batch[input_node]
+            required = ("input_features_raw", "input_times", "lat", "lon")
+            if not all(hasattr(store, name) for name in required):
+                return None
+
+            vals = store.input_features_raw.detach().cpu().numpy()
+            times = store.input_times.detach().cpu().numpy().astype(np.int64)
+            lat = store.lat.detach().cpu().numpy()
+            lon = store.lon.detach().cpu().numpy()
+            mask = None
+            if hasattr(store, "input_channel_mask"):
+                mask = store.input_channel_mask.detach().cpu().numpy().astype(bool)
+            pressure = None
+            if hasattr(store, "pressure_level"):
+                pressure = store.pressure_level.detach().cpu().numpy().astype(np.int64)
+
+            if vals.size == 0 or times.size != vals.shape[0]:
+                return None
+
+            cutoff = init_unix if init_unix >= 0 else None
+            latest = {}
+            for row, key in enumerate(_rounded_loc_keys(lat, lon, pressure)):
+                if cutoff is not None and times[row] > cutoff:
+                    continue
+                prev = latest.get(key)
+                if prev is None or times[row] > prev[0]:
+                    v = vals[row].astype(np.float64, copy=True)
+                    if mask is not None and mask.shape == vals.shape:
+                        v[~mask[row]] = np.nan
+                    latest[key] = (int(times[row]), v)
+            return latest, pressure is not None
+
+        # Init time columns (constant per file/batch when available)
+        init_time_str = self._extract_init_time_str(batch)
+        init_dt_str = ""
+        init_unix = -1
+        if init_time_str not in (None, '', 'unknown'):
+            try:
+                init_dt = pd.to_datetime(init_time_str, format='%Y%m%d%H', utc=True)
+                init_dt_str = init_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                init_unix = int(init_dt.timestamp())
+            except Exception:
+                init_dt_str = ""
+                init_unix = -1
+
+        persistence_lookup = _build_persistence_lookup()
 
         for step in range(len(preds_list)):
             if step >= len(preds_list) or step >= len(gts_list):
@@ -2091,28 +2305,10 @@ class GNNLightning(pl.LightningModule):
                     lat_deg = np.degrees(lat)
                     lon_deg = np.degrees(lon)
 
-                    # surface_obs_target: record the conditioned metadata (columns after lat/lon)
-                    if all_surface_meta_cols:
-                        try:
-                            meta = target_metadata[:, 2:2 + surface_meta_dim].detach().cpu().numpy()
-                            if meta.ndim == 1:
-                                meta = meta[:, None]
-                        except Exception:
-                            meta = None
-                        if meta is None or meta.shape[0] != int(y_pred_unnorm.shape[0]):
-                            for j in range(surface_meta_dim):
-                                all_surface_meta_cols[j].extend([float('nan')] * int(y_pred_unnorm.shape[0]))
-                        else:
-                            for j in range(surface_meta_dim):
-                                all_surface_meta_cols[j].extend(meta[:, j].astype(np.float64).tolist())
                 else:
                     n = y_pred_unnorm.shape[0]
                     lat_deg = np.zeros(n)
                     lon_deg = np.zeros(n)
-
-                    if all_surface_meta_cols:
-                        for j in range(surface_meta_dim):
-                            all_surface_meta_cols[j].extend([float('nan')] * int(n))
 
                 # Per-observation timestamps (epoch seconds) if present
                 if hasattr(batch[step_node_type], 'target_times'):
@@ -2191,6 +2387,26 @@ class GNNLightning(pl.LightningModule):
             all_pressure.extend(pressure_hpa)
             all_pressure_level.extend(pressure_level_idx)
 
+            persist = np.full(
+                y_true_unnorm.detach().cpu().numpy().shape,
+                np.nan,
+                dtype=np.float64,
+            )
+            if persistence_lookup is not None:
+                latest, needs_pressure = persistence_lookup
+                keys = _rounded_loc_keys(
+                    lat_deg,
+                    lon_deg,
+                    pressure_level_idx if needs_pressure else None,
+                )
+                for row, key in enumerate(keys):
+                    item = latest.get(key)
+                    if item is not None:
+                        vals = item[1]
+                        width = min(persist.shape[1], vals.shape[0])
+                        persist[row, :width] = vals[:width]
+            all_persist.append(persist)
+
             if valid_mask is not None:
                 all_mask.append(valid_mask.detach().cpu().numpy().astype(bool))
             else:
@@ -2209,6 +2425,7 @@ class GNNLightning(pl.LightningModule):
         all_pred_concat = np.vstack(all_pred)
         all_true_concat = np.vstack(all_true)
         all_mask_concat = np.vstack(all_mask)
+        all_persist_concat = np.vstack(all_persist) if all_persist else np.full_like(all_true_concat, np.nan, dtype=np.float64)
 
         # Skip saving if no real ground truth data
         if all_true_concat.size == 0:
@@ -2233,32 +2450,10 @@ class GNNLightning(pl.LightningModule):
         # Build DataFrame in EXACT same format as standard rollout
         df = pd.DataFrame({"lat": all_lat, "lon": all_lon})
 
-        # Persist surface meta columns (e.g., height) if present.
-        if all_surface_meta_cols and len(all_surface_meta_cols[0]) == len(df):
-            def _safe_meta_name(s: str) -> str:
-                return str(s).strip().replace(" ", "_")
-
-            for j in range(surface_meta_dim):
-                name = surface_meta_names[j] if j < len(surface_meta_names) else f"meta{j}"
-                df[f"meta_{_safe_meta_name(name)}"] = np.asarray(all_surface_meta_cols[j], dtype=np.float64)
-
         # Scan-angle columns (when applicable)
         if all_scan_angle_cols and len(all_scan_angle_cols[0]) == len(df):
             for j in range(scan_angle_expected_dim):
                 df[f"scan_angle_{j}"] = np.asarray(all_scan_angle_cols[j], dtype=np.float64)
-
-        # Init time columns (constant per file/batch when available)
-        init_time_str = self._extract_init_time_str(batch)
-        init_dt_str = ""
-        init_unix = -1
-        if init_time_str not in (None, '', 'unknown'):
-            try:
-                init_dt = pd.to_datetime(init_time_str, format='%Y%m%d%H', utc=True)
-                init_dt_str = init_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-                init_unix = int(init_dt.timestamp())
-            except Exception:
-                init_dt_str = ""
-                init_unix = -1
 
         if init_dt_str:
             df.insert(0, 'init_datetime', init_dt_str)
@@ -2298,6 +2493,7 @@ class GNNLightning(pl.LightningModule):
         for i, fname in enumerate(feats):
             col = _safe_col_name(fname)
             df[f"pred_{col}"] = all_pred_concat[:, i]
+            df[f"persist_{col}"] = all_persist_concat[:, i]
             df[f"true_{col}"] = all_true_concat[:, i]
             df[f"mask_{col}"] = all_mask_concat[:, i]
 
@@ -2463,7 +2659,7 @@ class GNNLightning(pl.LightningModule):
                 df.to_csv(filepath, index=False)
                 print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
 
-    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges):
+    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
         """Decode all forecast steps to mesh grid."""
 
         if not mesh_features_per_step:  # Check if the list is empty
@@ -2484,12 +2680,15 @@ class GNNLightning(pl.LightningModule):
 
                 # Decode each step
                 for step_idx, mesh_feat in enumerate(mesh_features_per_step):
-                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name])
+                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name],
+                                                         step_idx=step_idx,
+                                                         init_time_unix=init_time_unix
+                                                         )
                     predictions[inst_name].append(pred)
 
         return predictions
 
-    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges):
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, step_idx, init_time_unix=None):
         """Decode one step's mesh features to mesh grid."""
         # Get decoder
         decoder_key = f"mesh__to__{inst_name}_target"
@@ -2530,6 +2729,27 @@ class GNNLightning(pl.LightningModule):
             # Satellites, surface obs etc.: no pressure conditioning (same as training)
             rec_rep = torch.zeros(N, self.hidden_dim, device=device)
             print(f"[MESH PRED] Decoding {inst_name} with zero initialization (no pressure conditioning)")
+
+        # --- Target-time conditioning (mirrors regular decoder) ---
+        if init_time_unix is None:
+            raise ValueError(
+                f"[MESH PRED] init_time_unix is required for target-time conditioning "
+                f"but was not provided for instrument '{inst_name}'. "
+                f"Pass the analysis time as a Unix timestamp when calling mesh prediction."
+            )
+
+        # Compute valid time = init + lead
+        lead_seconds = int(round((step_idx + 0.5) * self.latent_step_hours * 3600))
+        target_time_unix = int(int(init_time_unix) + lead_seconds)
+
+        # Build time features using the same convention as _encode_target_time_features()
+        # LST is estimated from mesh node longitude
+        lons_deg = edges['lons'].cpu().numpy()  # [N]
+        target_times_unix = np.full(N, target_time_unix, dtype=np.int64)
+        time_feat_np = _encode_target_time_features(target_times_unix, lons_deg)  # [N, 5]
+        time_feat = torch.from_numpy(time_feat_np).float().to(device)
+        time_emb = self.target_time_embedder(time_feat)  # [N, 8]
+        rec_rep = rec_rep + self.target_time_projector(time_emb)  # additive bias
 
         # Decode
         decoded = decoder(
@@ -2595,6 +2815,16 @@ class GNNLightning(pl.LightningModule):
         """
         print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
 
+        target_init_filter = os.environ.get("PREDICT_INIT_TIME_FILTER", "").strip()
+        if target_init_filter:
+            batch_init_time = self._extract_init_time_str(batch)
+            if batch_init_time != target_init_filter:
+                print(
+                    f"[PREDICT] Skipping batch {batch_idx}: init_time={batch_init_time} "
+                    f"does not match PREDICT_INIT_TIME_FILTER={target_init_filter}"
+                )
+                return {}
+
         # Forward pass
         forward_output = self(batch)
         if isinstance(forward_output, tuple):
@@ -2655,7 +2885,8 @@ class GNNLightning(pl.LightningModule):
                         print("[PREDICT] No mesh features available for mesh predictions")
                     else:
                         mesh_pred_edges = self._get_mesh_pred_edges()
-                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges)
+                        init_time_unix = self._extract_init_time_unix(batch)
+                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges, init_time_unix)
                         if mesh_predictions:
                             mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
                             self._save_mesh_predictions(

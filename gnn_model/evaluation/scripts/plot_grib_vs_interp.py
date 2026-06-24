@@ -171,6 +171,10 @@ def _pick_truth_and_mask_cols(columns: list[str], short_name: str) -> tuple[str 
         mask = "mask_airTemperature" if "mask_airTemperature" in cols else None
         return truth, mask
     if short_name == "sp":
+        if "true_pressureMeanSeaLevel_prepbufr" in cols:
+            truth = "true_pressureMeanSeaLevel_prepbufr"
+            mask = "mask_pressureMeanSeaLevel_prepbufr" if "mask_pressureMeanSeaLevel_prepbufr" in cols else None
+            return truth, mask
         if "true_airPressure_prepbufr_event_1" in cols:
             truth = "true_airPressure_prepbufr_event_1"
             mask = "mask_airPressure_prepbufr_event_1" if "mask_airPressure_prepbufr_event_1" in cols else None

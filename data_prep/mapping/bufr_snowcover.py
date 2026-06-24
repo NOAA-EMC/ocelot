@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""Snow-cover BUFR mapping for OCELOT data preparation.
+
+"""
 
 import os
 

@@ -1,3 +1,8 @@
+"""Generic interaction-network message passing layer for OCELOT.
+
+Author: Azadeh Gholoubi
+"""
+
 # Third-party
 import torch
 import torch_geometric as pyg

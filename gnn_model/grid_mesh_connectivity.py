@@ -11,7 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tools for converting from regular grids on a sphere, to triangular meshes."""
+"""Tools for connecting observation grids to triangular meshes.
+
+Author: Azadeh Gholoubi
+
+Adapted from GraphCast mesh-connectivity utilities for the OCELOT model.
+"""
 
 import icosahedral_mesh
 import numpy as np
@@ -88,6 +93,9 @@ def radius_query_indices(
     for grid_index, mesh_neighbors in enumerate(query_indices):
         grid_edge_indices.append(np.repeat(grid_index, len(mesh_neighbors)))
         mesh_edge_indices.append(mesh_neighbors)
+
+    if not any(len(mesh_neighbors) for mesh_neighbors in query_indices):
+        return np.empty((0,), dtype=int), np.empty((0,), dtype=int)
 
     # [num_edges]
     grid_edge_indices = np.concatenate(grid_edge_indices, axis=0).astype(int)

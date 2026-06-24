@@ -13,6 +13,8 @@ Run this BEFORE full FSOI inference to catch issues early.
 Usage:
     python test_fsoi.py --checkpoint path/to/model.ckpt
     python test_fsoi.py --checkpoint path/to/checkpoint_dir/
+
+Author: Azadeh Gholoubi
 """
 
 import argparse
@@ -157,7 +159,7 @@ def test_dataset_creation(obs_config, feature_stats):
         test_start = "2024-01-01"
         test_end = "2024-01-03"  # Just 2-3 days
 
-        data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v6"
+        data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7"
 
         print(f"Creating datamodule for {test_start} to {test_end}")
 
@@ -234,7 +236,7 @@ def test_fsoi_formula():
         # Compute FSOI
         delta_x = xa - xb
         g_sum = ga + gb
-        fsoi = delta_x * g_sum
+        fsoi = 0.5 * delta_x * g_sum
 
         print(f"✓ FSOI formula computed")
         print(f"  Innovation (δx) mean: {delta_x.mean().item():.6e}")
@@ -252,6 +254,9 @@ def test_fsoi_formula():
         fsoi_dict = compute_fsoi_per_observation(xa_dict, xb_dict, ga_dict, gb_dict)
 
         if 'test_inst' in fsoi_dict:
+            if not torch.allclose(fsoi_dict['test_inst'], fsoi):
+                print("✗ FSOI dict computation does not match 0.5 * δx * (ga+gb)")
+                return False, None
             print("✓ FSOI computation with dict format works")
             return True, None
         else:

@@ -1,4 +1,6 @@
 #!/bin/bash -l
+# Run OCELOT evaluation plots or GFS comparison plots over a date range.
+#
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A da-cpu
 #SBATCH -p u1-service
@@ -32,9 +34,10 @@ OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 
 cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
 
-# Load Conda environment
+# Load Conda environment used for OCELOT v1 training and validation.
 source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
 conda activate gnn-env
+PY=(python)
 
 # Add PYTHONPATH
 export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
@@ -78,6 +81,10 @@ PLOT_DIR="evaluation/figures"
 # Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth
 # Set HAS_GROUND_TRUTH=false for mesh-grid files, no ground truth
 HAS_GROUND_TRUTH=true
+
+# Generate per-pressure-level maps for radiosonde/aircraft (default: true).
+# (evaluations.py defaults to --plot_pressure_level_maps; opt-out with --no-plot_pressure_level_maps)
+PLOT_PRESSURE_LEVEL_MAPS=${PLOT_PRESSURE_LEVEL_MAPS:-"true"}
 
 # --- Date Range for Batch Processing ---
 START_DATE=${1:-"2024112500"}
@@ -127,6 +134,8 @@ if [ "$MODE" == "gfs_compare" ]; then
     echo "  Instrument: $INSTRUMENT"
     echo "  Chunksize: $CHUNKSIZE"
     echo "  Vars: $VARS"
+else
+    echo "  Plot pressure-level maps?: $PLOT_PRESSURE_LEVEL_MAPS"
 fi
 
 # Fixed: Added spaces inside [ ] brackets
@@ -178,35 +187,35 @@ do
             echo "  Running: init_time=$INIT_TIME (no fhr)"
         fi
 
-        # Build Python command
+        # Build command (array) to avoid shell quoting issues.
+        cmd=()
         if [ "$MODE" == "gfs_compare" ]; then
-            # Plots RMSE vs forecast hour from *_vs_gfs.csv
-            CMD="python $GFS_COMPARE_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR --instrument $INSTRUMENT --vars $VARS --chunksize $CHUNKSIZE"
+            cmd=("${PY[@]}" "$GFS_COMPARE_SCRIPT" --init_time "$INIT_TIME" --data_dir "$DATA_DIR" --plot_dir "$PLOT_DIR" --instrument "$INSTRUMENT" --vars "$VARS" --chunksize "$CHUNKSIZE")
         else
-            # Standard evaluation plots (pred vs truth)
-            CMD="python $EVAL_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR"
+            cmd=("${PY[@]}" "$EVAL_SCRIPT" --init_time "$INIT_TIME" --data_dir "$DATA_DIR" --plot_dir "$PLOT_DIR")
+        fi
+
+        if [ "$MODE" != "gfs_compare" ] && [ "$PLOT_PRESSURE_LEVEL_MAPS" == "false" ]; then
+            cmd+=(--no-plot_pressure_level_maps)
         fi
 
         if [ -n "$FHR" ] && [ "$MODE" != "gfs_compare" ]; then
-            CMD="$CMD --fhr $FHR"
+            cmd+=(--fhr "$FHR")
         fi
 
-        # Fixed: Comparison for strings usually needs == and HAS_GROUND_TRUTH was set to "true" earlier
         if [ "$HAS_GROUND_TRUTH" == "true" ] && [ "$MODE" != "gfs_compare" ]; then
-            CMD="$CMD --has_ground_truth"
+            cmd+=(--has_ground_truth)
         fi
 
         if [ -n "$EPOCH_TO_PLOT" ]; then
-            CMD="$CMD --epoch $EPOCH_TO_PLOT"
-        fi
-        
-        if [ -n "$BATCH_IDX_TO_PLOT" ]; then
-            CMD="$CMD --batch_idx $BATCH_IDX_TO_PLOT"
+            cmd+=(--epoch "$EPOCH_TO_PLOT")
         fi
 
-        # Run Python script
-        # Note: eval is used here to properly interpret the string as a command
-        if eval $CMD; then
+        if [ -n "$BATCH_IDX_TO_PLOT" ]; then
+            cmd+=(--batch_idx "$BATCH_IDX_TO_PLOT")
+        fi
+
+        if "${cmd[@]}"; then
             SUCCESS_RUNS=$((SUCCESS_RUNS + 1))
             if [ -n "$FHR" ]; then
                 echo "Success: init_time=$INIT_TIME, fhr=$FHR"

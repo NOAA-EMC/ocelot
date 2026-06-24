@@ -1,3 +1,13 @@
+"""Lightning data loading and graph-building utilities for Ocelot GNN training.
+
+This module prepares time-binned observation samples, converts them into
+heterogeneous graph inputs, and manages train, validation, and prediction data
+pipelines through a PyTorch Lightning data module.
+
+Author: Azadeh Gholoubi
+"""
+
+import glob
 import os
 import json
 import hashlib
@@ -18,6 +28,30 @@ from create_mesh_graph_global import obs_mesh_conn
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
+
+
+def _resolve_zarr_path(data_path: str, zname: str, start_date: str) -> tuple[str, bool]:
+    base_name = zname[:-5] if zname.endswith(".zarr") else zname
+    direct_candidates = [os.path.join(data_path, zname if zname.endswith(".zarr") else f"{zname}.zarr")]
+
+    year = str(start_date).split("-")[0]
+    year_tagged_path = os.path.join(data_path, f"{base_name}_{year}.zarr")
+    direct_candidates.append(year_tagged_path)
+
+    for candidate in direct_candidates:
+        if os.path.isdir(candidate):
+            return candidate, False
+
+    matches = sorted(glob.glob(os.path.join(data_path, f"{base_name}_*.zarr")))
+    available_matches = [path for path in matches if os.path.isdir(path)]
+    if len(available_matches) == 1:
+        return available_matches[0], True
+
+    available_match_names = sorted(os.path.basename(path) for path in available_matches)
+    raise FileNotFoundError(
+        f"Zarr not found for '{zname}' under {data_path}. "
+        f"Available matches: {available_match_names or 'none'}"
+    )
 
 
 def _to_unix_seconds(t):
@@ -59,6 +93,7 @@ class BinDataset(Dataset):
         observation_config,
         feature_stats=None,
         require_targets=True,
+        include_persistence_inputs=False,
         tag="TRAIN",
         verbose: bool = False,
     ):
@@ -69,6 +104,7 @@ class BinDataset(Dataset):
         self.observation_config = observation_config
         self.feature_stats = feature_stats
         self.require_targets = require_targets
+        self.include_persistence_inputs = bool(include_persistence_inputs)
         self.tag = tag
         self.verbose = bool(verbose)
 
@@ -88,6 +124,7 @@ class BinDataset(Dataset):
                 self.observation_config,
                 feature_stats=self.feature_stats,
                 require_targets=self.require_targets,
+                include_persistence_inputs=self.include_persistence_inputs,
             )
             bin_data = out[bin_name]
             graph_data = self.create_graph_fn(bin_data)
@@ -161,6 +198,7 @@ class GNNDataModule(pl.LightningDataModule):
         latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
         self.save_hyperparameters()
         self.prediction_mode = bool(prediction_mode)
+        self.include_persistence_inputs = bool(prediction_mode)
 
         # If require_targets not specified, default based on prediction_mode
         # prediction_mode=True → require_targets=False (inference)
@@ -371,18 +409,16 @@ class GNNDataModule(pl.LightningDataModule):
                             zarr_path = zarr_dir
                         else:
                             zname = inst_cfg.get("zarr_name", inst_name)
-                            if not zname.endswith(".zarr"):
-                                # Try without year tag first (for v5 data or when the zarr_name field already includes the year)
-                                zarr_path_test = os.path.join(self.hparams.data_path, f"{zname}.zarr")
-
-                                if os.path.isdir(zarr_path_test):
-                                    zname += ".zarr"
-                                else:
-                                    # Add year tag for v6 data (extracted from start_date)
-                                    year = self.hparams.start_date.split('-')[0]
-                                    zname += f"_{year}.zarr"
-
-                            zarr_path = os.path.join(self.hparams.data_path, zname)
+                            zarr_path, used_fallback = _resolve_zarr_path(
+                                self.hparams.data_path,
+                                zname,
+                                self.hparams.start_date,
+                            )
+                            if used_fallback and rank == 0:
+                                print(
+                                    f"[ZARR] {obs_type}/{inst_name} requested year {self.hparams.start_date} "
+                                    f"not found; using available store {zarr_path}"
+                                )
 
                         if not os.path.isdir(zarr_path):
                             raise FileNotFoundError(f"Zarr not found: {zarr_path}")
@@ -489,7 +525,8 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
 
         m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
-        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0]
+        # Keep mesh edge_attr in fp16 to reduce device memory footprint under AMP.
+        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
         reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
         data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
@@ -524,6 +561,15 @@ class GNNDataModule(pl.LightningDataModule):
         if "input_features_final" in inst_dict:
             data[node_type_input].x = _t32(inst_dict["input_features_final"])
 
+            if "input_features_raw" in inst_dict:
+                data[node_type_input].input_features_raw = _t32(inst_dict["input_features_raw"])
+            if "input_channel_mask" in inst_dict:
+                data[node_type_input].input_channel_mask = torch.as_tensor(
+                    inst_dict["input_channel_mask"], dtype=torch.bool
+                )
+            if "input_time_unix" in inst_dict:
+                data[node_type_input].input_times = _t64(inst_dict["input_time_unix"])
+
             # Store pressure level index for radiosonde and aircraft (if available)
             if "input_pressure_level" in inst_dict:
                 data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
@@ -553,7 +599,7 @@ class GNNDataModule(pl.LightningDataModule):
                     o2m=True,
                 )
                 data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
-                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder
+                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder.to(torch.float16)
 
         # Handle target features for each latent step
         if "target_features_final_list" not in inst_dict:
@@ -594,7 +640,8 @@ class GNNDataModule(pl.LightningDataModule):
             mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
 
             data[node_type_target].y = _t32(y_t)
-            data[node_type_target].target_channel_mask = _t32(mask_t)
+            # IMPORTANT: keep as bool to avoid massive memory blow-ups for satellite targets.
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
 
             # Metadata
             if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
@@ -675,7 +722,7 @@ class GNNDataModule(pl.LightningDataModule):
                         o2m=False,
                     )
                     data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
@@ -685,7 +732,7 @@ class GNNDataModule(pl.LightningDataModule):
         data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
         data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
-        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 4), dtype=torch.float32)
 
         # Create empty target nodes for all latent steps
         for step in range(num_latent_steps):
@@ -695,13 +742,14 @@ class GNNDataModule(pl.LightningDataModule):
             obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
             scan_angle_dim = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
             data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
-            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS  # lat/lon + metadata columns
+            # lat/lon + instrument metadata + appended target time features
+            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS + 5
             data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
             data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
             data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
-            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 3), dtype=torch.float32)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float32)
             data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
             data[node_type_target].num_nodes = 0  # from standard mode, seems unused
             data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
@@ -726,6 +774,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=True,  # Training always requires targets
+            include_persistence_inputs=False,
             tag="TRAIN",
         )
         loader = PyGDataLoader(
@@ -752,6 +801,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=True,  # Validation requires targets for comparison
+            include_persistence_inputs=self.include_persistence_inputs,
             tag="VAL",
         )
         loader = PyGDataLoader(
@@ -789,6 +839,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=self.require_targets,  # Use datamodule's require_targets setting
+            include_persistence_inputs=self.include_persistence_inputs,
             tag="PREDICT",
         )
 
@@ -827,6 +878,7 @@ class GNNDataModule(pl.LightningDataModule):
             self.hparams.observation_config,
             feature_stats=self.feature_stats,
             require_targets=self.require_targets,
+            include_persistence_inputs=self.include_persistence_inputs,
             tag="FSOI",
         )
 
