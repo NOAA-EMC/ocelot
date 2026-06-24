@@ -3,6 +3,9 @@ bufr:
     - ADPSFC
     - SFCSHP
   variables:
+    obsType:
+      query: "*/TYP"
+
     obsTimeMinusCycleTime:
       query: "*/DHR"
 
@@ -41,6 +44,9 @@ bufr:
     # Quality Markers
     airTemperatureQuality:
       query: "*/T___INFO/T__EVENT/TQM"
+
+    pressureMeanSeaLevelQuality:
+      query: "*/PMSL_SEQ/PMQ" 
 
     specificHumidityQuality:
       query: "*/Q___INFO/Q__EVENT/QQM"
@@ -97,6 +103,10 @@ encoder:
       source: variables/airTemperatureQuality
       longName: "Air Temperature Quality Marker"
 
+    - name: "pressureMeanSeaLevelQuality"
+      source: variables/pressureMeanSeaLevelQuality
+      longName: "Pressure Mean Sea Level Quality Marker"
+
     - name: "specificHumidityQuality"
       source: variables/specificHumidityQuality
       longName: "Specific Humidity Quality Marker"
@@ -116,3 +126,7 @@ encoder:
     - name: "heightQuality"
       source: variables/heightQuality
       longName: "Height Quality Marker"
+
+    - name: "obsType"
+      source: variables/obsType
+      longName: "ObsType"

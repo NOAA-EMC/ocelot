@@ -16,6 +16,10 @@ bufr:
       query: "[*/CLONH, */CLON]"
 
     # Observation Values
+    height_bufr:
+      query: "[*/SELV, */HSMSL]"  # Height above ground level
+      type: float
+
     airPressure_bufr:
       query: "[*/PRES, */PRLC]"  # Air pressure  missing from NC000007
       type: float
@@ -30,11 +34,6 @@ bufr:
 
     airTemperature:
       query: "*/TMDB"  # Dry bulb temperature
-      transforms:
-        - offset: -273.15  # Convert from Kelvin to Celsius
-
-    seaTemperature:
-      query: "*/SST1"
       transforms:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
@@ -55,9 +54,10 @@ bufr:
       transforms:
         - scale: 0.0174533  # Convert degrees to radians
 
-    height_bufr:
-      query: "[*/SELV, */HSMSL]"  # Height above ground level
-      type: float
+    seaTemperature:
+      query: "*/SST1"
+      transforms:
+        - offset: -273.15  # Convert from Kelvin to Celsius
 
 encoder:
   variables:
@@ -80,6 +80,11 @@ encoder:
       range: [-180, 180]
 
     # Observation Values
+    - name: "height_bufr"
+      source: variables/height_bufr
+      longName: "Height Above Ground Level"
+      units: "m"
+
     - name: "airPressure_bufr"
       source: variables/airPressure_bufr
       longName: "Air Pressure at Station Level"
@@ -94,16 +99,6 @@ encoder:
       source: variables/airTemperature
       longName: "Air Temperature at Station Level"
       units: "C"
-
-    - name: "seaTemperature"
-      source: variables/seaTemperature
-      longName: "Sea Temperature"
-      units: "C"
-
-    - name: "seaTemperature"
-      source: variables/seaTemperature
-      longName: "Sea Temperature"
-      units: "Celsius"
 
     - name: "dewPointTemperature"
       source: variables/dewPointTemperature
@@ -125,11 +120,8 @@ encoder:
       longName: "Wind Direction at Station Level"
       units: "radians"
 
-    - name: "height_bufr"
-      source: variables/height_bufr
-      longName: "Height Above Ground Level"
-      units: "m"
-
-
-
+    - name: "seaTemperature"
+      source: variables/seaTemperature
+      longName: "Sea Temperature"
+      units: "C"
 
