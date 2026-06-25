@@ -15,6 +15,8 @@ import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 from torch_geometric.data import HeteroData
 
+from logger import log
+
 from .hierarchical_processor_base import HierarchicalProcessorBase
 from ..mesh.hierarchical_mesh import HierarchicalMesh
 from ..coder.interaction_net import InteractionNet
@@ -128,8 +130,8 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         step_mapping = step_info["step_mapping"]
         edge_mapping = self._map_step_edges(data, step_mapping)
 
-        self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        self.debug(f"[LATENT] Step mapping: {step_mapping}")
+        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
+        log.debug(f"[LATENT] Step mapping: {step_mapping}")
         
         for step in range(num_latent_steps):
             self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])

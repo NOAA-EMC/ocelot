@@ -20,6 +20,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import HeteroData
 
+from logger import log
+
 from modules.coder.attn_bipartite import BipartiteGAT
 from modules.coder.interaction_net import InteractionNet
 from modules.processor.interaction_processor import InteractionProcessor
@@ -275,7 +277,7 @@ class GNNLightning(pl.LightningModule):
         print(f"{'='*70}\n")
 
         self.mesh_resolution = mesh_resolution
-        self.mesh = MeshFactory.build(mesh_type, mesh_levels, mesh_resolution)
+        self.mesh = MeshFactory.build("fixed", mesh_levels, mesh_resolution)
 
         self.is_hierarchical = (mesh_type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
 
@@ -404,18 +406,14 @@ class GNNLightning(pl.LightningModule):
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
+        self.processor = ProcessorFactory().build('sliding_window', self.mesh, {'hidden_dim':self.hidden_dim,
+                                                                                'window':processor_window,
+                                                                                'depth':processor_depth,
+                                                                                'num_heads':processor_heads,
+                                                                                'dropout':processor_dropout,
+                                                                                'use_causal_mask':True,
+                                                                                'spatial_mixing_steps':spatial_mixing_steps})
 
-        self.processor = ProcessorFactory().build('hierarchical_sliding_window', self.mesh, {'hidden_dim':self.hidden_dim,
-                                                                                             'num_levels':self.mesh.num_levels,
-                                                                                             'window':processor_window,
-                                                                                             'depth':processor_depth,
-                                                                                             'num_heads':processor_heads,
-                                                                                             'dropout':processor_dropout,
-                                                                                             'use_causal_mask':True,
-                                                                                             'use_cross_scale':True,  # Enable cross-scale attention
-                                                                                             'spatial_mixing_steps':spatial_mixing_steps})
-
-        print ("**** ", self.processor)
 
 
     def _safe_trainer(self):
@@ -731,10 +729,6 @@ class GNNLightning(pl.LightningModule):
             valid_mask=valid_mask,
         )
 
-    def debug(self, *args, **kwargs):
-        if getattr(self, "verbose", False) and (not hasattr(self, "trainer") or self.trainer.is_global_zero):
-            print(*args, **kwargs)
-
     def on_fit_start(self):
         # Reset one-time debug cache each run.
         self._edge_attr_debug_seen = set()
@@ -742,7 +736,7 @@ class GNNLightning(pl.LightningModule):
             # enable once per run, not every batch
             torch.autograd.set_detect_anomaly(True)
             if self.trainer.is_global_zero:
-                self.debug("[ANOMALY] torch.autograd anomaly mode enabled once at fit start.")
+                log.debug("[ANOMALY] torch.autograd anomaly mode enabled once at fit start.")
 
     def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
         """Converts an edge_type tuple to a string key for ModuleDict."""
@@ -862,14 +856,14 @@ class GNNLightning(pl.LightningModule):
     def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
 
         num_graphs = data.num_graphs
-        num_mesh_nodes = self.mesh_x.shape[0]
+        num_mesh_nodes = self.mesh.x.shape[0]
 
         # Inject and batch static mesh data
         # For hierarchical mode, we use the finest mesh level for encoding/decoding
-        data["mesh"].x = self.mesh_x.repeat(num_graphs, 1)
-        data["mesh", "to", "mesh"].edge_attr = self.mesh_edge_attr.repeat(num_graphs, 1)
+        data["mesh"].x = self.mesh.x.repeat(num_graphs, 1)
+        data["mesh", "to", "mesh"].edge_attr = self.mesh.mesh_edge_attr.repeat(num_graphs, 1)
 
-        edge_indices = [self.mesh_edge_index + i * num_mesh_nodes for i in range(num_graphs)]
+        edge_indices = [self.mesh.mesh_edge_index + i * num_mesh_nodes for i in range(num_graphs)]
         data["mesh", "to", "mesh"].edge_index = torch.cat(edge_indices, dim=1)
 
         # --------------------------------------------------------------------
@@ -927,9 +921,9 @@ class GNNLightning(pl.LightningModule):
                 )
 
                 # --- Debugging ---
-                self.debug(f"\n[ENC] edge type: {edge_type}")
-                self.debug(f"  send_rep (obs) {obs_features.shape} | rec_rep (mesh) {encoded_mesh_features.shape}")
-                self.debug(f"  edge_index {edge_index.shape}")
+                log.debug(f"\n[ENC] edge type: {edge_type}")
+                log.debug(f"  send_rep (obs) {obs_features.shape} | rec_rep (mesh) {encoded_mesh_features.shape}")
+                log.debug(f"  edge_index {edge_index.shape}")
                 # --- End Debugging ---
 
                 encoded_mesh_features = encoder(
@@ -982,10 +976,164 @@ class GNNLightning(pl.LightningModule):
         Processor₄ → mesh_state₄ → Decoder₄ → Predictions [T+9 to T+12)
         """
 
-        predictions, mesh_features_per_step = self.processor(data, encoded_features['mesh'])
+        step_info = self._get_latent_step_info(data)
+        encoded_features['mesh'] = self.processor(step_info, encoded_features['mesh'])
+        predictions = self._generate_predictions(data, step_info['step_mapping'],  encoded_features['mesh'])
 
+        return predictions, None #, mesh_features_per_step
+    
+    def _generate_predictions(self, data: HeteroData, step_mapping: dict, mesh_features_processed) -> dict:
+        # Initialize predictions dict with lists for each base instrument
+        predictions = {}
+        for base_type in step_mapping.keys():
+            predictions[base_type] = []
 
-        return predictions, mesh_features_per_step
+        # Process all instruments for this step
+        for base_type, steps_dict in step_mapping.items():
+            if step in steps_dict:
+                step_node_type = steps_dict[step]  # e.g., "atms_target_step0"
+
+                # Find the corresponding edge
+                step_edge_type = None
+                step_edge_index = None
+                for edge_type, edge_index in data.edge_index_dict.items():
+                    src_type, _, dst_type = edge_type
+                    if src_type == "mesh" and dst_type == step_node_type:
+                        step_edge_type = edge_type
+                        step_edge_index = edge_index
+                        print(f"decode: [edge_type] {edge_type}: {edge_index.shape}")
+                        break
+
+                if step_edge_type is None or step_edge_index is None:
+                    log.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
+                    continue
+
+                # Get the decoder (mapped to base instrument)
+                decoder_key = edge_mapping.get(step_edge_type)
+                if decoder_key not in self.observation_decoders:
+                    log.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
+                    continue
+
+                decoder = self.observation_decoders[decoder_key]
+                decoder.edge_index = step_edge_index
+
+                # Condition decoder on viewing geometry at initialization
+                # - For satellites: viewing zenith angle (scan angle)
+                # - For radiosonde/aircraft: pressure level (vertical viewing geometry)
+                reference_device = mesh_features_processed.device
+                N = data[step_node_type].num_nodes
+
+                # Embed viewing geometry information FIRST (before decoder initialization)
+                sa_emb = None
+                pressure_emb = None
+                time_emb = None
+                if base_type == "ascat_target":
+                    scan_angle = data[step_node_type].x  # [N,3] for ASCAT
+                    sa_emb = self.ascat_scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
+                elif base_type in ("atms_target", "amsua_target", "avhrr_target", "cris_pca_target", "seviri_asr_target", "seviri_csr_target"):
+                    scan_angle = data[step_node_type].x  # [N,1] for ATMS/AMSU-A/AVHRR/CrIS-PCA
+                    sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
+
+                    # Diagnostic: verify scan angle varies
+                    if base_type == "atms_target" and self.global_step % 200 == 0:
+                        sa = data[step_node_type].x
+                        if sa.numel() == 0:
+                            print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
+                        else:
+                            sa_f = sa.float()
+                            mean_v = sa_f.mean().item()
+                            std_v = sa_f.std(unbiased=False).item()
+                            min_v = sa_f.min().item()
+                            max_v = sa_f.max().item()
+                            print(
+                                f"[SCAN DIAG] scan_angle: shape={sa.shape}, mean={mean_v:.4f}, "
+                                f"std={std_v:.4f}, min={min_v:.4f}, max={max_v:.4f}"
+                            )
+                elif base_type in ["radiosonde_target", "aircraft_target"] and "pressure_level" in data[step_node_type]:
+                    # For radiosonde and aircraft: condition on pressure level (vertical geometry)
+                    pressure_level_idx = data[step_node_type].pressure_level  # [N]
+                    pressure_emb = self.pressure_level_embedder(pressure_level_idx)  # [N, pressure_embed_dim=8]
+
+                if hasattr(data[step_node_type], "target_metadata"):
+                    target_metadata = data[step_node_type].target_metadata
+                    if (
+                        target_metadata is not None
+                        and target_metadata.numel() > 0
+                        and target_metadata.size(1) >= (2 + self.target_time_feature_dim)
+                    ):
+                        time_feat = target_metadata[:, -self.target_time_feature_dim:].to(reference_device)
+                        time_emb = self.target_time_embedder(time_feat)
+
+                # Decoder initialization: CONDITION on viewing geometry
+                # Instead of zeros, initialize decoder WITH geometry information
+                if sa_emb is not None:
+                    # Satellite: condition decoder on scan angle (viewing zenith angle)
+                    if self.scan_angle_projector is not None:
+                        target_features_initial = self.scan_angle_projector(sa_emb)
+                    else:
+                        # Backward-compatible behavior: scan info only in the last dims.
+                        padding_dim = self.hidden_dim - self.scan_angle_embed_dim
+                        target_features_initial = torch.cat([
+                            torch.zeros(N, padding_dim, device=reference_device),
+                            sa_emb
+                        ], dim=-1)  # [N, hidden_dim] with scan info in last 8 dims
+                elif pressure_emb is not None:
+                    # Radiosonde/Aircraft: condition decoder on pressure level (vertical viewing geometry)
+                    # Make prediction explicitly depend on geometry
+                    if self.pressure_level_projector is not None:
+                        target_features_initial = self.pressure_level_projector(pressure_emb)
+                    else:
+                        padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                        target_features_initial = torch.cat([
+                            torch.zeros(N, padding_dim, device=reference_device),
+                            pressure_emb
+                        ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
+                else:
+                    # Conventional obs without viewing geometry: use zeros
+                    target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
+
+                # Add target-time conditioning as an additive bias over the full hidden_dim.
+                if time_emb is not None:
+                    target_features_initial = target_features_initial + self.target_time_projector(time_emb)
+
+                edge_attr = self._edge_features(
+                    data=data,
+                    edge_type=step_edge_type,
+                    edge_index=step_edge_index,
+                    device=reference_device,
+                    dtype=mesh_features_processed.dtype,
+                )
+
+                # Decoder now receives GEOMETRY-CONDITIONED initialization
+                # This ensures the model CANNOT make predictions without knowing viewing geometry
+                decoded_target_features = decoder(
+                    send_rep=mesh_features_processed,
+                    rec_rep=target_features_initial,  # NOW conditioned on viewing geometry!
+                    edge_rep=edge_attr,
+                )
+
+                # Decoder output goes directly to output mapper
+                # The model learns to use the geometry information that's embedded in target_features_initial
+
+                # Diagnostic logging for radiosonde
+                if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
+                    print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
+
+                # Diagnostic logging for satellites
+                if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
+                    print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
+
+                # Safety: verify mapper exists before using
+                assert base_type in self.output_mappers, f"Missing output mapper for {base_type}"
+                step_prediction = self.output_mappers[base_type](decoded_target_features)
+
+                # Store prediction for this step
+                predictions[base_type].append(step_prediction)
+                print(f"predict: [node_type] {base_type}: {step_prediction.shape}")
+
+                log.debug(f"[LATENT] Step {step} - {base_type}: {step_prediction.shape}")
+
+        return predictions
 
 
     def get_current_rollout_steps(self):
@@ -1037,7 +1185,7 @@ class GNNLightning(pl.LightningModule):
             return self.max_rollout_steps
 
     @staticmethod
-    def _get_latent_step_info(self, data: HeteroData) -> dict:
+    def _get_latent_step_info(data: HeteroData) -> dict:
         """
         Extract information about latent steps from the batch.
         Returns dict with step mapping and number of steps.
@@ -1238,7 +1386,7 @@ class GNNLightning(pl.LightningModule):
         return avg_loss
 
     def validation_step(self, batch, batch_idx):
-        print(f"VALIDATION STEP batch: {batch.bin_name}")
+        log.info(f"VALIDATION STEP batch: {batch.bin_name}")
 
         # Build decoder names from config (all possible node_types with targets)
         decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
@@ -1252,7 +1400,7 @@ class GNNLightning(pl.LightningModule):
         # Determine rollout steps based on mode
         step_info = self._get_latent_step_info(batch)
         latent_rollout_steps = step_info["num_steps"]
-        print(f"[validation_step] latent rollout steps: {latent_rollout_steps}")
+        log.info(f"[validation_step] latent rollout steps: {latent_rollout_steps}")
 
         # Forward pass: Dict[node_type, List[Tensor]] per step
         # all_predictions = self(batch)
@@ -1278,7 +1426,7 @@ class GNNLightning(pl.LightningModule):
 
         # --- Loop over all node_types/decoders ---
         for node_type, preds_list in all_predictions.items():
-            print(f"[validation_step] Processing node_type: {node_type}")
+            log.info(f"[validation_step] Processing node_type: {node_type}")
             if node_type not in ground_truth_data:
                 continue
 
@@ -1301,7 +1449,7 @@ class GNNLightning(pl.LightningModule):
             for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
             ):
-                print(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
+                log.info(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
                 # Skip if either prediction or ground truth is None or empty
                 if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
@@ -1328,7 +1476,7 @@ class GNNLightning(pl.LightningModule):
 
                 if not torch.isfinite(channel_loss):
                     if self.trainer.is_global_zero:
-                        print(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
+                        log.info(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
                     continue
 
                 # Apply the overall instrument weight
@@ -2218,18 +2366,18 @@ class GNNLightning(pl.LightningModule):
         if hasattr(self, "_encoded_ref"):
             if self._encoded_ref is not None:
                 if self._encoded_ref.grad is not None:
-                    self.debug(f"[DEBUG] encoded.grad norm: {self._encoded_ref.grad.norm().item():.6f}")
+                    log.debug(f"[DEBUG] encoded.grad norm: {self._encoded_ref.grad.norm().item():.6f}")
                 else:
-                    self.debug("[DEBUG] encoded.grad is still None after backward.")
+                    log.debug("[DEBUG] encoded.grad is still None after backward.")
             else:
-                self.debug("[DEBUG] _encoded_ref is None")
+                log.debug("[DEBUG] _encoded_ref is None")
 
         # x_hidden grad
         if hasattr(self, "_x_hidden_ref"):
             if self._x_hidden_ref is not None and self._x_hidden_ref.grad is not None:
-                self.debug(f"[DEBUG] x_hidden.grad norm: {self._x_hidden_ref.grad.norm().item():.6f}")
+                log.debug(f"[DEBUG] x_hidden.grad norm: {self._x_hidden_ref.grad.norm().item():.6f}")
             else:
-                self.debug("[DEBUG] x_hidden.grad is still None after backward.")
+                log.debug("[DEBUG] x_hidden.grad is still None after backward.")
 
         # Print all parameter gradients
         if self.trainer.is_global_zero:
@@ -2237,12 +2385,12 @@ class GNNLightning(pl.LightningModule):
             for name, param in self.named_parameters():
                 if param.grad is not None:
                     norm = param.grad.data.norm(2)
-                    self.debug(f"[DEBUG] Grad for {name}: {norm:.6f}")
+                    log.debug(f"[DEBUG] Grad for {name}: {norm:.6f}")
                     total_grad_norm += norm.item() ** 2
                 else:
-                    self.debug(f"[DEBUG] Grad for {name}: None")
+                    log.debug(f"[DEBUG] Grad for {name}: None")
             total_grad_norm = total_grad_norm**0.5
-            self.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
+            log.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
 
     def predict_step(self, batch, batch_idx):
         """
@@ -2454,3 +2602,4 @@ class GNNLightning(pl.LightningModule):
                 "frequency": 1,
             },
         }
+

@@ -301,9 +301,9 @@ def predict_at_targets(
     # STEP 5: Forward pass to get predictions
     # ===========================================================================
     # Add dummy mesh nodes (will be overwritten by model.forward())
-    num_mesh_nodes = model.mesh_x.shape[0]
+    num_mesh_nodes = model.mesh.x.shape[0]
     forecast_batch["mesh"].x = torch.zeros(
-        (num_mesh_nodes, model.mesh_x.shape[1]),
+        (num_mesh_nodes, model.mesh.x.shape[1]),
         dtype=torch.float32,
         device=device,
     )

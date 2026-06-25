@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData
 
+from logger import log
 from ..mesh.fixed_mesh import FixedMesh
 from .flat_processor_base import FlatProcessorBase
 
@@ -26,6 +27,7 @@ class TemporalPositionalEncoding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [N, T, H]
         T = x.size(1)
+        print (f"@@@@ {x.shape} {self.pe[:, :T, :].shape}")
         return x + self.pe[:, :T, :]
 
 
@@ -189,7 +191,7 @@ class SlidingWindowTransformer(FlatProcessorBase):
         for s in states[-self.window:]:
             self.cache.append(s.detach())
 
-    def forward(self, latent_step_info: dict, encoded_mesh_features: dict) -> List[torch.Tensor]:
+    def forward(self, step_info: dict, encoded_mesh_features: torch.Tensor) -> torch.Tensor:
         """
         Args:
             latent_step_info: dict containing latent step information (step mapping and number of steps)
@@ -200,29 +202,31 @@ class SlidingWindowTransformer(FlatProcessorBase):
 
         self.reset()
 
-        step_mapping = latent_step_info["step_mapping"]
+        step_mapping = step_info["step_mapping"]
+        num_latent_steps = step_info["num_steps"]
         
-        self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        self.debug(f"[LATENT] Step mapping: {step_mapping}")
-
-        num_latent_steps = latent_step_info["num_steps"]
+        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
+        log.debug(f"[LATENT] Step mapping: {step_mapping}")
 
         for step in range(num_latent_steps):
-            self._do_forward_step(step, num_latent_steps, encoded_mesh_features)
+            encoded_mesh_features = self._do_forward_step()
 
-        return x_seq[:, -1, :]
+        return encoded_mesh_features
     
     
-    def _do_forward_step(self, x_mesh: torch.Tensor) -> torch.Tensor:
+    def _do_forward_step(self) -> torch.Tensor:
         """
-        x_mesh: [N_mesh, H] current latent mesh state
-        returns: [N_mesh, H] updated latent mesh state
+        Args:
+            mesh: FixedMesh object containing the current mesh state
+        Returns:
+            Tensor of shape [N_mesh, H] representing the updated mesh state after processing
         """
         # ensure device consistency
-        device = x_mesh.device
-        dtype = x_mesh.dtype
+        device = self.mesh.x.device
+        dtype = self.mesh.x.dtype
 
-        self.cache.append(x_mesh)
+        log.info(f"!!!!!!!! self.mesh.x.shape: {self.mesh.x.shape}")
+        self.cache.append(self.mesh.x)
         x_seq = torch.stack(list(self.cache), dim=1).to(
             device=device, dtype=dtype
         )  # [N, T, H]
@@ -246,7 +250,7 @@ class SlidingWindowTransformer(FlatProcessorBase):
                 for t in range(x_seq.size(1)):
                     xt = x_seq[:, t, :]
                     for _ in range(self.spatial_mixing_steps):
-                        xt = self.spatial_mix(xt, mesh_edge_index, mesh_edge_attr)
+                        xt = self.spatial_mix(xt, self.mesh.mesh_edge_index, self.mesh.mesh_edge_attr)
                     mixed.append(xt)
                 x_seq = torch.stack(mixed, dim=1)
 

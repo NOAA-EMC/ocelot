@@ -5,6 +5,7 @@ from matplotlib import pyplot as plt
 from .deepmind import icosahedral_mesh as gc_im
 from .deepmind import grid_mesh_connectivity as gc_gm
 from .deepmind import model_utils as gc_mu
+from .deepmind.graphcast_aux import _get_max_edge_distance
 
 
 DEFAULT_DTYPE = torch.float32
@@ -194,7 +195,7 @@ class Mesh(torch.nn.Module):
     
 
     def _register_buffers(self):
-        self.register_buffer("mesh_x", self._as_f32(self.mesh_features_torch[0]))
+        self.register_buffer("x", self._as_f32(self.mesh_features_torch[0]))
         self.register_buffer("mesh_edge_index", self._as_i64(self.m2m_edge_index_torch[0]))
         self.register_buffer("mesh_edge_attr", self._as_f32(self.m2m_features_torch[0]))
 

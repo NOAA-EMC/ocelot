@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import timedelta
 
+from logger import log,LogLevel
 import lightning.pytorch as pl
 import pandas as pd
 import torch
@@ -141,7 +142,7 @@ def main():
     parser.add_argument("--num_nodes", type=int, default=None)
 
     # Model hyperparameters (overridable)
-    parser.add_argument("--hidden_dim", type=int, default=192)
+    parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--huber_delta", type=float, default=0.1)
@@ -305,6 +306,13 @@ def main():
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
+
+    # if torch.cuda.is_available():
+    #     torch.cuda.memory._record_memory_history(max_entries=100000)
+
+    # Set log level based on verbosity flag
+    if args.verbose:
+        log.set_log_level(LogLevel.Debug)
 
     # Rank-aware reproducibility prints
     try:
@@ -523,6 +531,12 @@ def main():
         "mesh_lat_lon_torch": model.mesh.mesh_lat_lon_torch,
     }
 
+    for k, v in mesh_structure.items():
+        if isinstance(v, torch.Tensor):
+            print(f"[MESH] {k}: shape={v.shape} dtype={v.dtype} MB={v.nbytes/1e6:.1f}")
+        elif isinstance(v, list):
+            print(f"[MESH] {k}: list of {len(v)} items")
+
     # Add hierarchical connections if in hierarchical mode
     if args.mesh_type == "hierarchical":
         mesh_structure["mesh_up_ei_list"] = model.mesh.mesh_up_ei_list
@@ -693,6 +707,14 @@ def main():
         torch.cuda.synchronize()
 
     ckpt_path_for_fit = None if (resume_path and args.load_weights_only) else resume_path
+    log.debug(f"trainer.fit(model, data_module, ckpt_path={ckpt_path_for_fit})")
+
+    # try:
+    #     trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
+    # except torch.cuda.OutOfMemoryError:
+    #     rank = int(os.environ.get("SLURM_PROCID", "0"))
+    #     torch.cuda.memory._dump_snapshot(f"oom_snapshot_rank_{rank}.pkl")
+    #     raise
     trainer.fit(model, data_module, ckpt_path=ckpt_path_for_fit)
 
     end_time = time.time()

@@ -10,8 +10,8 @@ import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 from torch_geometric.data import HeteroData
 
+from logger import log
 from ..mesh.fixed_mesh import FixedMesh
-
 from .interaction_network import InteractionNetwork
 from .flat_processor_base import FlatProcessorBase
 
@@ -53,32 +53,28 @@ class InteractionProcessor(FlatProcessorBase):
             )
 
 
-    def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
+    def forward(self, step_info: dict, encoded_mesh_features: torch.Tensor) -> List[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
         Args:
-            data: HeteroData containing mesh edge indices and attributes for all levels
-            encoded_features: dict of encoded features for the finest level (level 0)
+            step_info: Dictionary containing information about latent steps and step mapping
+            encoded_mesh_features: tensor of encoded features for the finest level (level 0)
 
         Returns:
             List of [N_level, H] updated mesh states per level
         """
 
-        step_info = self._get_latent_step_info(data)
         num_latent_steps = step_info["num_steps"]
         step_mapping = step_info["step_mapping"]
-        edge_mapping = self._map_step_edges(data, step_mapping)
 
-        self.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        self.debug(f"[LATENT] Step mapping: {step_mapping}")
+        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
+        log.debug(f"[LATENT] Step mapping: {step_mapping}")
         
         for step in range(num_latent_steps):
-            processed_x_dict = self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
+            encoded_mesh_features = self._do_forward_step(step, num_latent_steps, encoded_mesh_features)
 
-        current_mesh_features = processed_x_dict["mesh"]
-
-        return output_list
+        return encoded_mesh_features
     
     
     def _do_forward_step(self, step, num_latent_steps, x_seq):
