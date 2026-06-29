@@ -977,16 +977,27 @@ class GNNLightning(pl.LightningModule):
         """
 
         step_info = self._get_latent_step_info(data)
-        encoded_features['mesh'] = self.processor(step_info, encoded_features['mesh'])
-        predictions = self._generate_predictions(data, step_info['step_mapping'],  encoded_features['mesh'])
+        step_mapping = step_info["step_mapping"]
+        num_latent_steps = step_info["num_steps"]
+        edge_mapping = self._map_step_edges(data, step_mapping)
+        
+        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
+        log.debug(f"[LATENT] Step mapping: {step_mapping}")
 
-        return predictions, None #, mesh_features_per_step
-    
-    def _generate_predictions(self, data: HeteroData, step_mapping: dict, mesh_features_processed) -> dict:
+        self.processor.reset()  # Ensure processor state is reset before rollout
+
         # Initialize predictions dict with lists for each base instrument
         predictions = {}
         for base_type in step_mapping.keys():
             predictions[base_type] = []
+
+        for step in range(num_latent_steps):
+            encoded_features['mesh'] = self.processor(step, step_info, encoded_features['mesh'])
+            self._generate_predictions(data, step, step_info['step_mapping'], edge_mapping, encoded_features['mesh'], predictions)
+
+        return predictions, None #, mesh_features_per_step
+    
+    def _generate_predictions(self, data: HeteroData, step: int, step_mapping: dict, edge_mapping: dict, mesh_features_processed: torch.Tensor, predictions: dict) -> None:
 
         # Process all instruments for this step
         for base_type, steps_dict in step_mapping.items():

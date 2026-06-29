@@ -27,7 +27,6 @@ class TemporalPositionalEncoding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [N, T, H]
         T = x.size(1)
-        print (f"@@@@ {x.shape} {self.pe[:, :T, :].shape}")
         return x + self.pe[:, :T, :]
 
 
@@ -191,42 +190,21 @@ class SlidingWindowTransformer(FlatProcessorBase):
         for s in states[-self.window:]:
             self.cache.append(s.detach())
 
-    def forward(self, step_info: dict, encoded_mesh_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            latent_step_info: dict containing latent step information (step mapping and number of steps)
+            step: int representing the current step in the sequence
+            step_info: dict containing latent step information (step mapping and number of steps)
             encoded_mesh_features: dict of encoded features for the finest level (level 0)
         Returns:
             List of [N_mesh, H] updated mesh states per latent step
         """
-
-        self.reset()
-
-        step_mapping = step_info["step_mapping"]
-        num_latent_steps = step_info["num_steps"]
         
-        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        log.debug(f"[LATENT] Step mapping: {step_mapping}")
-
-        for step in range(num_latent_steps):
-            encoded_mesh_features = self._do_forward_step()
-
-        return encoded_mesh_features
-    
-    
-    def _do_forward_step(self) -> torch.Tensor:
-        """
-        Args:
-            mesh: FixedMesh object containing the current mesh state
-        Returns:
-            Tensor of shape [N_mesh, H] representing the updated mesh state after processing
-        """
         # ensure device consistency
-        device = self.mesh.x.device
-        dtype = self.mesh.x.dtype
+        device = encoded_mesh_features.device
+        dtype = encoded_mesh_features.dtype
 
-        log.info(f"!!!!!!!! self.mesh.x.shape: {self.mesh.x.shape}")
-        self.cache.append(self.mesh.x)
+        self.cache.append(encoded_mesh_features)
         x_seq = torch.stack(list(self.cache), dim=1).to(
             device=device, dtype=dtype
         )  # [N, T, H]
@@ -254,4 +232,5 @@ class SlidingWindowTransformer(FlatProcessorBase):
                     mixed.append(xt)
                 x_seq = torch.stack(mixed, dim=1)
 
-        return x_seq[:, -1, :]
+        return x_seq[:, -1, :]  # new encoded_mesh_features
+    

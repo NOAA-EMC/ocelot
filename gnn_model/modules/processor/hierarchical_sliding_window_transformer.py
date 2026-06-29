@@ -374,7 +374,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
         return fine_features
 
 
-    def forward(self, step_info: dict, encoded_mesh_features: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
@@ -386,20 +386,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
             List of [N_level, H] updated mesh states per level
         """
 
-        num_latent_steps = step_info["num_steps"]
-        step_mapping = step_info["step_mapping"]
-
-        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        log.debug(f"[LATENT] Step mapping: {step_mapping}")
-        
-        for step in range(num_latent_steps):
-            encoded_mesh_features = self._do_forward_step(step, num_latent_steps, encoded_mesh_features)
-
-        return encoded_mesh_features
-    
-
-    def _do_forward_step(self, step: int, num_latent_steps: int, current_mesh_features: torch.Tensor) -> torch.Tensor:
-        meshData = self._prep_mesh_data(step, num_latent_steps, current_mesh_features)
+        meshData = self._prep_mesh_data(step, step_info["num_steps"], encoded_mesh_features)
 
         device = meshData.mesh_features_list[0].device
         dtype = meshData.mesh_features_list[0].dtype
