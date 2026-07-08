@@ -35,6 +35,11 @@ class IntField(ConfigField):
         if not isinstance(self.value, int):
             raise ValueError(f"Expected int but got {type(self.value)}")
         
+class BoolField(ConfigField):
+    def _validate(self):
+        if not isinstance(self.value, bool):
+            raise ValueError(f"Expected bool but got {type(self.value)}")
+        
 class FloatField(ConfigField):
     def _validate(self):
         if not isinstance(self.value, float):
