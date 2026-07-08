@@ -45,6 +45,3 @@ class ModelConfig(ConfigBase):
 
     def __init__(self, config_path: str):
         super().load(yaml.safe_load(open(config_path)))
-
-
-model_config = ModelConfig("gnn_model/configs/model_config.yaml")

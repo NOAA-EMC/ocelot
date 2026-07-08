@@ -26,7 +26,7 @@ from lightning.pytorch.strategies import DDPStrategy
 from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback
 from ckpt_utils import find_latest_checkpoint
 from gnn_datamodule import GNNDataModule
-from gnn_model import GNNLightning
+from ocelot_model import OcelotModel
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
 

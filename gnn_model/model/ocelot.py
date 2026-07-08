@@ -22,14 +22,14 @@ from torch_geometric.data import HeteroData
 
 from logger import log
 
-from modules.coder.attn_bipartite import BipartiteGAT
-from modules.coder.interaction_net import InteractionNet
-from modules.processor.interaction_processor import InteractionProcessor
-from modules.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
-from modules.processor.sliding_window_transformer import SlidingWindowTransformer
-from modules.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
-from modules.mesh.hierarchical_mesh import HierarchicalMesh
-from modules.processor.processor_factory import ProcessorFactory
+from model.coder.attn_bipartite import BipartiteGAT
+from model.coder.interaction_net import InteractionNet
+from model.processor.interaction_processor import InteractionProcessor
+from model.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
+from model.processor.sliding_window_transformer import SlidingWindowTransformer
+from model.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
+from model.mesh.hierarchical_mesh import HierarchicalMesh
+from model.processor.processor_factory import ProcessorFactory
 
 from utils import make_mlp
 from loss import weighted_huber_loss, weighted_mse_loss
@@ -37,8 +37,8 @@ from process_timeseries import _encode_target_time_features
 
 
 ####
-from modules.mesh.mesh import Mesh
-from modules.mesh.mesh_factory import MeshFactory
+from model.mesh.mesh import Mesh
+from model.mesh.mesh_factory import MeshFactory
 
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
     order = []
@@ -82,7 +82,7 @@ def _canonical_variable_name(feature_name: str) -> str:
     return mapping.get(key, feature_name)
 
 
-class GNNLightning(pl.LightningModule):
+class Ocelot(pl.LightningModule):
     """
     A Graph Neural Network (GNN) model for processing structured spatiotemporal data.
     Key Features:
@@ -96,58 +96,7 @@ class GNNLightning(pl.LightningModule):
             weighted aggregation to produce target predictions.
     """
 
-    def __init__(
-        self,
-        observation_config,
-        hidden_dim,
-        mesh_config=None,
-        mesh_resolution=6,
-        mesh_type="fixed",  # "fixed" or "hierarchical"
-        mesh_levels=4,
-        num_layers=4,
-        lr=1e-4,
-        instrument_weights=None,
-        channel_weights=None,
-        huber_delta: float = 0.1,
-        loss_type: str = "mse",
-        verbose=False,
-        detect_anomaly=False,
-        max_rollout_steps=1,
-        rollout_schedule="step",
-        latent_step_hours=3,
-        feature_stats=None,
-        processor_type: str = "interaction",  # "interaction" | "sliding_transformer"
-        processor_window: int = 4,
-        processor_depth: int = 2,
-        processor_heads: int = 4,
-        spatial_mixing_steps: int = 1,
-        processor_dropout: float = 0.0,
-        encoder_type: str = "interaction",     # "interaction" | "gat"
-        decoder_type: str = "interaction",     # "interaction" | "gat"
-        encoder_heads: int = 4,
-        decoder_heads: int = 4,
-        encoder_layers: int = 2,
-        decoder_layers: int = 2,
-        encoder_dropout: float = 0.0,
-        decoder_dropout: float = 0.0,
-        weight_decay: float = 1e-5,
-        lr_schedule: str = "plateau",  # "plateau" | "cosine_warmup"
-        warmup_pct: float = 0.05,
-        warmup_start_factor: float = 0.01,
-        min_lr: float = 1e-6,
-        # Validation CSV (diagnostic) outputs
-        val_csv_enabled: bool = True,
-        val_csv_out_dir: str = "val_csv",
-        val_csv_num_batches: int = 1,
-        val_csv_every_n_epochs: int = 1,
-        val_csv_max_rows: int | None = None,
-        val_csv_sample_seed: int = 0,
-        scan_angle_conditioning: str = "project",  # "pad" | "project"
-        pressure_level_conditioning: str = "project",  # "pad" | "project"
-        use_bipartite_edge_attr: bool = True,
-        bipartite_edge_attr_dim: int = 4,
-        **kwargs,
-    ):
+    def __init__(self, encoder, mesh, processor, decoder, verbose=False):
         """
         Initializes the GNNLightning model with an encoder, processor, and decoder.
 
