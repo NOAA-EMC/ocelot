@@ -13,7 +13,7 @@ class TrainingConfig(ConfigBase):
     lr = Optional(FloatField(), default=5e-4)
     lr_scheduler = Optional(Choices(['plateau', 'cosine_warmup']), default='plateau')
     weight_decay = Optional(FloatField(), default=1e-5)
-    max_epochs = Optional(IntField())
+    max_epochs = Optional(IntField(), default=0)
     precision = Optional(Choices(['16-mixed', 'fp32', 'fp16']), default='16-mixed')
 
 

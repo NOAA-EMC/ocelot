@@ -26,7 +26,7 @@ from lightning.pytorch.strategies import DDPStrategy
 from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback
 from ckpt_utils import find_latest_checkpoint
 from gnn_datamodule import GNNDataModule
-from ocelot_model import OcelotModel
+from gnn_model.model.ocelot import OcelotModel
 from timing_utils import timing_resource_decorator
 from weight_utils import load_weights_from_yaml
 
@@ -77,41 +77,6 @@ def main():
         choices=["random", "sequential"],
         help="The data sampling strategy ('random' or 'sequential').",
     )
-    parser.add_argument(
-        "--switch_to_sequential_after_epochs",
-        type=int,
-        default=None,
-        help=(
-            "If set (e.g., 50), start training with RANDOM windows then switch the TRAIN window sampler to "
-            "SEQUENTIAL starting at that epoch. Only applies when --sampling_mode random."
-        ),
-    )
-    parser.add_argument(
-        "--auto_switch_to_sequential",
-        action="store_true",
-        help=(
-            "If --sampling_mode random, automatically switch TRAIN window sampling to sequential when the "
-            "monitored metric plateaus (patience/min_delta)."
-        ),
-    )
-    parser.add_argument(
-        "--auto_switch_metric",
-        type=str,
-        default="val_loss",
-        help="Metric name to monitor for plateau (default: val_loss).",
-    )
-    parser.add_argument(
-        "--auto_switch_patience_epochs",
-        type=int,
-        default=10,
-        help="Number of validation epochs with insufficient improvement before switching.",
-    )
-    parser.add_argument(
-        "--auto_switch_min_delta",
-        type=float,
-        default=0.0,
-        help="Minimum decrease in monitored metric to count as improvement.",
-    )
 
     parser.add_argument("--resume_from_checkpoint", type=str, default=None)
     parser.add_argument("--resume_from_latest", action="store_true")
@@ -123,15 +88,6 @@ def main():
             "Useful when changing validation windows across runs."
         ),
     )
-    parser.add_argument(
-        "--run_name",
-        type=str,
-        default=None,
-        help=(
-            "Optional run identifier to isolate logs/checkpoints. If set, logs go to logs/<run_name>/ "
-            "and checkpoints to checkpoints/<run_name>/"
-        ),
-    )
 
     # Debug / resource overrides
     parser.add_argument("--debug_mode", action="store_true")
@@ -141,24 +97,6 @@ def main():
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--num_nodes", type=int, default=None)
 
-    # Model hyperparameters (overridable)
-    parser.add_argument("--hidden_dim", type=int, default=128)
-    parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--weight_decay", type=float, default=1e-5)
-    parser.add_argument("--huber_delta", type=float, default=0.1)
-    parser.add_argument("--loss_type", type=str, default="huber", choices=["huber", "mse"])
-
-    # LR schedule (handled in GNNLightning.configure_optimizers)
-    parser.add_argument(
-        "--lr_schedule",
-        type=str,
-        default="plateau",
-        choices=["plateau", "cosine_warmup"],
-        help="Learning-rate schedule: ReduceLROnPlateau or warmup+cosine decay.",
-    )
-    parser.add_argument("--warmup_pct", type=float, default=0.05)
-    parser.add_argument("--warmup_start_factor", type=float, default=0.01)
-    parser.add_argument("--min_lr", type=float, default=1e-6)
 
     parser.add_argument(
         "--scan_angle_conditioning",

@@ -2,14 +2,24 @@ class ConfigItem:
     pass
 
 class ConfigField(ConfigItem):
-    def __init__(self):
-        self.value = None
 
-    def _validate(self, value):
-        raise NotImplementedError("Must implement _validate method")
+    @property
+    def value(self):
+        return self._value
+    
+    @value.setter
+    def value(self, value):
+        self._value = self._get_type()(value) if value is not None else None
+
+    def _validate(self):
+        if not isinstance(self._value, self._get_type()):
+            raise ValueError(f"Expected value of type {self._get_type()} but got {type(self._value)}")
 
     def __call__(self):
         return self.value
+
+    def _get_type(self):
+        return None
 
 class Choices(ConfigField):
     def __init__(self, choices: list[str]):
@@ -20,35 +30,44 @@ class Choices(ConfigField):
         if self.value not in self.choices:
             raise ValueError(f"Value '{self.value}' not in allowed choices: {self.choices}")
         
+    def _get_type(self):
+        return str
+        
 class Optional(ConfigField):
+    type = None
+
     def __init__(self, inner_type, default=None):
         self.inner_type = inner_type
-        self.default = default
-        super().__init__(default)
+        self.value = default
+        super().__init__()
+
+    @property
+    def value(self):
+        return self.inner_type.value
+
+    @value.setter
+    def value(self, value):
+        self.inner_type.value = value
 
     def _validate(self):
         if self.value is not None:
-            self.inner_type._validate(self.value)
+            self.inner_type._validate()
 
 class IntField(ConfigField):
-    def _validate(self):
-        if not isinstance(self.value, int):
-            raise ValueError(f"Expected int but got {type(self.value)}")
+    def _get_type(self):
+        return int
         
 class BoolField(ConfigField):
-    def _validate(self):
-        if not isinstance(self.value, bool):
-            raise ValueError(f"Expected bool but got {type(self.value)}")
+    def _get_type(self):
+        return bool
         
 class FloatField(ConfigField):
-    def _validate(self):
-        if not isinstance(self.value, float):
-            raise ValueError(f"Expected float but got {type(self.value)}")
+    def _get_type(self):
+        return float
 
 class StrField(ConfigField):
-    def _validate(self):
-        if not isinstance(self.value, str):
-            raise ValueError(f"Expected str but got {type(self.value)}")
+    def _get_type(self):
+        return str
 
 # meta class for all config classes, which will validate the fields and provide a way to access the fields
 class ConfigMeta(type):
@@ -63,6 +82,8 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
     def load(self, config_dict: dict) -> None:
         for field_name in self._fields:
             if field_name not in config_dict:
+                if isinstance(self._fields[field_name], Optional):
+                    continue            
                 raise ValueError(f"Missing required field '{field_name}' in config")
             field = self._fields[field_name]
             if isinstance(field, ConfigBase):
@@ -78,3 +99,4 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
         if isinstance(attr, ConfigField):
             return attr()
         return attr
+    
