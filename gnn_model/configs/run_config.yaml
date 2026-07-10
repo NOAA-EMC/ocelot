@@ -2,10 +2,16 @@ experiment_name: baseline_v1
 checkpoint_dir: checkpoints/baseline_v1
 
 data:
+  path: /scratch3/NCEPDEV/da/Azadeh.Gholoubi/zarr
   window_hours: 12
   latent_step_hours: 3
   max_rollout_steps: 1
-  zarr_root: /scratch3/NCEPDEV/da/Azadeh.Gholoubi/zarr
+  
+
+  sampler:
+    type: random            # random | sequential
+    start_date: 2026-01-01
+    end_date: 2026-01-31
 
 training:
   lr: 1.0e-4

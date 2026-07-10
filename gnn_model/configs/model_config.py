@@ -1,6 +1,6 @@
 
 import yaml
-from .config_base import ConfigBase, Choices, IntField, FloatField, StrField, Optional
+from .config_base import ConfigBase, Choices, IntField, FloatField, BoolField, StrField, Optional
 
 
 class MeshConfig(ConfigBase):
@@ -14,6 +14,10 @@ class CoderConfig(ConfigBase):
     layers = IntField()
     heads = IntField()
     dropout = FloatField()
+    scan_angle_conditioning = Optional(Choices(['pad', 'project']), default='project')
+    pressure_level_conditioning = Optional(Choices(['pad', 'project']), default='project')
+    disable_bipartite_edge_attr = Optional(BoolField(), default=False)
+    bipartite_edge_attr_dim = Optional(IntField(), default=4)
 
 
 class ProcessorConfig(ConfigBase):
