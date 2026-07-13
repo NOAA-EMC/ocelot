@@ -97,48 +97,6 @@ def main():
     parser.add_argument("--devices", type=int, default=None)
     parser.add_argument("--num_nodes", type=int, default=None)
 
-
-    parser.add_argument(
-        "--scan_angle_conditioning",
-        type=str,
-        default="project",
-        choices=["pad", "project"],
-        help=(
-            "How to inject scan-angle into decoder receiver init for satellite targets. "
-            "'pad' keeps scan embedding in the last 8 dims (backward compatible); "
-            "'project' spreads it across hidden_dim via a learned linear projection."
-        ),
-    )
-
-    parser.add_argument(
-        "--pressure_level_conditioning",
-        type=str,
-        default="project",
-        choices=["pad", "project"],
-        help=(
-            "How to inject pressure-level embedding into decoder receiver init for aircraft/radiosonde targets. "
-            "'pad' keeps pressure embedding in the last 8 dims; "
-            "'project' spreads it across hidden_dim via a learned linear projection."
-        ),
-    )
-
-    parser.add_argument(
-        "--disable_bipartite_edge_attr",
-        action="store_true",
-        help=(
-            "By default, computed obs↔mesh / mesh↔target spatial edge_attr features are fed into "
-            "the GAT encoders/decoders. Set this flag to disable those features and force zero edge_attr instead."
-        ),
-    )
-    parser.add_argument(
-        "--bipartite_edge_attr_dim",
-        type=int,
-        default=4,
-        help=(
-            "Input dimension of bipartite spatial edge_attr features produced by obs_mesh_conn. "
-            "With current GraphCast-style features this is typically 4 (distance + relative position xyz)."
-        ),
-    )
     parser.add_argument(
         "--cfg_path",
         type=str,
@@ -172,15 +130,6 @@ def main():
         ),
     )
 
-    # Mesh config
-    parser.add_argument(
-        "--mesh_type",
-        type=str,
-        default="fixed",
-        choices=["fixed", "hierarchical"],
-    )
-    parser.add_argument("--mesh_levels", type=int, default=4)
-
     # Determinism and sequential stride
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--stride_days", type=int, default=1)
@@ -191,20 +140,7 @@ def main():
     parser.add_argument("--full_end_date", type=str, default=None)
     parser.add_argument("--train_val_split_ratio", type=float, default=None)
 
-    parser.add_argument("--train_start_date", type=str, default="2015-01-01")
-    parser.add_argument(
-        "--train_end_date",
-        type=str,
-        default="2024-01-01",
-        help="Exclusive end date.",
-    )
-    parser.add_argument("--val_start_date", type=str, default="2024-01-01")
-    parser.add_argument(
-        "--val_end_date",
-        type=str,
-        default="2025-01-01",
-        help="Exclusive end date.",
-    )
+
     parser.add_argument(
         "--use_split_ratio",
         action="store_true",

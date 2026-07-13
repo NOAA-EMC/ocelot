@@ -1,0 +1,50 @@
+experiment_name: baseline_v1
+checkpoint_dir: checkpoints/baseline_v1
+seed: null
+
+data:
+  path: /scratch3/NCEPDEV/da/Azadeh.Gholoubi/zarr
+  window_hours: 12
+  latent_step_hours: 3
+  max_rollout_steps: 1
+
+  sampler:
+    type: random            # random | sequential
+    date_range:
+      type: split_ratio     # split_ratio | predefined
+      train_val_split_ratio: 0.75
+    train_window_days: 7
+
+trainer:
+  max_epochs: 200
+  precision: 16-mixed
+  devices: 4
+  num_nodes: 1
+  early_stopping:
+    patience: 25
+    min_delta: 1.0e-5
+
+validation:
+  mode:
+    type: sequential        # fixed | random | sequential
+    window_days: 8
+    stride_days: 8
+    update_every_n_epochs: 5
+  cache_windows: true
+  cache_max_entries: 16
+  csv:
+    output_dir: val_csv
+    num_batches: 1
+    every_n_epochs: 1
+
+optimizer:
+  type: adamw
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+
+loss:
+  type: mse                 # mse | huber
+
+schedule:
+  type: plateau             # plateau | cosine_warmup
+  min_lr: 1.0e-6
