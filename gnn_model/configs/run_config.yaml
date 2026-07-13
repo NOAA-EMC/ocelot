@@ -7,11 +7,12 @@ data:
   latent_step_hours: 3
   max_rollout_steps: 1
   
-
   sampler:
     type: random            # random | sequential
-    start_date: 2026-01-01
-    end_date: 2026-01-31
+    window:
+      type: split_ratio      # split_ratio | predefined
+      train_val_split_ratio: 0.75
+      window_days: 7
 
 training:
   lr: 1.0e-4
