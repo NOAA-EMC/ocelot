@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import yaml
 from .config_base import ConfigBase, \
                          BoolField, \
@@ -7,20 +9,60 @@ from .config_base import ConfigBase, \
                          StrField, \
                          DatetimeField, \
                          Optional 
-                        
 
-class SequentialSamplingConfig(ConfigBase):
-    start_date = DatetimeField()
-    end_date = DatetimeField()
+#### Data ####                   
+
+class SplitRatioWindowConfig(ConfigBase):
+    full_start_date = Optional(DatetimeField(), default="2015-01-01")
+    full_end_date = Optional(DatetimeField(), default="2025-01-01")
+    train_val_split_ratio = Optional(FloatField(), default=0.9)
+    window_days = Optional(IntField(), default=7)
+
+    @property
+    def train_start_date(self):
+        return self.full_start_date
+    
+    @property
+    def train_end_date(self):
+        total_days = (self.full_end_date - self.full_start_date).days
+        train_days = int(total_days * self.train_val_split_ratio)
+        return self.full_start_date + timedelta(days=train_days)
+    
+    @property
+    def val_start_date(self):
+        return self.train_end_date
+    
+    @property
+    def val_end_date(self):
+        return self.full_end_date
+
+
+class PredefinedWindowsConfig(ConfigBase):
+    train_start_date = Optional(DatetimeField(), default="2015-01-01")
+    train_end_date = Optional(DatetimeField(), default="2025-01-01")
+    val_start_date = Optional(DatetimeField(), default="2025-01-01")
+    val_end_date = Optional(DatetimeField(), default="2025-12-31")
 
 
 class RandomSamplingConfig(ConfigBase):
-    start_date = DatetimeField()
-    end_date = DatetimeField()
+    window = Choices({'split_ratio': SplitRatioWindowConfig(),
+                      'predefined': PredefinedWindowsConfig()})
+    
+
+    train_window_days = Optional(IntField(), default=14)
+    val_window_days = Optional(IntField(), default=3)
     seed = Optional(IntField())
 
 
+class SequentialSamplingConfig(ConfigBase):
+    full_start_date = DatetimeField()
+    full_end_date = DatetimeField()
+    window_days = Optional(IntField(), default=7)
+    stride_days = Optional(IntField(), default=1)
+
+
 class DataConfig(ConfigBase):
+
     path = StrField()
 
     sampler = Choices({'random': RandomSamplingConfig(), 

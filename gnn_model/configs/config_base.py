@@ -32,7 +32,8 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
 
             if field_name not in config_dict:
                 if isinstance(field, Optional):
-                    continue            
+                    field.load()
+                    continue     
                 raise ValueError(f"Missing required field '{field_name}' in config")
             if isinstance(field, ConfigBase):
                 field.load(config_dict[field_name])
@@ -89,7 +90,7 @@ class Optional(ConfigField):
     def value(self):
         return self.inner_type.value
     
-    def load(self, value=None):    
+    def load(self, value=None):
         if value is not None:
             self.inner_type.load(value)
         elif self.default is not None:
