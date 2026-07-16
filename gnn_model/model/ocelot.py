@@ -96,7 +96,30 @@ class Ocelot(pl.LightningModule):
             weighted aggregation to produce target predictions.
     """
 
-    def __init__(self, encoder, mesh, processor, decoder, verbose=False):
+    def __init__(
+        self,
+        observation_config,
+        model_config,
+        optimizer_config,
+        loss_config,
+        schedule_config,
+        mesh_variable_config,
+        feature_stats=None,
+        instrument_weights=None,
+        channel_weights=None,
+        max_rollout_steps=1,
+        rollout_schedule="fixed",
+        latent_step_hours=3,
+        val_csv_enabled=True,
+        val_csv_out_dir="val_csv",
+        val_csv_num_batches=1,
+        val_csv_every_n_epochs=1,
+        val_csv_max_rows=None,
+        val_csv_sample_seed=0,
+        detect_anomaly=False,
+        verbose=False,
+        **legacy_config,
+    ):
         """
         Initializes the GNNLightning model with an encoder, processor, and decoder.
 
@@ -108,22 +131,36 @@ class Ocelot(pl.LightningModule):
         """
         super().__init__()
 
+        hidden_dim = int(model_config['hidden_dim'])
+        mesh_arch_config = model_config['mesh']
+        encoder_config = model_config['encoder']
+        processor_config = model_config['processor']
+        decoder_config = model_config['decoder']
+        embeddings_config = model_config['embeddings']
+
+        mesh_type = mesh_arch_config['type']
+        mesh_levels = int(mesh_arch_config['levels'])
+        mesh_resolution = int(mesh_arch_config.get('splits', mesh_arch_config.get('resolution')))
+
         # Normalize to int so Lightning hparams merge is stable across module/datamodule.
         latent_step_hours = int(latent_step_hours)
         self.verbose = verbose
         self.detect_anomaly = detect_anomaly
         self.feature_stats = feature_stats
         self.save_hyperparameters()
-        self.lr = lr
-        self.weight_decay = float(weight_decay)
-        self.huber_delta = float(huber_delta)
-        self.loss_type = str(loss_type).lower()
+        self.optimizer_type = str(optimizer_config['type']).lower()
+        self.lr = float(optimizer_config['lr'])
+        self.weight_decay = float(optimizer_config['weight_decay'])
+        self.huber_delta = float(loss_config.get('delta', 0.1))
+        self.loss_type = str(loss_config['type']).lower()
         if self.loss_type not in ("huber", "mse"):
             raise ValueError(f"loss_type must be 'huber' or 'mse' (got: {self.loss_type!r})")
-        self.lr_schedule = str(lr_schedule)
-        self.warmup_pct = float(warmup_pct)
-        self.warmup_start_factor = float(warmup_start_factor)
-        self.min_lr = float(min_lr)
+        self.lr_schedule = str(schedule_config['type'])
+        self.warmup_pct = float(schedule_config.get('warmup_pct', 0.05))
+        self.warmup_start_factor = float(schedule_config.get('warmup_start_factor', 0.01))
+        self.min_lr = float(schedule_config.get('min_lr', 1e-6))
+        self.plateau_factor = float(schedule_config.get('factor', 0.5))
+        self.plateau_patience = int(schedule_config.get('patience', 3))
         self.instrument_weights = instrument_weights or {}
         self.channel_weights = channel_weights or {}
         self.max_rollout_steps = max_rollout_steps
@@ -138,13 +175,13 @@ class Ocelot(pl.LightningModule):
         self.val_csv_max_rows = int(val_csv_max_rows) if val_csv_max_rows is not None else None
         self.val_csv_sample_seed = int(val_csv_sample_seed)
 
-        self.scan_angle_conditioning = str(scan_angle_conditioning)
+        self.scan_angle_conditioning = str(embeddings_config['scan_angle_conditioning'])
         if self.scan_angle_conditioning not in ("pad", "project"):
             raise ValueError(
                 f"scan_angle_conditioning must be 'pad' or 'project' (got: {self.scan_angle_conditioning!r})"
             )
 
-        self.pressure_level_conditioning = str(pressure_level_conditioning)
+        self.pressure_level_conditioning = str(embeddings_config['pressure_level_conditioning'])
         if self.pressure_level_conditioning not in ("pad", "project"):
             raise ValueError(
                 f"pressure_level_conditioning must be 'pad' or 'project' (got: {self.pressure_level_conditioning!r})"
@@ -152,18 +189,19 @@ class Ocelot(pl.LightningModule):
 
         self.observation_config = observation_config
 
-        self.use_bipartite_edge_attr = bool(use_bipartite_edge_attr)
-        self.bipartite_edge_attr_dim = int(bipartite_edge_attr_dim)
-
-        # Backward compatibility: older checkpoints may not have mesh_config in hparams.
-        # Lightning will pass mesh_config=None in that case.
-        mesh_config = mesh_config or {}
+        edge_dims = [
+            config.get('edge_dim')
+            for config in (encoder_config, decoder_config)
+            if config['type'] == 'gat' and config.get('edge_dim') is not None
+        ]
+        self.use_bipartite_edge_attr = bool(edge_dims)
+        self.bipartite_edge_attr_dim = int(edge_dims[0]) if edge_dims else 4
 
         # Load mesh-grid variable config
-        self.enable_mesh_pred = mesh_config.get('enable_mesh_pred', False)
-        self.mesh_variable_config = mesh_config
-        self.mesh_instruments = list(mesh_config.get('variables', {}).keys())
-        self.mesh_pressure_level_idx = mesh_config.get('mesh_pressure_level_idx', 0)
+        self.enable_mesh_pred = mesh_variable_config.get('enable_mesh_pred', False)
+        self.mesh_variable_config = mesh_variable_config
+        self.mesh_instruments = list(mesh_variable_config.get('variables', {}).keys())
+        self.mesh_pressure_level_idx = mesh_variable_config.get('mesh_pressure_level_idx', 0)
         if self.verbose:
             print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
             print(f"[DEBUG CONFIG] mesh_variable_config: {self.mesh_variable_config}")
@@ -220,13 +258,13 @@ class Ocelot(pl.LightningModule):
         print(f"  - Mesh type: {mesh_type}")
         print(f"  - Mesh levels: {mesh_levels}")
         print(f"  - Mesh resolution (splits): {mesh_resolution}")
-        print(f"  - Processor type: {processor_type}")
-        print(f"  - Encoder type: {encoder_type}")
-        print(f"  - Decoder type: {decoder_type}")
+        print(f"  - Processor type: {processor_config['type']}")
+        print(f"  - Encoder type: {encoder_config['type']}")
+        print(f"  - Decoder type: {decoder_config['type']}")
         print(f"{'='*70}\n")
 
         self.mesh_resolution = mesh_resolution
-        self.mesh = MeshFactory.build("fixed", mesh_levels, mesh_resolution)
+        self.mesh = MeshFactory.build(mesh_type, mesh_levels, mesh_resolution)
 
         self.is_hierarchical = (mesh_type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
 
@@ -248,7 +286,7 @@ class Ocelot(pl.LightningModule):
 
         # Create scan-angle embedders once to avoid loop-order surprises
         # These embeddings are used ONLY for decoder initialization
-        self.scan_angle_embed_dim = 8
+        self.scan_angle_embed_dim = int(embeddings_config['scan_angle_dim'])
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
 
@@ -260,9 +298,9 @@ class Ocelot(pl.LightningModule):
             self.scan_angle_projector = None
 
         # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
-        self.pressure_level_embed_dim = 8
+        self.pressure_level_embed_dim = int(embeddings_config['pressure_level_dim'])
         self.pressure_level_embedder = nn.Embedding(
-            num_embeddings=16,  # 16 standard pressure levels
+            num_embeddings=int(embeddings_config['num_pressure_levels']),
             embedding_dim=self.pressure_level_embed_dim
         )
 
@@ -274,7 +312,7 @@ class Ocelot(pl.LightningModule):
 
         # Target valid-time + local solar time conditioning lives in the last 5 target_metadata columns.
         self.target_time_feature_dim = 5
-        self.target_time_embed_dim = 8
+        self.target_time_embed_dim = int(embeddings_config['target_time_dim'])
         self.target_time_embedder = make_mlp([self.target_time_feature_dim, self.target_time_embed_dim])
         self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.hidden_dim)
 
@@ -297,54 +335,64 @@ class Ocelot(pl.LightningModule):
                 edge_type_tuple_enc = (node_type_input, "to", "mesh")
                 enc_key = self._edge_key(edge_type_tuple_enc)
 
-                if encoder_type == "gat":
-                    enc_edge_dim = self.bipartite_edge_attr_dim
+                if encoder_config['type'] == "gat":
                     self.observation_encoders[enc_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
                         hidden_dim=hidden_dim,
-                        layers=encoder_layers,
-                        heads=encoder_heads,
-                        dropout=encoder_dropout,
-                        edge_dim=enc_edge_dim,
+                        layers=encoder_config['layers'],
+                        heads=encoder_config['heads'],
+                        dropout=encoder_config['dropout'],
+                        edge_dim=encoder_config.get('edge_dim'),
+                        dst_chunk_size=encoder_config.get('dst_chunk_size'),
+                        dst_chunk_threshold=encoder_config['dst_chunk_threshold'],
+                        use_activation_checkpointing=encoder_config['use_activation_checkpointing'],
                     )
                 else:
                     self.observation_encoders[enc_key] = InteractionNet(
                         edge_index=None,
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
-                        hidden_layers=hidden_layers,
-                        update_edges=False,
+                        hidden_layers=encoder_config['hidden_layers'],
+                        update_edges=encoder_config['update_edges'],
+                        edge_chunk_sizes=encoder_config.get('edge_chunk_sizes'),
+                        aggr_chunk_sizes=encoder_config.get('aggr_chunk_sizes'),
+                        aggr=encoder_config['aggr'],
                     )
                 # Decoder GNN (mesh -> target)
                 edge_type_tuple_dec = ("mesh", "to", node_type_target)
                 dec_key = self._edge_key(edge_type_tuple_dec)
 
-                if decoder_type == "gat":
-                    dec_edge_dim = self.bipartite_edge_attr_dim
+                if decoder_config['type'] == "gat":
                     self.observation_decoders[dec_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
                         hidden_dim=hidden_dim,
-                        layers=decoder_layers,
-                        heads=decoder_heads,
-                        dropout=decoder_dropout,
-                        edge_dim=dec_edge_dim,
+                        layers=decoder_config['layers'],
+                        heads=decoder_config['heads'],
+                        dropout=decoder_config['dropout'],
+                        edge_dim=decoder_config.get('edge_dim'),
+                        dst_chunk_size=decoder_config.get('dst_chunk_size'),
+                        dst_chunk_threshold=decoder_config['dst_chunk_threshold'],
+                        use_activation_checkpointing=decoder_config['use_activation_checkpointing'],
                     )
                 else:
                     self.observation_decoders[dec_key] = InteractionNet(
                         edge_index=None,
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
-                        hidden_layers=hidden_layers,
-                        update_edges=False,
+                        hidden_layers=decoder_config['hidden_layers'],
+                        update_edges=decoder_config['update_edges'],
+                        edge_chunk_sizes=decoder_config.get('edge_chunk_sizes'),
+                        aggr_chunk_sizes=decoder_config.get('aggr_chunk_sizes'),
+                        aggr=decoder_config['aggr'],
                     )
 
                 # Initial MLP to project raw features to hidden_dim
                 # Add pressure-level embedding dimensions for radiosonde and aircraft input
                 embedder_input_dim = input_dim
                 if inst_name in ["radiosonde", "aircraft"]:
-                    embedder_input_dim += 8  # Add pressure-level embedding dimension
+                    embedder_input_dim += self.pressure_level_embed_dim
                 self.observation_embedders[node_type_input] = make_mlp([embedder_input_dim] + self.mlp_blueprint_end)
 
                 # Output mapper takes ONLY decoded features (hidden_dim)
@@ -355,13 +403,16 @@ class Ocelot(pl.LightningModule):
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
-        self.processor = ProcessorFactory().build('sliding_window', self.mesh, {'hidden_dim':self.hidden_dim,
-                                                                                'window':processor_window,
-                                                                                'depth':processor_depth,
-                                                                                'num_heads':processor_heads,
-                                                                                'dropout':processor_dropout,
-                                                                                'use_causal_mask':True,
-                                                                                'spatial_mixing_steps':spatial_mixing_steps})
+        processor_type = processor_config['type']
+        processor_params = {
+            'hidden_dim': self.hidden_dim,
+            **{key: value for key, value in processor_config.items() if key != 'type'},
+        }
+        if processor_type == 'interaction':
+            processor_params.update(node_types=node_types, edge_types=edge_types)
+        elif processor_type in ('hierarchical_interaction', 'hierarchical_sliding_window'):
+            processor_params['num_levels'] = self.mesh.num_levels
+        self.processor = ProcessorFactory.build(processor_type, self.mesh, processor_params)
 
 
 
@@ -830,12 +881,17 @@ class Ocelot(pl.LightningModule):
                 if needs_pressure_level:
                     if "pressure_level" in data[node_type] and data[node_type].pressure_level.shape[0] > 0:
                         pressure_level_idx = data[node_type].pressure_level  # [N]
-                        pressure_embed = self.pressure_level_embedder(pressure_level_idx)  # [N, 8]
+                        pressure_embed = self.pressure_level_embedder(pressure_level_idx)
                     else:
-                        pressure_embed = torch.zeros(x.shape[0], 8, device=x.device, dtype=x.dtype)
+                        pressure_embed = torch.zeros(
+                            x.shape[0],
+                            self.pressure_level_embed_dim,
+                            device=x.device,
+                            dtype=x.dtype,
+                        )
 
                     # Concatenate with original features
-                    x_with_embed = torch.cat([x, pressure_embed], dim=-1)  # [N, input_dim + 8]
+                    x_with_embed = torch.cat([x, pressure_embed], dim=-1)
                     print(
                         f"PRESSURE-LEVEL EMBEDDING APPLIED: {node_type} | "
                         f"orig={x.shape} + embed={pressure_embed.shape} → combined={x_with_embed.shape}"
@@ -2499,7 +2555,9 @@ class Ocelot(pl.LightningModule):
                 print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        if self.optimizer_type != "adamw":
+            raise ValueError(f"Unsupported optimizer type: {self.optimizer_type}")
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
         # TenYearTrain-style schedule: warmup + cosine decay (robust to noisy validation)
         if self.lr_schedule == "cosine_warmup":
@@ -2547,9 +2605,8 @@ class Ocelot(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
-            factor=0.5,
-            patience=3,
-            verbose=True,
+            factor=self.plateau_factor,
+            patience=self.plateau_patience,
             min_lr=self.min_lr,
         )
 

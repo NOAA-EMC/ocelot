@@ -136,40 +136,14 @@ if [[ "$RESUME_FROM_LATEST" == "1" ]]; then
 fi
 
 
+MODEL_CONFIG="${MODEL_CONFIG:-configs/model_config.yaml}"
+: "${TRAIN_CONFIG:?Set TRAIN_CONFIG to a YAML file with data.sampler.type: sequential}"
+
+echo "MODEL_CONFIG=$MODEL_CONFIG"
+echo "TRAIN_CONFIG=$TRAIN_CONFIG"
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-	--run_name "$RUN_NAME" \
-	"${RESUME_ARGS[@]}" \
-	--mesh_type fixed \
-	--sampling_mode sequential \
-	--data_path /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7 \
-	--train_start_date 2015-01-01 \
-	--train_end_date 2024-01-01 \
-	--val_start_date 2024-01-01 \
-	--val_end_date 2025-01-01 \
-	--train_window_days 12 \
-	--val_window_days 8 \
-	--val_mode sequential \
-	--val_stride_days 8 \
-	--val_update_every_n_epochs 20 \
-	--num_layers 16 \
-	--lr 1.5e-4 \
-	--weight_decay 1e-4 \
-	--processor_dropout 0.1 \
-	--node_dropout 0.05 \
-	--encoder_dropout 0.1 \
-	--decoder_dropout 0.1 \
-	--conv_weight_mult 3.0 \
-	--huber_delta 0.5 \
-	--seed 12345 \
-	--max_epochs 3280 \
-	--cache_val_windows \
-	--val_cache_max_entries 16 \
-	--disable_early_stopping \
-	--val_csv_out_dir "val_csv/${RUN_NAME}" \
-	--val_csv_num_batches 2 \
-	--val_csv_every_n_epochs 20 \
-	--val_csv_max_rows 50000 \
-	--val_csv_sample_seed 12345
+	--model_config "$MODEL_CONFIG" \
+	--train_config "$TRAIN_CONFIG"
 
 # Resume from specific checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt

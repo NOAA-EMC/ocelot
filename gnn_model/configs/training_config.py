@@ -137,7 +137,7 @@ class ValidationModeConfig(ConfigBase):
 
 
 class FixedValidationConfig(ConfigBase):
-    pass
+    window_days = Optional(IntField(), default=8)
 
 
 class RandomValidationConfig(ValidationModeConfig):
@@ -190,6 +190,8 @@ class CosineWarmupScheduleConfig(ScheduleConfig):
 class TrainingConfig(ConfigBase):
     experiment_name = StrField()
     checkpoint_dir = StrField()
+    observation_config_path = Optional(StrField(), default='configs/observation_config.yaml')
+    mesh_variable_config_path = Optional(StrField(), default='configs/mesh_config.yaml')
     seed = Optional(IntField())
     verbose = Optional(BoolField(), default=False)
     debug_mode = Optional(BoolField(), default=False)

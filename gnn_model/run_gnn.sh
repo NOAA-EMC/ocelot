@@ -71,7 +71,9 @@ nvidia-smi
 # ============================================================================
 
 # Launch training (env is propagated to ranks)
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+	--model_config configs/model_config.yaml \
+	--train_config configs/training_config.yaml
 
 # HIERARCHICAL MODE
 # Resume training from the latest checkpoint in hierarchical mode

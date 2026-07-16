@@ -162,45 +162,14 @@ if [[ "$LOAD_WEIGHTS_ONLY" == "1" ]]; then
 fi
 
 
+MODEL_CONFIG="${MODEL_CONFIG:-configs/model_config.yaml}"
+TRAIN_CONFIG="${TRAIN_CONFIG:-configs/training_config.yaml}"
+
+echo "MODEL_CONFIG=$MODEL_CONFIG"
+echo "TRAIN_CONFIG=$TRAIN_CONFIG"
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
-	--run_name "$RUN_NAME" \
-	"${RESUME_ARGS[@]}" \
-	--mesh_type fixed \
-	--scan_angle_conditioning project \
-	--sampling_mode random \
-	--cfg_path configs/observation_config.yaml \
-	--data_path /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7 \
-	--train_start_date 2015-01-01 \
-	--train_end_date 2024-01-01 \
-	--val_start_date 2024-01-01 \
-	--val_end_date 2025-01-01 \
-	--train_window_days 12 \
-	--val_window_days 12 \
-	--val_mode sequential \
-	--val_stride_days 12 \
-	--val_update_every_n_epochs 100 \
-	--lr "$LR" \
-	--lr_schedule "$LR_SCHEDULE" \
-	--warmup_pct "$WARMUP_PCT" \
-	--warmup_start_factor "$WARMUP_START_FACTOR" \
-	--min_lr "$MIN_LR" \
-	--weight_decay 1e-4 \
-	--processor_dropout 0.1 \
-	--node_dropout 0.05 \
-	--encoder_dropout 0.1 \
-	--decoder_dropout 0.1 \
-	--loss_type "$LOSS_TYPE" \
-	--huber_delta 0.5 \
-	--seed 12345 \
-	--max_epochs 3280 \
-	--cache_val_windows \
-	--val_cache_max_entries 16 \
-	--disable_early_stopping \
-	--val_csv_out_dir "val_csv/${RUN_NAME}" \
-	--val_csv_num_batches 3 \
-	--val_csv_every_n_epochs 10 \
-	--val_csv_max_rows 50000 \
-	--val_csv_sample_seed 12345
+	--model_config "$MODEL_CONFIG" \
+	--train_config "$TRAIN_CONFIG"
 
 # Resume from specific checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt
