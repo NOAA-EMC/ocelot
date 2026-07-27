@@ -62,8 +62,8 @@ GFS_COMPARE_SCRIPT="evaluation/scripts/plot_gfs_compare.py"
 
 # --- Training Mode Parameters ---
 # Leave empty ("") for testing mode, or set for training mode:
-EPOCH_TO_PLOT="2"
-BATCH_IDX_TO_PLOT="0"
+EPOCH_TO_PLOT="100"
+BATCH_IDX_TO_PLOT="2"
 
 # --- Data Directories ---
 # Training mode example:

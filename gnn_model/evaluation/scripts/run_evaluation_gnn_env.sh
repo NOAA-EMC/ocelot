@@ -63,8 +63,8 @@ GFS_COMPARE_SCRIPT="evaluation/scripts/plot_gfs_compare.py"
 
 # --- Training Mode Parameters ---
 # Leave empty ("") for testing mode, or set for training mode:
-EPOCH_TO_PLOT=""
-BATCH_IDX_TO_PLOT=""
+EPOCH_TO_PLOT="300"
+BATCH_IDX_TO_PLOT="1"
 
 # --- Data Directories ---
 # Training mode example:
@@ -73,19 +73,19 @@ BATCH_IDX_TO_PLOT=""
 # Testing mode examples:
 #   DATA_DIR="predictions/pred_csv/obs-space/"     # observation-location outputs (with ground truth; set HAS_GROUND_TRUTH = true)
 #   DATA_DIR="predictions/pred_csv/mesh-grid/"     # mesh-grid outputs (forecast only; set HAS_GROUND_TRUTH = false)
-DATA_DIR="predictions/ocelot_v1_prediction_example/pred_csv/mesh-grid/"
+DATA_DIR="val_csv/test_cris_pca/"
 
 # Output directory for plots
-PLOT_DIR="evaluation/figures/ocelot_v1_prediction_example/pred_mesh"
+PLOT_DIR="evaluation/figures/test_cris_pca"
 
 # --- Mode Configuration ---
 # Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth
 # Set HAS_GROUND_TRUTH=false for mesh-grid files, no ground truth
-HAS_GROUND_TRUTH=false
+HAS_GROUND_TRUTH=true
 
 # --- Date Range for Batch Processing ---
-START_DATE=${1:-"2025030100"}
-END_DATE=${2:-"2025030112"}
+START_DATE=${1:-"2024110500"}
+END_DATE=${2:-"2024110500"}
 FHR_LIST=(6 12)
 # Examples:
 #   FHR_LIST=("")        # obs-space data (always empty)

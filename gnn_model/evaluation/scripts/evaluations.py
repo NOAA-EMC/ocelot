@@ -179,6 +179,7 @@ def _parse_groupby_keys(s: str) -> list[str]:
 
 
 def _collect_csv_files(data_dir: str, pattern: str, recursive: bool) -> list[str]:
+    print(pattern)
     data_dir = os.path.abspath(data_dir)
     if recursive:
         glob_pat = os.path.join(data_dir, "**", pattern)
@@ -400,6 +401,7 @@ def find_csv_files(
     """
     pattern = os.path.join(data_dir, '*.csv')
     csv_files = glob.glob(pattern)
+    print(pattern)
 
     # Filter by instrument name
     if instrument_name:
