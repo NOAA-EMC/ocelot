@@ -46,8 +46,40 @@ ATMS_CHANNELS = list(range(1, 23))  # Channels 1-22
 AMSUA_CHANNELS = list(range(1, 16))  # Channels 1-15
 AVHRR_CHANNELS = [3, 4, 5]  # Channels 3-5
 SSMIS_CHANNELS = list(range(1, 25))  # Channels 1-24
-CRIS_FSR_CHANNELS = [28, 95, 132, 158, 400, 496, 626, 678, 748, 874, 1018, 1133, 1596, 1635, 2182]
-IASI_CHANNELS = [89, 148, 259, 350, 414, 1027, 1271, 1579, 1710, 2346, 2701, 3027, 3322, 5992, 6182, 6489, 7584]
+CRIS_FSR_CHANNELS = [
+    28,
+    95,
+    132,
+    158,
+    400,
+    496,
+    626,
+    678,
+    748,
+    874,
+    1018,
+    1133,
+    1596,
+    1635,
+    2182]
+IASI_CHANNELS = [
+    89,
+    148,
+    259,
+    350,
+    414,
+    1027,
+    1271,
+    1579,
+    1710,
+    2346,
+    2701,
+    3027,
+    3322,
+    5992,
+    6182,
+    6489,
+    7584]
 
 COMMON_RANGE = [150, 350]
 
@@ -93,7 +125,7 @@ OBSERVATION_CONFIG = {
             'dropna_cols': ['sat_zenith_angle', 'sol_zenith_angle', 'sol_azimuth_angle'],
             'encoder_hidden_layers': 2,
             'decoder_hidden_layers': 2,
-            
+
             'qc_filters': {
                 f'observation_channel_{ch}': COMMON_RANGE for ch in ATMS_CHANNELS
             },
@@ -176,7 +208,7 @@ OBSERVATION_CONFIG = {
             },
             'subsample': {
                 'mode': 'random',
-                'fraction': 1,    
+                'fraction': 1,
                 'seed': 12345
             }
         },
@@ -241,12 +273,14 @@ OBSERVATION_CONFIG = {
                     'range': [-388, 9000]
                 },
                 'windSpeed': {
-                    'range': [0, 405],  # global min/max across levels (0 always, max from summary)
+                    # global min/max across levels (0 always, max from summary)
+                    'range': [0, 405],
                 },
                 'windDirection': {
-                    'range': [0, 8.85],  # global min/max across levels (from summary)
+                    # global min/max across levels (from summary)
+                    'range': [0, 8.85],
                 },
-               
+
             },
             'qc_relations': {
                 'dewpoint_le_temp': True,
@@ -413,17 +447,20 @@ OBSERVATION_CONFIG = {
                     'keep_nan': 1
                 },
                 'windSpeed': {
-                    'range': [0, 75],  # global min/max across levels (0 always, max from summary)
+                    # global min/max across levels (0 always, max from summary)
+                    'range': [0, 75],
                     'qm_flag_col': 'windQuality',
                     'keep': [2]
                 },
                 'windDirection': {
-                    'range': [0, 6.28],  # global min/max across levels (from summary)
+                    # global min/max across levels (from summary)
+                    'range': [0, 6.28],
                     'qm_flag_col': 'windQuality',
                     'keep': [2]
                 },
                 'geopotentialHeight_gp10': {
-                    'range': [-9798, 1660060],  # global min/max across levels (from summary)
+                    # global min/max across levels (from summary)
+                    'range': [-9798, 1660060],
                     'range_by_level': {  # min, max per pressure level (from raw_radiosonde standard-levels summary)
                         1000: [-4782, 10721.2],
                         925: [-519, 16620.8],
@@ -501,7 +538,8 @@ FEATURE_STATS = {
         'wind_v': [0.25, 6.78],
         'height_bufr': [227, 415],
         'airPressure': [5.981, 0.746],
-        # mean, std per pressure level (from raw_radiosonde standard-levels summary); [mean, std]
+        # mean, std per pressure level (from raw_radiosonde standard-levels
+        # summary); [mean, std]
         'mean_std_by_level': {
             'airTemperature': {
                 1000: [6.11, 16.43],
@@ -704,9 +742,12 @@ FEATURE_STATS = {
         **{f'observation_channel_{ch}': stats for ch, stats in zip(
             SSMIS_CHANNELS,
             [[241.56, 18.18], [253.06, 11.59], [243.67, 7.89], [228.35, 5.02], [214.87, 6.93],
-             [212.03, 8.47], [216.7, 7.75], [259.45, 28.54], [262.34, 17.43], [256.26, 12.29],
-             [243.89, 8.39], [179.17, 56.61], [222.94, 34.67], [238.08, 29.15], [191.91, 44.78],
-             [232.2, 25.78], [254.83, 22.86], [234.82, 30.33], [228.97, 7.64], [208.37, 10.73],
+             [212.03, 8.47], [216.7, 7.75], [259.45, 28.54], [
+                 262.34, 17.43], [256.26, 12.29],
+             [243.89, 8.39], [179.17, 56.61], [222.94, 34.67], [
+                 238.08, 29.15], [191.91, 44.78],
+             [232.2, 25.78], [254.83, 22.86], [234.82, 30.33], [
+                 228.97, 7.64], [208.37, 10.73],
              [248.93, 7.13], [250.07, 9.89], [239.85, 10.08], [226.23, 8.88]]
         )}
     },
@@ -791,4 +832,3 @@ FEATURE_STATS = {
         'pressure': [6.89, 0.05],
     }
 }
-

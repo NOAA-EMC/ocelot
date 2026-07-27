@@ -53,47 +53,45 @@ def load_observation_config(
         instrument_weights = config.get("instrument_weights", {})
         increment_stats = config.get("increment_stats", {})
 
-    if exp_type in ( "regional", ):
-        #selected_obs = ['atms', 'surface_obs']
+    if exp_type in ("regional", ):
+        # selected_obs = ['atms', 'surface_obs']
         selected_obs = [
-            'diag_t', 
-            'diag_q', 
-            'diag_uv', 
+            'diag_t',
+            'diag_q',
+            'diag_uv',
             'diag_ps',
-            ]
+        ]
     elif exp_type in ("regional_da", ):
         selected_obs = [
-            'diag_t', 
-            'diag_q', 
-            'diag_uv', 
+            'diag_t',
+            'diag_q',
+            'diag_uv',
             'diag_ps',
-            'ges', 
-            ]
+            'ges',
+        ]
     elif exp_type in ('regional_rrfs',):
-         selected_obs = [
-            'diag_atms', 
-            'diag_amsua', 
-            #'diag_cris-fsr', 
-            #'diag_sst', 
-            'diag_surface_obs_t', 
-            #'diag_surface_obs_uv'
+        selected_obs = [
+            'diag_atms',
+            'diag_amsua',
+            # 'diag_cris-fsr',
+            # 'diag_sst',
+            'diag_surface_obs_t',
+            # 'diag_surface_obs_uv'
         ]
 
     else:
         selected_obs = [
-        'diag_atms', 
-        'radiosonde', 
-        #'diag_amsua', 
-        'diag_ssmis',
-        'diag_cris-fsr', 
-        'diag_avhrr', 
-        'diag_sst', 
-        'diag_surface_obs_t', 
-        #'surface_obs',
-        #'diag_surface_obs_uv'
+            'diag_atms',
+            'radiosonde',
+            # 'diag_amsua',
+            'diag_ssmis',
+            'diag_cris-fsr',
+            'diag_avhrr',
+            'diag_sst',
+            'diag_surface_obs_t',
+            # 'surface_obs',
+            # 'diag_surface_obs_uv'
         ]
-                    
-    
 
     filtered_obs_config = {}
     for obs_type, instruments in observation_config.items():

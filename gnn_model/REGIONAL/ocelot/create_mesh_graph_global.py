@@ -236,7 +236,8 @@ def create_mesh(splits, levels, hierarchical, plot=False):
             mesh_lat_lon[:, 0],
             mesh_lat_lon[:, 1],
         )
-        assert np.sum(np.abs(mesh_features[:, 0] - np.cos(mesh_theta))) <= 1e-10
+        assert np.sum(
+            np.abs(mesh_features[:, 0] - np.cos(mesh_theta))) <= 1e-10
 
     # Convert to torch
     m2m_edge_index_torch = [
@@ -282,7 +283,13 @@ def create_mesh(splits, levels, hierarchical, plot=False):
     return mesh_structure
 
 
-def obs_mesh_conn(grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, o2m=True):
+def obs_mesh_conn(
+        grid_lat,
+        grid_lon,
+        m2m_graphs,
+        mesh_lat_lon_list,
+        mesh_list,
+        o2m=True):
 
     # Create lat-lon grid
     grid_lat_lon_flat = np.stack((grid_lat, grid_lon), axis=1)  # shape (N, 2)
@@ -295,9 +302,10 @@ def obs_mesh_conn(grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, 
     # This creates the correct mapping for the grid indices
 
     # Grid2Mesh: Radius-based
-    grid_con_mesh = m2m_graphs[0]  # Mesh graph that should be connected to grid
+    # Mesh graph that should be connected to grid
+    grid_con_mesh = m2m_graphs[0]
     grid_con_mesh_lat_lon = mesh_lat_lon_list[0]
-    
+
     if o2m:
         # Compute maximum edge distance in finest mesh
         # pylint: disable-next=protected-access
@@ -310,10 +318,10 @@ def obs_mesh_conn(grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, 
             radius=g2m_connect_radius,
         )
         # Returns two arrays of node indices, each [num_edges]
-    
+
         g2m_edge_index = np.stack(g2m_grid_mesh_indices, axis=0)
         g2m_edge_index_torch = torch.tensor(g2m_edge_index, dtype=torch.long)
-    
+
         # Only care about edge features here
         _, _, g2m_features = gc_mu.get_bipartite_graph_spatial_features(
             senders_node_lat=grid_lat_lon_flat[:, 0],
@@ -327,7 +335,7 @@ def obs_mesh_conn(grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, 
         g2m_features_torch = torch.tensor(g2m_features, dtype=DEFAULT_DTYPE)
 
     else:
-   
+
         # Mesh2Grid: Connect to containing mesh triangle
         m2g_grid_mesh_indices = gc_gm.in_mesh_triangle_indices(
             grid_latitude=grid_lat,
@@ -360,7 +368,7 @@ def obs_mesh_conn(grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, 
     else:
         return (m2g_edge_index_torch, m2g_features_torch)
 
-            
+
 def main():
     """
     Global graph generation
@@ -416,9 +424,14 @@ def main():
             print(f"INFO: Adding new argument '{key}' to args")
             setattr(args, key, value)
 
-    mesh_structure = create_mesh(args.splits, args.levels, args.hierarchical, args.plot)
+    mesh_structure = create_mesh(
+        args.splits,
+        args.levels,
+        args.hierarchical,
+        args.plot)
 
-    fields_group_path = os.path.join(args.data_path, "atms_20240401_20240407.zarr")
+    fields_group_path = os.path.join(
+        args.data_path, "atms_20240401_20240407.zarr")
     graph_dir_path = os.path.join("graphs", args.graph)
     os.makedirs(graph_dir_path, exist_ok=True)
 
@@ -430,10 +443,14 @@ def main():
     grid_lon = np.array(
         fields_group["longitude"], dtype=DEFAULT_DTYPE
     )[:1000]  # (num_long,)
-    
-    obs_mesh_conn(grid_lat, grid_lon, mesh_structure['m2m_graphs'], mesh_structure['mesh_lat_lon_list'],
-                  mesh_structure['mesh_list'])
 
-    
+    obs_mesh_conn(
+        grid_lat,
+        grid_lon,
+        mesh_structure['m2m_graphs'],
+        mesh_structure['mesh_lat_lon_list'],
+        mesh_structure['mesh_list'])
+
+
 if __name__ == "__main__":
     main()

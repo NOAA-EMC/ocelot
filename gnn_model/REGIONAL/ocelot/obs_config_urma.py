@@ -129,7 +129,7 @@ OBSERVATION_CONFIG = {
                 'seed': 12345
             }
         },
-         'diag_q': {
+        'diag_q': {
             'source': 'zarr',
             'zarr_name': 'diag_urma_q',
             'features': ['observation', 'pressure'],
@@ -172,13 +172,13 @@ FEATURE_STATS = {
         'height': [573.49, 696.63],
         'pressure': [6.89, 0.08],
     },
-     'diag_q': {
+    'diag_q': {
         'observation': [4.18, 3.04],
         'height': [543.96, 648],
         'pressure': [6.89, 0.08],
     },
 
-     'diag_ps': {
+    'diag_ps': {
         'observation': [978, 55],
         'height': [349.41, 488.67],
         'pressure': [6.89, 0.08],

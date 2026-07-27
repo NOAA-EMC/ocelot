@@ -87,6 +87,7 @@ def plot_graph(graph, title=None):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _mk_2d_graph(xy, nx_pts, ny_pts):
     """Create a directed 2D grid graph with diagonal edges in Cartesian space."""
     xm, xM = np.amin(xy[0][0, :]), np.amax(xy[0][0, :])
@@ -103,14 +104,23 @@ def _mk_2d_graph(xy, nx_pts, ny_pts):
     for node in g.nodes:
         g.nodes[node]["pos"] = np.array([mg[0][node], mg[1][node]])
 
-    g.add_edges_from(
-        [((x, y), (x + 1, y + 1)) for x in range(nx_pts - 1) for y in range(ny_pts - 1)]
-        + [((x + 1, y), (x, y + 1)) for x in range(nx_pts - 1) for y in range(ny_pts - 1)]
-    )
+    g.add_edges_from([((x, y), (x +
+                                1, y +
+                                1)) for x in range(nx_pts -
+                                                   1) for y in range(ny_pts -
+                      1)] +
+                     [((x +
+                        1, y), (x, y +
+                                1)) for x in range(nx_pts -
+                                                   1) for y in range(ny_pts -
+                                                                     1)])
 
     dg = nx.DiGraph(g)
     for u, v in g.edges():
-        d = float(np.sqrt(np.sum((g.nodes[u]["pos"] - g.nodes[v]["pos"]) ** 2)))
+        d = float(
+            np.sqrt(
+                np.sum(
+                    (g.nodes[u]["pos"] - g.nodes[v]["pos"]) ** 2)))
         dg.edges[u, v]["len"] = d
         dg.edges[u, v]["vdiff"] = g.nodes[u]["pos"] - g.nodes[v]["pos"]
         dg.add_edge(v, u)
@@ -138,17 +148,20 @@ def _from_networkx_offset(nx_graph, start_index):
     vdiff = pyg.pos[pyg.edge_index[1]] - pyg.pos[pyg.edge_index[0]]
     lengths = torch.linalg.vector_norm(vdiff, dim=1, keepdim=True)
     lengths_norm = lengths / (lengths.mean() + 1e-8)
-    pyg.edge_attr = torch.cat((lengths_norm, vdiff / (lengths + 1e-8)), dim=1).to(DEFAULT_DTYPE)
+    pyg.edge_attr = torch.cat(
+        (lengths_norm, vdiff / (lengths + 1e-8)), dim=1).to(DEFAULT_DTYPE)
     pyg.edge_index = pyg.edge_index + start_index
     return pyg
 
 
 def _add_edge_attr(pyg_graph):
     """Compute edge_attr = [length, vdiff_x, vdiff_y] for a 0-indexed PyG graph."""
-    vdiff = pyg_graph.pos[pyg_graph.edge_index[1]] - pyg_graph.pos[pyg_graph.edge_index[0]]
+    vdiff = pyg_graph.pos[pyg_graph.edge_index[1]] - \
+        pyg_graph.pos[pyg_graph.edge_index[0]]
     lengths = torch.linalg.vector_norm(vdiff, dim=1, keepdim=True)
     lengths_norm = lengths / (lengths.mean() + 1e-8)
-    pyg_graph.edge_attr = torch.cat((lengths_norm, vdiff / (lengths + 1e-8)), dim=1).to(DEFAULT_DTYPE)
+    pyg_graph.edge_attr = torch.cat(
+        (lengths_norm, vdiff / (lengths + 1e-8)), dim=1).to(DEFAULT_DTYPE)
     return pyg_graph
 
 
@@ -172,11 +185,13 @@ def _create_flat_mesh(G, nx_stride, graph_dir_path, args):
             .reshape((n, n, 2))[1::nx_stride, 1::nx_stride, :]
             .reshape(int(n / nx_stride) ** 2, 2)
         )
-        G[lev] = nx.relabel_nodes(G[lev], dict(zip(G[lev].nodes, [tuple(x) for x in ij])))
+        G[lev] = nx.relabel_nodes(G[lev], dict(
+            zip(G[lev].nodes, [tuple(x) for x in ij])))
         G_tot = nx.compose(G_tot, G[lev])
 
     G_tot = _prepend_node_index(G_tot, 0)
-    G_int = nx.convert_node_labels_to_integers(G_tot, first_label=0, ordering="sorted")
+    G_int = nx.convert_node_labels_to_integers(
+        G_tot, first_label=0, ordering="sorted")
 
     pyg_m2m = from_networkx(G_int)
     pyg_m2m = _add_edge_attr(pyg_m2m)
@@ -187,7 +202,7 @@ def _create_flat_mesh(G, nx_stride, graph_dir_path, args):
     if args.plot:
         plot_graph(pyg_m2m, title="Mesh-to-mesh")
         plt.show()
-            
+
     return {
         "m2m_graphs": m2m_graphs,
         "mesh_pos": mesh_pos,
@@ -214,16 +229,27 @@ def _create_level_connections(G_from, G_to, start_index):
     for v in v_to_list:
         neigh_idx = kdt.query(G_down.nodes[v]["pos"], 1)[1]
         u = v_from_list[neigh_idx]
-        d = float(np.sqrt(np.sum((G_down.nodes[u]["pos"] - G_down.nodes[v]["pos"]) ** 2)))
-        G_down.add_edge(u, v, len=d, vdiff=G_down.nodes[u]["pos"] - G_down.nodes[v]["pos"])
+        d = float(
+            np.sqrt(
+                np.sum(
+                    (G_down.nodes[u]["pos"] -
+                     G_down.nodes[v]["pos"]) ** 2)))
+        G_down.add_edge(
+            u,
+            v,
+            len=d,
+            vdiff=G_down.nodes[u]["pos"] -
+            G_down.nodes[v]["pos"])
 
-    G_down_int = nx.convert_node_labels_to_integers(G_down, first_label=start_index, ordering="sorted")
+    G_down_int = nx.convert_node_labels_to_integers(
+        G_down, first_label=start_index, ordering="sorted")
     G_down_int = _sort_nodes_internally(G_down_int)
     return _from_networkx_offset(G_down_int, start_index)
 
 
 def _create_hierarchical_mesh(G, mesh_levels, graph_dir_path, args):
-    G = [_prepend_node_index(graph, level_i) for level_i, graph in enumerate(G)]
+    G = [_prepend_node_index(graph, level_i)
+         for level_i, graph in enumerate(G)]
 
     num_nodes_level = np.array([len(g.nodes) for g in G])
     first_index_level = np.concatenate(
@@ -236,15 +262,15 @@ def _create_hierarchical_mesh(G, mesh_levels, graph_dir_path, args):
     ):
         G_down = _create_level_connections(G_from, G_to, start_index)
         G_up = G_down.clone()
-        G_up.edge_index = torch.stack((G_down.edge_index[1], G_down.edge_index[0]), dim=0)
+        G_up.edge_index = torch.stack(
+            (G_down.edge_index[1], G_down.edge_index[0]), dim=0)
         up_graphs.append(G_up)
         down_graphs.append(G_down)
         if args.plot:
             plot_graph(
-                    G_up, title=f"Down graph, {first_index_level} -> {first_index_level + 1}"
-                )
+                G_up,
+                title=f"Down graph, {first_index_level} -> {first_index_level + 1}")
             plt.show()
-
 
     m2m_graphs = [
         _from_networkx_offset(
@@ -300,7 +326,8 @@ def create_regional_mesh(xy, args):
     if levels_arg is not None:
         mesh_levels = min(mesh_levels, levels_arg)
 
-    logger.info(f"[regional mesh] nlev={nlev}, nleaf={nleaf}, mesh_levels={mesh_levels}")
+    logger.info(
+        f"[regional mesh] nlev={nlev}, nleaf={nleaf}, mesh_levels={mesh_levels}")
 
     G = []
     for lev in range(1, mesh_levels + 1):
@@ -321,7 +348,13 @@ def create_regional_mesh(xy, args):
 # Convenience entry point: domain corners instead of a full meshgrid
 # ---------------------------------------------------------------------------
 
-def create_regional_mesh_from_corners(lon_min, lon_max, lat_min, lat_max, args, mesh_levels=None):
+def create_regional_mesh_from_corners(
+        lon_min,
+        lon_max,
+        lat_min,
+        lat_max,
+        args,
+        mesh_levels=None):
     """
     Build a regional mesh from domain corner coordinates in degrees.
 
@@ -335,10 +368,12 @@ def create_regional_mesh_from_corners(lon_min, lon_max, lat_min, lat_max, args, 
     Returns: same dict as create_regional_mesh.
     """
     NX = 3
-    levels = mesh_levels if mesh_levels is not None else getattr(args, "mesh_splits", 2)
+    levels = mesh_levels if mesh_levels is not None else getattr(
+        args, "mesh_splits", 2)
     if levels is None:
         levels = 2
-    # Shape must be >= 3^(levels+1) so nlev >= levels+1 and mesh_levels >= levels
+    # Shape must be >= 3^(levels+1) so nlev >= levels+1 and mesh_levels >=
+    # levels
     n = NX ** (levels + 1)
     lons = np.linspace(lon_min, lon_max, n)
     lats = np.linspace(lat_min, lat_max, n)
@@ -389,7 +424,8 @@ def obs_mesh_conn_regional(obs_xy, G_bottom_mesh, args, o2m=True):
         neigh_idxs = kdt_obs.query_ball_point(v_pos, dm * cutoff_factor)
         if not neigh_idxs:
             _, indices = kdt_obs.query(v_pos, k=num_neighbors)
-            neigh_idxs = [int(indices)] if num_neighbors == 1 else indices.tolist()
+            neigh_idxs = [
+                int(indices)] if num_neighbors == 1 else indices.tolist()
 
         for obs_idx in neigh_idxs:
             obs_pos = obs_xy[obs_idx]

@@ -23,7 +23,11 @@ from ocelot.constants import FEATURES_AUX_DIM
 ENCODE_OBS_TO_MESH_REL = "encode_obs_to_mesh"
 
 
-def target_node_type(obs_type: str, inst_name: str, horizon: int, num_target_bins: int) -> str:
+def target_node_type(
+        obs_type: str,
+        inst_name: str,
+        horizon: int,
+        num_target_bins: int) -> str:
     """
     Node type name for decoder targets. Must end with ``_target`` so ``decode()`` picks it up.
 
@@ -95,7 +99,7 @@ def build_feedback_input_x_from_target(
     if obs_type == "satellite":
         if num_metadata > 0:
             meta = tx[:, :num_metadata]
-            aux = tx[:, num_metadata : num_metadata + FEATURES_AUX_DIM]
+            aux = tx[:, num_metadata: num_metadata + FEATURES_AUX_DIM]
         else:
             meta = pred_norm.new_zeros(pred_norm.size(0), 0)
             aux = tx
@@ -106,5 +110,6 @@ def build_feedback_input_x_from_target(
     if num_metadata > 0:
         meta = tx[:, :num_metadata]
         aux = tx[:, num_metadata:]
-        return build_conventional_input_x(pred_norm, aux, vm, features_meta=meta)
+        return build_conventional_input_x(
+            pred_norm, aux, vm, features_meta=meta)
     return build_conventional_input_x(pred_norm, tx, vm, features_meta=None)

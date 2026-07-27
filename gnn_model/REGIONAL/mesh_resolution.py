@@ -68,7 +68,9 @@ def print_table(rows, W_km, H_km):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
 
     domain = p.add_argument_group("domain (choose one input mode)")
     domain.add_argument("--xmin", type=float, help="x min")
@@ -79,10 +81,21 @@ def main():
     domain.add_argument("--lat_max", type=float, help="north latitude (deg)")
     domain.add_argument("--lon_min", type=float, help="west longitude (deg)")
     domain.add_argument("--lon_max", type=float, help="east longitude (deg)")
-    domain.add_argument("--metres", action="store_true", help="x/y inputs are in metres (default: km)")
+    domain.add_argument(
+        "--metres",
+        action="store_true",
+        help="x/y inputs are in metres (default: km)")
 
-    p.add_argument("--nx", type=int, nargs="+", default=[2, 3, 4],
-                   metavar="NX", help="branching factor(s) to tabulate (default: 2 3 4)")
+    p.add_argument(
+        "--nx",
+        type=int,
+        nargs="+",
+        default=[
+            2,
+            3,
+            4],
+        metavar="NX",
+        help="branching factor(s) to tabulate (default: 2 3 4)")
     p.add_argument("--max_levels", type=int, default=8,
                    help="max mesh levels to show (default: 8)")
 

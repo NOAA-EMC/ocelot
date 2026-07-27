@@ -23,13 +23,13 @@ def setup_logger(name='ocelot', level=logging.INFO):
         # Create a formatter and set it for the handler
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - [%(filename)s:%(lineno)d] - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
+            datefmt='%Y-%m-%d %H:%M:%S')
         handler.setFormatter(formatter)
 
         # Add the handler to the logger
         logger.addHandler(handler)
 
     return logger
+
 
 logger = setup_logger(level=level)

@@ -70,29 +70,42 @@ class WelfordAccumulator:
             self.m2[j] = m2_ab
 
     def finalize(self):
-        std = np.sqrt(np.where(self.count > 1, self.m2 / np.maximum(self.count, 1), 0.0))
+        std = np.sqrt(
+            np.where(
+                self.count > 1,
+                self.m2 /
+                np.maximum(
+                    self.count,
+                    1),
+                0.0))
         return self.mean, std, self.count
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute per-variable DA increment (anal - ges) stats offline.")
-    parser.add_argument("--data_path", type=str,
-                         default="/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/diag_urma/")
+    parser = argparse.ArgumentParser(
+        description="Compute per-variable DA increment (anal - ges) stats offline.")
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/diag_urma/")
     parser.add_argument("--start_date", type=str, default="2025-02-01")
     parser.add_argument("--end_date", type=str, default="2025-02-28")
     parser.add_argument("--delta_time", type=int, default=1)
     parser.add_argument("--obs_config", type=str, default="urma")
     parser.add_argument("--exp_type", type=str, default="regional_da")
-    parser.add_argument("--out", type=str, default=None,
-                         help="Optional path to write the resulting stats as JSON.")
+    parser.add_argument(
+        "--out",
+        type=str,
+        default=None,
+        help="Optional path to write the resulting stats as JSON.")
     args = parser.parse_args()
 
     observation_config, feature_stats, fill_values, _, _ = load_observation_config(
-        exp_type=args.exp_type, config_name=args.obs_config
-    )
+        exp_type=args.exp_type, config_name=args.obs_config)
     ges_cfg = observation_config.get("state", {}).get(_STATE_GES, {})
     if not ges_cfg:
-        raise ValueError(f"No state/{_STATE_GES} entry in observation_config for obs_config={args.obs_config!r}")
+        raise ValueError(
+            f"No state/{_STATE_GES} entry in observation_config for obs_config={args.obs_config!r}")
     feature_keys = ges_cfg["features"]
 
     ges_obs_config = {"state": {_STATE_GES: ges_cfg}}
@@ -105,8 +118,16 @@ def main():
     )
 
     anal_zarr_name = ges_cfg.get("anal_zarr_name", _STATE_ANAL)
-    anal_obs_config = {"state": {_STATE_ANAL: {**ges_cfg, "zarr_name": anal_zarr_name}}}
-    anal_feature_stats = {**feature_stats, _STATE_ANAL: feature_stats.get(_STATE_GES, {})}
+    anal_obs_config = {
+        "state": {
+            _STATE_ANAL: {
+                **ges_cfg,
+                "zarr_name": anal_zarr_name}}}
+    anal_feature_stats = {
+        **feature_stats,
+        _STATE_ANAL: feature_stats.get(
+            _STATE_GES,
+            {})}
     anal_loader = ParquetDataManager(
         data_dir=args.data_path,
         observation_config=anal_obs_config,
@@ -118,8 +139,10 @@ def main():
     start_ts = pd.to_datetime(args.start_date)
     end_ts = pd.to_datetime(args.end_date)
     bin_names = generate_binned_timestamp_list(
-        start_ts.strftime("%m/%d"), end_ts.strftime("%m/%d"), start_ts.year, args.delta_time
-    )
+        start_ts.strftime("%m/%d"),
+        end_ts.strftime("%m/%d"),
+        start_ts.year,
+        args.delta_time)
 
     acc = WelfordAccumulator(len(feature_keys))
 
@@ -129,13 +152,16 @@ def main():
         ges_data = (ges_bin or {}).get("state", {}).get(_STATE_GES)
         anal_data = (anal_bin or {}).get("state", {}).get(_STATE_ANAL)
         if ges_data is None or anal_data is None:
-            logger.warning(f"[{i+1}/{len(bin_names)}] {bin_name}: missing ges/anal, skipping.")
+            logger.warning(
+                f"[{i+1}/{len(bin_names)}] {bin_name}: missing ges/anal, skipping.")
             continue
 
         ges_norm = ges_data["features_norm"]
         anal_norm = anal_data["features_norm"]
-        if ges_norm.numel() == 0 or anal_norm.numel() == 0 or ges_norm.shape[0] != anal_norm.shape[0]:
-            logger.warning(f"[{i+1}/{len(bin_names)}] {bin_name}: empty or mismatched rows, skipping.")
+        if ges_norm.numel() == 0 or anal_norm.numel(
+        ) == 0 or ges_norm.shape[0] != anal_norm.shape[0]:
+            logger.warning(
+                f"[{i+1}/{len(bin_names)}] {bin_name}: empty or mismatched rows, skipping.")
             continue
 
         ges_valid = ges_data["features_valid_mask"].numpy()
@@ -145,12 +171,14 @@ def main():
         increment = (anal_norm - ges_norm).numpy()
         acc.update(increment, both_valid)
 
-        logger.info(f"[{i+1}/{len(bin_names)}] {bin_name}: rows={increment.shape[0]}, "
-                    f"running n={acc.count.tolist()}")
+        logger.info(
+            f"[{i+1}/{len(bin_names)}] {bin_name}: rows={increment.shape[0]}, "
+            f"running n={acc.count.tolist()}")
 
     mean, std, count = acc.finalize()
 
-    print("\nPer-variable DA increment stats (normalized-field space, matches data[target].y):")
+    print(
+        "\nPer-variable DA increment stats (normalized-field space, matches data[target].y):")
     print(f"{'feature':<24}{'count':>10}{'mean':>12}{'std':>12}")
     result = {}
     for key, m, s, n in zip(feature_keys, mean, std, count):

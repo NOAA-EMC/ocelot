@@ -49,8 +49,8 @@ def mask_and_reduce_metric(metric_entry_vals, mask, average_grid, sum_vars):
     # Reduce the remaining values to a single mean value.
     if average_grid:
         metric_entry_vals = torch.mean(metric_entry_vals)
-    # The sum_vars argument is no longer needed as we are averaging over everything.
-
+    # The sum_vars argument is no longer needed as we are averaging over
+    # everything.
 
     return metric_entry_vals
 
@@ -74,9 +74,10 @@ def wmse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     depending on reduction arguments.
     """
     # Log shapes before computing MSE
-    logger.debug(f"wmse - pred shape: {tuple(pred.shape)}, target shape: {tuple(target.shape)}, "
-                 f"pred_std shape: {tuple(pred_std.shape)}")
-    
+    logger.debug(
+        f"wmse - pred shape: {tuple(pred.shape)}, target shape: {tuple(target.shape)}, "
+        f"pred_std shape: {tuple(pred_std.shape)}")
+
     entry_mse = torch.nn.functional.mse_loss(
         pred, target, reduction="none"
     )  # (..., N, d_state)
@@ -84,7 +85,8 @@ def wmse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
 
     print("pred_std:", pred_std.shape)         # (22,)
 
-    print("broadcasted pred_std:", (pred_std[None, None, :]).shape)  # (1, 1, 22)
+    print("broadcasted pred_std:",
+          (pred_std[None, None, :]).shape)  # (1, 1, 22)
     entry_mse_weighted = entry_mse / (pred_std**2)  # (..., N, d_state)
 
     return mask_and_reduce_metric(
@@ -114,9 +116,10 @@ def mse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     depending on reduction arguments.
     """
     # Log shapes before computing MSE
-    logger.debug(f"mse - pred shape: {tuple(pred.shape)}, target shape: {tuple(target.shape)}, "
-                 f"pred_std shape: {tuple(pred_std.shape)}")
-    
+    logger.debug(
+        f"mse - pred shape: {tuple(pred.shape)}, target shape: {tuple(target.shape)}, "
+        f"pred_std shape: {tuple(pred_std.shape)}")
+
     # Replace pred_std with constant ones
     return wmse(
         pred, target, torch.ones_like(pred_std), mask, average_grid, sum_vars
@@ -242,7 +245,14 @@ def crps_gauss(
     )
 
 
-def huber(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True, delta=1.0):
+def huber(
+        pred,
+        target,
+        pred_std,
+        mask=None,
+        average_grid=True,
+        sum_vars=True,
+        delta=1.0):
     """
     Huber loss (Smooth L1 loss)
     Combines MSE for small errors and MAE for large errors
@@ -277,7 +287,14 @@ def huber(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True, d
     )
 
 
-def whuber(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True, delta=1.0):
+def whuber(
+        pred,
+        target,
+        pred_std,
+        mask=None,
+        average_grid=True,
+        sum_vars=True,
+        delta=1.0):
     """
     Weighted Huber loss (uncertainty-weighted)
     Divides Huber loss by predicted standard deviation
@@ -311,8 +328,10 @@ def whuber(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True, 
     entry_huber_weighted = entry_huber / pred_std  # (..., N, d_state)
 
     return mask_and_reduce_metric(
-        entry_huber_weighted, mask=mask, average_grid=average_grid, sum_vars=sum_vars
-    )
+        entry_huber_weighted,
+        mask=mask,
+        average_grid=average_grid,
+        sum_vars=sum_vars)
 
 
 def gradient_loss(pred, target, edge_index, mask=None):
@@ -383,14 +402,27 @@ def multiscale_loss(pred, target, pos, mask=None, scales=(0.5, 1.0, 2.0, 4.0)):
         lat_bin = torch.floor(lat / scale).long()
         lon_bin = lon_bin - lon_bin.min()
         lat_bin = lat_bin - lat_bin.min()
-        # Row-major combination into a single bin id (like np.ravel_multi_index).
+        # Row-major combination into a single bin id (like
+        # np.ravel_multi_index).
         bin_id = lon_bin * (lat_bin.max() + 1) + lat_bin
         _, inverse = torch.unique(bin_id, return_inverse=True)
         n_bins = int(inverse.max().item()) + 1
 
-        sums_pred = torch.zeros(n_bins, pred.shape[1], device=pred.device, dtype=torch.float32)
-        sums_target = torch.zeros(n_bins, pred.shape[1], device=pred.device, dtype=torch.float32)
-        counts = torch.zeros(n_bins, pred.shape[1], device=pred.device, dtype=torch.float32)
+        sums_pred = torch.zeros(
+            n_bins,
+            pred.shape[1],
+            device=pred.device,
+            dtype=torch.float32)
+        sums_target = torch.zeros(
+            n_bins,
+            pred.shape[1],
+            device=pred.device,
+            dtype=torch.float32)
+        counts = torch.zeros(
+            n_bins,
+            pred.shape[1],
+            device=pred.device,
+            dtype=torch.float32)
         sums_pred = sums_pred.index_add(0, inverse, pred_valid)
         sums_target = sums_target.index_add(0, inverse, target_valid)
         counts = counts.index_add(0, inverse, valid)

@@ -7,7 +7,7 @@ from ocelot import utils
 
 class InteractionNetwork(nn.Module):
     """Memory-optimized Interaction Network for heterogeneous graphs."""
-    
+
     def __init__(self, hidden_dim: int, node_types: List[str],
                  edge_types: List[Tuple[str, str, str]],
                  scatter_chunk_size: int = 50000,
@@ -37,16 +37,31 @@ class InteractionNetwork(nn.Module):
                 [input_dim] + [hidden_dim, hidden_dim]
             )
 
-    def forward(self, x_dict: Dict[str, torch.Tensor],
-                edge_index_dict: Dict[Tuple[str, str, str], torch.Tensor],
-                edge_attr_dict: Dict[Tuple[str, str, str], torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(self,
+                x_dict: Dict[str,
+                             torch.Tensor],
+                edge_index_dict: Dict[Tuple[str,
+                                            str,
+                                            str],
+                                      torch.Tensor],
+                edge_attr_dict: Dict[Tuple[str,
+                                           str,
+                                           str],
+                                     torch.Tensor] = None) -> Dict[str,
+                                                                   torch.Tensor]:
 
         if self.process_edge_types_sequentially:
-            return self._forward_sequential(x_dict, edge_index_dict, edge_attr_dict)
+            return self._forward_sequential(
+                x_dict, edge_index_dict, edge_attr_dict)
         else:
-            return self._forward_parallel(x_dict, edge_index_dict, edge_attr_dict)
-    
-    def _forward_sequential(self, x_dict, edge_index_dict, edge_attr_dict=None):
+            return self._forward_parallel(
+                x_dict, edge_index_dict, edge_attr_dict)
+
+    def _forward_sequential(
+            self,
+            x_dict,
+            edge_index_dict,
+            edge_attr_dict=None):
         """Process edge types one at a time to minimize peak memory."""
         aggregated_messages = {node_type: torch.zeros_like(x_dict[node_type])
                                for node_type in x_dict}
@@ -54,7 +69,8 @@ class InteractionNetwork(nn.Module):
         for edge_type, edge_index in edge_index_dict.items():
             src_type, _, dst_type = edge_type
             edge_key = self._edge_key(edge_type)
-            edge_attr = edge_attr_dict.get(edge_type) if edge_attr_dict is not None else None
+            edge_attr = edge_attr_dict.get(
+                edge_type) if edge_attr_dict is not None else None
             msg = self._compute_and_aggregate_edge_type(
                 x_dict[src_type],
                 x_dict[dst_type],
@@ -64,17 +80,26 @@ class InteractionNetwork(nn.Module):
                 edge_attr,
             )
             aggregated_messages[dst_type] = aggregated_messages[dst_type] + msg
-        
-        # Update nodes — pop each aggregated message to free it immediately after use
+
+        # Update nodes — pop each aggregated message to free it immediately
+        # after use
         updated_x_dict = {}
         for node_type, x in x_dict.items():
-            node_input = torch.cat([x, aggregated_messages.pop(node_type)], dim=-1)
+            node_input = torch.cat(
+                [x, aggregated_messages.pop(node_type)], dim=-1)
             updated_x_dict[node_type] = self.node_models[node_type](node_input)
             del node_input
-        
+
         return updated_x_dict
-    
-    def _compute_and_aggregate_edge_type(self, src_x, dst_x, edge_index, edge_key, num_dst_nodes, edge_attr=None):
+
+    def _compute_and_aggregate_edge_type(
+            self,
+            src_x,
+            dst_x,
+            edge_index,
+            edge_key,
+            num_dst_nodes,
+            edge_attr=None):
         """Compute messages and aggregate for a single edge type.
 
         Processes edges in chunks to keep peak memory at chunk_size*2*hidden_dim
@@ -95,7 +120,7 @@ class InteractionNetwork(nn.Module):
             output.index_add_(0, idx[1], chunk_msg)
 
         return output
-    
+
     def _forward_parallel(self, x_dict, edge_index_dict, edge_attr_dict=None):
         """Original parallel processing (higher memory usage)."""
         messages = {}
@@ -107,7 +132,8 @@ class InteractionNetwork(nn.Module):
             if edge_attr_dict is not None and edge_type in edge_attr_dict:
                 parts.append(edge_attr_dict[edge_type])
             message_input = torch.cat(parts, dim=-1)
-            messages[edge_type] = self.edge_models[self._edge_key(edge_type)](message_input)
+            messages[edge_type] = self.edge_models[self._edge_key(
+                edge_type)](message_input)
 
         # Aggregate
         aggregated_messages = {node_type: [] for node_type in x_dict}
@@ -115,15 +141,16 @@ class InteractionNetwork(nn.Module):
             _, _, dst_type = edge_type
             dst_index = edge_index_dict[edge_type][1]
             aggregated_messages[dst_type].append(
-                self._scatter_chunked(msg, dst_index, x_dict[dst_type].shape[0])
-            )
+                self._scatter_chunked(
+                    msg, dst_index, x_dict[dst_type].shape[0]))
 
         final_aggregated = {}
         for node_type, msg_list in aggregated_messages.items():
             if msg_list:
                 final_aggregated[node_type] = sum(msg_list)
             else:
-                final_aggregated[node_type] = torch.zeros_like(x_dict[node_type])
+                final_aggregated[node_type] = torch.zeros_like(
+                    x_dict[node_type])
 
         # Update nodes
         updated_x_dict = {}
@@ -133,26 +160,31 @@ class InteractionNetwork(nn.Module):
 
         return updated_x_dict
 
-    def _scatter_chunked(self, msg: torch.Tensor, dst_index: torch.Tensor, 
-                        num_nodes: int) -> torch.Tensor:
+    def _scatter_chunked(self, msg: torch.Tensor, dst_index: torch.Tensor,
+                         num_nodes: int) -> torch.Tensor:
         """Memory-efficient chunked scatter."""
         from torch_geometric.utils import scatter
-        
+
         num_edges = msg.shape[0]
-        
+
         if num_edges <= self.scatter_chunk_size:
-            return scatter(msg, dst_index, dim=0, dim_size=num_nodes, reduce='sum')
-        
-        output = torch.zeros(num_nodes, msg.shape[1], 
-                           dtype=msg.dtype, device=msg.device)
-        
+            return scatter(
+                msg,
+                dst_index,
+                dim=0,
+                dim_size=num_nodes,
+                reduce='sum')
+
+        output = torch.zeros(num_nodes, msg.shape[1],
+                             dtype=msg.dtype, device=msg.device)
+
         for start_idx in range(0, num_edges, self.scatter_chunk_size):
             end_idx = min(start_idx + self.scatter_chunk_size, num_edges)
             msg_chunk = msg[start_idx:end_idx]
             idx_chunk = dst_index[start_idx:end_idx]
             output.index_add_(0, idx_chunk, msg_chunk)
-        
+
         return output
-    
+
     def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
         return f'{edge_type[0]}__{edge_type[1]}__{edge_type[2]}'

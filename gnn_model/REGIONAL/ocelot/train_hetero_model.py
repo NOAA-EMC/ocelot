@@ -2,6 +2,7 @@
 Example training script for HeteroObservationGraphModel using PyTorch Lightning.
 """
 
+import torch.distributed as dist
 from pprint import pprint
 from typing import Optional
 
@@ -25,68 +26,74 @@ from ocelot.memory_callback import CombinedMemoryCallback
 # Set default dtype to float32 to prevent dtype mismatch issues
 torch.set_default_dtype(DEFAULT_DTYPE)
 
-import torch.distributed as dist
-
 
 def print_memory_summary(stage_name, rank=None):
     """
     Print detailed GPU memory usage at a specific stage of training.
-    
+
     Args:
         stage_name: Name of the pipeline stage (e.g., "After Model Init")
         rank: GPU rank (if None, will get from dist if available)
     """
     if not torch.cuda.is_available():
         return
-    
+
     # Get rank
     if rank is None:
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
         else:
             rank = 0
-    
+
     # Only print from rank 0 to avoid spam (or print all if you want)
     if rank != 0:
         return
-    
+
     # Get memory stats for all GPUs on this node
     num_gpus = torch.cuda.device_count()
-    
-    logger.info("\n" + "="*80)
+
+    logger.info("\n" + "=" * 80)
     logger.info(f"🔍 MEMORY SNAPSHOT: {stage_name}")
-    logger.info("="*80)
-    
+    logger.info("=" * 80)
+
     for gpu_id in range(num_gpus):
         torch.cuda.set_device(gpu_id)
-        
+
         # Get memory stats
         allocated = torch.cuda.memory_allocated(gpu_id) / (1024**3)  # GB
         reserved = torch.cuda.memory_reserved(gpu_id) / (1024**3)    # GB
-        max_allocated = torch.cuda.max_memory_allocated(gpu_id) / (1024**3)  # GB
-        total = torch.cuda.get_device_properties(gpu_id).total_memory / (1024**3)  # GB
+        max_allocated = torch.cuda.max_memory_allocated(
+            gpu_id) / (1024**3)  # GB
+        total = torch.cuda.get_device_properties(
+            gpu_id).total_memory / (1024**3)  # GB
         free = total - allocated
-        
+
         logger.info(f"\n📊 GPU {gpu_id}:")
         logger.info(f"   Total Memory:     {total:.2f} GB")
-        logger.info(f"   Allocated:        {allocated:.2f} GB ({allocated/total*100:.1f}%)")
-        logger.info(f"   Reserved:         {reserved:.2f} GB ({reserved/total*100:.1f}%)")
-        logger.info(f"   Free:             {free:.2f} GB ({free/total*100:.1f}%)")
-        logger.info(f"   Peak Allocated:   {max_allocated:.2f} GB ({max_allocated/total*100:.1f}%)")
+        logger.info(
+            f"   Allocated:        {allocated:.2f} GB ({allocated/total*100:.1f}%)")
+        logger.info(
+            f"   Reserved:         {reserved:.2f} GB ({reserved/total*100:.1f}%)")
+        logger.info(
+            f"   Free:             {free:.2f} GB ({free/total*100:.1f}%)")
+        logger.info(
+            f"   Peak Allocated:   {max_allocated:.2f} GB ({max_allocated/total*100:.1f}%)")
         logger.info(f"   Fragmentation:    {(reserved - allocated):.2f} GB")
-        
+
         # Get detailed memory breakdown if available
         try:
             memory_stats = torch.cuda.memory_stats(gpu_id)
-            active_bytes = memory_stats.get('active_bytes.all.current', 0) / (1024**3)
-            inactive_bytes = memory_stats.get('inactive_split_bytes.all.current', 0) / (1024**3)
-            
+            active_bytes = memory_stats.get(
+                'active_bytes.all.current', 0) / (1024**3)
+            inactive_bytes = memory_stats.get(
+                'inactive_split_bytes.all.current', 0) / (1024**3)
+
             logger.info(f"   Active Tensors:   {active_bytes:.2f} GB")
             logger.info(f"   Inactive/Cached:  {inactive_bytes:.2f} GB")
-        except:
+        except BaseException:
             pass
-    
-    logger.info("="*80 + "\n")
+
+    logger.info("=" * 80 + "\n")
 
 
 def make_profiler(enabled=True, profile_per_module=False):
@@ -96,13 +103,15 @@ def make_profiler(enabled=True, profile_per_module=False):
     # Use a simpler schedule that's more robust for varying training lengths
     # This schedule will profile steps 3-7 (5 steps total) in each epoch
     return pl.profilers.PyTorchProfiler(
-        on_trace_ready=torch.profiler.tensorboard_trace_handler('./lightning_logs/profiler'),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(
+            './lightning_logs/profiler'),
         schedule=torch.profiler.schedule(
             skip_first=2,   # skip first 2 batches (reduce from 6)
             wait=1,         # wait 1 step before profiling starts
             warmup=1,       # collect warmup data for 1 step
             active=3,       # profile 3 steps (reduce from 5)
-            repeat=0        # repeat=0 means continue cycling indefinitely (no NONE state)
+            # repeat=0 means continue cycling indefinitely (no NONE state)
+            repeat=0
         ),
         record_shapes=True,
         profile_memory=True,
@@ -111,18 +120,21 @@ def make_profiler(enabled=True, profile_per_module=False):
     )
 
 
-
 class ProfilerSummaryCallback(pl.Callback):
-    def __init__(self, save_dir="lightning_logs/profiler_summary", enabled=True):
+    def __init__(
+            self,
+            save_dir="lightning_logs/profiler_summary",
+            enabled=True):
         super().__init__()
         self.save_dir = save_dir
         self.enabled = enabled
 
     def on_fit_end(self, trainer, pl_module):
-        # Only run profiler summary on rank 0 to avoid conflicts in distributed training
+        # Only run profiler summary on rank 0 to avoid conflicts in distributed
+        # training
         if trainer.global_rank != 0:
             return
-            
+
         if not self.enabled:
             logger.info("🟡 Profiler summary disabled.")
             return
@@ -135,21 +147,23 @@ class ProfilerSummaryCallback(pl.Callback):
         import os
         os.makedirs(self.save_dir, exist_ok=True)
 
-        logger.info("\n" + "="*80)
+        logger.info("\n" + "=" * 80)
         logger.info("📊 PROFILER SUMMARY - GPU Time")
-        logger.info("="*80)
-        
+        logger.info("=" * 80)
+
         # Table sorted by CUDA time
-        cuda_time_table = prof.key_averages().table(sort_by="cuda_time_total", row_limit=20)
+        cuda_time_table = prof.key_averages().table(
+            sort_by="cuda_time_total", row_limit=20)
         logger.info(cuda_time_table)
-        
-        logger.info("\n" + "="*80)
+
+        logger.info("\n" + "=" * 80)
         logger.info("💾 PROFILER SUMMARY - GPU Memory Usage (Ranked by Layer)")
-        logger.info("="*80)
-        
-        # Get key averages grouped by stack trace (shows module names and code locations)
+        logger.info("=" * 80)
+
+        # Get key averages grouped by stack trace (shows module names and code
+        # locations)
         key_averages_stack = prof.key_averages(group_by_stack_n=5)
-        
+
         # Filter for operations with memory usage and sort by memory
         memory_ops = []
         for evt in key_averages_stack:
@@ -159,56 +173,64 @@ class ProfilerSummaryCallback(pl.Callback):
                 # Try to extract meaningful module name
                 if 'nn.Module:' in stack_info:
                     # Extract module class name
-                    module_name = stack_info.split('nn.Module:')[1].split('(')[0].strip()
+                    module_name = stack_info.split(
+                        'nn.Module:')[1].split('(')[0].strip()
                 else:
-                    module_name = stack_info.split('\n')[0] if '\n' in stack_info else stack_info
-                
+                    module_name = stack_info.split(
+                        '\n')[0] if '\n' in stack_info else stack_info
+
                 memory_ops.append({
                     'name': module_name[:80],  # Truncate long names
                     'full_stack': stack_info,
-                    'memory_mb': evt.cuda_memory_usage / (1024 * 1024),  # Convert to MB
+                    # Convert to MB
+                    'memory_mb': evt.cuda_memory_usage / (1024 * 1024),
                     'count': evt.count,
                     'cpu_time_ms': evt.cpu_time_total / 1000,  # Convert to ms
                     'cuda_time_ms': evt.cuda_time_total / 1000,  # Convert to ms
                 })
-        
+
         # Sort by memory usage (descending)
         memory_ops.sort(key=lambda x: x['memory_mb'], reverse=True)
-        
+
         # Print top memory consumers
-        logger.info(f"\n{'Rank':<6} {'Memory (MB)':<15} {'Count':<8} {'CUDA Time (ms)':<18} {'Module/Location'}")
+        logger.info(
+            f"\n{'Rank':<6} {'Memory (MB)':<15} {'Count':<8} {'CUDA Time (ms)':<18} {'Module/Location'}")
         logger.info("-" * 120)
-        
+
         for i, op in enumerate(memory_ops[:25], 1):  # Top 25
-            logger.info(f"{i:<6} {op['memory_mb']:>12.2f}   {op['count']:<8} {op['cuda_time_ms']:>15.2f}   {op['name']}")
-        
+            logger.info(
+                f"{i:<6} {op['memory_mb']:>12.2f}   {op['count']:<8} {op['cuda_time_ms']:>15.2f}   {op['name']}")
+
         total_memory = sum(op['memory_mb'] for op in memory_ops)
         logger.info("-" * 120)
         logger.info(f"{'TOTAL':<6} {total_memory:>12.2f} MB")
-        logger.info("="*80 + "\n")
+        logger.info("=" * 80 + "\n")
 
         # Save all summaries to files
         with open(f"{self.save_dir}/cuda_time_summary.txt", "w") as f:
             f.write(cuda_time_table)
-        
+
         with open(f"{self.save_dir}/memory_summary.txt", "w") as f:
-            f.write(f"{'Rank':<6} {'Memory (MB)':<15} {'Count':<8} {'CUDA Time (ms)':<18} {'Module/Location'}\n")
+            f.write(
+                f"{'Rank':<6} {'Memory (MB)':<15} {'Count':<8} {'CUDA Time (ms)':<18} {'Module/Location'}\n")
             f.write("-" * 120 + "\n")
             for i, op in enumerate(memory_ops, 1):
-                f.write(f"{i:<6} {op['memory_mb']:>12.2f}   {op['count']:<8} {op['cuda_time_ms']:>15.2f}   {op['name']}\n")
+                f.write(
+                    f"{i:<6} {op['memory_mb']:>12.2f}   {op['count']:<8} {op['cuda_time_ms']:>15.2f}   {op['name']}\n")
             f.write("-" * 120 + "\n")
             f.write(f"{'TOTAL':<6} {total_memory:>12.2f} MB\n")
-        
+
         # Save detailed stack traces
         with open(f"{self.save_dir}/memory_detailed_stacks.txt", "w") as f:
             f.write("DETAILED STACK TRACES FOR TOP MEMORY CONSUMERS\n")
             f.write("=" * 120 + "\n\n")
             for i, op in enumerate(memory_ops[:25], 1):
-                f.write(f"Rank {i}: {op['memory_mb']:.2f} MB | Count: {op['count']} | CUDA Time: {op['cuda_time_ms']:.2f} ms\n")
+                f.write(
+                    f"Rank {i}: {op['memory_mb']:.2f} MB | Count: {op['count']} | CUDA Time: {op['cuda_time_ms']:.2f} ms\n")
                 f.write("-" * 120 + "\n")
                 f.write(op['full_stack'])
                 f.write("\n\n" + "=" * 120 + "\n\n")
-        
+
         logger.info(f"✅ Profiler summaries saved to {self.save_dir}/")
         logger.info(f"   - cuda_time_summary.txt")
         logger.info(f"   - memory_summary.txt")
@@ -233,7 +255,8 @@ def check_ddp_environment():
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
     # # Sync RNG seeds
     # seed_everything(42, workers=True)
@@ -254,25 +277,65 @@ def check_ddp_environment():
 
 
 def parse_args(default_args=None):
-    parser = argparse.ArgumentParser(description="Train HeteroObservationGraphModel with multi-GPU support")
-    parser.add_argument('--debug_gradients', action='store_true',
-                        help='If set, print gradient stats after each backward pass for debugging.')
-    parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and summary.")
-    parser.add_argument("--profile_per_module", action="store_true", help="Enable per-module profiling (requires --profile).")
-    parser.add_argument("--monitor_memory", action="store_true", help="Enable detailed memory monitoring during training.")
-    parser.add_argument("--memory_log_interval", type=int, default=10, help="Log memory every N training steps.")
-    parser.add_argument("--scatter_chunk_size", type=int, default=50000, 
-                       help="Chunk size for scatter operations (smaller = less memory, slower)")
-    
+    parser = argparse.ArgumentParser(
+        description="Train HeteroObservationGraphModel with multi-GPU support")
+    parser.add_argument(
+        '--debug_gradients',
+        action='store_true',
+        help='If set, print gradient stats after each backward pass for debugging.')
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable PyTorch profiler and summary.")
+    parser.add_argument(
+        "--profile_per_module",
+        action="store_true",
+        help="Enable per-module profiling (requires --profile).")
+    parser.add_argument(
+        "--monitor_memory",
+        action="store_true",
+        help="Enable detailed memory monitoring during training.")
+    parser.add_argument(
+        "--memory_log_interval",
+        type=int,
+        default=10,
+        help="Log memory every N training steps.")
+    parser.add_argument(
+        "--scatter_chunk_size",
+        type=int,
+        default=50000,
+        help="Chunk size for scatter operations (smaller = less memory, slower)")
+
     # Model parameters
     model_group = parser.add_argument_group('Model Configuration')
-    model_group.add_argument("--hidden_dim", type=int, help="Hidden dimension size")
-    model_group.add_argument("--hidden_layers", type=int, help="Number of hidden layers")
-    model_group.add_argument("--mesh_resolution", type=float, help="Resolution of the mesh")
-    model_group.add_argument("--mesh_feature_dim", type=int, help="Dimension of the static mesh features")
-    model_group.add_argument("--cutoff_factor", type=float, help="Cutoff factor for mesh connections")
-    model_group.add_argument("--num_neighbors", type=int, help="Number of neighbors for KNN")
-    model_group.add_argument("--mesh_gnn_layers", type=int, help="Number of GNN layers in the mesh model")
+    model_group.add_argument(
+        "--hidden_dim",
+        type=int,
+        help="Hidden dimension size")
+    model_group.add_argument(
+        "--hidden_layers",
+        type=int,
+        help="Number of hidden layers")
+    model_group.add_argument(
+        "--mesh_resolution",
+        type=float,
+        help="Resolution of the mesh")
+    model_group.add_argument(
+        "--mesh_feature_dim",
+        type=int,
+        help="Dimension of the static mesh features")
+    model_group.add_argument(
+        "--cutoff_factor",
+        type=float,
+        help="Cutoff factor for mesh connections")
+    model_group.add_argument(
+        "--num_neighbors",
+        type=int,
+        help="Number of neighbors for KNN")
+    model_group.add_argument(
+        "--mesh_gnn_layers",
+        type=int,
+        help="Number of GNN layers in the mesh model")
     model_group.add_argument(
         "--hierarchical_processor_type",
         type=str,
@@ -328,39 +391,89 @@ def parse_args(default_args=None):
         help="Chunk size along mesh nodes for MultiheadAttention in hierarchical transformer "
         "(large meshes need chunking to avoid CUDA invalid configuration; default 2048)",
     )
-    model_group.add_argument("--num_processor_rollout_steps", type=int, default=1,
-                             help="Number of latent processor rollout steps (processor applied repeatedly on mesh state)")
-    model_group.add_argument("--processor_rollout_alpha", type=float, default=None,
-                             help="Blend factor for rollout: state = (1-alpha)*state + alpha*processor(state). "
-                                  "Default: 1/num_processor_rollout_steps for better gradient flow")
-    model_group.add_argument("--step_length", type=int, help="Step length for the model")
-    model_group.add_argument("--num_heads", type=int, help="Number of heads for multi-head attention")
-    model_group.add_argument("--scan_angle_embed_dim", type=int, default=8, help="Dimension of scan angle embedding")
-    model_group.add_argument("--use_gat_encoder_decoder", action="store_true",
-                             help="Use GAT instead of InteractionNet for encoder and decoder")
-    model_group.add_argument("--gat_chunk_size", type=int, default=0,
-                             help="Chunk receiver nodes during GAT inference to reduce peak GPU memory (0=disabled)")
+    model_group.add_argument(
+        "--num_processor_rollout_steps",
+        type=int,
+        default=1,
+        help="Number of latent processor rollout steps (processor applied repeatedly on mesh state)")
+    model_group.add_argument(
+        "--processor_rollout_alpha",
+        type=float,
+        default=None,
+        help="Blend factor for rollout: state = (1-alpha)*state + alpha*processor(state). "
+        "Default: 1/num_processor_rollout_steps for better gradient flow")
+    model_group.add_argument(
+        "--step_length",
+        type=int,
+        help="Step length for the model")
+    model_group.add_argument(
+        "--num_heads",
+        type=int,
+        help="Number of heads for multi-head attention")
+    model_group.add_argument(
+        "--scan_angle_embed_dim",
+        type=int,
+        default=8,
+        help="Dimension of scan angle embedding")
+    model_group.add_argument(
+        "--use_gat_encoder_decoder",
+        action="store_true",
+        help="Use GAT instead of InteractionNet for encoder and decoder")
+    model_group.add_argument(
+        "--gat_chunk_size",
+        type=int,
+        default=0,
+        help="Chunk receiver nodes during GAT inference to reduce peak GPU memory (0=disabled)")
 
     # Training parameters
     train_group = parser.add_argument_group('Training Configuration')
-    train_group.add_argument("--batch_size", type=int, help="Batch size per GPU")
-    train_group.add_argument("--max_epochs", type=int, help="Maximum number of epochs")
+    train_group.add_argument(
+        "--batch_size",
+        type=int,
+        help="Batch size per GPU")
+    train_group.add_argument(
+        "--max_epochs",
+        type=int,
+        help="Maximum number of epochs")
     train_group.add_argument("--lr", type=float, help="Learning rate")
-    train_group.add_argument("--weight_decay", type=float, help="Weight decay for optimizer")
-    train_group.add_argument('--plot_on_test', action='store_true',
-                             help='Generate and save plots during the test phase.')
-    train_group.add_argument("--num_workers", type=int, help="Number of workers for dataloaders")
+    train_group.add_argument(
+        "--weight_decay",
+        type=float,
+        help="Weight decay for optimizer")
+    train_group.add_argument(
+        '--plot_on_test',
+        action='store_true',
+        help='Generate and save plots during the test phase.')
+    train_group.add_argument(
+        "--num_workers",
+        type=int,
+        help="Number of workers for dataloaders")
     train_group.add_argument("--loss", type=str, help="Loss function to use")
-    train_group.add_argument("--obs_config", type=str, default="default",
-                             help="Observation config variant to load (e.g. 'default', 'urma')")
-    train_group.add_argument("--exp_name", type=str, default="default_experiment",
-                             help="Name of the experiment for logging")
-    train_group.add_argument("--version", type=str, default='version_0',
-                             help="Logger version (subfolder). If omitted, Lightning auto-increments.")
-    train_group.add_argument("--validation_interval", type=int, default=32,
-                             help="Base number of training steps between validations (scaled inversely by world_size)")
-    train_group.add_argument("--limit_val_batches", type=float, default=1.0,
-                             help="Fraction (0.0-1.0) or number of validation batches to use per validation run (default: 1.0 = all batches)")
+    train_group.add_argument(
+        "--obs_config",
+        type=str,
+        default="default",
+        help="Observation config variant to load (e.g. 'default', 'urma')")
+    train_group.add_argument(
+        "--exp_name",
+        type=str,
+        default="default_experiment",
+        help="Name of the experiment for logging")
+    train_group.add_argument(
+        "--version",
+        type=str,
+        default='version_0',
+        help="Logger version (subfolder). If omitted, Lightning auto-increments.")
+    train_group.add_argument(
+        "--validation_interval",
+        type=int,
+        default=32,
+        help="Base number of training steps between validations (scaled inversely by world_size)")
+    train_group.add_argument(
+        "--limit_val_batches",
+        type=float,
+        default=1.0,
+        help="Fraction (0.0-1.0) or number of validation batches to use per validation run (default: 1.0 = all batches)")
     train_group.add_argument(
         "--no_early_stopping",
         action="store_true",
@@ -375,22 +488,58 @@ def parse_args(default_args=None):
 
     # Multi-GPU parameters
     gpu_group = parser.add_argument_group('Multi-GPU Configuration')
-    gpu_group.add_argument("--strategy", type=str, choices=["ddp", "ddp_spawn", "deepspeed", "fsdp", "auto"],
-                           help="Distributed training strategy")
-    gpu_group.add_argument("--accelerator", type=str, help="Accelerator type (gpu, cpu, tpu)")
+    gpu_group.add_argument(
+        "--strategy",
+        type=str,
+        choices=[
+            "ddp",
+            "ddp_spawn",
+            "deepspeed",
+            "fsdp",
+            "auto"],
+        help="Distributed training strategy")
+    gpu_group.add_argument(
+        "--accelerator",
+        type=str,
+        help="Accelerator type (gpu, cpu, tpu)")
     gpu_group.add_argument("--devices", type=int, help="Number of GPUs to use")
-    gpu_group.add_argument("--num_nodes", type=int, default=1, help="Number of nodes for distributed training")
+    gpu_group.add_argument(
+        "--num_nodes",
+        type=int,
+        default=1,
+        help="Number of nodes for distributed training")
     gpu_group.add_argument("--precision", type=str, help="Training precision")
 
     # Data parameters
     data_group = parser.add_argument_group('Data Configuration')
-    data_group.add_argument("--data_path", type=str, help="Path to data directory")
-    data_group.add_argument("--start_date", type=str, help="Start date for training data")
-    data_group.add_argument("--end_date", type=str, help="End date for training data")
-    data_group.add_argument("--observation_config", type=dict, help="Observation_config for data selection")
-    data_group.add_argument("--feature_stats", type=dict, help="Observation stats  for data selection")
-    data_group.add_argument("--instrument_weights", type=dict, help="Per-instrument loss weight, keyed like observation_config")
-    data_group.add_argument("--increment_stats", type=dict, help="Per-variable DA increment (anal-ges) mean/std in normalized-field space, keyed like the state feature list. See ocelot/compute_increment_stats.py.")
+    data_group.add_argument(
+        "--data_path",
+        type=str,
+        help="Path to data directory")
+    data_group.add_argument(
+        "--start_date",
+        type=str,
+        help="Start date for training data")
+    data_group.add_argument(
+        "--end_date",
+        type=str,
+        help="End date for training data")
+    data_group.add_argument(
+        "--observation_config",
+        type=dict,
+        help="Observation_config for data selection")
+    data_group.add_argument(
+        "--feature_stats",
+        type=dict,
+        help="Observation stats  for data selection")
+    data_group.add_argument(
+        "--instrument_weights",
+        type=dict,
+        help="Per-instrument loss weight, keyed like observation_config")
+    data_group.add_argument(
+        "--increment_stats",
+        type=dict,
+        help="Per-variable DA increment (anal-ges) mean/std in normalized-field space, keyed like the state feature list. See ocelot/compute_increment_stats.py.")
     data_group.add_argument(
         "--normalize_increment",
         action="store_true",
@@ -428,14 +577,21 @@ def parse_args(default_args=None):
         "--multiscale_scales",
         type=float,
         nargs="+",
-        default=[0.5, 1.0, 2.0, 4.0],
+        default=[
+            0.5,
+            1.0,
+            2.0,
+            4.0],
         help="Bin sizes in degrees lat/lon for --multiscale_loss_weight (default: 0.5 1.0 2.0 4.0).",
     )
     data_group.add_argument(
         "--delta_time",
         type=int,
         default=12,
-        choices=[1, 6, 12],
+        choices=[
+            1,
+            6,
+            12],
         help="Time interval in hours between consecutive bins (1, 6, or 12). Default 12.",
     )
     data_group.add_argument(
@@ -460,18 +616,36 @@ def parse_args(default_args=None):
 
     # Other arguments
     misc_group = parser.add_argument_group('Miscellaneous Configuration')
-    misc_group.add_argument("--exp_type", type=str, default="global", help="Experiment type: 'global' or 'regional' (limited-area mesh and dataset)")
-    misc_group.add_argument("--model_path", type=str, help="a full class path string for the model")
-    misc_group.add_argument("--load_ckpt_path", type=str, help="Path to a checkpoint to load.")
+    misc_group.add_argument(
+        "--exp_type",
+        type=str,
+        default="global",
+        help="Experiment type: 'global' or 'regional' (limited-area mesh and dataset)")
+    misc_group.add_argument(
+        "--model_path",
+        type=str,
+        help="a full class path string for the model")
+    misc_group.add_argument(
+        "--load_ckpt_path",
+        type=str,
+        help="Path to a checkpoint to load.")
     misc_group.add_argument(
         "--action",
         type=str,
-        choices=['train', 'test', 'train_and_test', 'start_train', 'predict'],
+        choices=[
+            'train',
+            'test',
+            'train_and_test',
+            'start_train',
+            'predict'],
         help="train / start_train: fit; train_and_test: fit then test; "
         "test / predict: no training, require --load_ckpt_path (test runs test_dataloader, "
         "predict runs predict_dataloader).",
     )
-    misc_group.add_argument("--levels", type=int, help="Number of levels in the mesh hierarchy")
+    misc_group.add_argument(
+        "--levels",
+        type=int,
+        help="Number of levels in the mesh hierarchy")
     misc_group.add_argument(
         "--mesh_splits",
         type=int,
@@ -479,7 +653,9 @@ def parse_args(default_args=None):
         help="Icosahedral refinement splits passed to create_mesh (default: 6)",
     )
     misc_group.add_argument(
-        "--x_min", type=float, default=None,
+        "--x_min",
+        type=float,
+        default=None,
         help="Minimum projected x-coordinate of the regional grid (e.g. metres in LCC). "
         "Required when model_path points to RegionalHeteroObservationGraphModel.",
     )
@@ -495,16 +671,31 @@ def parse_args(default_args=None):
         "--y_max", type=float, default=None,
         help="Maximum projected y-coordinate of the regional grid.",
     )
-    misc_group.add_argument("--plot", action='store_true', help="Generate plots during testing")
+    misc_group.add_argument(
+        "--plot",
+        action='store_true',
+        help="Generate plots during testing")
     misc_group.add_argument(
         "--hierarchical",
         action='store_true',
         help="Use multi-level mesh with up/down edges and HierarchicalProcessor (U-Net style)",
     )
-    misc_group.add_argument("--output_std", action='store_true', help="Whether to output standard deviation")
-    misc_group.add_argument("--restore_opt", action='store_true', help="Restore optimizer state from checkpoint")
-    misc_group.add_argument("--n_example_pred", type=int, help="Number of example predictions to generate")
-    misc_group.add_argument("--graph", type=str, help="Type of graph to use (e.g., 'hetero')")
+    misc_group.add_argument(
+        "--output_std",
+        action='store_true',
+        help="Whether to output standard deviation")
+    misc_group.add_argument(
+        "--restore_opt",
+        action='store_true',
+        help="Restore optimizer state from checkpoint")
+    misc_group.add_argument(
+        "--n_example_pred",
+        type=int,
+        help="Number of example predictions to generate")
+    misc_group.add_argument(
+        "--graph",
+        type=str,
+        help="Type of graph to use (e.g., 'hetero')")
     misc_group.add_argument(
         "--predict_output",
         type=str,
@@ -527,13 +718,13 @@ def set_model(args_update):
     """
 
     seed_everything(42, workers=True)
-    
+
     # Memory checkpoint 1: Before model initialization
     print_memory_summary("1. Before Model Init")
 
     # Initialize model and data module
     model = instantiate_class_from_path(args_update.model_path, args_update)
-    
+
     # Memory checkpoint 2: After model initialization
     print_memory_summary("2. After Model Init")
     datamodule = WeatherDataModule(
@@ -549,12 +740,12 @@ def set_model(args_update):
 
     # Memory checkpoint 3: After datamodule creation
     print_memory_summary("3. After DataModule Init")
-    
+
     # --- Setup and dummy forward pass to initialize lazy layers for DDP ---
     datamodule.setup('fit')
     logger.info("Setting up model mesh...")
-    model.setup_mesh() # This creates the mesh_x buffer
-    
+    model.setup_mesh()  # This creates the mesh_x buffer
+
     # Memory checkpoint 4: After mesh setup
     print_memory_summary("4. After Mesh Setup")
 
@@ -570,10 +761,15 @@ def set_model(args_update):
     # (important when version is None and gets auto-incremented to version_0, version_1, etc.)
     args_update.version = csv_logger.version
 
-    # Checkpoints: align with logger layout logs/<exp_name>/<version>/ so runs don't clobber each other
-    ckpt_dir = os.path.join("checkpoints", str(args_update.exp_name), str(args_update.version))
+    # Checkpoints: align with logger layout logs/<exp_name>/<version>/ so runs
+    # don't clobber each other
+    ckpt_dir = os.path.join(
+        "checkpoints", str(
+            args_update.exp_name), str(
+            args_update.version))
     os.makedirs(ckpt_dir, exist_ok=True)
-    args_update.checkpoint_dir = ckpt_dir  # also used for train_model.ckpt after fit()
+    # also used for train_model.ckpt after fit()
+    args_update.checkpoint_dir = ckpt_dir
     checkpoint_callback = ModelCheckpoint(
         monitor='val_loss',
         dirpath=ckpt_dir,
@@ -605,22 +801,25 @@ def set_model(args_update):
     print_memory_summary("5. Before Trainer Init")
 
     # Calculate validation interval scaled by world size
-    # With more GPUs, each GPU sees fewer steps per epoch, so we validate more frequently
+    # With more GPUs, each GPU sees fewer steps per epoch, so we validate more
+    # frequently
     world_size = args_update.devices * args_update.num_nodes
     val_check_interval = max(1, args_update.validation_interval // world_size)
-    
+
     # Determine number of training batches per epoch to decide validation strategy
-    # IMPORTANT: Check this BEFORE creating the trainer to avoid validation errors
+    # IMPORTANT: Check this BEFORE creating the trainer to avoid validation
+    # errors
     try:
         train_dataloader = datamodule.train_dataloader()
         num_train_batches_total = len(train_dataloader)
-        
+
         # When using DDP, each GPU sees a subset of the data
         # The dataloader length before trainer wraps it is the TOTAL batches
         # We need to divide by world_size to get batches per GPU
         if is_distributed:
             num_train_batches = num_train_batches_total // world_size
-            logger.info(f"📊 Training batches: {num_train_batches_total} total, {num_train_batches} per GPU (world_size={world_size})")
+            logger.info(
+                f"📊 Training batches: {num_train_batches_total} total, {num_train_batches} per GPU (world_size={world_size})")
         else:
             num_train_batches = num_train_batches_total
             logger.info(f"📊 Training batches per epoch: {num_train_batches}")
@@ -628,12 +827,13 @@ def set_model(args_update):
         logger.warning(f"Could not determine number of training batches: {e}")
         logger.warning("Falling back to epoch-based validation")
         num_train_batches = 0
-    
+
     # Check validation dataloader
     try:
         val_dataloader = datamodule.val_dataloader()
         if val_dataloader is None:
-            logger.error("❌ Validation dataloader is None! Validation will not run.")
+            logger.error(
+                "❌ Validation dataloader is None! Validation will not run.")
             num_val_batches = 0
         else:
             num_val_batches = len(val_dataloader)
@@ -643,45 +843,56 @@ def set_model(args_update):
     except Exception as e:
         logger.warning(f"Could not check validation dataloader: {e}")
         num_val_batches = 0
-    
+
     # Adjust limit_val_batches to ensure at least 1 batch is used
     if num_val_batches > 0:
         if args_update.limit_val_batches < 1.0:
             # It's a fraction (0.0 to 1.0)
-            batches_to_use = max(1, int(num_val_batches * args_update.limit_val_batches))
+            batches_to_use = max(
+                1, int(
+                    num_val_batches * args_update.limit_val_batches))
             adjusted_limit = batches_to_use / num_val_batches
             if adjusted_limit != args_update.limit_val_batches:
-                logger.info(f"📊 Adjusted limit_val_batches from {args_update.limit_val_batches:.2f} to {adjusted_limit:.2f} to ensure at least 1 batch")
+                logger.info(
+                    f"📊 Adjusted limit_val_batches from {args_update.limit_val_batches:.2f} to {adjusted_limit:.2f} to ensure at least 1 batch")
                 args_update.limit_val_batches = adjusted_limit
         elif args_update.limit_val_batches >= 1.0:
             # It's an absolute number of batches
             batches_to_use = int(args_update.limit_val_batches)
             if batches_to_use < 1:
-                logger.warning(f"⚠️  limit_val_batches={args_update.limit_val_batches} rounds to 0, setting to 1")
+                logger.warning(
+                    f"⚠️  limit_val_batches={args_update.limit_val_batches} rounds to 0, setting to 1")
                 args_update.limit_val_batches = 1
             elif batches_to_use > num_val_batches:
-                logger.warning(f"⚠️  limit_val_batches={batches_to_use} exceeds total val batches ({num_val_batches}), using all batches")
+                logger.warning(
+                    f"⚠️  limit_val_batches={batches_to_use} exceeds total val batches ({num_val_batches}), using all batches")
                 args_update.limit_val_batches = num_val_batches
-    
+
     # Decide between step-based and epoch-based validation
     # Use step-based ONLY if validation can run at least once per epoch
     if num_train_batches > 0 and val_check_interval < num_train_batches:
         # Step-based validation is feasible - will run mid-epoch
         use_step_based_validation = True
         validation_config = {"val_check_interval": val_check_interval}
-        logger.info(f"✅ Using step-based validation: every {val_check_interval} steps per GPU")
-        logger.info(f"   (base={args_update.validation_interval}, world_size={world_size}, batches_per_epoch={num_train_batches})")
-        logger.info(f"   Validation will run approximately {num_train_batches // val_check_interval} times per epoch")
+        logger.info(
+            f"✅ Using step-based validation: every {val_check_interval} steps per GPU")
+        logger.info(
+            f"   (base={args_update.validation_interval}, world_size={world_size}, batches_per_epoch={num_train_batches})")
+        logger.info(
+            f"   Validation will run approximately {num_train_batches // val_check_interval} times per epoch")
     else:
         # Fall back to epoch-based validation
         # This ensures validation ALWAYS runs at the end of each epoch
         use_step_based_validation = False
         validation_config = {"check_val_every_n_epoch": 1}
         if num_train_batches > 0:
-            logger.info(f"⚠️  Step-based validation not feasible (interval={val_check_interval} >= batches={num_train_batches})")
+            logger.info(
+                f"⚠️  Step-based validation not feasible (interval={val_check_interval} >= batches={num_train_batches})")
         logger.info(f"✅ Using epoch-based validation: every 1 epoch")
-        logger.info(f"   Validation will run at the END of each epoch (after all {num_train_batches} training batches)")
-        logger.info(f"   To use step-based validation, reduce --validation_interval or increase dataset size")
+        logger.info(
+            f"   Validation will run at the END of each epoch (after all {num_train_batches} training batches)")
+        logger.info(
+            f"   To use step-based validation, reduce --validation_interval or increase dataset size")
 
     # Only enable profiler on rank 0 in distributed training to reduce overhead
     use_profiler = args_update.profile
@@ -689,34 +900,38 @@ def set_model(args_update):
     if is_distributed:
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         use_profiler = use_profiler and (local_rank == 0)
-    
+
     profile_per_module = args_update.profile_per_module if use_profiler else False
-    profiler = make_profiler(enabled=use_profiler, profile_per_module=profile_per_module)
+    profiler = make_profiler(
+        enabled=use_profiler,
+        profile_per_module=profile_per_module)
     callbacks = [checkpoint_callback]
     if not getattr(args_update, "no_early_stopping", False):
         es_patience = getattr(args_update, "early_stopping_patience", 5)
         callbacks.append(
             EarlyStopping(monitor="val_loss", patience=es_patience, mode="min")
         )
-        logger.info(f"EarlyStopping enabled (monitor=val_loss, patience={es_patience})")
+        logger.info(
+            f"EarlyStopping enabled (monitor=val_loss, patience={es_patience})")
     else:
         logger.info("EarlyStopping disabled (--no_early_stopping)")
     if use_profiler:
         callbacks.append(ProfilerSummaryCallback(enabled=True))
-    
+
     # Add memory monitoring callback if requested
     if args_update.monitor_memory:
         # Save memory CSV in the same logs directory as other experiment logs
         memory_csv_path = f"logs/{args_update.exp_name}/memory_log.csv"
         os.makedirs(f"logs/{args_update.exp_name}", exist_ok=True)
-        
+
         memory_callback = CombinedMemoryCallback(
             log_every_n_steps=args_update.memory_log_interval,
             detailed=True,  # Set to False for less verbose output
             csv_path=memory_csv_path
         )
         callbacks.append(memory_callback)
-        logger.info(f"✅ Memory monitoring enabled (logging every {args_update.memory_log_interval} steps)")
+        logger.info(
+            f"✅ Memory monitoring enabled (logging every {args_update.memory_log_interval} steps)")
         logger.info(f"📊 Memory CSV will be saved to: {memory_csv_path}")
     # Initialize trainer with multi-GPU settings
     trainer_kwargs = {
@@ -737,19 +952,19 @@ def set_model(args_update):
         "profiler": profiler,
         "limit_val_batches": args_update.limit_val_batches,
     }
-    
+
     # Add validation configuration (determined above based on dataset size)
     trainer_kwargs.update(validation_config)
-    
+
     # Log the final trainer configuration for debugging
     logger.info(f"🔧 Trainer validation config: {validation_config}")
     logger.info(f"🔧 Limit val batches: {args_update.limit_val_batches}")
-    
+
     trainer = pl.Trainer(**trainer_kwargs)
-    
+
     # Memory checkpoint 6: After trainer initialization
     print_memory_summary("6. After Trainer Init")
-    
+
     return args_update, trainer, model, datamodule
 
 
@@ -787,7 +1002,11 @@ def _save_predict_outputs_to_disk(outputs, path: str, args) -> None:
 def _default_predict_output_path(args) -> str:
     exp = getattr(args, 'exp_name', 'default_experiment')
     ver = getattr(args, 'version', 'version_0')
-    return os.path.join('predict_outputs', str(exp), str(ver), 'predictions.pt')
+    return os.path.join(
+        'predict_outputs',
+        str(exp),
+        str(ver),
+        'predictions.pt')
 
 
 def _require_checkpoint_file(path: Optional[str], purpose: str) -> str:
@@ -798,7 +1017,8 @@ def _require_checkpoint_file(path: Optional[str], purpose: str) -> str:
         )
     path = os.path.expanduser(str(path))
     if not os.path.isfile(path):
-        raise FileNotFoundError(f"Checkpoint file not found for {purpose}: {path}")
+        raise FileNotFoundError(
+            f"Checkpoint file not found for {purpose}: {path}")
     return path
 
 
@@ -819,7 +1039,12 @@ def main(args_parsed):
     # --- Test only: no fit ---
     if action == 'test':
         print_memory_summary("7. Before Test")
-        ckpt = _require_checkpoint_file(getattr(args_parsed, 'load_ckpt_path', None), "test")
+        ckpt = _require_checkpoint_file(
+            getattr(
+                args_parsed,
+                'load_ckpt_path',
+                None),
+            "test")
         logger.info("--- Starting Test (no training) ---")
         logger.info(f"Loading weights from: {ckpt}")
         trainer.test(datamodule=datamodule, ckpt_path=ckpt)
@@ -830,7 +1055,12 @@ def main(args_parsed):
     # --- Predict only: no fit ---
     if action == 'predict':
         print_memory_summary("7. Before Predict")
-        ckpt = _require_checkpoint_file(getattr(args_parsed, 'load_ckpt_path', None), "predict")
+        ckpt = _require_checkpoint_file(
+            getattr(
+                args_parsed,
+                'load_ckpt_path',
+                None),
+            "predict")
         logger.info("--- Starting Predict (no training) ---")
         logger.info(f"Loading weights from: {ckpt}")
         predict_out = trainer.predict(
@@ -839,9 +1069,10 @@ def main(args_parsed):
             ckpt_path=ckpt,
             return_predictions=True,
         )
-        out_path = getattr(args_parsed, 'predict_output', None) or _default_predict_output_path(
-            args_parsed
-        )
+        out_path = getattr(
+            args_parsed,
+            'predict_output',
+            None) or _default_predict_output_path(args_parsed)
         _save_predict_outputs_to_disk(predict_out, out_path, args_parsed)
         logger.info("--- Predict Finished ---")
         print_memory_summary("8. After Predict")
@@ -874,7 +1105,8 @@ def main(args_parsed):
                 best_model_path = cb.best_model_path
                 break
         if best_model_path and os.path.exists(best_model_path):
-            logger.info(f"Found best checkpoint from training run: {best_model_path}")
+            logger.info(
+                f"Found best checkpoint from training run: {best_model_path}")
             ckpt_path_for_test = best_model_path
         else:
             logger.info(
@@ -883,17 +1115,20 @@ def main(args_parsed):
             )
 
         if ckpt_path_for_test and os.path.exists(ckpt_path_for_test):
-            logger.info(f"Loading model for testing from: {ckpt_path_for_test}")
+            logger.info(
+                f"Loading model for testing from: {ckpt_path_for_test}")
             trainer.test(datamodule=datamodule, ckpt_path=ckpt_path_for_test)
         else:
-            logger.info("No checkpoint specified or found, testing with model's current weights.")
+            logger.info(
+                "No checkpoint specified or found, testing with model's current weights.")
             trainer.test(model=model, datamodule=datamodule)
 
         logger.info("--- Testing Finished ---")
 
 
 if __name__ == "__main__":
-    # Resolve exp_type and obs_config before full parse so the right config is loaded as default.
+    # Resolve exp_type and obs_config before full parse so the right config is
+    # loaded as default.
     _exp_type = next(
         (sys.argv[i + 1] for i, a in enumerate(sys.argv) if a == "--exp_type"),
         "global",
@@ -903,14 +1138,13 @@ if __name__ == "__main__":
         "default",
     )
     observation_config, feature_stats, fill_values, instrument_weights, increment_stats = load_observation_config(
-        exp_type=_exp_type, config_name=_obs_config_name
-    )
+        exp_type=_exp_type, config_name=_obs_config_name)
 
     args_dict = {
         "model_path": "ocelot.hetero_observation_interaction.HeteroObservationGraphModel",
-        #"data_path": "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v4/global/",
-        #"data_path": "/scratch3/NCEPDEV/da/Xin.C.Jin/my_data/ocelot/data_v5/global/dev/",
-        #"data_path": "/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/global/",
+        # "data_path": "/scratch3/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v4/global/",
+        # "data_path": "/scratch3/NCEPDEV/da/Xin.C.Jin/my_data/ocelot/data_v5/global/dev/",
+        # "data_path": "/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/global/",
         "data_path": "/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/diag_global/",
         "exp_type": _exp_type,
         'feature_stats': feature_stats,
@@ -920,7 +1154,7 @@ if __name__ == "__main__":
         "increment_stats": increment_stats,
         "start_date": "2024-04-01",
         "end_date": "2024-05-30",
-        #"loss": "MSE",
+        # "loss": "MSE",
         "loss": "huber",
         "lr": 0.0001,
         "hidden_dim": 128,
@@ -961,7 +1195,7 @@ if __name__ == "__main__":
         "graph": "hetero",
         "scan_angle_embed_dim": 4,
     }
-        
+
     # Parse arguments, allowing command-line overrides
     args = parse_args(default_args=args_dict)
     main(args)

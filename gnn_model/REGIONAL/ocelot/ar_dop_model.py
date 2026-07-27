@@ -46,7 +46,8 @@ def scale_learning_rate(base_lr, base_world_size=1, scale_type="sqrt"):
         scaled_lr = base_lr  # no scaling
 
     if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
-        print(f"✅ Using scaled LR = {scaled_lr:.3e} (world_size={world_size}, mode={scale_type})")
+        print(
+            f"✅ Using scaled LR = {scaled_lr:.3e} (world_size={world_size}, mode={scale_type})")
     return scaled_lr
 
 
@@ -68,7 +69,6 @@ def warmup_scheduler(optimizer, warmup_steps, total_steps, min_lr_ratio=0.1):
     return LambdaLR(optimizer, lr_lambda)
 
 
-
 class ARDOPModel(pl.LightningModule):
     """
     Generic auto-regressive weather model.
@@ -85,7 +85,6 @@ class ARDOPModel(pl.LightningModule):
 
         # Instantiate loss function
         self.loss = metrics_dop.get_metric(args.loss)
-
 
     def _log_channel_stats(self, obs_type, node, pred_tensor, feature_names):
         """Print per-channel bias/RMSE/std table in normalized units for diagnostic use."""
@@ -104,8 +103,7 @@ class ARDOPModel(pl.LightningModule):
             f"[channel stats] {obs_type}  epoch={self.current_epoch}  step={self.global_step}\n"
             f"{'ch':<5} {'feature':<32} {'n_valid':>7} {'bias':>8} {'rmse':>8} "
             f"{'pred_std':>9} {'truth_std':>9}\n"
-            f"{'-' * 72}"
-        )
+            f"{'-' * 72}")
         rows = [header]
         for ci in range(n_ch):
             y_ch = y_all[:, ci]
@@ -116,7 +114,8 @@ class ARDOPModel(pl.LightningModule):
             n_valid = len(y_ch)
             fname = feature_names[ci] if ci < len(feature_names) else f'ch{ci}'
             if n_valid == 0:
-                rows.append(f"  {ci:<4} {fname:<32} {'0':>7} {'NO VALID DATA':>8}")
+                rows.append(
+                    f"  {ci:<4} {fname:<32} {'0':>7} {'NO VALID DATA':>8}")
                 continue
             bias = float(np.mean(p_ch - y_ch))
             rmse = float(np.sqrt(np.mean((p_ch - y_ch) ** 2)))
@@ -124,8 +123,7 @@ class ARDOPModel(pl.LightningModule):
             truth_std = float(np.std(y_ch))
             rows.append(
                 f"  {ci:<4} {fname:<32} {n_valid:>7} {bias:>8.4f} {rmse:>8.4f} "
-                f"{pred_std:>9.4f} {truth_std:>9.4f}"
-            )
+                f"{pred_std:>9.4f} {truth_std:>9.4f}")
         rows.append(sep)
         print('\n'.join(rows))
 
@@ -137,11 +135,12 @@ class ARDOPModel(pl.LightningModule):
         target_dict: The dictionary with target data.
         predicted_dict: The dictionary with predicted data.
         """
-        # Only plot on rank 0 to avoid duplicate plots and file conflicts in multi-GPU training
+        # Only plot on rank 0 to avoid duplicate plots and file conflicts in
+        # multi-GPU training
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank() != 0:
                 return
-        
+
         del batch[('mesh', 'to', 'mesh')]
         batch_1 = batch.to_data_list()[0]
         target_list = []
@@ -161,17 +160,20 @@ class ARDOPModel(pl.LightningModule):
             try:
                 first_feature_name = self.args.observation_config[obs_category][cfg_key]['features'][0]
             except KeyError as e:
-                print(f"Skipping plotting for {obs_type}: could not find observation_config entry. Error: {e}")
+                print(
+                    f"Skipping plotting for {obs_type}: could not find observation_config entry. Error: {e}")
                 continue
 
-            # Get the stats for that feature if available; otherwise fall back to [0, 1]
+            # Get the stats for that feature if available; otherwise fall back
+            # to [0, 1]
             stats_dict = self.args.feature_stats.get(cfg_key, {})
             obs_stats = stats_dict.get(first_feature_name, [0.0, 1.0])
 
             node = batch_1[f'{obs_type}_target']
 
             # --- Per-channel diagnostic stats ---
-            feature_names = self.args.observation_config[obs_category][cfg_key].get('features', [])
+            feature_names = self.args.observation_config[obs_category][cfg_key].get(
+                'features', [])
             pred_key = f'{obs_type}_target'
             if pred_key in predictions:
                 self._log_channel_stats(
@@ -184,7 +186,8 @@ class ARDOPModel(pl.LightningModule):
 
             # Get the corresponding prediction and target tensors
             target = node.y[:, 0].cpu().detach().numpy()
-            predicted = predictions[f'{obs_type}_target'][:, 0].cpu().detach().numpy()
+            predicted = predictions[f'{obs_type}_target'][:, 0].cpu(
+            ).detach().numpy()
             predicted = predicted[0:target.shape[0]]
 
             if hasattr(node, 'valid_mask') and node.valid_mask is not None:
@@ -196,21 +199,27 @@ class ARDOPModel(pl.LightningModule):
                 target_lat_deg = target_lat_deg[mask]
                 target_lon_deg = target_lon_deg[mask]
 
-            # For radiosonde, restrict plots to the first (highest) pressure level only
+            # For radiosonde, restrict plots to the first (highest) pressure
+            # level only
             is_radiosonde = (
                 'radiosonde' in obs_type.lower()
                 and hasattr(node, 'x') and node.x is not None
             )
             if is_radiosonde:
-                # airPressure is stored in metadata (x); find its index from observation_config
+                # airPressure is stored in metadata (x); find its index from
+                # observation_config
                 try:
-                    metadata_keys = self.args.observation_config[obs_category][cfg_key].get('metadata', [])
-                    airpressure_idx = metadata_keys.index('airPressure') if 'airPressure' in metadata_keys else 0
-                    pressure = node.x[:, airpressure_idx].cpu().detach().numpy()
+                    metadata_keys = self.args.observation_config[obs_category][cfg_key].get(
+                        'metadata', [])
+                    airpressure_idx = metadata_keys.index(
+                        'airPressure') if 'airPressure' in metadata_keys else 0
+                    pressure = node.x[:,
+                                      airpressure_idx].cpu().detach().numpy()
                     valid_mask = ~np.isnan(pressure)
                     pressure_valid = pressure[valid_mask]
                     if pressure_valid.size > 0:
-                        # Choose the highest pressure level (surface) as the "first level"
+                        # Choose the highest pressure level (surface) as the
+                        # "first level"
                         first_level = float(np.max(pressure_valid))
                         level_mask = (pressure == first_level)
                         if level_mask.any():
@@ -218,18 +227,23 @@ class ARDOPModel(pl.LightningModule):
                             predicted = predicted[level_mask]
                             target_lat_deg = target_lat_deg[level_mask]
                             target_lon_deg = target_lon_deg[level_mask]
-                            # If per-level stats are available, override obs_stats with this level's stats
-                            by_level = self.args.feature_stats.get(cfg_key, {}).get('mean_std_by_level', {})
+                            # If per-level stats are available, override
+                            # obs_stats with this level's stats
+                            by_level = self.args.feature_stats.get(
+                                cfg_key, {}).get('mean_std_by_level', {})
                             level_key = int(round(first_level))
-                            if first_feature_name in by_level and level_key in by_level[first_feature_name]:
+                            if first_feature_name in by_level and level_key in by_level[
+                                    first_feature_name]:
                                 obs_stats = by_level[first_feature_name][level_key]
                 except Exception as e:
-                    print(f"Warning: could not apply radiosonde level filter in plot_examples: {e}")
-            
+                    print(
+                        f"Warning: could not apply radiosonde level filter in plot_examples: {e}")
+
             # Generate unique plot names for each sample and instrument
-            # Use global_step for step-based validation, fallback to epoch for epoch-based
+            # Use global_step for step-based validation, fallback to epoch for
+            # epoch-based
             plot_name = f'{obs_type}_epoch{self.current_epoch}_step{self.global_step}'
-        
+
             vis.plot_hist(
                 plot_name,
                 [predicted, target],
@@ -255,19 +269,28 @@ class ARDOPModel(pl.LightningModule):
         # Get current learning rate from the optimizer
         current_lr = self.optimizers().param_groups[0]['lr']
         # Log it to the logger (will appear in metrics.csv)
-        self.log('lr', current_lr, on_step=True, on_epoch=False, prog_bar=False, logger=True)
+        self.log(
+            'lr',
+            current_lr,
+            on_step=True,
+            on_epoch=False,
+            prog_bar=False,
+            logger=True)
 
     def configure_optimizers(self):
         base_lr = self.args.lr
         scaled_lr = scale_learning_rate(base_lr, scale_type="sqrt")
-        optimizer = torch.optim.AdamW(self.parameters(), lr=scaled_lr, weight_decay=1e-5)
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=scaled_lr, weight_decay=1e-5)
 
-        # Try to get estimated stepping batches, but handle case where trainer isn't fully set up
+        # Try to get estimated stepping batches, but handle case where trainer
+        # isn't fully set up
         try:
             total_steps = self.trainer.estimated_stepping_batches
         except (AttributeError, ValueError) as e:
             # Fallback: estimate based on max_epochs and a reasonable batch count
-            # This is a rough estimate that will be corrected when training actually starts
+            # This is a rough estimate that will be corrected when training
+            # actually starts
             if hasattr(self.trainer, 'max_epochs') and self.trainer.max_epochs:
                 estimated_batches_per_epoch = 100  # Conservative estimate
                 total_steps = self.trainer.max_epochs * estimated_batches_per_epoch
@@ -278,15 +301,17 @@ class ARDOPModel(pl.LightningModule):
                 # Last resort fallback
                 total_steps = 500
                 if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
-                    print(f"⚠️  Could not estimate total steps, using default: {total_steps}")
-        
+                    print(
+                        f"⚠️  Could not estimate total steps, using default: {total_steps}")
+
         warmup_steps = int(0.05 * total_steps)  # e.g. 5% warm-up
 
         scheduler = warmup_scheduler(
             optimizer,
             warmup_steps=warmup_steps,
             total_steps=total_steps,
-            min_lr_ratio=0.01,  # min LR = 1% of scaled LR (allows more fine-tuning at end)
+            min_lr_ratio=0.01,
+            # min LR = 1% of scaled LR (allows more fine-tuning at end)
         )
 
         scheduler_dict = {
@@ -296,6 +321,7 @@ class ARDOPModel(pl.LightningModule):
         }
 
         if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
-            print(f"✅ Warm-up for {warmup_steps} steps, total {total_steps}, scaled_lr={scaled_lr:.2e}")
+            print(
+                f"✅ Warm-up for {warmup_steps} steps, total {total_steps}, scaled_lr={scaled_lr:.2e}")
 
         return [optimizer], [scheduler_dict]

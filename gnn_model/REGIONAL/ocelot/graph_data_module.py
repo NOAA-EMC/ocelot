@@ -98,7 +98,8 @@ class WeatherDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         """Return the DataLoader for the training set."""
-        # Lightning automatically wraps your dataloaders with a DistributedSampler if shuffle=False.
+        # Lightning automatically wraps your dataloaders with a
+        # DistributedSampler if shuffle=False.
         return PyGDataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -117,7 +118,7 @@ class WeatherDataModule(pl.LightningDataModule):
             shuffle=False,
             pin_memory=False,
             collate_fn=collate_skip_none
-            )
+        )
 
     def test_dataloader(self):
         """Return the DataLoader for the test set."""

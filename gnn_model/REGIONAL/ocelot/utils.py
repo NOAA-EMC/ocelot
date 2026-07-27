@@ -35,9 +35,9 @@ def make_mlp(blueprint, layer_norm=True, output_activation=None):
         layers.append(nn.Linear(dim1, dim2))
         if layer_i != hidden_layers:
             # Add a small epsilon to LayerNorm to prevent division by zero
-            layers.append(nn.LayerNorm(dim2, eps=1e-6))  # Normalize after activation
+            # Normalize after activation
+            layers.append(nn.LayerNorm(dim2, eps=1e-6))
             layers.append(nn.SiLU())  # Swish activation
-            
 
     # Optionally add layer norm to output
     if layer_norm:
@@ -72,4 +72,3 @@ def load_class_from_path(class_path: str):
 def instantiate_class_from_path(class_path: str, *args, **kwargs):
     cls = load_class_from_path(class_path)
     return cls(*args, **kwargs)
-

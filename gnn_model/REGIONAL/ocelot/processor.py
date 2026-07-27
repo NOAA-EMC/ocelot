@@ -15,10 +15,19 @@ class Processor(nn.Module):
     This module handles the core GNN processing, including the message-passing
     loop and residual connections.
     """
-    def __init__(self, hidden_dim: int, node_types: List[str], edge_types: List[Tuple[str, str, str]],
-                 num_message_passing_steps: int, use_gradient_checkpointing: bool = True,
-                 scatter_chunk_size: int = 50000, edge_chunk_size: int = 10000,
-                 share_weights: bool = False, edge_attr_dim: int = 0):
+
+    def __init__(self,
+                 hidden_dim: int,
+                 node_types: List[str],
+                 edge_types: List[Tuple[str,
+                                        str,
+                                        str]],
+                 num_message_passing_steps: int,
+                 use_gradient_checkpointing: bool = True,
+                 scatter_chunk_size: int = 50000,
+                 edge_chunk_size: int = 10000,
+                 share_weights: bool = False,
+                 edge_attr_dim: int = 0):
         """
         Args:
             hidden_dim: Hidden dimension size
@@ -48,9 +57,9 @@ class Processor(nn.Module):
             for _ in range(num_message_passing_steps):
                 self.layers.append(
                     InteractionNetwork(hidden_dim, node_types, edge_types,
-                                      scatter_chunk_size=scatter_chunk_size,
-                                      edge_chunk_size=edge_chunk_size,
-                                      edge_attr_dim=edge_attr_dim)
+                                       scatter_chunk_size=scatter_chunk_size,
+                                       edge_chunk_size=edge_chunk_size,
+                                       edge_attr_dim=edge_attr_dim)
                 )
             self.shared_layer = None
 
@@ -62,12 +71,17 @@ class Processor(nn.Module):
                 node_type: nn.LayerNorm(hidden_dim) for node_type in node_types
             }))
 
-    def forward(self, x_dict: Dict[str, torch.Tensor],
-                edge_index_dict: Dict[str, torch.Tensor],
-                edge_attr_dict: Dict[str, torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(self,
+                x_dict: Dict[str,
+                             torch.Tensor],
+                edge_index_dict: Dict[str,
+                                      torch.Tensor],
+                edge_attr_dict: Dict[str,
+                                     torch.Tensor] = None) -> Dict[str,
+                                                                   torch.Tensor]:
         """
         Processes the graph through multiple message-passing steps.
-        
+
         With gradient checkpointing enabled, intermediate activations are NOT stored
         during forward pass. They are recomputed during backward pass, trading
         compute for memory (30-40% memory savings).
@@ -93,12 +107,20 @@ class Processor(nn.Module):
                 # binding rather than the value, causing the wrong layer to be
                 # used during checkpoint recomputation.
                 processed_x_dict = checkpoint(
-                    lambda x_d, e_d, ea_d, _l=layer, _n=norms: self._process_step(_l, _n, x_d, e_d, ea_d),
+                    lambda x_d,
+                    e_d,
+                    ea_d,
+                    _l=layer,
+                    _n=norms: self._process_step(
+                        _l,
+                        _n,
+                        x_d,
+                        e_d,
+                        ea_d),
                     processed_x_dict,
                     edge_index_dict,
                     edge_attr_dict,
-                    use_reentrant=False
-                )
+                    use_reentrant=False)
             else:
                 # Normal forward pass: store all activations
                 processed_x_dict = self._process_step(
@@ -111,7 +133,13 @@ class Processor(nn.Module):
 
         return processed_x_dict
 
-    def _process_step(self, layer, norms, x_dict, edge_index_dict, edge_attr_dict=None):
+    def _process_step(
+            self,
+            layer,
+            norms,
+            x_dict,
+            edge_index_dict,
+            edge_attr_dict=None):
         """
         Single message passing step - extracted for gradient checkpointing.
 
@@ -129,11 +157,11 @@ class Processor(nn.Module):
 
         # Apply message passing
         processed_x_dict = layer(x_dict, edge_index_dict, edge_attr_dict)
-        
+
         # Add residual and normalize
         for node_type in processed_x_dict:
             processed_x_dict[node_type] = norms[node_type](
                 processed_x_dict[node_type] + residual_x_dict[node_type]
             )
-        
+
         return processed_x_dict

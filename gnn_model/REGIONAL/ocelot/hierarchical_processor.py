@@ -135,7 +135,8 @@ class HierarchicalProcessor(nn.Module):
                 edge_rep=ua,
                 edge_index=uei,
             )
-            level_features[level + 1] = level_features[level + 1] + coarse_update
+            level_features[level +
+                           1] = level_features[level + 1] + coarse_update
 
         for level in reversed(range(self.num_levels - 1)):
             dei = down_edge_index_list[level]

@@ -29,7 +29,13 @@ class TemporalPositionalEncoding(nn.Module):
 
 
 def _causal_mask(t: int, device: torch.device) -> torch.Tensor:
-    return torch.triu(torch.ones(t, t, dtype=torch.bool, device=device), diagonal=1)
+    return torch.triu(
+        torch.ones(
+            t,
+            t,
+            dtype=torch.bool,
+            device=device),
+        diagonal=1)
 
 
 def _mha_self_chunked(
@@ -50,7 +56,7 @@ def _mha_self_chunked(
         return out
     parts = []
     for start in range(0, n, chunk_size):
-        xc = x[start : start + chunk_size]
+        xc = x[start: start + chunk_size]
         oc, _ = attn(xc, xc, xc, attn_mask=attn_mask, need_weights=False)
         parts.append(oc)
     return torch.cat(parts, dim=0)
@@ -69,8 +75,8 @@ def _mha_cross_chunked(
         return out
     parts = []
     for start in range(0, n, chunk_size):
-        q = query[start : start + chunk_size]
-        kv = key_value[start : start + chunk_size]
+        q = query[start: start + chunk_size]
+        kv = key_value[start: start + chunk_size]
         oc, _ = attn(q, kv, kv, need_weights=False)
         parts.append(oc)
     return torch.cat(parts, dim=0)
@@ -134,7 +140,10 @@ class CrossScaleAttention(nn.Module):
         self.norm = nn.LayerNorm(hidden_dim)
         self.drop = nn.Dropout(dropout)
 
-    def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
+    def forward(
+            self,
+            query: torch.Tensor,
+            key_value: torch.Tensor) -> torch.Tensor:
         attn_out = _mha_cross_chunked(
             self.cross_attn, query, key_value, self.attn_chunk_size
         )
@@ -177,7 +186,9 @@ class SpatialMixBlock(nn.Module):
             agg = torch.zeros((n, x.size(1)), device=device, dtype=dtype)
             agg.index_add_(0, dst, x[src])
             deg = torch.zeros((n,), device=device, dtype=dtype)
-            deg.index_add_(0, dst, torch.ones((dst.numel(),), device=device, dtype=dtype))
+            deg.index_add_(
+                0, dst, torch.ones(
+                    (dst.numel(),), device=device, dtype=dtype))
             agg = agg / deg.clamp(min=1).unsqueeze(-1)
         else:
             if edge_attr.dim() == 1:
@@ -187,7 +198,8 @@ class SpatialMixBlock(nn.Module):
             else:
                 feat = edge_attr.to(device=device, dtype=torch.float32)
                 feat_norm = torch.sqrt((feat * feat).sum(dim=1) + 1e-12)
-                w = torch.exp(-float(self.distance_scale) * feat_norm).to(dtype=dtype)
+                w = torch.exp(-float(self.distance_scale)
+                              * feat_norm).to(dtype=dtype)
 
             w = w.to(device=device, dtype=dtype).clamp(min=0)
             agg = torch.zeros((n, x.size(1)), device=device, dtype=dtype)
@@ -300,7 +312,8 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
         )
 
         self.register_buffer("_dummy", torch.empty(0))
-        self.caches: List[deque] = [deque(maxlen=window) for _ in range(num_levels)]
+        self.caches: List[deque] = [
+            deque(maxlen=window) for _ in range(num_levels)]
         self.level_spatial_mix = nn.ModuleList(
             [SpatialMixBlock(hidden_dim, dropout=dropout) for _ in range(num_levels)]
         )
@@ -313,7 +326,7 @@ class HierarchicalSlidingWindowTransformer(nn.Module):
     def warm_start(self, states_per_level: List[List[torch.Tensor]]) -> None:
         for level_idx, level_states in enumerate(states_per_level):
             self.caches[level_idx].clear()
-            for state in level_states[-self.window :]:
+            for state in level_states[-self.window:]:
                 self.caches[level_idx].append(state.detach())
 
     def _pool_features(
@@ -497,18 +510,22 @@ class SlidingWindowTransformerProcessor(nn.Module):
     @torch.no_grad()
     def warm_start(self, states: List[torch.Tensor]) -> None:
         self.cache.clear()
-        for s in states[-self.window :]:
+        for s in states[-self.window:]:
             self.cache.append(s.detach())
 
     def forward(self, x_mesh: torch.Tensor) -> torch.Tensor:
         device = x_mesh.device
         dtype = x_mesh.dtype
         self.cache.append(x_mesh)
-        x_seq = torch.stack(list(self.cache), dim=1).to(device=device, dtype=dtype)
+        x_seq = torch.stack(
+            list(
+                self.cache),
+            dim=1).to(
+            device=device,
+            dtype=dtype)
         x_seq = self.posenc(x_seq)
-        attn_mask = (
-            _causal_mask(x_seq.size(1), device) if self.use_causal_mask else None
-        )
+        attn_mask = (_causal_mask(x_seq.size(1), device)
+                     if self.use_causal_mask else None)
         for blk in self.blocks:
             x_seq = blk(x_seq, attn_mask)
         return x_seq[:, -1, :]

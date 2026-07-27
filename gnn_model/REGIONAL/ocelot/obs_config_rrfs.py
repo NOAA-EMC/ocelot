@@ -32,8 +32,40 @@ ATMS_CHANNELS = list(range(1, 23))  # Channels 1-22
 AMSUA_CHANNELS = list(range(1, 16))  # Channels 1-15
 AVHRR_CHANNELS = [3, 4, 5]  # Channels 3-5
 SSMIS_CHANNELS = list(range(1, 25))  # Channels 1-24
-CRIS_FSR_CHANNELS = [28, 95, 132, 158, 400, 496, 626, 678, 748, 874, 1018, 1133, 1596, 1635, 2182]
-IASI_CHANNELS = [89, 148, 259, 350, 414, 1027, 1271, 1579, 1710, 2346, 2701, 3027, 3322, 5992, 6182, 6489, 7584]
+CRIS_FSR_CHANNELS = [
+    28,
+    95,
+    132,
+    158,
+    400,
+    496,
+    626,
+    678,
+    748,
+    874,
+    1018,
+    1133,
+    1596,
+    1635,
+    2182]
+IASI_CHANNELS = [
+    89,
+    148,
+    259,
+    350,
+    414,
+    1027,
+    1271,
+    1579,
+    1710,
+    2346,
+    2701,
+    3027,
+    3322,
+    5992,
+    6182,
+    6489,
+    7584]
 COMMON_RANGE = [150, 350]
 
 from ocelot.obs_config_utils import apply_derived_instrument_dims  # noqa: E402
@@ -48,7 +80,7 @@ OBSERVATION_CONFIG = {
             'dropna_cols': ['sat_zenith_angle', 'sol_zenith_angle', 'sol_azimuth_angle'],
             'encoder_hidden_layers': 2,
             'decoder_hidden_layers': 2,
-            
+
             'qc_filters': {
                 f'observation_channel_{ch}': COMMON_RANGE for ch in ATMS_CHANNELS
             },
@@ -88,7 +120,7 @@ OBSERVATION_CONFIG = {
             },
             'subsample': {
                 'mode': 'random',
-                'fraction': 1,    
+                'fraction': 1,
                 'seed': 12345
             }
         },
@@ -113,7 +145,7 @@ OBSERVATION_CONFIG = {
     },
 
     'conventional': {
-                'diag_sst': {
+        'diag_sst': {
             'source': 'zarr',
             'zarr_name': 'diag_sst',
             'features': ['observation'],
@@ -134,8 +166,8 @@ OBSERVATION_CONFIG = {
             },
             'subsample': {
                 'mode': 'random',
-                'fraction': 1,
-                'seed': 12345
+                        'fraction': 1,
+                        'seed': 12345
             }
         },
         'diag_surface_obs_t': {
@@ -173,7 +205,7 @@ OBSERVATION_CONFIG = {
             'zarr_name': 'diag_surface_obs_uv',
             'features': ['u_observation', 'v_observation', 'pressure'],
             'metadata': ['height'],
-            'dropna_cols': ['height'], 
+            'dropna_cols': ['height'],
             'drop_rows': {
                 'analysis_use_flag': [-1]
             },
@@ -207,7 +239,7 @@ apply_derived_instrument_dims(OBSERVATION_CONFIG)
 
 # Feature statistics
 FEATURE_STATS = {
-       'diag_atms': {
+    'diag_atms': {
         **{f'observation_channel_{ch}': stats for ch, stats in zip(
             ATMS_CHANNELS,
             [
@@ -304,7 +336,7 @@ FEATURE_STATS = {
             ]
         )}
     },
-        'diag_sst': {
+    'diag_sst': {
         'observation': [292.12, 8.12],
         'station_elevation': [3.15, 22.34],
         'height': [1.03, 0.84],

@@ -71,12 +71,14 @@ class InteractionNet(nn.Module):
         else:
             edge_mlp_input_dim = send_dim + rec_dim
         # Output of edge_mlp is the message, which has hidden_dim
-        edge_mlp_recipe = [edge_mlp_input_dim] + [hidden_dim] * (hidden_layers + 1)
+        edge_mlp_recipe = [edge_mlp_input_dim] + \
+            [hidden_dim] * (hidden_layers + 1)
 
         # Aggregation MLP input: [rec_rep, edge_rep_aggr]
         # Output of aggr_mlp is the residual update, which has rec_dim
         aggr_mlp_input_dim = rec_dim + hidden_dim
-        aggr_mlp_recipe = [aggr_mlp_input_dim] + [hidden_dim] * hidden_layers + [rec_dim]
+        aggr_mlp_recipe = [aggr_mlp_input_dim] + \
+            [hidden_dim] * hidden_layers + [rec_dim]
 
         if edge_chunk_sizes is None:
             self.edge_mlp = utils.make_mlp(edge_mlp_recipe)
@@ -123,7 +125,12 @@ class InteractionNet(nn.Module):
         messages = self.edge_mlp(edge_inputs)
 
         # Aggregate messages
-        edge_rep_aggr = scatter(messages, col, dim=0, dim_size=rec_rep.size(0), reduce=self.aggr)
+        edge_rep_aggr = scatter(
+            messages,
+            col,
+            dim=0,
+            dim_size=rec_rep.size(0),
+            reduce=self.aggr)
 
         rec_diff = self.aggr_mlp(torch.cat((rec_rep, edge_rep_aggr), dim=-1))
 

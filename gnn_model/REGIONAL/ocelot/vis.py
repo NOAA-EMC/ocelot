@@ -29,7 +29,7 @@ def standard_scale(data, stats):
     data[1] = stats[1] * data[1] + stats[0]
     return data
 
-    
+
 @catch_plotting_errors
 def plot_hist(
     var_name, data, obs_stats, exp_name="default_experiment",
@@ -56,12 +56,12 @@ def plot_hist(
     # bins = np.arange(mean-(4*std),mean+(4*std),binsize)
 
     # Now plot figure
-    fig = plt.figure(figsize=(18,8))
+    fig = plt.figure(figsize=(18, 8))
 
     labels = ['Ground Truth', 'Prediction', 'Difference']
 
     for i in range(3):
-        ax = fig.add_subplot(1, 3, i+1)
+        ax = fig.add_subplot(1, 3, i + 1)
         delta = obs_stats[1] * 3
 
         if i < 2:
@@ -99,7 +99,7 @@ def plot_hist(
         # ax = fig.add_subplot(111)
         # plt.hist(data)
         # plt.title(var_name)
-    dpi=150
+    dpi = 150
     plt.tight_layout()
     output_dir = f'figures/{exp_name}/{version}'
     os.makedirs(output_dir, exist_ok=True)
@@ -136,25 +136,25 @@ def plot_map(
     # zcnt = z.size()
     # Set colorbar
     delta = obs_stats[1] * 3
-    cmax =  obs_stats[0]  + delta
-    cmin =  obs_stats[0] - delta
-    
-    cmap=plt.get_cmap('jet')
-    
+    cmax = obs_stats[0] + delta
+    cmin = obs_stats[0] - delta
+
+    cmap = plt.get_cmap('jet')
+
     # Set plot variable unit
     units = 'W m-2 sr-1 m'
     units = 'K'
 
-    fig = plt.figure(figsize=(18,8))
-    
+    fig = plt.figure(figsize=(18, 8))
+
     labels = ['Ground Truth', 'Prediction', 'Difference']
-    
+
     for i in range(3):
         # Initialize the plot pointing to the project
         ax = fig.add_subplot(
-            1, 3, i+1, projection=ccrs.PlateCarree()
+            1, 3, i + 1, projection=ccrs.PlateCarree()
         )
-        
+
         # Get data to plot
         if i < 2:
             z_plot = z[i]
@@ -169,32 +169,30 @@ def plot_map(
             zmin_val = zmin_diff
             zavg_val = zavg_diff
             zstd_val = zstd_diff
-            vmin, vmax = -3 * zstd_diff, 3 * zstd_diff              
-            cmap=plt.get_cmap('RdBu_r')
+            vmin, vmax = -3 * zstd_diff, 3 * zstd_diff
+            cmap = plt.get_cmap('RdBu_r')
 
-            
-        
         # Get scatter data
         sc = ax.scatter(
             x, y, c=z_plot, s=5, marker="o", linewidth=3, alpha=1.0,
             vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), cmap=cmap,
             norm=None, edgecolor='none', antialiased=True
         )
-        
+
         # Plot colorbar
         cbar = fig.colorbar(
             sc, ax=ax, orientation="horizontal", pad=0.1, fraction=0.15,
             aspect=40, extend='both'
         )
         cbar.ax.set_xlabel(units, fontsize=10, loc='right')
-        
+
         # Plot globally
         # ax.set_global()
 
         # Add land and ocean
         ax.add_feature(cfeature.LAND)
         ax.add_feature(cfeature.OCEAN)
-        
+
         # Add gridlines
         gline = ax.gridlines(
             draw_labels=True, dms=True, x_inline=False, y_inline=False,
@@ -202,9 +200,9 @@ def plot_map(
         )
         gline.top_labels = False
         gline.right_labels = False
-        
+
         # Get title and png file from the input filename
-        
+
         subplot_title = f'{title} - {labels[i]}'
         # Add figure labels
         ax.set_title(subplot_title, pad=15, fontsize=18)
@@ -319,7 +317,7 @@ def plot_vertical_profile(
 ):
     """
     Creates a vertical profile plot showing pressure vs variable value.
-    
+
     Args:
         var_name: Variable name for the plot
         pressure_levels: Array of pressure levels (will be on y-axis,
@@ -336,7 +334,7 @@ def plot_vertical_profile(
     """
     # Create the plot
     fig, ax = plt.subplots(figsize=(8, 10))
-    
+
     # Plot ground truth with error bars
     ax.plot(
         gt_means, pressure_levels, 'b-o', label='Ground Truth',
@@ -346,7 +344,7 @@ def plot_vertical_profile(
         pressure_levels, gt_means - gt_stds, gt_means + gt_stds,
         alpha=0.2, color='blue', label='GT ±1σ'
     )
-    
+
     # Plot predictions with error bars
     ax.plot(
         pred_means, pressure_levels, 'r-s', label='Prediction',
@@ -356,11 +354,11 @@ def plot_vertical_profile(
         pressure_levels, pred_means - pred_stds, pred_means + pred_stds,
         alpha=0.2, color='red', label='Pred ±1σ'
     )
-    
+
     # Invert y-axis so higher pressure is at bottom
     # (typical for vertical profiles)
     ax.invert_yaxis()
-    
+
     # Labels and title
     xlabel = (
         var_name.split('_')[-1] if '_' in var_name else var_name
@@ -370,9 +368,9 @@ def plot_vertical_profile(
     ax.set_title(f'{title}', fontsize=14)
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best')
-    
+
     plt.tight_layout()
-    
+
     # Save the plot
     output_dir = f'figures/{exp_name}/{version}'
     os.makedirs(output_dir, exist_ok=True)
@@ -386,5 +384,5 @@ def plot_vertical_profile(
     )
     fig.savefig(pngfile, dpi=150)
     plt.close()
-    
+
     return pngfile

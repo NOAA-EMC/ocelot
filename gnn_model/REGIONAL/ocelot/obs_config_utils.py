@@ -28,4 +28,5 @@ def apply_derived_instrument_dims(observation_config: dict) -> None:
             if obs_type == "satellite":
                 inst["input_dim"] = target_dim + n_meta + FEATURES_AUX_DIM
             else:
-                inst["input_dim"] = target_dim + n_meta + FEATURES_AUX_DIM + target_dim
+                inst["input_dim"] = target_dim + \
+                    n_meta + FEATURES_AUX_DIM + target_dim
