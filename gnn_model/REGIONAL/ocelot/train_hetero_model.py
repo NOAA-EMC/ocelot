@@ -539,7 +539,8 @@ def parse_args(default_args=None):
     data_group.add_argument(
         "--increment_stats",
         type=dict,
-        help="Per-variable DA increment (anal-ges) mean/std in normalized-field space, keyed like the state feature list. See ocelot/compute_increment_stats.py.")
+        help="Per-variable DA increment (anal-ges) mean/std in normalized-field space, "
+        "keyed like the state feature list. See ocelot/compute_increment_stats.py.")
     data_group.add_argument(
         "--normalize_increment",
         action="store_true",

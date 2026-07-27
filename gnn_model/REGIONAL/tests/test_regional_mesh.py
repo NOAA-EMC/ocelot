@@ -82,9 +82,9 @@ class TestCreateRegionalMesh(unittest.TestCase):
     def test_levels_cap(self):
         # Capping levels=1 should give fewer mesh nodes than levels=None
         ms_full = create_regional_mesh(_make_xy(), _flat_args(levels=None))
-        ms_cap  = create_regional_mesh(_make_xy(), _flat_args(levels=1))
+        ms_cap = create_regional_mesh(_make_xy(), _flat_args(levels=1))
         n_full = ms_full["m2m_graphs"][0].pos.shape[0]
-        n_cap  = ms_cap["m2m_graphs"][0].pos.shape[0]
+        n_cap = ms_cap["m2m_graphs"][0].pos.shape[0]
         self.assertLessEqual(n_cap, n_full)
 
     def test_hierarchical_mesh_multiple_levels(self):
