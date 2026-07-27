@@ -118,7 +118,7 @@ def inter_mesh_connection(from_mesh, to_mesh):
 
 
 def _get_max_edge_distance(mesh):
-  senders, receivers = icosahedral_mesh.faces_to_edges(mesh.faces)
-  edge_distances = np.linalg.norm(
-      mesh.vertices[senders] - mesh.vertices[receivers], axis=-1)
-  return edge_distances.max()
+    senders, receivers = icosahedral_mesh.faces_to_edges(mesh.faces)
+    edge_distances = np.linalg.norm(
+        mesh.vertices[senders] - mesh.vertices[receivers], axis=-1)
+    return edge_distances.max()
