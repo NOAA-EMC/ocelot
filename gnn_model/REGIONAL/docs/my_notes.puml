@@ -1,0 +1,135 @@
+@startuml
+title Ocelot GNN DOP: **Architecture & Forward Pass**
+
+!theme vibrant
+
+skinparam defaultFontName "Arial"
+skinparam defaultFontSize 18
+skinparam defaultFontColor Black
+skinparam componentStyle rectangle
+
+package "Input Data" {
+  [Input HeteroData Object] as HeteroData
+  note right of HeteroData
+    Features and graph structure:
+    - Node types: `*_input`, `mesh`,
+    `*_target`
+    - Edge types: [(*, to, mesh)],
+    [(mesh, to, mesh)], [(mesh, to, *)]
+  end note
+}
+
+package "Model Components" {
+    left to right direction
+    component "Encoder" {
+        [Observation Embedders\n(MLP for each input type)] as EncoderMLPs
+        [Aggregate to Mesh\n(scatter_add)] as EncoderAgg
+    }
+
+    component "Processor" {
+        [Mesh GNN\n(N x InteractionNetwork Layers)] as MeshProcessor
+    }
+
+    component "Decoder" {
+        [Aggregate from Mesh\n(scatter_mean)] as DecoderAgg
+        [Output Mappers\n(MLP for each target type)] as DecoderMLPs
+    }
+}
+
+
+package "Output " {
+  [Prediaacted Observations] as Output
+}
+
+
+' --- Data Flow Connections ---
+
+HeteroData --> EncoderMLPs : `*_input` node features
+note on link: Each input observation type \nis processed by its own MLP embedder.
+
+EncoderMLPs --> EncoderAgg : Embedded Features
+HeteroData --> EncoderAgg : [(*_input, to, mesh)] edges
+note on link: Encoded features are sent to \n the mesh nodes they are connected to.
+
+EncoderAgg --> MeshProcessor : Initial Mesh Node Features
+
+MeshProcessor --> MeshProcessor : [(mesh, to, mesh)] edges
+note on link: Information is propagated \n across the mesh for N steps.
+
+MeshProcessor --> DecoderAgg : Processed Mesh Features
+HeteroData -left-> DecoderAgg : [(mesh, to, *_target)] edges
+note on link: Target nodes gather features from their connected mesh nodes.
+
+DecoderAgg --> DecoderMLPs : Aggregated Features per Target
+
+DecoderMLPs -left-> Output : Final Predictions
+
+@enduml
+
+
+@startuml
+title Ocelot GNN: Data Flow and Processing
+
+skinparam defaultFontName "Arial"
+skinparam defaultFontSize 18
+skinparam defaultFontColor Black
+
+start
+:Load Raw Time-Series Data from Zarr;
+note right: Contains multiple observation types\n(satellite, surface, etc.)
+
+:Slice data into discrete **Time Bins**;
+note right: Creates Input -> Target sample pairs
+
+partition "For Each Bin" {
+    :Extract Features & Metadata;
+    note right
+        - Normalize core features (StandardScaler)
+        - Generate cyclical time/space features (features_aux)
+    endnote
+
+:Handle Missing Values (NaNs);
+note right
+    1. Create binary **mask** for `features_norm` & `features_meta`
+    2. Impute NaNs with 0
+    endnote
+}
+
+partition "GNN Model Forward Pass" {
+    split
+        partition "Encoder" {
+            :Project Observation Features onto Mesh Nodes;
+            note right: An MLP processes each observation, then\n`scatter_add` aggregates features onto the mesh.
+        }
+    split again
+        partition "Processor" {
+            :Perform N steps of Message Passing\non the **Mesh Graph**;
+            note right: Interaction Networks learn\nglobal spatial dynamics.
+        }
+    split again
+        partition "Decoder" {
+            :Map Processed Mesh Features\nto Target Observation Locations;
+            note right: Gathers from nearest mesh nodes\nand predicts with an MLP.
+        }
+    end split
+}
+
+partition "Graph Construction" {
+    :Assemble **PyG HeteroData Object**;
+    note right
+      - **Nodes**: obs_input, mesh, obs_target
+      - **Features**: Concatenate [imputed_features, mask]
+      - **Edges**: obs->mesh, mesh->mesh, mesh->target
+    endnote
+}
+
+partition "Training" {
+    :Generate Predictions;
+    :Calculate **Masked Loss**;
+    note right: Compares predictions to ground truth,\nignoring loss from any missing **target** values.
+    :Update Model Weights;
+}
+
+stop
+
+@enduml
