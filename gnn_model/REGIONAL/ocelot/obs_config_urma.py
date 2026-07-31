@@ -34,7 +34,7 @@ OBSERVATION_CONFIG = {
     "state": {
         "ges": {
             'source': 'zarr',
-            'features': ['tmp_2maboveground', 'pres_surface', 'vgrd_10maboveground', 'ugrd_10maboveground', 'dpt_2maboveground',] ,
+            'features': ['tmp_2maboveground', 'pres_surface', 'vgrd_10maboveground', 'ugrd_10maboveground', 'dpt_2maboveground',],
             # 'features': ['tmp_2maboveground', 'hgt_surface', 'pres_surface', 'vgrd_10maboveground',  'ugrd_10maboveground',
             #              'dpt_2maboveground',] ,
             "target_dim": 5,              # number of state variables
@@ -142,7 +142,7 @@ OBSERVATION_CONFIG = {
                 'seed': 12345
             }
         },
-         'diag_q': {
+        'diag_q': {
             'source': 'zarr',
             'zarr_name': 'diag_urma_q',
             'features': ['observation', 'pressure'],
@@ -185,13 +185,13 @@ FEATURE_STATS = {
         'height': [573.49, 696.63],
         'pressure': [6.89, 0.08],
     },
-     'diag_q': {
+    'diag_q': {
         'observation': [4.18, 3.04],
         'height': [543.96, 648],
         'pressure': [6.89, 0.08],
     },
 
-     'diag_ps': {
+    'diag_ps': {
         'observation': [978, 55],
         'height': [349.41, 488.67],
         'pressure': [6.89, 0.08],
@@ -205,11 +205,11 @@ FEATURE_STATS = {
 
     'ges': {
         'hgt_surface': [442, 622],
-        'pres_surface': [96000,  6950],
+        'pres_surface': [96000, 6950],
         'vgrd_10maboveground': [0.10, 5.0],
-        'ugrd_10maboveground': [1.2, 4.5], 
+        'ugrd_10maboveground': [1.2, 4.5],
         'dpt_2maboveground': [273.15, 13.5],
-        'tmp_2maboveground': [280.14, 13.0], 
+        'tmp_2maboveground': [280.14, 13.0],
     }
 }
 
