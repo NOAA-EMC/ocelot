@@ -508,6 +508,431 @@ _STATE_ANAL = "anal"
 _URMA_STATIC_DATA_DIR = '/scratch3/NCEPDEV/da/Xin.C.Jin/my_data/urma'
 
 
+class DARegionalGraphDataset(RegionalGraphDataset):
+    """
+    Regional dataset where the target time bin equals the input time bin.
+
+    Adds a ``state`` obs_type with two sub-instruments:
+
+    * ``ges``  – first-guess / background: encoded as input nodes.
+    * ``anal`` – analysis / corrected state: decoded as target nodes (``y``).
+
+    For all other obs_types the same bin is used for both input and target.
+    """
+
+    @property
+    def num_target_bins(self) -> int:
+        return 1
+
+    def setup(self):
+        super().setup()
+        # Build a private loader for anal data using anal_zarr_name from the ges config.
+        # "anal" never appears as a top-level observation_config key, so nothing else
+        # in the codebase needs to know about it.
+        ges_cfg = self.observation_config.get("state", {}).get(_STATE_GES, {})
+        anal_zarr_name = ges_cfg.get("anal_zarr_name", _STATE_ANAL)
+        anal_obs_config = {
+            "state": {
+                _STATE_ANAL: {**ges_cfg, "zarr_name": anal_zarr_name}
+            }
+        }
+        delta_time = getattr(self.args, "delta_time", 12)
+        # anal uses the same variable stats as ges; map 'anal' -> ges stats so
+        # ParquetDataManager doesn't fall back to mean=0/std=1 defaults.
+        anal_feature_stats = {
+            **self.args.feature_stats,
+            _STATE_ANAL: self.args.feature_stats.get(_STATE_GES, {}),
+        }
+        self.anal_loader = ParquetDataManager(
+            data_dir=self.data_path,
+            observation_config=anal_obs_config,
+            feature_stats=anal_feature_stats,
+            fill_values=getattr(self.args, "fill_values", None),
+            delta_time=delta_time,
+        )
+
+        # Static per-gridpoint context (terrain height, land/sea mask) for the anal
+        # decoder target nodes. Row order must match anal's grid-flatten order
+        # 1:1.
+        static_data_dir = getattr(
+            self.args,
+            "static_data_dir",
+            _URMA_STATIC_DATA_DIR)
+        terrain = np.load(
+            os.path.join(
+                static_data_dir,
+                'urma2p5_terrain.npy')).astype(
+            np.float32).flatten()
+        slmask = np.load(
+            os.path.join(
+                static_data_dir,
+                'urma2p5_slmask_nolakes.npz'))['slmask'].flatten()
+        # z-score terrain height so its scale matches the other (already normalized)
+        # input/target columns; slmask is already binary {0, 1} and needs no
+        # scaling.
+        terrain = (terrain - terrain.mean()) / terrain.std()
+        self.terrain = torch.from_numpy(terrain)
+        self.slmask = torch.from_numpy(slmask.astype(np.float32))
+
+        # Optional: predict the full analysis field directly (y = anal) instead of
+        # the DA increment (y = anal - ges). Mutually exclusive with
+        # --normalize_increment, which only makes sense for the increment target.
+        self.target_is_anal = bool(getattr(self.args, "target_is_anal", False))
+
+        # Optional: rescale the DA increment (anal - ges) by offline-computed
+        # per-variable increment stats (mean/std of anal_norm - ges_norm), instead
+        # of leaving it implicitly normalized by field std alone. See
+        # graphcast_residuals.md and ocelot/compute_increment_stats.py.
+        self.normalize_increment = bool(
+            getattr(self.args, "normalize_increment", False))
+        if self.target_is_anal and self.normalize_increment:
+            raise ValueError(
+                "--target_is_anal and --normalize_increment are mutually exclusive.")
+        if self.normalize_increment:
+            increment_stats = getattr(self.args, "increment_stats", None) or {}
+            feature_keys = ges_cfg["features"]
+            missing = [k for k in feature_keys if k not in increment_stats]
+            if missing:
+                raise ValueError(
+                    f"--normalize_increment is set but increment_stats is missing "
+                    f"entries for: {missing}. Compute them with "
+                    f"ocelot/compute_increment_stats.py and add a STATE_INCREMENT_STATS "
+                    f"dict to the obs_config module.")
+            mean = torch.tensor([increment_stats[k][0]
+                                for k in feature_keys], dtype=torch.float32)
+            std = torch.tensor([increment_stats[k][1]
+                               for k in feature_keys], dtype=torch.float32)
+            self.increment_mean = mean
+            self.increment_std = torch.where(
+                std > 0, std, torch.ones_like(std))
+
+    def __len__(self) -> int:
+        return len(self.binned_samples)
+
+    def __getitem__(self, idx: int) -> Optional[HeteroData]:
+        logger.debug(f"DARegionalGraphDataset.__getitem__({idx})")
+
+        bin_name = self.binned_samples[idx]
+        bin_data = self.loader.get_data_for_bin(bin_name)
+        if bin_data is None:
+            logger.warning(f"Skipping index {idx}: missing bin '{bin_name}'.")
+            return None
+
+        data = HeteroData()
+        any_missing = False
+        missing_summary: Dict = {}
+
+        for obs_type in self.observation_config.keys():
+            if obs_type == "state":
+                ok = self._process_state_nodes(data, bin_data, bin_name, idx)
+                if not ok:
+                    any_missing = True
+                    missing_summary["state"] = [_STATE_GES, _STATE_ANAL]
+                continue
+
+            all_inst_ok = True
+            missing_insts = []
+            for inst_name in self.observation_config[obs_type].keys():
+                inst_cfg = self.observation_config[obs_type][inst_name]
+                inst_data = bin_data.get(obs_type, {}).get(inst_name)
+                fn = inst_data.get("features_norm") if inst_data else None
+                nonempty = (
+                    fn is not None
+                    and (not torch.is_tensor(fn) or fn.numel() > 0)
+                    and len((inst_data or {}).get("lat_deg", [])) > 0
+                )
+                if not nonempty:
+                    all_inst_ok = False
+                    missing_insts.append(inst_name)
+                    self._create_empty_nodes(
+                        data, obs_type, inst_name, inst_cfg)
+                    continue
+
+                self._process_same_time_instrument(
+                    data, obs_type, inst_name, inst_data)
+
+            if not all_inst_ok:
+                any_missing = True
+                missing_summary[obs_type] = missing_insts
+                logger.warning(
+                    f"idx={idx}: '{obs_type}' missing/empty: {missing_insts}")
+
+        data["mesh"].num_nodes = self._mesh_num_nodes()
+        data["mesh"].x = torch.zeros(data["mesh"].num_nodes, 1)
+        if any_missing:
+            logger.warning(
+                f"Finished bin {bin_name} with missing: {missing_summary}")
+        else:
+            logger.info(f"Finished bin {bin_name}")
+        return data
+
+    def _process_same_time_instrument(
+        self,
+        data: HeteroData,
+        obs_type: str,
+        inst_name: str,
+        inst_data: Dict,
+    ) -> None:
+        """Build encoder input and decoder target nodes from the same time-bin data."""
+        node_type_input = f"{obs_type}_{inst_name}_input"
+        node_type_target = target_node_type(obs_type, inst_name, 0, 1)
+
+        input_features = inst_data["features_norm"].float()
+        input_aux = inst_data["features_aux"].float()
+
+        if obs_type == "satellite":
+            fvm = inst_data["features_valid_mask"]
+            mvm = inst_data.get("metadata_valid_mask")
+            keep = torch.all(fvm, dim=1)
+            if mvm is not None:
+                keep = keep & torch.all(mvm, dim=1)
+            keep_np = keep.cpu().numpy()
+            input_features = input_features[keep]
+            input_aux = input_aux[keep]
+            input_meta = inst_data["features_meta"].float()[keep]
+            lat = inst_data["lat_deg"][keep_np]
+            lon = inst_data["lon_deg"][keep_np]
+            data[node_type_input].x = torch.cat(
+                [input_features, input_meta, input_aux], dim=1)
+        else:
+            lat = inst_data["lat_deg"]
+            lon = inst_data["lon_deg"]
+            valid_mask = inst_data["features_valid_mask"].float()
+            meta = inst_data.get("features_meta")
+            meta = meta.float() if meta is not None and torch.is_tensor(meta) else None
+            data[node_type_input].x = build_conventional_input_x(
+                input_features, input_aux, valid_mask, features_meta=meta
+            )
+
+        ei_enc, ea_enc = self._obs_to_mesh_edges(lat, lon, o2m=True)
+        if ei_enc.numel() == 0:
+            raise ValueError(
+                "No encoder edges created; try increasing cutoff_factor.")
+        data[node_type_input, "to", "mesh"].edge_index = ei_enc
+        data[node_type_input, "to", "mesh"].edge_attr = ea_enc
+
+        # target == same time: reuse inst_data
+        self._populate_target_nodes(
+            data,
+            obs_type,
+            inst_name,
+            inst_data,
+            node_type_target)
+
+        target_lat, target_lon = self._target_lat_lon_for_edges(
+            obs_type, inst_data)
+        ei_dec, ea_dec = self._obs_to_mesh_edges(
+            target_lat, target_lon, o2m=False)
+        data["mesh", "to", node_type_target].edge_index = ei_dec
+        data["mesh", "to", node_type_target].edge_attr = ea_dec
+        data[node_type_target].pos = torch.stack(
+            [torch.tensor(target_lon, dtype=torch.float),
+             torch.tensor(target_lat, dtype=torch.float)],
+            dim=1,
+        )
+
+    def _process_state_nodes(
+        self, data: HeteroData, bin_data: Dict, bin_name: str, idx: int
+    ) -> bool:
+        """
+        Handle ``state`` obs_type: ges → encoder input, anal → decoder target.
+        Returns True when both sub-instruments are present and non-empty.
+        """
+        ges_data = bin_data.get("state", {}).get(_STATE_GES)
+        anal_bin = self.anal_loader.get_data_for_bin(bin_name)
+        anal_data = (anal_bin or {}).get("state", {}).get(_STATE_ANAL)
+
+        # observation_config["state"] only needs one key ("ges"); anal shares
+        # the same dims.
+        ges_cfg = self.observation_config.get("state", {}).get(_STATE_GES, {})
+
+        def _nonempty(d):
+            if d is None:
+                return False
+            fn = d.get("features_norm")
+            return (
+                fn is not None
+                and (not torch.is_tensor(fn) or fn.numel() > 0)
+                and len(d.get("lat_deg", [])) > 0
+            )
+
+        if not _nonempty(ges_data) or not _nonempty(anal_data):
+            logger.warning(
+                f"idx={idx}: state ges/anal missing or empty; inserting empty nodes.")
+            self._create_empty_state_nodes(data, ges_cfg)
+            return False
+
+        node_type_input = f"state_{_STATE_GES}_input"
+        node_type_target = target_node_type("state", _STATE_GES, 0, 1)
+
+        # Static per-gridpoint context (terrain height, land/sea mask). ges and anal
+        # share the same URMA grid/row order (required for the elementwise increment
+        # below), so the same static context applies to both the encoder input and
+        # the decoder target.
+        ges_features = ges_data["features_norm"].float()
+        anal_features = anal_data["features_norm"].float()
+        n_nodes = ges_features.shape[0]
+        if anal_features.shape[0] != n_nodes or self.terrain.shape[0] != n_nodes:
+            raise ValueError(
+                f"Static grid size ({self.terrain.shape[0]}) does not match state node "
+                f"count (ges={n_nodes}, anal={anal_features.shape[0]}); terrain/slmask "
+                f"grid no longer lines up with state rows.")
+        static_ctx = torch.stack([self.terrain, self.slmask], dim=1)
+
+        # Encoder input from ges
+        ges_aux = ges_data["features_aux"].float()
+        ges_valid_mask = ges_data["features_valid_mask"].float()
+        ges_meta = ges_data.get("features_meta")
+        ges_meta = ges_meta.float() if ges_meta is not None and torch.is_tensor(ges_meta) else None
+        data[node_type_input].x = torch.cat([build_conventional_input_x(
+            ges_features, ges_aux, ges_valid_mask, features_meta=ges_meta), static_ctx, ], dim=1, )
+
+        ges_lat = ges_data["lat_deg"]
+        ges_lon = ges_data["lon_deg"]
+        ei_enc, ea_enc = self._obs_to_mesh_edges(ges_lat, ges_lon, o2m=True)
+        if ei_enc.numel() == 0:
+            raise ValueError(
+                "No state encoder edges; try increasing cutoff_factor.")
+        data[node_type_input, "to", "mesh"].edge_index = ei_enc
+        data[node_type_input, "to", "mesh"].edge_attr = ea_enc
+
+        # Decoder target from anal. Default: residual formulation, y = anal - ges (DA
+        # increment); at inference, full_prediction = ges_background + model_output.
+        # With --target_is_anal: y = anal directly, no residual/background
+        # add-back.
+        anal_valid_mask = anal_data["features_valid_mask"].bool()
+        anal_aux = anal_data["features_aux"].float()
+        anal_meta = anal_data.get("features_meta")
+
+        if anal_meta is not None and torch.is_tensor(anal_meta):
+            data[node_type_target].x = torch.cat(
+                [anal_meta.float(), anal_aux, static_ctx], dim=1)
+        else:
+            data[node_type_target].x = torch.cat([anal_aux, static_ctx], dim=1)
+        if self.target_is_anal:
+            # full analysis field, no residual formulation
+            target = anal_features
+        else:
+            target = anal_features - ges_features
+            logger.debug(
+                f"DA increment stats — mean: {target.mean():.4f}, "
+                f"std: {target.std():.4f}, "
+                f"min: {target.min():.4f}, "
+                f"max: {target.max():.4f} "
+                f"(if std << 0.1, consider normalizing by std(increment) instead of std(field))")
+            if self.normalize_increment:
+                target = (target - self.increment_mean) / self.increment_std
+                # Stored so downstream code (e.g. analyze_outputs.py) can invert:
+                # anal_norm = ges + (y * increment_std + increment_mean)
+                data[node_type_target].increment_mean = self.increment_mean
+                data[node_type_target].increment_std = self.increment_std
+            # background; add to model output at inference
+            data[node_type_target].ges = ges_features
+        # anal, or increment (anal - ges) optionally rescaled
+        data[node_type_target].y = target
+        data[node_type_target].valid_mask = anal_valid_mask
+        data[node_type_target].num_nodes = anal_features.shape[0]
+
+        anal_lat = anal_data["lat_deg"]
+        anal_lon = anal_data["lon_deg"]
+        ei_dec, ea_dec = self._obs_to_mesh_edges(anal_lat, anal_lon, o2m=False)
+        data["mesh", "to", node_type_target].edge_index = ei_dec
+        data["mesh", "to", node_type_target].edge_attr = ea_dec
+        data[node_type_target].pos = torch.stack(
+            [torch.tensor(anal_lon, dtype=torch.float),
+             torch.tensor(anal_lat, dtype=torch.float)],
+            dim=1,
+        )
+
+        # Optional: k-NN neighbor graph among state target nodes themselves (not
+        # mesh <-> target), used only by the auxiliary --gradient_loss_weight term
+        # to score value differences across neighboring grid cells. Gated behind
+        # the flag so the KDTree build cost is only paid when the loss is
+        # enabled.
+        if float(getattr(self.args, "gradient_loss_weight", 0.0) or 0.0) > 0:
+            grad_ei = self._build_grid_gradient_edges(anal_lon, anal_lat)
+            data[node_type_target, "grad", node_type_target].edge_index = grad_ei
+        return True
+
+    def _build_grid_gradient_edges(
+            self,
+            lon_deg,
+            lat_deg,
+            k: int = 4) -> torch.Tensor:
+        """
+        k-NN neighbor graph over the state target grid's own nodes (lon/lat),
+        used by the --gradient_loss_weight auxiliary loss. Cached per dataset
+        instance (keyed by node count) since the regional grid is the same
+        physical set of points for every sample.
+        """
+        n = len(lon_deg)
+        cache = getattr(self, "_grad_edge_cache", None)
+        if cache is not None and cache[0] == n:
+            return cache[1]
+        if n == 0:
+            edge_index = torch.empty((2, 0), dtype=torch.long)
+        else:
+            xy = np.stack([np.asarray(lon_deg), np.asarray(lat_deg)], axis=1)
+            tree = scipy.spatial.KDTree(xy)
+            k_query = min(k + 1, n)
+            _, neighbor_idx = tree.query(xy, k=k_query)
+            if k_query == 1:
+                edge_index = torch.empty((2, 0), dtype=torch.long)
+            else:
+                neighbor_idx = np.atleast_2d(neighbor_idx)
+                src = np.repeat(np.arange(n), k_query - 1)
+                dst = neighbor_idx[:, 1:].reshape(-1)
+                edge_index = torch.tensor(
+                    np.stack([src, dst]), dtype=torch.long)
+        self._grad_edge_cache = (n, edge_index)
+        return edge_index
+
+    def _create_empty_state_nodes(
+            self,
+            data: HeteroData,
+            ges_cfg: Dict) -> None:
+        """Placeholder empty nodes for state when ges/anal data is unavailable."""
+        node_type_input = f"state_{_STATE_GES}_input"
+        node_type_target = target_node_type("state", _STATE_GES, 0, 1)
+
+        # ges and anal share the same field dimensions
+        ges_dim = ges_cfg.get("target_dim", 0)
+        anal_dim = ges_dim
+        anal_num_meta = len(ges_cfg.get("metadata", []))
+        # input: features + valid_mask + aux + static context  (mirrors
+        # build_conventional_input_x + static_ctx)
+        input_dim = ges_dim + ges_dim + FEATURES_AUX_DIM + STATIC_CONTEXT_DIM
+        target_context_dim = anal_num_meta + FEATURES_AUX_DIM + STATIC_CONTEXT_DIM
+
+        data[node_type_input].x = torch.empty(
+            (0, input_dim), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_index = torch.empty(
+            (2, 0), dtype=torch.long)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty(
+            (0, 4), dtype=torch.float32)
+        data[node_type_target].y = torch.empty(
+            (0, anal_dim), dtype=torch.float32)    # anal/increment placeholder
+        if not self.target_is_anal:
+            data[node_type_target].ges = torch.empty(
+                (0, ges_dim), dtype=torch.float32)   # background placeholder
+        if self.normalize_increment:
+            data[node_type_target].increment_mean = self.increment_mean
+            data[node_type_target].increment_std = self.increment_std
+        data[node_type_target].valid_mask = torch.empty(
+            (0, anal_dim), dtype=torch.bool)
+        data[node_type_target].num_nodes = 0
+        data[node_type_target].x = torch.empty(
+            (0, target_context_dim), dtype=torch.float32)
+        data["mesh", "to", node_type_target].edge_index = torch.empty(
+            (2, 0), dtype=torch.long)
+        data["mesh", "to", node_type_target].edge_attr = torch.empty(
+            (0, 4), dtype=torch.float32)
+        data[node_type_target].pos = torch.empty((0, 2), dtype=torch.float32)
+        if float(getattr(self.args, "gradient_loss_weight", 0.0) or 0.0) > 0:
+            data[node_type_target, "grad", node_type_target].edge_index = torch.empty(
+                (2, 0), dtype=torch.long)
+
+
 def make_graph_dataset(
     data_path: str,
     start_date: str,
@@ -520,11 +945,14 @@ def make_graph_dataset(
 
     Supported values:
     * ``"regional"``           – RegionalGraphDataset (target at t+1 … t+k)
+    * ``"regional_da"`` – DARegionalGraphDataset (target at same t, with state ges/anal)
     * ``"global"``      – GlobalGraphDataset
     """
     _MAP = {
         "regional": RegionalGraphDataset,
         "regional_rrfs": RegionalGraphDataset,
+        "regional_da": DARegionalGraphDataset,
+        "global": GlobalGraphDataset,
     }
     cls = _MAP.get(args.exp_type)
     if cls is None:

@@ -39,7 +39,7 @@ done
 #EXP_NAME="regional_smoke"
 #EXP_NAME="regional_standard"
 #EXP_NAME="da_standard"
-EXP_NAME="da_increment_standard"
+EXP_NAME="da_anal_standard"
 #EXP_NAME="longrun_standard"
 #EXP_NAME="baseline_8nodes"
 #EXP_NAME="medium_hidden_256"
@@ -48,7 +48,7 @@ EXP_NAME="da_increment_standard"
 #EXP_NAME="longrun_hidden_layers_1"
 RANK=0
 ANALYSIS_NAME="my_analysis"
-DEBUG_BASE_DIR="/scratch3/NCEPDEV/da/Xin.C.Jin/git/ocelot3/debug_outputs"
+DEBUG_BASE_DIR="/scratch3/NCEPDEV/da/Xin.C.Jin/git/ocelot/gnn_model/REGIONAL/debug_outputs"
 
 # List of instruments to analyze
 INSTRUMENTS=(

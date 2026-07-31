@@ -625,7 +625,7 @@ Examples:
 
   # With custom base directory
   python -m ocelot.plot_training_metrics \\
-      --base_dir /scratch3/NCEPDEV/da/Xin.C.Jin/git/staging/ocelot3/logs \\
+      --base_dir /scratch3/NCEPDEV/da/Xin.C.Jin/git/staging/ocelot/logs \\
       --exp_name baseline_standard
 
   # Using explicit metrics_csv path (overrides base_dir)
@@ -648,7 +648,7 @@ Examples:
     parser.add_argument(
         '--base_dir',
         type=str,
-        default='/scratch3/NCEPDEV/da/Xin.C.Jin/git/staging/ocelot3/logs',
+        default='/scratch3/NCEPDEV/da/Xin.C.Jin/git/staging/ocelot/logs',
         help='Base directory containing experiment subdirectories (default: logs)')
     parser.add_argument(
         '--metrics_csv',

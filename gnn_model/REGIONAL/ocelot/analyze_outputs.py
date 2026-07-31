@@ -749,7 +749,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--debug_base_dir', type=str,
         default=(
-            '/scratch3/NCEPDEV/da/Xin.C.Jin/git/ocelot3/debug_outputs'
+            '/scratch3/NCEPDEV/da/Xin.C.Jin/git/ocelot/gnn_model/REGIONAL/debug_outputs'
         ),
         help='Base directory for debug outputs'
     )
