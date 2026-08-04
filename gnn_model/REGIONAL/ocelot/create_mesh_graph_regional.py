@@ -367,8 +367,7 @@ def create_regional_mesh_from_corners(
     Returns: same dict as create_regional_mesh.
     """
     NX = 3
-    levels = mesh_levels if mesh_levels is not None else getattr(
-        args, "mesh_splits", 2)
+    levels = mesh_levels if mesh_levels is not None else getattr(args, "levels", 2)
     if levels is None:
         levels = 2
     # Shape must be >= 3^(levels+1) so nlev >= levels+1 and mesh_levels >=
