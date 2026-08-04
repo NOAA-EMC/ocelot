@@ -43,13 +43,22 @@ from plot_instrument_channel_heatmaps import (
 
 # ── Data source configuration ─────────────────────────────────────────────────
 
+def _radiosonde_csv_dir(season: str) -> Path:
+    """Resolve a radiosonde season csv dir, preferring the canonical
+    ``fsoi_outputs/seasonal_fixed`` location but falling back to the legacy
+    repo-root ``seasonal_fixed`` layout when that is where the data lives."""
+    primary = _GNN_MODEL / "FSOI" / "fsoi_outputs" / "seasonal_fixed" / f"radiosonde_{season}" / "csv"
+    legacy = _OCELOT / "seasonal_fixed" / f"radiosonde_{season}" / "csv"
+    return legacy if (legacy.is_dir() and not primary.is_dir()) else primary
+
+
 TARGETS = {
     "radiosonde": {
         "label": "Radiosonde verification (T, T_d, u, v)",
         "csv_dirs": [
-            _OCELOT / "seasonal_fixed" / "radiosonde_jan2025" / "csv",
-            _OCELOT / "seasonal_fixed" / "radiosonde_apr2025" / "csv",
-            _OCELOT / "seasonal_fixed" / "radiosonde_oct2025" / "csv",
+            _radiosonde_csv_dir("jan2025"),
+            _radiosonde_csv_dir("apr2025"),
+            _radiosonde_csv_dir("oct2025"),
         ],
         "seasons": ["Jan 2025", "Apr 2025", "Oct 2025"],
     },

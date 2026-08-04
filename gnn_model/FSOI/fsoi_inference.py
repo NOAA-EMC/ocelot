@@ -816,10 +816,14 @@ def compute_fsoi_for_pair(
                 per_level_results = []
                 scatter_saved = False
                 for mr in raw_results:
-                    # Broadcast metric target pressure for all instruments
+                    # Broadcast metric target pressure for all instruments.
+                    # Surface targets have no pressure level (p_idx is None), so
+                    # skip the broadcast: satellites then aggregate per-channel
+                    # without a bogus target level (avoids torch.tensor([None])).
                     meta_m = dict(metadata)
-                    meta_m['_target_pressure_level'] = torch.tensor([mr['p_idx']])
-                    meta_m['_target_pressure_hpa'] = torch.tensor([mr['p_hpa']])
+                    if mr.get('p_idx') is not None:
+                        meta_m['_target_pressure_level'] = torch.tensor([mr['p_idx']])
+                        meta_m['_target_pressure_hpa'] = torch.tensor([mr['p_hpa']])
 
                     df_ch = aggregate_fsoi_by_channel(
                         mr['fsoi_values'],

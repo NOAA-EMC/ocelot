@@ -37,10 +37,18 @@ from plot_instrument_channel_heatmaps import (  # noqa: E402
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
+def _radiosonde_csv_dir(season: str) -> Path:
+    """Prefer the canonical fsoi_outputs/seasonal_fixed layout, falling back to
+    the legacy repo-root seasonal_fixed layout when that is where data lives."""
+    primary = _GNN_MODEL / "FSOI" / "fsoi_outputs" / "seasonal_fixed" / f"radiosonde_{season}" / "csv"
+    legacy = _OCELOT / "seasonal_fixed" / f"radiosonde_{season}" / "csv"
+    return legacy if (legacy.is_dir() and not primary.is_dir()) else primary
+
+
 SEASONAL_CSV_DIRS = [
-    _OCELOT / "seasonal_fixed" / "radiosonde_jan2025" / "csv",
-    _OCELOT / "seasonal_fixed" / "radiosonde_apr2025" / "csv",
-    _OCELOT / "seasonal_fixed" / "radiosonde_oct2025" / "csv",
+    _radiosonde_csv_dir("jan2025"),
+    _radiosonde_csv_dir("apr2025"),
+    _radiosonde_csv_dir("oct2025"),
 ]
 
 SEASON_LABELS = ["Jan 2025", "Apr 2025", "Oct 2025"]
@@ -140,7 +148,7 @@ def main() -> None:
     df_combined = load_and_combine(SEASONAL_CSV_DIRS)
 
     # Prepare aggregate (reuse existing logic from plot_instrument_channel_heatmaps)
-    agg, value_col, title_suffix = _prepare_aggregate(df_combined, basis=args.basis)
+    agg, value_col, title_suffix, verification_target = _prepare_aggregate(df_combined, basis=args.basis)
 
     seasons_used = ", ".join(SEASON_LABELS[: len(SEASONAL_CSV_DIRS)])
     title_suffix = f"Averaged across {seasons_used}"
@@ -166,6 +174,7 @@ def main() -> None:
             value_col=value_col,
             title_suffix=title_suffix,
             mode=args.mode,
+            verification_target=verification_target,
         )
         print(f"  Saved: {out.name}")
 
