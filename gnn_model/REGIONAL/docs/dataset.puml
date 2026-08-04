@@ -1,0 +1,49 @@
+@startuml
+!theme vibrant
+title Data Loading Flowchart
+
+start
+
+:**Initialization & Setup** \n Generates list of all possible time samples;
+note right
+    This generates a master list of all samples.
+    Each sample contains a unique bin name (e.g., 'bin_123')
+    and its corresponding weekly data prefix, which is used
+    to easily locate the correct Zarr file on disk.
+end note
+
+while (For each batch \n requests a batch of indices) is (true)
+
+    while (For each index in batch) is (true)
+
+        :__getitem__ (index);
+        :Get time bin & week string for the index;
+                :Call TwoWeekZarrLoader.get_data_for_bin();
+        note right
+            **TwoWeekZarrLoader**
+            Lazily loads and caches weekly data from Zarr stores.
+            This avoids re-reading and re-processing the same
+            data files repeatedly, improving efficiency.
+        end note
+        if (Is week's data in cache?) then (no)
+            :Load and process all Zarr files for that week;
+
+        endif
+        :Get specific bin data from cache;
+
+        :Add node features & targets to HeteroData;
+
+        :Return single HeteroData graph;
+
+    endwhile
+
+
+        :DataLoader collects all HeteroData objects for the batch;
+
+endwhile
+
+
+:Yield Batched Graph to Model;
+
+stop
+@enduml

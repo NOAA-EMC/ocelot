@@ -1,0 +1,114 @@
+# Regional / URMA Experiment Configuration File (YAML format)
+# This file defines regional and URMA training experiments.
+# Split from experiment_configs.yaml — global experiments remain there.
+#
+# Each experiment can specify:
+# - Resource allocation (nodes, gpus_per_node, time)
+# - Model architecture (hidden_dim, mesh_gnn_layers, num_heads, etc.)
+# - Training parameters (batch_size, lr, max_epochs, validation_interval, etc.)
+# - Data parameters (start_date, end_date, data_path, delta_time)
+# - Inference-only: action (test | predict), load_ckpt_path, optional predict_output
+# - Early stopping: no_early_stopping (bool), early_stopping_patience (int; default in trainer is 5 if omitted)
+# - Any other parameters supported by the training script
+
+# Default values that apply to all experiments (can be overridden per experiment)
+# These are the parameters passed via command line in job scripts
+defaults:
+  # SLURM resource allocation
+  nodes: 2
+  gpus_per_node: 2
+  time: "01:00:00"
+  partition: "u1-h100"
+  # account: "gpu-emc-ai"
+  account: "gpu-ai4wp"
+
+  # Model architecture
+  hidden_dim: 128
+  mesh_gnn_layers: 8
+  num_processor_rollout_steps: 4  # latent rollout: processor applied this many times on mesh state
+  use_gat_encoder_decoder: true  # set true to use GAT for encoder/decoder instead of InteractionNet
+  gat_chunk_size: 10000
+
+  # Training parameters
+  batch_size: 2
+  lr: 0.001
+  max_epochs: 40
+  num_workers: 2
+  no_early_stopping: true
+
+  # Multi-GPU strategy
+  strategy: "ddp"
+
+  # Mesh parameters
+  mesh_splits: 5  # Icosahedral refinement splits passed to create_mesh
+
+  # Domain selection
+  exp_type: "regional"    # "regional" → RegionalGraphDataset + regional obs config; "global" → global
+  obs_config: "urma"  # obs_config variant: "default" → obs_config.py; "urma" → obs_config_urma.py
+  x_min: 233.723448  # TODO: fill in projected x-min (metres, LCC)
+  x_max: 300.957852061 # TODO: fill in projected x-max
+  y_min: 19.228976  # TODO: fill in projected y-min
+  y_max: 54.37275379  # TODO: fill in projected y-max
+
+  # Data parameters
+  start_date: "2025-02-01"
+  end_date: "2025-02-28"
+  delta_time: 1  # time step between samples in hours
+
+# Individual experiments
+# Each experiment inherits from defaults and can override any parameter
+experiments:
+
+  # ============================================================================
+  # URMA Model (RegionalHeteroObservationGraphModel)
+  # Uses 2D Cartesian (Lambert Conformal projected) mesh instead of icosahedral.
+  # Required extra args vs. global experiments:
+  #   model_path    — points to the regional class
+  #   x_min, x_max, y_min, y_max  — projected grid bounding box (metres, LCC)
+  #   mesh_feature_dim: 2  (Cartesian (x,y) node features, not spherical)
+  #   cutoff_factor / num_neighbors  — obs-mesh radius + KNN fallback
+  # Submit filter: bash submit_experiments_from_yaml.sh - urma_
+  # ============================================================================
+
+  urma_smoke:
+    description: "Regional (RRFS 15km LCC) quick smoke run for debugging"
+    exp_type: "regional"
+    obs_config: "urma"
+    model_path: "ocelot.hetero_observation_interaction_regional.RegionalHeteroObservationGraphModel"
+    data_path: "/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/diag_urma/"
+    mesh_feature_dim: 2
+    cutoff_factor: 0.67
+    num_neighbors: 4
+    levels: 2
+    hierarchical: false
+    nodes: 2
+    gpus_per_node: 1
+    time: "00:30:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.001
+    max_epochs: 3
+    limit_val_batches: 0.2
+
+  urma_standard:
+    description: "Regional (RRFS 15km LCC) standard training run"
+    exp_type: "regional"
+    obs_config: "urma"
+    model_path: "ocelot.hetero_observation_interaction_regional.RegionalHeteroObservationGraphModel"
+    data_path: "/scratch3/NCEPDEV/stmp/Xin.C.Jin/data/ocelot/data_v6/diag_urma/"
+    mesh_feature_dim: 2
+    cutoff_factor: 0.67
+    num_neighbors: 4
+    levels: null
+    hierarchical: false
+    nodes: 2
+    gpus_per_node: 2
+    time: "08:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.0001
+    max_epochs: 40
+    limit_val_batches: 0.15
+    no_early_stopping: true

@@ -1,0 +1,493 @@
+# Experiment Configuration File (YAML format)
+# This file defines multiple training experiments with full control over parameters
+#
+# Each experiment can specify:
+# - Resource allocation (nodes, gpus_per_node, time)
+# - Model architecture (hidden_dim, mesh_gnn_layers, num_heads, etc.)
+# - Training parameters (batch_size, lr, max_epochs, validation_interval, etc.)
+# - Data parameters (start_date, end_date, data_path, delta_time)
+# - Inference-only: action (test | predict), load_ckpt_path, optional predict_output
+# - Early stopping: no_early_stopping (bool), early_stopping_patience (int; default in trainer is 5 if omitted)
+# - Any other parameters supported by the training script
+
+# Hierarchical mesh + processor (optional; used when experiment sets hierarchical: true)
+#   hierarchical: true
+#   hierarchical_processor_type: interaction | transformer   # default interaction
+#   mesh_splits: 6              # icosahedral splits for create_mesh
+#   levels: 4                   # number of hierarchy levels to keep (≤ mesh_splits + 1)
+#   processor_window / processor_depth / processor_heads / processor_dropout / spatial_mixing_steps
+#   no_processor_causal_mask: true   → pass --no_processor_causal_mask (transformer only)
+#   no_processor_cross_scale: true   → pass --no_processor_cross_scale (transformer only)
+#   processor_attn_chunk_size: 1024    → chunk MultiheadAttention along nodes (avoid CUDA errors on huge meshes)
+# Submit filter examples:
+#   bash submit_experiments_from_yaml.sh - hier_
+#   bash submit_experiments_from_yaml.sh - hier_interaction_smoke --dry-run
+
+# Default values that apply to all experiments (can be overridden per experiment)
+# These are the parameters passed via command line in job scripts
+defaults:
+  # SLURM resource allocation
+  nodes: 2
+  gpus_per_node: 2
+  time: "01:00:00"
+  partition: "u1-h100"
+  # account: "gpu-emc-ai"
+  account: "gpu-ai4wp"
+  
+  # Model architecture
+  hidden_dim: 128
+  mesh_gnn_layers: 8
+  num_processor_rollout_steps: 4  # latent rollout: processor applied this many times on mesh state
+  use_gat_encoder_decoder: true  # set true to use GAT for encoder/decoder instead of InteractionNet
+  gat_chunk_size: 10000
+  
+  # Training parameters
+  batch_size: 2
+  lr: 0.001
+  max_epochs: 40
+  num_workers: 2
+  no_early_stopping: true
+  
+  # Multi-GPU strategy
+  strategy: "ddp"
+
+  # Domain selection
+  exp_type: "global"    # "regional" → RegionalGraphDataset + regional obs config; "global" → global
+  obs_config: "default"  # obs_config variant: "default" → obs_config.py; "urma" → obs_config_urma.py
+
+  # Data parameters
+  start_date: "2024-01-01"
+  end_date: "2024-12-01"
+  delta_time: 12  # time step between samples in hours
+
+# Individual experiments
+# Each experiment inherits from defaults and can override any parameter
+experiments:
+  
+  # ============================================================================
+  # Quick Tests
+  # ============================================================================
+  
+  quick_train:
+    description: "Quick training run for debugging (30 minutes)"
+    nodes: 2
+    time: "00:30:00"
+    max_epochs: 5
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+
+  # ============================================================================
+  # Inference-only (test / predict) — no training
+  # Set data_path, dates, and load_ckpt_path to real paths before submitting.
+  # Submit filter examples:
+  #   bash submit_experiments_from_yaml.sh - test
+  #   bash submit_experiments_from_yaml.sh - inference_predict
+  # max_epochs is ignored by train_hetero_model for test/predict but kept for YAML/submit compatibility.
+  # (Experiment key `quick_train` avoids substring clash with filter "test".)
+  # ============================================================================
+
+  test:
+    description: "trainer.test only: runs test_dataloader, loads weights from checkpoint"
+    nodes: 1
+    gpus_per_node: 1
+    time: "01:00:00"
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    max_epochs: 1
+    action: test
+    load_ckpt_path: "/path/to/checkpoint.ckpt"
+    data_path: "/path/to/data"
+    start_date: "2024-04-01"
+    end_date: "2024-05-30"
+
+  inference_predict_example:
+    description: "predict only: runs predict_dataloader, saves .pt on rank 0 (see --predict_output)"
+    nodes: 1
+    gpus_per_node: 1
+    time: "01:00:00"
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    max_epochs: 1
+    action: predict
+    load_ckpt_path: "/path/to/checkpoint.ckpt"
+    predict_output: "/path/to/my_predictions.pt"
+    data_path: "/path/to/data"
+    start_date: "2024-04-01"
+    end_date: "2024-05-30"
+
+  # ============================================================================
+  # Early stopping (maps to --no_early_stopping / --early_stopping_patience)
+  # Submit: bash submit_experiments_from_yaml.sh - train_no_early_stop
+  #         bash submit_experiments_from_yaml.sh - train_early_stop_patience
+  # ============================================================================
+
+  train_no_early_stop:
+    description: "Training without EarlyStopping (run full max_epochs unless stopped elsewhere)"
+    nodes: 2
+    time: "02:00:00"
+    max_epochs: 40
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    no_early_stopping: true
+
+  train_early_stop_patience:
+    description: "Training with EarlyStopping patience=10 epochs on val_loss (default is 5)"
+    nodes: 2
+    time: "02:00:00"
+    max_epochs: 40
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    early_stopping_patience: 10
+
+  # ============================================================================
+  # Autoregressive multi-target-bin tests (num_target_bins = k > 1)
+  # Default model path: AR forward + teacher forcing on y for feedback encode.
+  # Use no_obs_autoregressive: true for parallel decode (single mesh, all horizons).
+  # Use no_obs_ar_teacher_forcing: true to feed back predictions instead of y.
+  # Submit filter examples: bash submit_experiments_from_yaml.sh - ar_k
+  # ============================================================================
+
+  ar_k2_teacher_default:
+    description: "AR smoke test: k=2 targets, default AR + teacher forcing on prior y"
+    nodes: 2
+    time: "00:45:00"
+    max_epochs: 3
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    limit_val_batches: 0.2
+    num_target_bins: 2
+
+  ar_k3_teacher_default:
+    description: "AR smoke test: k=3 horizons, default AR + teacher forcing"
+    nodes: 2
+    time: "01:00:00"
+    max_epochs: 3
+    batch_size: 1
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    limit_val_batches: 0.15
+    num_target_bins: 3
+
+  ar_k2_parallel_decode:
+    description: "k=2 targets but no_obs_autoregressive (one encode/processor, parallel decoders)"
+    nodes: 2
+    time: "00:45:00"
+    max_epochs: 3
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    limit_val_batches: 0.2
+    num_target_bins: 2
+    no_obs_autoregressive: true
+
+  ar_k2_pred_feedback:
+    description: "k=2 AR with prediction feedback (no teacher forcing on encode_obs_to_mesh)"
+    nodes: 2
+    time: "00:45:00"
+    max_epochs: 3
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    limit_val_batches: 0.2
+    num_target_bins: 2
+    no_obs_ar_teacher_forcing: true
+
+  ar_k5_pred_feedback:
+    description: "k=2 AR with prediction feedback (no teacher forcing on encode_obs_to_mesh)"
+    nodes: 2
+    time: "08:00:00"
+    max_epochs: 3
+    batch_size: 1
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.001
+    limit_val_batches: 0.2
+    num_target_bins: 5
+    no_obs_ar_teacher_forcing: true    
+  # ============================================================================
+  # Hierarchical mesh (multi-level icosahedral + up/down edges)
+  # Requires train_hetero_model support for --hierarchical, mesh_splits, levels.
+  # Submit: bash submit_experiments_from_yaml.sh - hier_
+  # ============================================================================
+
+  hier_interaction_smoke:
+    description: "Hierarchical mesh + HierarchicalProcessor (InteractionNet stack), short smoke run"
+    nodes: 2
+    time: "04:00:00"
+    max_epochs: 5
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.0001
+    limit_val_batches: 0.2
+    hierarchical: true
+    hierarchical_processor_type: interaction
+    mesh_splits: 6
+    levels: 4
+
+  hier_transformer_smoke:
+    description: "Hierarchical mesh + HierarchicalSlidingWindowTransformer (temporal window + cross-scale)"
+    nodes: 2
+    time: "04:30:00"
+    max_epochs: 5
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.0001
+    limit_val_batches: 0.2
+    hierarchical: true
+    hierarchical_processor_type: transformer
+    mesh_splits: 6
+    levels: 4
+    processor_window: 4
+    processor_depth: 2
+    processor_heads: 4
+    processor_dropout: 0.0
+    spatial_mixing_steps: 1
+
+  hier_transformer_ablation:
+    description: "Hierarchical transformer: no causal mask, no cross-scale (ablation)"
+    nodes: 2
+    time: "04:30:00"
+    max_epochs: 5
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    lr: 0.0001
+    limit_val_batches: 0.2
+    hierarchical: true
+    hierarchical_processor_type: transformer
+    mesh_splits: 6
+    levels: 4
+    processor_window: 6
+    processor_depth: 2
+    processor_heads: 4
+    processor_dropout: 0.1
+    spatial_mixing_steps: 1
+    no_processor_causal_mask: true
+    no_processor_cross_scale: true
+
+  hier_interaction_fewer_levels:
+    description: "Hierarchical InteractionNet with 3 mesh levels (smaller graphs)"
+    nodes: 2
+    time: "04:45:00"
+    max_epochs: 5
+    batch_size: 2
+    hidden_dim: 128
+    mesh_gnn_layers: 6
+    lr: 0.0001
+    limit_val_batches: 0.25
+    hierarchical: true
+    hierarchical_processor_type: interaction
+    mesh_splits: 5
+    levels: 3
+
+  # ============================================================================
+  # Baseline Experiments
+  # ============================================================================
+  
+  baseline_standard:
+    description: "Long training run on 1-year dataset (single experiment)"
+    nodes: 2
+    time: "8:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.0001
+    max_epochs: 5
+    limit_val_batches: 0.15  # Use only 1/3 of validation batches for faster validation
+  
+  baseline_4nodes:
+    description: "Long training run on 1-year dataset (single experiment)"
+    nodes: 4
+    time: "8:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.0001
+    max_epochs: 5
+    limit_val_batches: 0.4  # Use only 1/3 of validation batches for faster validation
+
+  baseline_debug:
+    description: "Long training run on 1-year dataset (single experiment)"
+    nodes: 2
+    time: "1:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.0001
+    max_epochs: 5
+    limit_val_batches: 0.4 # Use only 1/3 of validation batches for faster validation
+
+  # ============================================================================
+  # Medium-Scale Experiments (Parameter Variations)
+  # ============================================================================
+  medium_hidden_256:
+    description: "Long training run on 1-year dataset (single experiment)"
+    nodes: 2
+    time: "8:00:00"
+    hidden_dim: 256
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.0005
+    max_epochs: 5
+    limit_val_batches: 0.15  # Use only 1/3 of validation batches for faster validation
+
+  medium_mesh_16:
+    description: "Long training run on 1-year dataset (single experiment)"
+    nodes: 2
+    time: "8:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 16
+    batch_size: 2
+    lr: 0.0005
+    max_epochs: 5
+    limit_val_batches: 0.15  # Use only 1/3 of validation batches for faster validation
+
+  # medium_p1_std:
+  #   description: "Medium model - larger hidden dim (256)"
+  #   nodes: 2
+  #   time: "12:00:00"
+  #   hidden_dim: 256
+  #   mesh_gnn_layers: 8
+  #   batch_size: 2
+  #   lr: 0.001
+  #   max_epochs: 50
+  
+  # medium_p1_8n:
+  #   description: "Medium model - larger hidden dim (256) with 8 nodes"
+  #   nodes: 8
+  #   time: "04:00:00"
+  #   hidden_dim: 256
+  #   mesh_gnn_layers: 8
+  #   batch_size: 2
+  #   lr: 0.001
+  #   max_epochs: 50
+  
+  # medium_p2_std:
+  #   description: "Medium model - deeper GNN (16 layers)"
+  #   nodes: 2
+  #   time: "12:00:00"
+  #   hidden_dim: 128
+  #   mesh_gnn_layers: 16
+  #   batch_size: 2
+  #   lr: 0.001
+  #   max_epochs: 50
+  
+  # medium_p2_8n:
+  #   description: "Medium model - deeper GNN (16 layers) with 8 nodes"
+  #   nodes: 8
+  #   time: "04:00:00"
+  #   hidden_dim: 128
+  #   mesh_gnn_layers: 16
+  #   batch_size: 2
+  #   lr: 0.001
+  #   max_epochs: 50
+  
+  # medium_b_std:
+  #   description: "Medium model - both larger dim and deeper (256x16)"
+  #   nodes: 2
+  #   time: "16:00:00"
+  #   hidden_dim: 256
+  #   mesh_gnn_layers: 16
+  #   batch_size: 2
+  #   lr: 0.001
+  #   max_epochs: 50
+  
+  # medium_b_8n:
+  #   description: "Medium model - both larger dim and deeper (256x16) with 8 nodes"
+  #   nodes: 8
+  #   time: "08:00:00"
+  #   hidden_dim: 256
+  #   mesh_gnn_layers: 16
+  #   batch_size: 2
+  #   lr: 0.001
+  #   max_epochs: 50
+  
+  # ============================================================================
+  # Ablation Studies
+  # ============================================================================
+  
+  ablation_lr_high:
+    description: "Ablation - higher learning rate"
+    nodes: 2
+    time: "08:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.005
+    max_epochs: 50
+  
+  ablation_lr_low:
+    description: "Ablation - lower learning rate"
+    nodes: 2
+    time: "08:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.0001
+    max_epochs: 50
+  
+  ablation_batch_size:
+    description: "Ablation - larger batch size"
+    nodes: 2
+    time: "08:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 4
+    lr: 0.001
+    max_epochs: 50
+  
+  ablation_validation_freq:
+    description: "Ablation - more frequent validation"
+    nodes: 2
+    time: "08:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.001
+    validation_interval: 32
+    max_epochs: 50
+  
+  # ============================================================================
+  # Memory Profiling Experiments
+  # ============================================================================
+  
+  profile_memory:
+    description: "Profile memory usage during training"
+    nodes: 2
+    time: "02:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.001
+    max_epochs: 10
+    monitor_memory: true
+    memory_log_interval: 5
+  
+  profile_performance:
+    description: "Profile performance with PyTorch profiler"
+    nodes: 2
+    time: "02:00:00"
+    hidden_dim: 128
+    mesh_gnn_layers: 8
+    batch_size: 2
+    lr: 0.001
+    max_epochs: 10
+    profile: true
+
