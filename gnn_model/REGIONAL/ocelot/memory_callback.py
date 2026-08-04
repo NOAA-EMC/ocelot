@@ -124,7 +124,6 @@ class CombinedMemoryCallback(Callback):
         print("=" * 80)
 
         for gpu_id in range(num_gpus):
-            torch.cuda.set_device(gpu_id)
 
             # Get memory stats
             allocated = torch.cuda.memory_allocated(gpu_id) / (1024**3)  # GB
