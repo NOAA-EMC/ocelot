@@ -12,8 +12,7 @@ from torch.utils.data import Subset, DataLoader
 from ocelot.graph_dataset import GraphDataset, make_graph_dataset
 
 
-print("Using torch_geometric version", torch_geometric.__version__)
-print("PyG DataLoader:", PyGDataLoader)
+# NOTE: Avoid import-time side effects; log versions from the training entrypoint if needed.
 
 
 def collate_skip_none(batch):
