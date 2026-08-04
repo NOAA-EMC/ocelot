@@ -322,10 +322,9 @@ def create_regional_mesh(xy, args):
     nleaf = NX ** nlev
 
     mesh_levels = nlev - 1
-    levels_arg = getattr(args, "mesh_splits", None)
+    levels_arg = getattr(args, "levels", None)
     if levels_arg is not None:
-        mesh_levels = min(mesh_levels, levels_arg)
-
+        mesh_levels = min(mesh_levels, int(levels_arg))
     logger.info(
         f"[regional mesh] nlev={nlev}, nleaf={nleaf}, mesh_levels={mesh_levels}")
 
