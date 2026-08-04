@@ -1,16 +1,14 @@
 # FSOI Configuration - Aircraft Observations Impact Study
 # Objective:
 #   Measure how ALL observation types impact forecast error of AIRCRAFT
-#   verification targets: temperature, specific humidity, u/v wind at
+#   verification targets: temperature, u/v wind at
 #   flight levels (pressure-stratified).
 #
 # Scientific notes:
 # - Aircraft obs span the upper troposphere (~200-850 hPa); pressure
 #   stratification is enabled to diagnose vertical structure of impact.
 # - Area weighting is enabled for fair global comparison.
-# - Aircraft humidity is NOT masked (aircraft is the verification target here).
-#   Compare to radiosonde config where aircraft humidity is masked because
-#   the model's aircraft q representation may be degraded.
+# - Aircraft has no humidity channel in observation_config (features are T, U, V).
 # - Finite-difference check is enabled (10 samples).
 
 forecast:
@@ -19,7 +17,7 @@ forecast:
   # Decode/score only aircraft verification targets
   target_instruments: ["aircraft"]
 
-  # All aircraft channels: T, specific_humidity, u_wind, v_wind
+  # All aircraft channels: T, u_wind, v_wind
   target_variables: "all"
 
   target_pressure_levels: "all"
@@ -55,8 +53,7 @@ data:
   save_per_obs_impacts: false
   store_full_tensors: false
 
-  # Do NOT mask aircraft humidity: aircraft is the verification target here.
-  # (Contrast with radiosonde config where aircraft q is masked as an input.)
+  # No aircraft humidity channel exists in observation_config; no masking needed.
   feature_masks: {}
 
 memory:
@@ -116,6 +113,6 @@ experiment:
   description: |
     FSOI analysis: how do all observation types impact forecast error scored
     at AIRCRAFT verification targets?
-    Variables: temperature, specific_humidity, u_wind, v_wind.
+    Variables: temperature, u_wind, v_wind.
     Pressure-stratified by flight level (~200-850 hPa).
-    Area-weighted; aircraft humidity NOT masked (aircraft is the target).
+    Area-weighted.

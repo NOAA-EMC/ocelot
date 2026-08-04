@@ -41,9 +41,8 @@ def map_channels_to_pressure(df, instrument='radiosonde'):
 
     For aircraft:
         Channel 1: temperature
-        Channel 2: humidity (specific humidity)
-        Channel 3: u_wind
-        Channel 4: v_wind
+        Channel 2: u_wind
+        Channel 3: v_wind
 
     NOTE: Current FSOI doesn't stratify by actual pressure levels,
     only by channel (variable type). This function prepares the data
@@ -61,9 +60,8 @@ def map_channels_to_pressure(df, instrument='radiosonde'):
     elif instrument == 'aircraft':
         channel_map = {
             1: 'temperature',
-            2: 'humidity',
-            3: 'u_wind',
-            4: 'v_wind'
+            2: 'u_wind',
+            3: 'v_wind'
         }
     else:
         return df

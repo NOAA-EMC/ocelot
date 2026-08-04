@@ -40,7 +40,101 @@ from __future__ import annotations
 import torch
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from typing import Dict, List, Optional
+
+
+def _mesh_channel_names(mesh_instrument: str, n_channels: int) -> np.ndarray:
+    """Human-readable channel labels for saved mesh OSE fields."""
+    try:
+        from fsoi_utils import _default_target_channel_names
+        mapping = _default_target_channel_names(mesh_instrument, n_channels)
+    except Exception:
+        mapping = {i: f"channel_{i + 1}" for i in range(n_channels)}
+    return np.asarray([mapping.get(i, f"channel_{i + 1}") for i in range(n_channels)])
+
+
+def _save_ose_spatial_fields(
+    output_dir,
+    control_diag: dict,
+    denied_diag: dict,
+    pair_idx: int,
+    prev_bin: str,
+    curr_bin: str,
+    lead_step: int,
+    denied_instruments: List[str],
+    mesh_instrument: str,
+    mesh_pressure_level_idx: Optional[int],
+    ea_control: float,
+    ea_denied: float,
+    ose_impact: float,
+) -> str:
+    """Save per-node mesh OSE error-difference fields for physical case studies."""
+    control_sq = np.asarray(control_diag.get("sq_error"), dtype=np.float32)
+    denied_sq = np.asarray(denied_diag.get("sq_error"), dtype=np.float32)
+    if control_sq.shape != denied_sq.shape or control_sq.size == 0:
+        raise ValueError(
+            f"Control/denied spatial error shape mismatch: "
+            f"{control_sq.shape} vs {denied_sq.shape}"
+        )
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    pressure_hpa = np.nan
+    pressure_tag = "plevNA"
+    if mesh_pressure_level_idx is not None:
+        pressure_tag = f"pidx{int(mesh_pressure_level_idx):02d}"
+        try:
+            from fsoi_utils import STANDARD_PRESSURE_LEVELS
+            pressure_hpa = float(STANDARD_PRESSURE_LEVELS[int(mesh_pressure_level_idx)])
+            pressure_tag = f"{int(pressure_hpa)}hPa"
+        except Exception:
+            pass
+
+    denied_tag = "_".join(sorted(denied_instruments)) or "unknown"
+    safe_denied = "".join(c if c.isalnum() or c in "_-" else "_" for c in denied_tag)
+    out_file = out_dir / (
+        f"ose_spatial_pair{pair_idx:04d}_{safe_denied}_"
+        f"{mesh_instrument}_{pressure_tag}.npz"
+    )
+
+    valid_mask = control_diag.get("valid_mask")
+    if valid_mask is None:
+        valid_mask = np.isfinite(control_sq) & np.isfinite(denied_sq)
+    lat = control_diag.get("lat")
+    lon = control_diag.get("lon")
+
+    np.savez_compressed(
+        out_file,
+        lat=np.asarray(lat, dtype=np.float32) if lat is not None else np.asarray([]),
+        lon=np.asarray(lon, dtype=np.float32) if lon is not None else np.asarray([]),
+        control_sq_error=control_sq,
+        denied_sq_error=denied_sq,
+        error_diff=(control_sq - denied_sq).astype(np.float32),
+        valid_mask=np.asarray(valid_mask, dtype=bool),
+        area_weight=np.asarray(control_diag.get("area_weight"), dtype=np.float32)
+                    if control_diag.get("area_weight") is not None else np.asarray([]),
+        channel_names=_mesh_channel_names(mesh_instrument, control_sq.shape[1]),
+        pair_idx=np.asarray(pair_idx),
+        prev_bin=np.asarray(prev_bin),
+        curr_bin=np.asarray(curr_bin),
+        lead_step=np.asarray(lead_step),
+        denied_instruments=np.asarray(",".join(sorted(denied_instruments))),
+        mesh_instrument=np.asarray(mesh_instrument),
+        mesh_pressure_level_idx=np.asarray(
+            -1 if mesh_pressure_level_idx is None else int(mesh_pressure_level_idx)
+        ),
+        mesh_pressure_hpa=np.asarray(pressure_hpa, dtype=np.float32),
+        ea_control=np.asarray(ea_control, dtype=np.float64),
+        ea_denied=np.asarray(ea_denied, dtype=np.float64),
+        ose_impact=np.asarray(ose_impact, dtype=np.float64),
+        error_diff_convention=np.asarray(
+            "full/control squared error minus denied squared error; positive means denial improves locally"
+        ),
+    )
+    print(f"[OSE] Saved spatial error-difference fields: {out_file}")
+    return str(out_file)
 
 
 def compute_ose_for_pair(
@@ -63,6 +157,11 @@ def compute_ose_for_pair(
     pair_idx: int,
     curr_bin: str,
     prev_bin: str,
+    gfs_reference: Optional[torch.Tensor] = None,
+    mesh_instrument: str = "radiosonde",
+    mesh_pressure_level_idx: Optional[int] = None,
+    init_time_unix: Optional[int] = None,
+    spatial_output_dir: Optional[str] = None,
 ) -> dict:
     """Compute single-cycle OSE impact for one time pair.
 
@@ -80,7 +179,11 @@ def compute_ose_for_pair(
     -------
     dict with per-(pair, instrument) OSE impact and comparison metadata.
     """
-    from fsoi_utils import replace_batch_inputs, compute_forecast_error
+    from fsoi_utils import (
+        replace_batch_inputs,
+        compute_forecast_error,
+        compute_forecast_error_on_mesh,
+    )
     from fsoi_utils import prune_batch_targets_inplace
 
     device = next(model.parameters()).device
@@ -104,6 +207,30 @@ def compute_ose_for_pair(
         target_pressure_levels=target_pressure_levels,
         loss_reduction=loss_reduction,
     )
+    use_mesh_ose = gfs_reference is not None and init_time_unix is not None
+    save_spatial = bool(spatial_output_dir) and use_mesh_ose
+
+    def _compute_error(batch_for_error, return_spatial: bool = False):
+        if use_mesh_ose:
+            out = compute_forecast_error_on_mesh(
+                model=model,
+                batch=batch_for_error,
+                gfs_reference=gfs_reference,
+                mesh_instrument=mesh_instrument,
+                forecast_lead_step=forecast_lead_step,
+                init_time_unix=init_time_unix,
+                use_area_weights=use_area_weights,
+                loss_reduction=loss_reduction,
+                return_diagnostics=return_spatial,
+                enable_gradients=False,
+            )
+            if return_spatial:
+                loss, diag = out
+                return float(loss.item()), diag
+            return float(out.item()), None
+
+        return float(compute_forecast_error(
+            model, batch_for_error, **shared_kwargs).item()), None
 
     # ── Control run: ea with full xa (recomputed for scale consistency) ──────
     # The caller may pass an ea_control derived from a stratified sum (e.g. sum
@@ -116,8 +243,10 @@ def compute_ose_for_pair(
     replace_batch_inputs(curr_batch_ctrl, xa, observation_config,
                          replace_indices=subsample_indices)
     with torch.no_grad():
-        ea_control_fresh = float(compute_forecast_error(
-            model, curr_batch_ctrl, **shared_kwargs).item())
+        ea_control_fresh, control_diag = _compute_error(
+            curr_batch_ctrl,
+            return_spatial=save_spatial,
+        )
     torch.cuda.empty_cache()
 
     if abs(ea_control) > 1e-12:
@@ -141,8 +270,10 @@ def compute_ose_for_pair(
     replace_batch_inputs(curr_batch_ose, xa_ose, observation_config,
                          replace_indices=subsample_indices)
     with torch.no_grad():
-        ea_denied = float(compute_forecast_error(
-            model, curr_batch_ose, **shared_kwargs).item())
+        ea_denied, denied_diag = _compute_error(
+            curr_batch_ose,
+            return_spatial=save_spatial,
+        )
     torch.cuda.empty_cache()
 
     # OSE impact: negative means denied instrument was detrimental (its removal
@@ -150,6 +281,27 @@ def compute_ose_for_pair(
     # Sign convention: ose_impact < 0 = detrimental (matches FSOI > 0 = detrimental
     # after negation — see compare_ose_vs_fsoi).
     ose_impact = ea_denied - ea_control_fresh
+
+    spatial_npz = ""
+    if save_spatial and control_diag and denied_diag:
+        try:
+            spatial_npz = _save_ose_spatial_fields(
+                output_dir=spatial_output_dir,
+                control_diag=control_diag,
+                denied_diag=denied_diag,
+                pair_idx=pair_idx,
+                prev_bin=prev_bin,
+                curr_bin=curr_bin,
+                lead_step=forecast_lead_step,
+                denied_instruments=present_denied,
+                mesh_instrument=mesh_instrument,
+                mesh_pressure_level_idx=mesh_pressure_level_idx,
+                ea_control=ea_control_fresh,
+                ea_denied=ea_denied,
+                ose_impact=ose_impact,
+            )
+        except Exception as save_err:
+            print(f"[OSE] WARNING: spatial field save failed for pair {pair_idx}: {save_err}")
 
     return {
         'pair_idx': pair_idx,
@@ -162,6 +314,10 @@ def compute_ose_for_pair(
         'ose_impact': ose_impact,
         'ose_sign': 'helpful' if ose_impact > 0 else 'detrimental',
         'ose_relative_impact': ose_impact / (abs(ea_control_fresh) + 1e-12),
+        'verification_target': 'mesh' if use_mesh_ose else 'obs',
+        'mesh_instrument': mesh_instrument if use_mesh_ose else '',
+        'mesh_pressure_level_idx': mesh_pressure_level_idx if use_mesh_ose else '',
+        'ose_spatial_npz': spatial_npz,
     }
 
 

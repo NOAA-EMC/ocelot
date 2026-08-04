@@ -29,10 +29,17 @@
 #   FSOI_OUTPUT_DIR     output directory
 #   DATA_PATH           path to v7 dataset
 #   CONFIG_FILE         FSOI config yaml (default: fsoi_config_radiosonde_all.yaml)
+#   FSOI_VERIFICATION_TARGET  obs or mesh (default: obs)
+#   GFS_ROOT            GFS analysis root for mesh verification
+#   MESH_INSTRUMENT     radiosonde or surface_obs (default: radiosonde)
+#   MESH_PRESSURE_LEVEL_IDX pressure index for mesh radiosonde verification (default: 4 = 500 hPa)
+#   OSE_SAVE_SPATIAL_FIELDS 1 to save per-node full-minus-denied OSE fields
+#   OSE_SPATIAL_PAIR_INDICES space-separated pair indices to save (default: 0)
 #
 # Usage:
 #   sbatch FSOI/scripts/run_fsoi_ose.sh
 #   OSE_INSTRUMENTS="atms amsua" sbatch FSOI/scripts/run_fsoi_ose.sh
+#   FSOI_VERIFICATION_TARGET=mesh OSE_SAVE_SPATIAL_FIELDS=1 sbatch FSOI/scripts/run_fsoi_ose.sh
 # ============================================================================
 
 set -e
@@ -77,6 +84,12 @@ echo "[PATH] Working dir: $(pwd)"
 CKPT="${CHECKPOINT_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 CONFIG_FILE="${CONFIG_FILE:-FSOI/configs/fsoi_config_radiosonde_all.yaml}"
+FSOI_VERIFICATION_TARGET="${FSOI_VERIFICATION_TARGET:-obs}"
+GFS_ROOT="${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}"
+MESH_INSTRUMENT="${MESH_INSTRUMENT:-radiosonde}"
+MESH_PRESSURE_LEVEL_IDX="${MESH_PRESSURE_LEVEL_IDX:-4}"
+OSE_SAVE_SPATIAL_FIELDS="${OSE_SAVE_SPATIAL_FIELDS:-0}"
+OSE_SPATIAL_PAIR_INDICES="${OSE_SPATIAL_PAIR_INDICES:-0}"
 
 # Parse denied instruments (default: atms)
 OSE_INSTRUMENTS="${OSE_INSTRUMENTS:-atms}"
@@ -111,6 +124,14 @@ echo "[CKPT]    $CKPT"
 echo "[CONFIG]  $CONFIG_FILE"
 echo "[DATES]   $START_DATE → $END_DATE"
 echo "[DENIED]  $OSE_INSTRUMENTS"
+echo "[VERIFY]  $FSOI_VERIFICATION_TARGET"
+if [ "$FSOI_VERIFICATION_TARGET" = "mesh" ]; then
+    echo "[MESH]    instrument=$MESH_INSTRUMENT pressure_idx=$MESH_PRESSURE_LEVEL_IDX"
+    echo "[GFS]     $GFS_ROOT"
+fi
+if [ "$OSE_SAVE_SPATIAL_FIELDS" = "1" ]; then
+    echo "[SPATIAL] save pairs: $OSE_SPATIAL_PAIR_INDICES"
+fi
 echo "[OUTPUT]  $OUTPUT_DIR"
 echo ""
 
@@ -129,6 +150,17 @@ for inst in $OSE_INSTRUMENTS; do
     OSE_ARGS="$OSE_ARGS $inst"
 done
 
+EXTRA_ARGS="--verification_target $FSOI_VERIFICATION_TARGET"
+if [ "$FSOI_VERIFICATION_TARGET" = "mesh" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --gfs_root $GFS_ROOT"
+    EXTRA_ARGS="$EXTRA_ARGS --mesh_instrument $MESH_INSTRUMENT"
+    EXTRA_ARGS="$EXTRA_ARGS --mesh_pressure_level_idx $MESH_PRESSURE_LEVEL_IDX"
+fi
+if [ "$OSE_SAVE_SPATIAL_FIELDS" = "1" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --ose_save_spatial_fields"
+    EXTRA_ARGS="$EXTRA_ARGS --ose_spatial_pair_indices $OSE_SPATIAL_PAIR_INDICES"
+fi
+
 python FSOI/fsoi_inference.py \
     --checkpoint    "$CKPT" \
     --config        "$CONFIG_FILE" \
@@ -137,6 +169,7 @@ python FSOI/fsoi_inference.py \
     --end_date      "$END_DATE" \
     --output_dir    "$OUTPUT_DIR" \
     --diagnostics \
+    $EXTRA_ARGS \
     --ose_instruments $OSE_ARGS \
     2>&1 | tee "FSOI/logs/fsoi_ose_${SLURM_JOB_ID}.log"
 

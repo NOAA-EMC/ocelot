@@ -64,8 +64,8 @@ data:
   output_dir: "./FSOI/fsoi_outputs/radiosonde_allvars_impact"
   save_per_obs_impacts: false
 
-  feature_masks:
-    aircraft: [specificHumidity]
+  # Aircraft has no humidity channel in observation_config (features: T, U, V).
+  feature_masks: {}
 
   store_full_tensors: false
 

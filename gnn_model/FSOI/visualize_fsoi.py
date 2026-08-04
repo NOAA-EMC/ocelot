@@ -179,7 +179,7 @@ def plot_pressure_instrument_heatmap(df_ch: pd.DataFrame, output_dir: Path, top_
 
     This requires pressure-stratified output (pressure_hpa or pressure_level_idx).
     """
-    print("Creating pressure × instrument relative contribution heatmap...")
+    print("Creating pressure x instrument relative contribution heatmap...")
     if df_ch is None or df_ch.empty:
         print("  Skipping: no channel data")
         return
@@ -266,7 +266,7 @@ def plot_pressure_instrument_heatmap(df_ch: pd.DataFrame, output_dir: Path, top_
 
 
 def plot_pressure_instrument_heatmaps_by_variable(df_ch: pd.DataFrame, output_dir: Path, top_n: int = 20):
-    """One heatmap per target variable: pressure (y) × instrument (x)."""
+    """One heatmap per target variable: pressure (y) x instrument (x)."""
     if df_ch is None or df_ch.empty:
         return
     if 'target_variable' not in df_ch.columns or df_ch['target_variable'].isna().all():
@@ -358,7 +358,7 @@ def plot_pressure_instrument_heatmaps_by_variable(df_ch: pd.DataFrame, output_di
 
 def plot_variable_pressure_combined_heatmap(df_ch: pd.DataFrame, output_dir: Path, top_n: int = 20):
     """Combined heatmap with y-axis = (target_variable, pressure_hpa) pairs and x-axis = instrument."""
-    print("Creating combined (variable, pressure) × instrument heatmap...")
+    print("Creating combined (variable, pressure) x instrument heatmap...")
     if df_ch is None or df_ch.empty:
         print("  Skipping: no channel data")
         return
@@ -479,9 +479,9 @@ def plot_innovation_vs_fsoi_scatter(df_scatter: pd.DataFrame, output_dir: Path, 
         print("  Skipping: empty after cleaning")
         return
 
-    # Normalize innovation per instrument for comparability
+    # Normalize innovation per instrument for comparability (vectorized for speed on large seasonal files)
     inst_std = df.groupby('instrument')['innovation'].std().replace(0, np.nan)
-    df['innovation_norm'] = df.apply(lambda r: r['innovation'] / inst_std.get(r['instrument'], np.nan), axis=1)
+    df['innovation_norm'] = df['innovation'] / df['instrument'].map(inst_std)
     df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['innovation_norm', 'fsoi'])
     if df.empty:
         print("  Skipping: empty after normalization")
@@ -501,8 +501,8 @@ def plot_innovation_vs_fsoi_scatter(df_scatter: pd.DataFrame, output_dir: Path, 
         else:
             ax.hexbin(sub['innovation_norm'], sub['fsoi'], gridsize=60, bins='log', cmap='viridis')
         ax.set_title(inst)
-        ax.set_xlabel('Normalized Innovation (δx / σ)')
-        ax.set_ylabel('FSOI (δx ⊙ (ga+gb))')
+        ax.set_xlabel('Normalized Innovation (dx / sigma)')
+        ax.set_ylabel('FSOI (dx * (ga+gb))')
         ax.grid(True, alpha=0.2)
 
     # Hide unused axes
@@ -940,9 +940,9 @@ def create_summary_table(df_inst, output_dir):
         f.write("  - sum_impact_scaled: estimated full total when decoder subsampling was used\n")
         f.write("  - positive_frac: % of obs that increased error\n")
         f.write("  - Large absolute total impact: high impact instrument\n")
-        f.write("  - innovation_*: Magnitude of δx (analysis - background)\n")
+        f.write("  - innovation_*: Magnitude of dx (analysis - background)\n")
         f.write("  - gradient_*: Magnitude of adjoint (ga+gb)\n")
-        f.write("  - alignment_cosine: +1 aligned, -1 opposed between δx and gradient\n")
+        f.write("  - alignment_cosine: +1 aligned, -1 opposed between dx and gradient\n")
 
     print(f"  Saved: {output_dir / 'summary_statistics.csv'}")
     print(f"  Saved: {output_dir / 'summary_statistics.txt'}")

@@ -1,18 +1,14 @@
 # FSOI Outputs Guide
 
-**What is FSOI?**
-FSOI (Forecast Sensitivity to Observations) answers the question: *"How much did each observation type improve — or worsen — the model's forecast?"*
+This guide is a **reference for interpreting the files a run produces** — the output
+directory layout and a column-by-column description of every CSV and plot. For the
+**methodology** (what FSOI is, the formula derivation, gradient sign logic, validation
+theory, and the OSE concept), see [FSOI_Explanation.md](../FSOI_Explanation.md). For the
+**scientific findings and rankings**, see [FSOI_FINAL_FINDINGS.md](FSOI_FINAL_FINDINGS.md).
 
-For each pair of time steps, the pipeline computes:
-- **xa** — the analysis: the real observation values at the current time (the truth / verified state)
-- **xb** — the background: the GNN's forecast at the current time, made without seeing current observations (the prior)
-- **ga, gb** — the gradients of forecast error with respect to xa and xb
-- **FSOI_i = 0.5 × (xa_i − xb_i) · (ga_i + gb_i)** — the estimated impact of observation i
-
-`xa − xb` is the **analysis increment**: how much the real observations differ from what the GNN predicted. Large increments mean the GNN was far from truth and observations carried a lot of information.
-
-Negative FSOI = observation reduced forecast error = **beneficial**.
-Positive FSOI = observation increased forecast error = **detrimental**.
+In brief: **FSOI_i = 0.5 × (xa_i − xb_i) · (ga_i + gb_i)** estimates each observation's
+impact, where `xa` is the analysis, `xb` the background, and `ga, gb` the forecast-error
+gradients. Negative FSOI = **beneficial** (reduced error); positive = **detrimental**.
 
 ---
 
@@ -43,7 +39,7 @@ flowchart TD
     CLOS --> CLOS1{Global closure ratio?}
     CLOS1 -->|0.85 – 1.15| CLOS2[PASS: linear approx holds\nQuantitative results reliable]
     CLOS1 -->|1.15 – 1.5| CLOS3[WARN: mild nonlinearity\nRankings reliable, magnitudes approximate]
-    CLOS1 -->|> 1.5| CLOS4[FAIL: large nonlinearity\nRankings qualitative only\nOur result: 1.524]
+    CLOS1 -->|> 1.5| CLOS4[FAIL: large nonlinearity\nRankings qualitative only]
 
     C --> HLTH[**STEP 5: System Health**\nevaluation/fsoi_system_health.csv]
     HLTH --> HLTH1{helpful_fraction?}
@@ -98,7 +94,7 @@ FSOI/fsoi_weights_mesh/                   ← Primary weights (use these)
 
 ## Step 1 — Gradient Validation (Three-Tier)
 
-Gradient correctness is verified using three complementary tests that together cover all instrument types regardless of observation count.
+Gradient correctness is verified using three complementary tests that together cover all instrument types regardless of observation count. For the *theory* behind these tiers (why float32 SKIPs, what the Rademacher directional test proves), see the Validation Framework section of [FSOI_Explanation.md](../FSOI_Explanation.md); the tables below focus on the output columns and status flags.
 
 ---
 
@@ -122,8 +118,6 @@ Perturbs a single observation by ε, reruns the model, checks whether `(e(x+ε) 
 | **WARN** | Match within 5% | Proceed — minor rounding |
 | **SKIP** | Per-obs gradient ~10⁻⁸; ε×gradient ~10⁻¹⁰ below float32 ULP — indistinguishable from zero by design | Run Steps 1b and 1c |
 | **FAIL** | Gradient is wrong | Stop |
-
-**Our results:** Radiosonde **WARN** (1.5%). All satellites **SKIP** (float32 precision limit — expected).
 
 ---
 
@@ -230,10 +224,6 @@ These plots check whether the background (previous forecast) is behaving sensibl
 
 **`background_quality_summary.png`** — Summary heatmap: normalized RMSE per instrument and channel. Green = background close to observations. Red = large departure.
 
-### Our results
-
-ATMS channels: normalized RMSE 9–22%. Radiosonde innovation RMS = 3.21σ (large — observations strongly disagree with background). Surface_obs innovation RMS = 4.01σ. These large innovations are the root cause of the closure failure (Step 4).
-
 ---
 
 ## Step 3 — FSOI Numbers (the core output)
@@ -298,11 +288,11 @@ where `ea` = forecast error with the full analysis and `eb` = forecast error wit
 | `mean_sum_fsoi` | Average total FSOI across pairs |
 | `mean_ea_minus_eb` | Average actual error reduction |
 
-### Our results
+### Interpreting the closure ratio
 
-Global closure ratio = **1.524 (FAIL)**. This means the actual observation impact is ~52% larger than FSOI's linear estimate. This is caused by the 3–4σ innovations (radiosonde, surface_obs) — when the analysis departs far from the background, higher-order nonlinear terms become large and FSOI's linear formula misses them.
+A ratio well above 1.0 means the actual observation impact is larger than FSOI's linear estimate, caused by large (3–4σ) innovations — when the analysis departs far from the background, higher-order nonlinear terms become significant and the linear formula misses them.
 
-**This does not invalidate the rankings.** The sign agreement across pairs is high (>88% for most instruments). Rankings are qualitatively correct; magnitudes are approximate.
+**A failing closure ratio does not invalidate the rankings.** Sign agreement across pairs stays high, so rankings are qualitatively correct; magnitudes are approximate.
 
 ---
 
@@ -321,10 +311,6 @@ A single-row overall health check of the FSOI run.
 | `mean_beneficial_fraction_of_ea` | How large is the total helpful FSOI relative to the forecast error? |
 | `n_pairs_warn` | Number of pairs that triggered a warning |
 | `system_flag` | OK / WARN |
-
-### Our results
-
-`helpful_fraction = 82.2%` (OK). `system_flag = OK`. The model is assimilating observations beneficially in the majority of cases.
 
 ---
 
@@ -357,15 +343,6 @@ The global closure test above collapses everything into one number. This check r
 | **WARN** | Sign agreement 55–65% — marginal |
 | **FAIL** | Sign agreement < 55% — FSOI gets the direction wrong here |
 | **INSUF** | Too few pairs to draw conclusions |
-
-### Our results
-
-- **35 LOW_SIGNAL** — signal at those levels/variables is negligible
-- **21 PASS** — u_wind throughout the troposphere is the strongest
-- **3 WARN** — borderline cases
-- **5 FAIL** — temperature 200/250 hPa, dewpoint 925 hPa: GNN analysis is *worse* than background at these levels, but FSOI incorrectly predicts improvement
-
-The 5 FAIL cells identify specific levels where the GNN's assimilation is counterproductive — a real scientific finding.
 
 ---
 
@@ -419,7 +396,7 @@ One row per time pair. Shows the total FSOI per instrument per pair — the raw 
 
 Checks that running the same pair twice gives the same FSOI. Any non-determinism (from dropout, random GPU operations) would show up here as non-zero `ea_diff` or `max_ga_diff`.
 
-In our runs this was NOT_RUN (we did not run two identical passes), so this file is populated with empty entries. It is a placeholder for future use.
+If two identical passes are not run, this file is populated with empty entries — a placeholder for future use.
 
 ---
 
@@ -561,15 +538,6 @@ The mesh-space weights (`fsoi_weights_mesh/`) verify against the GFS analysis at
 
 **Variant B** (`w ∝ |mean_impact| × reliability²`): Adds a reliability penalty. An instrument that is helpful 90% of the time gets a higher weight than one with the same mean impact but that flips between helpful and detrimental. Encourages the model to learn from consistent signals.
 
-### Weight table (mesh-space)
-
-| Instrument | Weight A | Weight B | Interpretation |
-|---|---|---|---|
-| radiosonde | 8.166 | 8.180 | Dominant — 3–4σ innovations, globally consistent |
-| aircraft | 0.154 | 0.151 | Second — reliably beneficial |
-| surface_obs | 0.117 | 0.105 | Third — net detrimental but some pairs beneficial |
-| All satellites | 0.094 | 0.094 | At minimum floor — near-zero mean impact |
-
 ---
 
 ## Quick Reference: What Does Each File Answer?
@@ -590,3 +558,166 @@ The mesh-space weights (`fsoi_weights_mesh/`) verify against the GFS analysis at
 | `fsoi_regional_summary.csv` | Which regions benefit most from observations? |
 | `ose_vs_fsoi_comparison.csv` | Does removing ATMS actually do what FSOI predicted? |
 | `fsoi_weight_summary.csv` | How should each instrument be weighted in fine-tuning? |
+
+---
+
+## Step 11 — Tail Diagnostics (99th Percentile FSOI Contribution)
+
+**Purpose:** Identify whether FSOI results are driven by typical observations or by extreme/rare events. This is critical for understanding the robustness of the signal.
+
+**Scripts:**
+- `run_tail_diagnostics.py` — Full analysis across all channels and seasons
+- `run_conventional_tail_diagnostics.py` — Detailed breakdown for conventional obs (Ch 1-5)
+- `run_tail_summary.py` — Quick reference summary
+
+### What it is
+
+For each (instrument, channel) group, the script computes:
+1. **99th percentile threshold** of |innovation| for that group
+2. **Tail FSOI** — sum of absolute FSOI where |innovation| exceeds the 99th percentile
+3. **Tail fraction** — tail FSOI / total FSOI; ranges 0.0 to 1.0
+
+A high tail fraction means the FSOI result is driven by rare, extreme observations. A low tail fraction means it's driven by typical observations (more robust).
+
+### Interpretation guide
+
+| Tail % Range | Meaning | Action |
+|---|---|---|
+| **<10%** | FSOI from typical observations (robust signal) | ✓ Use as-is |
+| **10-30%** | Moderate contribution from extreme 1% | ⚠ Report 99th percentile fraction |
+| **>30%** | FSOI heavily driven by rare observations | ⚠ Stratify by subtype; flag in results |
+| **>50%** | Extremely tail-driven (<1% of samples dominate) | ⚠ Use robust statistics (median instead of mean) |
+
+---
+
+## Step 12 — Stratification Framework (Subtype & Pressure Level)
+
+**Purpose:** Decompose FSOI by observation subtype (aircraft model, surface station type, pressure level) to understand population-specific contributions and detect cancellation artifacts.
+
+**Modules:**
+- `fsoi_utils.py` — Helper functions: `detect_aircraft_subtype()`, `detect_surface_subtype()`, `nearest_pressure_level()`, `build_stratification_key()`
+- `_tail_diagnostics_helper.py` — Functions: `compute_tail_fsoi_contribution()`, `stratified_fsoi_aggregation()`
+
+### Why stratification matters
+
+Instrument-level aggregation can hide important structure:
+
+**Example: Aircraft temperature**
+- Mixing AIRCAR and AIRCFT observations (different aircraft types with different preprocessing biases) into one channel leads to bimodal innovation distributions
+- FSOI aggregate masks the fact that one subtype is beneficial (+) while the other is detrimental (−), causing the two to partially cancel
+- Stratified FSOI reveals the true subpopulation impacts
+
+**Example: Surface wind**
+- Land stations (ADPSFC) and ship observations (SFCSHP) have different wind characteristics and assimilation behavior
+- Aggregated u_wind may show weak total impact; stratified reveals one subtype is consistently beneficial and the other detrimental
+- Allows targeted weight adjustments per subtype
+
+### Available stratification dimensions
+
+| Instrument | Dimensions | Method |
+|---|---|---|
+| Aircraft | AIRCAR vs AIRCFT | Inferred from station ID patterns or BUFR subset code |
+| Surface obs | ADPSFC vs SFCSHP | Inferred from BUFR subset code |
+| Radiosonde | Pressure level (16 standard levels: 1000–10 hPa) | Mapped via `nearest_pressure_level()` |
+| Satellites | Channel only (no subtype) | Use as-is |
+
+### Usage example
+
+```python
+from gnn_model.FSOI.fsoi_utils import build_stratification_key, detect_aircraft_subtype
+
+# Build a stratification key for aircraft temperature from AIRCAR subset
+key = build_stratification_key('aircraft', 'temperature', subtype='AIRCAR')
+# Returns: 'aircraft/temperature/AIRCAR'
+
+# Alternatively, infer from station ID:
+aircraft_type = detect_aircraft_subtype(station_id_array)
+# Returns: 'AIRCAR', 'AIRCFT', or None for each observation
+```
+
+### Output format
+
+When using stratified aggregation, the output CSV includes a `stratification_key` column:
+
+```
+instrument,variable,channel,subtype,pressure_level,sum_fsoi,mean_fsoi,n_obs
+aircraft,temperature,1,AIRCAR,,0.053,0.00015,350000
+aircraft,temperature,1,AIRCFT,,−0.027,−0.00011,220000
+surface_obs,u_wind,3,ADPSFC,,0.142,0.00089,160000
+surface_obs,u_wind,3,SFCSHP,,−0.089,−0.00044,85000
+radiosonde,temperature,1,,700,0.089,0.00042,210000
+radiosonde,temperature,1,,500,−0.012,−0.00008,195000
+```
+
+### Integration into fsoi_inference.py
+
+To enable automatic subtype detection during FSOI computation:
+
+1. Extract BUFR metadata (subset code or station ID) from observations during scatter sample collection
+2. Call `detect_aircraft_subtype()` or `detect_surface_subtype()` to tag each observation
+3. Add `subtype` column to `scatter_samples.csv`
+4. Aggregation functions use the column automatically to produce stratified outputs
+
+---
+
+## Step 13 — Conventional Obs Variable Naming
+
+**Purpose:** Replace generic channel numbers (Ch1, Ch2, Ch3, Ch4, Ch5) with physically meaningful variable names (temperature, specific_humidity, u_wind, v_wind, surface_pressure) for conventional observations.
+
+### Channel mapping
+
+**Aircraft (BUFR AIRCAR/AIRCFT):**
+
+| Channel | Variable | Units | Typical Range |
+|---|---|---|---|
+| 1 | Temperature (2 m) | K | 255–305 |
+| 2 | Specific humidity | kg/kg | 0.001–0.020 |
+| 3 | u-wind (10 m) | m/s | −30 to +30 |
+| 4 | v-wind (10 m) | m/s | −30 to +30 |
+
+**Surface observations (BUFR ADPSFC/SFCSHP):**
+
+| Channel | Variable | Units | Typical Range |
+|---|---|---|---|
+| 1 | Temperature (2 m) | K | 255–305 |
+| 2 | Specific humidity | kg/kg | 0.001–0.020 |
+| 3 | u-wind (10 m) | m/s | −30 to +30 |
+| 4 | v-wind (10 m) | m/s | −30 to +30 |
+| 5 | Surface pressure | Pa | 95,000–105,000 |
+
+**Radiosonde (BUFR ADPUPA/UPRAIR/PREPBUFR):**
+
+| Channel | Variable | Units | Typical Range | Notes |
+|---|---|---|---|---|
+| 1 | Temperature | K | 190–310 | Depends on pressure level |
+| 2 | Dewpoint temperature | K | 190–310 | Often ≤ T; indicates moisture |
+| 3 | u-wind | m/s | −50 to +50 | High aloft |
+| 4 | v-wind | m/s | −50 to +50 | High aloft |
+
+### Implementation in plots
+
+All innovation diagnostic plots now display:
+- **For conventional obs (aircraft, surface, radiosonde):** Variable name (e.g., "temperature", "u_wind")
+- **For satellites (ATMS, AMSUA, AVHRR, etc.):** Channel number (e.g., "Ch1", "Ch23") since satellite channels do not have standardized physical names
+
+Example plot titles:
+- ✓ `innovation_histograms_aircraft_temperature.png` (clear)
+- ✓ `innovation_histograms_surface_obs_u_wind.png` (clear)
+- ✓ `innovation_histograms_atms.png` (channels 1–24 labeled on plot)
+
+### Updating existing plots
+
+To regenerate innovation diagnostic plots with variable names:
+
+```bash
+python gnn_model/FSOI/plot_innovation_diagnostics.py \
+    --scatter gnn_model/FSOI/fsoi_outputs/aircraft_seasonal/aircraft_apr2025/csv/scatter_samples.csv \
+    --diag gnn_model/FSOI/fsoi_outputs/aircraft_seasonal/aircraft_apr2025/evaluation/innovation_diagnostics.csv \
+    --output gnn_model/FSOI/fsoi_outputs/aircraft_seasonal/aircraft_apr2025/figures/innovation
+```
+
+The script now:
+1. Checks if the instrument is conventional (aircraft, surface_obs, radiosonde) or satellite
+2. Maps channel numbers to variable names for conventional obs
+3. Uses generic "Ch{N}" labels for satellites
+4. Updates all four diagnostic plots (histograms, bias timeseries, background quality, skewness) with readable labels

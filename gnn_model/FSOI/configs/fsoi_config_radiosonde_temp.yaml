@@ -19,7 +19,7 @@ forecast:
   # Which radiosonde variables to include in error metric
   # Options: "all" or list of variable names
   target_variables: ["temperature"]  # Focus on temperature only
-  # If you want multiple: ["temperature", "u_wind", "v_wind", "specific_humidity"]
+  # If you want multiple: ["temperature", "dewpoint_temperature", "u_wind", "v_wind"]
 
   # Which pressure levels to include (optional filter)
   # Common levels: 1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100 hPa
@@ -55,8 +55,8 @@ data:
   save_per_obs_impacts: false  # Set to true for spatial maps (large files)
 
   # Feature masks applied at inference (zeroed before computing FSOI)
-  feature_masks:
-    aircraft: [specificHumidity]  # Zero aircraft humidity channels at inference
+  # Aircraft has no humidity channel in observation_config (features: T, U, V).
+  feature_masks: {}
 
   # Memory control: whether to store full xa/xb/ga/gb tensors
   # For long time windows, storing full tensors can consume excessive memory

@@ -18,10 +18,27 @@ import pandas as pd
 from collections import defaultdict
 
 
+SENTINEL_INNOVATION = -9.0
+SENTINEL_ATOL = 0.25
+SENTINEL_INNOVATION_LO = -12.0
+SENTINEL_INNOVATION_HI = -7.0  # widened from -8.5 to catch surface_obs leakage
+
 STANDARD_PRESSURE_LEVELS = np.array(
     [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10],
     dtype=float,
 )
+
+# BUFR subset → aircraft type mapping (AIRCAR vs AIRCFT)
+AIRCRAFT_SUBSET_MAP = {
+    'AIRCAR': 'AIRCAR',  # Direct ACARS/AMDAR reports
+    'AIRCFT': 'AIRCFT',  # Preprocessed aircraft reports
+}
+
+# BUFR subset → surface station type mapping (ADPSFC vs SFCSHP)
+SURFACE_SUBSET_MAP = {
+    'ADPSFC': 'ADPSFC',  # Land/synoptic surface observations
+    'SFCSHP': 'SFCSHP',  # Ship/ocean surface observations
+}
 
 
 def _normalize_loss_reduction(loss_reduction: str) -> str:
@@ -32,6 +49,96 @@ def _normalize_loss_reduction(loss_reduction: str) -> str:
     if reduction in {'sum', 'sse', 'total'}:
         return 'sum'
     raise ValueError(f"Unsupported FSOI loss_reduction={loss_reduction!r}; use 'mean' or 'sum'")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stratification helpers: subtype extraction for instrument×variable×subtype
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_aircraft_subtype(station_id_arr: Optional[np.ndarray], 
+                            bufr_subset: Optional[str] = None) -> Optional[str]:
+    """
+    Infer aircraft subtype (AIRCAR vs AIRCFT) from station ID patterns or BUFR subset.
+    
+    AIRCAR: Direct ACARS/AMDAR reports (e.g., station IDs starting with 'QUQ')
+    AIRCFT: Preprocessed aircraft reports (other patterns)
+    
+    Returns: 'AIRCAR', 'AIRCFT', or None if indeterminate.
+    """
+    # Try BUFR subset first
+    if bufr_subset and bufr_subset.upper() in AIRCRAFT_SUBSET_MAP:
+        return AIRCRAFT_SUBSET_MAP[bufr_subset.upper()]
+    
+    # Fallback: infer from station ID patterns
+    if station_id_arr is not None and len(station_id_arr) > 0:
+        sid = str(station_id_arr).upper() if not isinstance(station_id_arr, str) else station_id_arr.upper()
+        if 'QUQ' in sid or 'ACARS' in sid.upper():
+            return 'AIRCAR'
+        elif 'AMDAR' in sid or 'AIRCFT' in sid.upper():
+            return 'AIRCFT'
+    return None
+
+
+def detect_surface_subtype(bufr_subset: Optional[str]) -> Optional[str]:
+    """
+    Infer surface station type (ADPSFC vs SFCSHP) from BUFR subset code.
+    
+    ADPSFC: Land/synoptic surface observations
+    SFCSHP: Ship/ocean surface observations
+    
+    Returns: 'ADPSFC', 'SFCSHP', or None if indeterminate.
+    """
+    if bufr_subset:
+        subset_upper = bufr_subset.upper()
+        if subset_upper in SURFACE_SUBSET_MAP:
+            return SURFACE_SUBSET_MAP[subset_upper]
+        # Fallback: detect by name
+        if 'SHIP' in subset_upper or 'SFC' in subset_upper and 'SHIP' in subset_upper:
+            return 'SFCSHP'
+        elif 'SFC' in subset_upper or 'ADPSFC' in subset_upper:
+            return 'ADPSFC'
+    return None
+
+
+def nearest_pressure_level(pressure_hpa: np.ndarray) -> np.ndarray:
+    """
+    Map pressure values (hPa) to nearest STANDARD_PRESSURE_LEVELS for radiosonde stratification.
+    
+    Returns: array of pressure level indices (or the level value itself for downstream grouping).
+    """
+    pressure_hpa = np.asarray(pressure_hpa, dtype=np.float64)
+    nearest_levels = np.zeros(pressure_hpa.shape, dtype=int)
+    
+    for i, p in enumerate(pressure_hpa.flat):
+        if not np.isfinite(p):
+            nearest_levels.flat[i] = -1  # sentinel for invalid pressure
+        else:
+            distances = np.abs(STANDARD_PRESSURE_LEVELS - p)
+            nearest_levels.flat[i] = int(STANDARD_PRESSURE_LEVELS[np.argmin(distances)])
+    
+    return nearest_levels.reshape(pressure_hpa.shape)
+
+
+def build_stratification_key(inst: str, var: str, pressure_level: Optional[int] = None,
+                             subtype: Optional[str] = None) -> str:
+    """
+    Build a fully qualified stratification key for FSOI aggregation.
+    
+    Format: `{instrument}/{variable}` or `{instrument}/{variable}/{subtype}`
+            or `{instrument}/{variable}/{pressure_level}hPa` (radiosonde)
+    
+    Example:
+      - 'aircraft/temperature/AIRCAR'
+      - 'surface_obs/u_wind/ADPSFC'
+      - 'radiosonde/temperature/700hPa'
+    """
+    key = f"{inst}/{var}"
+    if subtype:
+        key += f"/{subtype}"
+    elif pressure_level is not None and pressure_level > 0:
+        key += f"/{pressure_level}hPa"
+    return key
+
 
 
 def _reduce_weighted_error(
@@ -110,18 +217,17 @@ def _default_target_channel_names(inst_name: str, n_channels: int) -> dict[int, 
     if inst == 'aircraft':
         base = {
             0: 'temperature',
-            1: 'specific_humidity',
-            2: 'u_wind',
-            3: 'v_wind',
+            1: 'u_wind',
+            2: 'v_wind',
         }
         return {k: v for k, v in base.items() if k < n_channels}
     if inst in ('surface_obs', 'surface', 'synop', 'metar', 'sfcship'):
         base = {
-            0: 'temperature',
-            1: 'specific_humidity',
-            2: 'u_wind',
-            3: 'v_wind',
-            4: 'surface_pressure',
+            0: 'surface_pressure',
+            1: 'temperature',
+            2: 'dewpoint_temperature',
+            3: 'u_wind',
+            4: 'v_wind',
         }
         return {k: v for k, v in base.items() if k < n_channels}
     # Fallback: keep internal tensor indices zero-based, but expose names as
@@ -135,11 +241,27 @@ def sample_innovation_vs_fsoi(
     max_points: int = 200000,
     seed: int = 0,
     obs_coords: Optional[Dict[str, Tuple]] = None,
+    xa: Optional[Dict[str, torch.Tensor]] = None,
 ) -> pd.DataFrame:
     """Return a lightweight random sample of (innovation, fsoi) pairs.
 
     This is used for innovation-vs-FSOI scatter plots without storing full tensors.
     Sample is taken across all instruments/channels available.
+
+    Sentinel masking strategy
+    -------------------------
+    Missing observation channels are filled with exactly ``SENTINEL_OBS = -9.0``
+    in normalised space by ``process_timeseries.py``.  The corresponding
+    innovation is ``xa - xb = -9.0 - xb``, which spreads across roughly
+    ``[-12, -8.5]`` because the background prediction ``xb`` varies.
+    Masking on the innovation therefore requires an ad-hoc range and still
+    leaks at the tails.
+
+    When ``xa`` (the analysis input tensor) is supplied the mask is computed
+    on the source directly: ``xa != -9.0``.  This is exact and preferred.
+    When ``xa`` is not supplied the function falls back to the range mask on
+    the innovation for backward compatibility with callers that do not have
+    ``xa`` available (e.g. post-hoc re-plotting from a saved CSV).
 
     Args:
         fsoi_values: Per-instrument FSOI tensors [N_obs, C].
@@ -150,6 +272,9 @@ def sample_innovation_vs_fsoi(
             numpy arrays of shape [N_obs], already aligned with fsoi_values
             (i.e., subsampling already applied). When provided, 'lat' and 'lon'
             columns are added to the output so scatter samples can be gridded.
+        xa: Optional dict of raw analysis input tensors [N_obs, C] from which
+            sentinel positions can be determined exactly.  Pass this whenever
+            ``xa`` is available at the call site.
     """
     if max_points is None or max_points <= 0:
         return pd.DataFrame()
@@ -169,27 +294,47 @@ def sample_innovation_vs_fsoi(
             continue
         if f.shape != innovations[inst].shape:
             continue
-        n = int(f.numel())
+        f_np = f.detach().cpu().reshape(-1).numpy()
+        inn_np = innovations[inst].detach().cpu().reshape(-1).numpy()
+
+        if xa is not None and inst in xa and xa[inst] is not None:
+            # Preferred: mask on the source tensor where sentinel was injected.
+            xa_np = xa[inst].detach().cpu().reshape(-1).numpy()
+            valid_mask = (
+                np.isfinite(f_np)
+                & np.isfinite(inn_np)
+                & ~np.isclose(xa_np, SENTINEL_OBS, atol=SENTINEL_OBS_ATOL)
+            )
+        else:
+            # Fallback: range mask on innovation (xa - xb spreads -9.0 by xb).
+            valid_mask = (
+                np.isfinite(f_np)
+                & np.isfinite(inn_np)
+                & ~((inn_np >= SENTINEL_INNOVATION_LO) & (inn_np <= SENTINEL_INNOVATION_HI))
+            )
+        valid_idx = np.flatnonzero(valid_mask)
+        n = int(valid_idx.size)
         if n <= 0:
             continue
-        avail[inst] = n
+        avail[inst] = valid_idx
         total_available += n
 
     if total_available == 0:
         return pd.DataFrame()
 
     remaining = int(max_points)
-    for inst, n in sorted(avail.items(), key=lambda kv: kv[1], reverse=True):
+    for inst, valid_idx in sorted(avail.items(), key=lambda kv: kv[1].size, reverse=True):
         if remaining <= 0:
             break
         # Proportional allocation with a minimum of 2000 for big instruments
+        n = int(valid_idx.size)
         take = int(np.ceil(max_points * (n / total_available)))
         take = int(min(max(take, 2000 if n >= 20000 else 200), remaining, n))
 
         f = fsoi_values[inst].detach().cpu().reshape(-1)
         inn = innovations[inst].detach().cpu().reshape(-1)
 
-        idx = rng.choice(n, size=take, replace=False)
+        idx = rng.choice(valid_idx, size=take, replace=False)
         # Recover channel index. Internal tensors are zero-based; report
         # human-facing channels as 1-based in CSV outputs.
         C = int(fsoi_values[inst].shape[1])
@@ -489,6 +634,8 @@ def compute_forecast_error_on_mesh(
     init_time_unix: int,
     use_area_weights: bool = True,
     loss_reduction: str = 'mean',
+    return_diagnostics: bool = False,
+    enable_gradients: bool = True,
 ) -> torch.Tensor:
     """Compute forecast error at OCELOT mesh nodes against GFS analysis.
 
@@ -515,6 +662,11 @@ def compute_forecast_error_on_mesh(
     init_time_unix   : Unix timestamp of the window end (for time conditioning).
     use_area_weights : Apply cos(lat) weighting over mesh nodes (recommended).
     loss_reduction   : 'mean' or 'sum'.
+    return_diagnostics : If True, return ``(loss, diagnostics)`` where
+                       diagnostics contains detached per-node squared errors
+                       and mesh coordinates for plotting.
+    enable_gradients : Keep gradients through the mesh forecast path. FSOI uses
+                       True; OSE diagnostics can use False.
 
     Returns
     -------
@@ -532,7 +684,8 @@ def compute_forecast_error_on_mesh(
 
     # Temporarily enable mesh feature collection without the no_grad decoder
     model.enable_mesh_pred = True
-    with torch.enable_grad():
+    grad_context = torch.enable_grad if enable_gradients else torch.no_grad
+    with grad_context():
         fwd_out = model(batch)
     model.enable_mesh_pred = original_enable_mesh
 
@@ -541,7 +694,8 @@ def compute_forecast_error_on_mesh(
     if mesh_features_per_step is None or len(mesh_features_per_step) == 0:
         print("[MeshFSOI] WARNING: model did not return mesh_features_per_step. "
               "Ensure enable_mesh_pred=True in mesh_config.yaml.")
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        zero = torch.tensor(0.0, device=device, requires_grad=enable_gradients)
+        return (zero, {}) if return_diagnostics else zero
 
     if forecast_lead_step >= len(mesh_features_per_step):
         print(f"[MeshFSOI] WARNING: requested lead_step={forecast_lead_step} "
@@ -559,7 +713,7 @@ def compute_forecast_error_on_mesh(
             "Check mesh_config.yaml variables and precompute_mesh_edges.py."
         )
 
-    with torch.enable_grad():
+    with grad_context():
         mesh_pred = model._decode_one_step_to_mesh(
             mesh_feat,
             mesh_instrument,
@@ -582,15 +736,22 @@ def compute_forecast_error_on_mesh(
     n_valid_channels = int(valid_mask.any(dim=0).sum())
     if n_valid_channels == 0:
         print("[MeshFSOI] WARNING: all GFS channels are NaN — no valid channels to score.")
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        zero = torch.tensor(0.0, device=device, requires_grad=enable_gradients)
+        return (zero, {}) if return_diagnostics else zero
 
-    sq_err = (mesh_pred - gfs_ref) ** 2  # [N_mesh, C]
-    _fdtype = sq_err.dtype
-    sq_err = sq_err * valid_mask.to(_fdtype)  # zero out NaN channels
+    sq_err_raw = (mesh_pred - gfs_ref) ** 2  # [N_mesh, C]
+    _fdtype = sq_err_raw.dtype
+    sq_err_unweighted = torch.where(
+        valid_mask,
+        sq_err_raw,
+        torch.full_like(sq_err_raw, float("nan")),
+    )
+    sq_err = sq_err_raw * valid_mask.to(_fdtype)  # zero out NaN channels
 
     # ── 4. Area weighting (cosine latitude) ──────────────────────────────────
+    edges = mesh_pred_edges[mesh_instrument]
+    area_w = None
     if use_area_weights:
-        edges = mesh_pred_edges[mesh_instrument]
         lats = edges.get('lats')
         if lats is not None:
             lat_t = torch.from_numpy(np.asarray(lats)).to(dtype=_fdtype, device=device)  # [N_mesh]
@@ -607,6 +768,22 @@ def compute_forecast_error_on_mesh(
         loss = sq_err.sum() / weights_sum.clamp(min=1.0)
     else:
         loss = sq_err.sum()
+
+    if return_diagnostics:
+        diagnostics = {
+            'sq_error': sq_err_unweighted.detach().cpu().to(torch.float32).numpy(),
+            'valid_mask': valid_mask.detach().cpu().numpy(),
+            'lat': np.asarray(edges.get('lats'), dtype=np.float32)
+                   if edges.get('lats') is not None else None,
+            'lon': np.asarray(edges.get('lons'), dtype=np.float32)
+                   if edges.get('lons') is not None else None,
+            'area_weight': area_w.detach().cpu().view(-1).to(torch.float32).numpy()
+                           if area_w is not None else None,
+            'loss': float(loss.detach().cpu().item()),
+            'mesh_instrument': mesh_instrument,
+            'forecast_lead_step': int(forecast_lead_step),
+        }
+        return loss, diagnostics
 
     return loss
 

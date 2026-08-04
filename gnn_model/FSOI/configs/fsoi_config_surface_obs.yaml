@@ -1,8 +1,8 @@
 # FSOI Configuration - Surface Observations Impact Study
 # Objective:
 #   Measure how ALL observation types impact forecast error of SURFACE OBS
-#   verification targets: 2-m temperature, specific humidity, 10-m u/v wind,
-#   and surface pressure.
+#   verification targets: surface pressure, 2-m temperature, dewpoint,
+#   and 10-m u/v wind.
 #
 # Scientific notes:
 # - Surface obs have no vertical pressure structure, so stratify_by_pressure is
@@ -11,7 +11,7 @@
 #   so cosine-latitude weights prevent geographic density from biasing totals.
 # - Finite-difference check is enabled (10 samples) to verify gradient accuracy
 #   against a tangent-linear approximation for this target type.
-# - Aircraft humidity is NOT masked here (aircraft is not the verification target).
+# - Aircraft has no humidity channel in observation_config (features: T, U, V).
 
 forecast:
   lead_steps: [0]
@@ -19,7 +19,7 @@ forecast:
   # Decode/score only surface_obs verification targets
   target_instruments: ["surface_obs"]
 
-  # All surface channels (T, q, u, v, ps)
+  # All surface channels (ps, T, Td, u, v)
   target_variables: "all"
 
   # Surface obs have no pressure level → stratify_by_pressure must be false
@@ -42,7 +42,9 @@ forecast:
   stratify_by_pressure: false
 
   # Separate backward pass per target variable enables per-variable attribution
-  # (one map/plot per surface variable).
+  # (one map/plot per surface variable: T, Td, u, v, ps). This uses the
+  # stratified path even though stratify_by_pressure is false — the per-variable
+  # kernel treats the surface target as a single level.
   stratify_by_variable: true
 
 plots:

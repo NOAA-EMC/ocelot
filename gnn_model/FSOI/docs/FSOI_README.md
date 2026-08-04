@@ -22,6 +22,30 @@ Where:
 
 **Key insight**: FSOI tells you which observations help reduce forecast error (negative FSOI = beneficial) and which increase it (positive FSOI = detrimental).
 
+## Quick Start (3 steps)
+
+For a minimal run (see the sections below for full detail):
+
+**1. Test the setup** (~1 min):
+```bash
+python FSOI/test_fsoi.py --checkpoint /path/to/model.ckpt
+```
+Expect `✓ PASS` for Config Loading, Model Loading, Gradient Computation, and FSOI Formula.
+
+**2. Configure** — set your date range and output dir in `FSOI/configs/fsoi_config.yaml`, and the checkpoint path in `FSOI/scripts/run_fsoi.sh`.
+
+**3. Run** — interactively (`python FSOI/fsoi_inference.py ...`, see Usage below) or via SLURM (`sbatch FSOI/scripts/run_fsoi.sh`).
+
+Success indicators in the log:
+```
+[FSOI] Model frozen for inference
+[FSOI Dataset] Created with N sequential pairs
+✓ FSOI computation complete for lead step 0
+Results saved to: ./FSOI/fsoi_outputs
+```
+
+**One-line summary:** FSOI tells you which observations help your forecast (negative FSOI = good) and which hurt it (positive FSOI = bad), computed from gradients of your trained model.
+
 ## Implementation Structure
 
 ### Files Created
@@ -163,6 +187,33 @@ Same as above but broken down by individual channels within each instrument.
 - **Small FSOI**: Low impact
 
 **Example**: ATMS channel 8 with sum_impact = -1500 means this channel collectively reduces forecast error by 1500 units across all observations.
+
+## Post-Processing Examples
+
+Quick plots from the output CSVs (use `sum_impact_scaled` when present, else `sum_impact`):
+
+**Total impact by instrument:**
+```python
+import pandas as pd, matplotlib.pyplot as plt
+df = pd.read_csv('FSOI/fsoi_outputs/csv/fsoi_by_instrument.csv')
+col = 'sum_impact_scaled' if 'sum_impact_scaled' in df.columns else 'sum_impact'
+df.groupby('instrument')[col].sum().sort_values().plot(kind='barh')
+plt.xlabel('Total FSOI (negative = helpful)'); plt.tight_layout()
+plt.savefig('fsoi_by_instrument.png')
+```
+
+**Impact time series:**
+```python
+df['date'] = pd.to_datetime(df['curr_bin'].str.replace('bin', '').str[:10], format='%Y%m%d%H')
+df.groupby(['date', 'instrument'])[col].sum().unstack().plot(figsize=(12, 6))
+plt.ylabel('Daily FSOI'); plt.savefig('fsoi_timeseries.png')
+```
+
+**Top-impact channels:**
+```python
+dch = pd.read_csv('FSOI/fsoi_outputs/csv/fsoi_by_channel.csv')
+print(dch.groupby(['instrument', 'channel'])['sum_impact'].sum().abs().nlargest(10))
+```
 
 ## Technical Details
 

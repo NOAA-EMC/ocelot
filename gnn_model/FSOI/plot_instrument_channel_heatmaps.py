@@ -50,16 +50,15 @@ CHANNEL_LABELS = {
     },
     "aircraft": {
         1: "temperature",
-        2: "humidity",
-        3: "u wind",
-        4: "v wind",
+        2: "u wind",
+        3: "v wind",
     },
     "surface_obs": {
-        1: "temperature",
-        2: "dewpoint",
-        3: "u wind",
-        4: "v wind",
-        5: "pressure",
+        1: "pressure",
+        2: "temperature",
+        3: "dewpoint",
+        4: "u wind",
+        5: "v wind",
     },
     "ascat": {
         1: "u wind",
@@ -79,6 +78,35 @@ DISPLAY_NAMES = {
     "surface_obs": "Surface",
     "ascat": "ASCAT",
 }
+
+
+def _ensure_target_variable(df: pd.DataFrame) -> tuple[pd.DataFrame, str, str]:
+    """Ensure a target_variable column exists.
+
+    Returns
+      df_out: dataframe with target_variable populated
+      verification_target: label used in plot title/y-axis context
+      fallback_note: text appended to title suffix when fallback is used
+    """
+    out = df.copy()
+    if "target_variable" in out.columns and out["target_variable"].notna().any():
+        return out, "Target", ""
+
+    # Fallback #1: derive target labels from target_channel if available.
+    if "target_channel" in out.columns and out["target_channel"].notna().any():
+        ch = pd.to_numeric(out["target_channel"], errors="coerce")
+        out["target_variable"] = [f"target_ch{int(v)}" if np.isfinite(v) else "target_unknown" for v in ch]
+        return out, "Target Channel", "fallback labels from target_channel"
+
+    # Fallback #2: derive pair-based labels.
+    if "pair_idx" in out.columns and out["pair_idx"].notna().any():
+        pair = pd.to_numeric(out["pair_idx"], errors="coerce")
+        out["target_variable"] = [f"pair_{int(v)}" if np.isfinite(v) else "pair_unknown" for v in pair]
+        return out, "Pair", "fallback labels from pair_idx"
+
+    # Fallback #3: single aggregated target bucket.
+    out["target_variable"] = "all_targets"
+    return out, "Aggregated", "fallback labels aggregated"
 
 
 def _resolve_csv_dir(path: Path) -> Path:
@@ -153,8 +181,9 @@ def _row_label(row: pd.Series) -> str:
     return f"{row['target_variable']} @ {p_txt}hPa"
 
 
-def _prepare_aggregate(df_ch: pd.DataFrame, basis: str) -> tuple[pd.DataFrame, str, str]:
+def _prepare_aggregate(df_ch: pd.DataFrame, basis: str) -> tuple[pd.DataFrame, str, str, str]:
     df = _ensure_pressure_hpa(df_ch)
+    df, verification_target, fallback_note = _ensure_target_variable(df)
     required = {"instrument", "channel", "target_variable", "pressure_hpa"}
     missing = required - set(df.columns)
     if missing:
@@ -185,11 +214,14 @@ def _prepare_aggregate(df_ch: pd.DataFrame, basis: str) -> tuple[pd.DataFrame, s
         value_col = "impact_sum"
         title_suffix = impact_col
 
+    if fallback_note:
+        title_suffix = f"{title_suffix}; {fallback_note}"
+
     agg["channel_label"] = [
         _channel_label(inst, ch)
         for inst, ch in zip(agg["instrument"], agg["channel_display"])
     ]
-    return agg, value_col, title_suffix
+    return agg, value_col, title_suffix, verification_target
 
 
 def _ordered_rows(agg_inst: pd.DataFrame) -> pd.DataFrame:
@@ -209,7 +241,7 @@ def plot_instrument_heatmap(
     value_col: str,
     title_suffix: str,
     mode: str,
-    verification_target: str = "Radiosonde",
+    verification_target: str = "Target",
 ) -> tuple[Path, pd.DataFrame]:
     inst_df = agg[agg["instrument"] == instrument].copy()
     if inst_df.empty:
@@ -335,7 +367,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     df_ch = pd.read_csv(csv_dir / "fsoi_by_channel.csv")
-    agg, value_col, title_suffix = _prepare_aggregate(df_ch, basis=args.basis)
+    agg, value_col, title_suffix, verification_target = _prepare_aggregate(df_ch, basis=args.basis)
 
     instruments = args.instruments or sorted(str(v) for v in agg["instrument"].dropna().unique())
     all_values = []
@@ -353,6 +385,7 @@ def main() -> None:
             value_col=value_col,
             title_suffix=title_suffix,
             mode=args.mode,
+            verification_target=verification_target,
         )
         all_values.append(values)
         print(f"Saved: {out}")

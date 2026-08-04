@@ -189,14 +189,25 @@ def _compute_innovation_diagnostics(
     for inst in xa:
         if inst not in xb:
             continue
-        dx = (xa[inst].detach().cpu() - xb[inst].detach().cpu()).float()  # [N, C]
         xa_cpu = xa[inst].detach().cpu().float()
+        dx = (xa_cpu - xb[inst].detach().cpu().float())  # [N, C]
         n_obs, n_ch = dx.shape
         for ch in range(n_ch):
             d = dx[:, ch].numpy()
             x = xa_cpu[:, ch].numpy()
             if len(d) == 0:
                 continue
+
+            # Mask sentinel observations: process_timeseries.py fills missing
+            # channels with exactly -9.0 in normalised space.  Exclude these
+            # from all statistics so they don't contaminate means / RMSE.
+            valid = ~np.isclose(x, -9.0, atol=1e-3)
+            d = d[valid]
+            x = x[valid]
+            n_valid = int(valid.sum())
+            if n_valid < 2:
+                continue
+
             mu = float(np.mean(d))
             sigma = float(np.std(d))
             rmse = float(np.sqrt(np.mean(d ** 2)))
@@ -208,7 +219,7 @@ def _compute_innovation_diagnostics(
                 'lead_step': lead_step,
                 'instrument': inst,
                 'channel': ch + 1,
-                'n_obs': n_obs,
+                'n_obs': n_valid,
                 'innovation_mean': mu,
                 'innovation_std': sigma,
                 'innovation_skewness': skew,
@@ -238,11 +249,20 @@ def _run_ose_check(
     loss_reduction: str,
     lead_step: int,
     pair_idx: int,
+    gfs_reference=None,
+    mesh_instrument: str = "radiosonde",
+    mesh_pressure_level_idx: int = None,
+    init_time_unix: int = None,
+    spatial_output_dir: str = None,
 ):
-    """Compute OSE impact and append to results['ose_records']."""
+    """Compute OSE impact and append to results['ose_records'].""" 
     from fsoi_ose import compute_ose_for_pair as _ose_pair
     print(f"[OSE] Computing denial experiment for: {ose_instruments} (pair {pair_idx})")
     try:
+        if isinstance(gfs_reference, dict):
+            gfs_tensor_for_ose = gfs_reference.get(mesh_instrument)
+        else:
+            gfs_tensor_for_ose = gfs_reference
         rec = _ose_pair(
             model=model,
             curr_batch=curr_batch,
@@ -263,6 +283,11 @@ def _run_ose_check(
             pair_idx=pair_idx,
             curr_bin=results.get('curr_bin', ''),
             prev_bin=results.get('prev_bin', ''),
+            gfs_reference=gfs_tensor_for_ose,
+            mesh_instrument=mesh_instrument,
+            mesh_pressure_level_idx=mesh_pressure_level_idx,
+            init_time_unix=init_time_unix,
+            spatial_output_dir=spatial_output_dir,
         )
         if rec:
             results['ose_records'].append(rec)
@@ -293,6 +318,8 @@ def compute_fsoi_for_pair(
     gfs_reference: dict = None,
     mesh_instrument: str = "radiosonde",
     mesh_pressure_level_idx: int = 4,
+    ose_spatial_output_dir: str = None,
+    ose_spatial_pair_indices: set = None,
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -417,7 +444,7 @@ def compute_fsoi_for_pair(
         metadata['_target_pressure_level'] = target_pressure_level
         metadata['_target_pressure_hpa'] = target_pressure_hpa
 
-        # Feature masks applied at inference (e.g., zero aircraft humidity)
+        # Feature masks applied at inference (zero selected channels by name)
         raw_mask_map = fsoi_config.get('data', {}).get('feature_masks', {}) or {}
         feature_mask_map = {}
         for inst_name, feats in raw_mask_map.items():
@@ -540,7 +567,7 @@ def compute_fsoi_for_pair(
                 lon_np = lon_np[cpu_idx]
             obs_coords[inst_name] = (lat_np, lon_np)
 
-        # Optionally zero specific channels (e.g., aircraft humidity) at inference time
+        # Optionally zero specific channels by feature name at inference time
         zero_feature_columns(xa, observation_config, feature_mask_map)
 
         # Enable gradients for xb
@@ -614,7 +641,10 @@ def compute_fsoi_for_pair(
                     use_area_weights=use_area_weights,
                     loss_reduction=loss_reduction,
                 )
-                print(f"[MESH FSOI] Using GFS mesh verification at pair {pair_idx}")
+                print(
+                    f"[MESH FSOI] Using OCELOT mesh verification "
+                    f"with GFS reference at pair {pair_idx}"
+                )
 
         # Optional: innovation diagnostics (background quality check)
         if run_diagnostics:
@@ -751,7 +781,14 @@ def compute_fsoi_for_pair(
         # (enables pressure_hpa column for ALL instruments including satellites)
         stratify_by_pressure = fsoi_config['forecast'].get('stratify_by_pressure', False)
 
-        if stratify_by_pressure:
+        # Variable stratification also uses the stratified backward-pass path.
+        # Surface targets have no vertical structure (stratify_by_pressure=False)
+        # but still need per-variable attribution (T, Td, u, v, ps); the
+        # per-variable kernel handles the no-pressure case as a single surface
+        # level, so enable the stratified path whenever either flag is set.
+        use_stratified_path = stratify_by_pressure or stratify_by_variable
+
+        if use_stratified_path:
             # ====================================================
             # STEPS 4-6 (STRATIFIED): one backward pass per level
             # ====================================================
@@ -831,6 +868,7 @@ def compute_fsoi_for_pair(
                             max_points=scatter_max_points,
                             seed=pair_idx * 1000 + int(lead_step),
                             obs_coords=obs_coords,
+                            xa=xa,  # enables exact sentinel mask (xa==-9.0) instead of range heuristic
                         )
                         if not scatter_df.empty:
                             scatter_df['pair_idx'] = pair_idx
@@ -886,6 +924,16 @@ def compute_fsoi_for_pair(
                     target_instruments, target_variables, target_pressure_levels,
                     instrument_weights, channel_weights, use_area_weights,
                     loss_reduction, lead_step, pair_idx,
+                    gfs_reference=gfs_reference,
+                    mesh_instrument=mesh_instrument,
+                    mesh_pressure_level_idx=mesh_pressure_level_idx,
+                    init_time_unix=init_time_unix,
+                    spatial_output_dir=(
+                        ose_spatial_output_dir
+                        if ose_spatial_output_dir
+                        and (ose_spatial_pair_indices is None or pair_idx in ose_spatial_pair_indices)
+                        else None
+                    ),
                 )
 
         else:
@@ -1033,6 +1081,7 @@ def compute_fsoi_for_pair(
                     max_points=scatter_max_points,
                     seed=pair_idx * 1000 + int(lead_step),
                     obs_coords=obs_coords,
+                    xa=xa,  # enables exact sentinel mask (xa==-9.0) instead of range heuristic
                 )
                 if not scatter_df.empty:
                     scatter_df['pair_idx'] = pair_idx
@@ -1094,12 +1143,22 @@ def compute_fsoi_for_pair(
                     target_instruments, target_variables, target_pressure_levels,
                     instrument_weights, channel_weights, use_area_weights,
                     loss_reduction, lead_step, pair_idx,
+                    gfs_reference=gfs_reference,
+                    mesh_instrument=mesh_instrument,
+                    mesh_pressure_level_idx=mesh_pressure_level_idx,
+                    init_time_unix=init_time_unix,
+                    spatial_output_dir=(
+                        ose_spatial_output_dir
+                        if ose_spatial_output_dir
+                        and (ose_spatial_pair_indices is None or pair_idx in ose_spatial_pair_indices)
+                        else None
+                    ),
                 )
 
         # Memory control: only store full tensors if enabled (non-stratified path)
         store_full_tensors = fsoi_config['data'].get('store_full_tensors', False)
 
-        if stratify_by_pressure:
+        if use_stratified_path:
             pass  # already stored above via per_level_results
 
         elif store_full_tensors:
@@ -1230,7 +1289,7 @@ def main():
         default="obs",
         help="Verification target for FSOI forecast error:\n"
              "  obs  (default): obs-space targets (e.g. radiosonde locations)\n"
-             "  mesh: OCELOT icosahedral mesh vs GFS analysis (global, unbiased)\n"
+             "  mesh: OCELOT icosahedral mesh vs GFS analysis (global reference)\n"
              "Mesh mode requires --gfs_root and --mesh_instrument.",
     )
     parser.add_argument(
@@ -1252,6 +1311,22 @@ def main():
         default=4,
         help="Pressure level index 0-15 for radiosonde mesh verification "
              "(0=1000hPa … 4=500hPa … 15=10hPa, default: 4=500hPa).",
+    )
+    parser.add_argument(
+        "--ose_save_spatial_fields",
+        action="store_true",
+        default=False,
+        help="When running OSE with --verification_target mesh, save per-node "
+             "control, denied, and full-minus-denied squared-error fields for "
+             "selected pairs. Use for physical case-study maps.",
+    )
+    parser.add_argument(
+        "--ose_spatial_pair_indices",
+        nargs="*",
+        type=int,
+        default=None,
+        help="Pair indices for --ose_save_spatial_fields. If spatial saving is "
+             "enabled without this option, pair 0 is saved.",
     )
     parser.add_argument(
         "--encoding_order",
@@ -1313,6 +1388,18 @@ def main():
     # Setup output directory
     output_path = setup_output_directory(fsoi_config['data']['output_dir'])
     print(f"Output directory: {output_path}")
+
+    ose_spatial_output_dir = None
+    ose_spatial_pair_indices = None
+    if args.ose_save_spatial_fields:
+        ose_spatial_output_dir = str(output_path / "evaluation" / "ose_spatial_fields")
+        if args.ose_spatial_pair_indices:
+            ose_spatial_pair_indices = set(args.ose_spatial_pair_indices)
+        else:
+            ose_spatial_pair_indices = {0}
+        print(f"[OSE] Spatial field saving enabled for pairs: "
+              f"{sorted(ose_spatial_pair_indices)}")
+        print(f"[OSE] Spatial field output: {ose_spatial_output_dir}")
 
     # Save configuration
     config_save_path = output_path / "logs" / "fsoi_config_used.yaml"
@@ -1635,6 +1722,8 @@ def main():
                 gfs_reference=gfs_reference_pair,
                 mesh_instrument=args.mesh_instrument if use_mesh_verification else "radiosonde",
                 mesh_pressure_level_idx=args.mesh_pressure_level_idx if use_mesh_verification else 4,
+                ose_spatial_output_dir=ose_spatial_output_dir,
+                ose_spatial_pair_indices=ose_spatial_pair_indices,
             )
 
             all_results.append(result)
