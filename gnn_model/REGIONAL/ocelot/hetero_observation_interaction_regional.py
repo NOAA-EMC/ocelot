@@ -5,9 +5,8 @@ Overrides create_mesh_structures() and setup_mesh() to work in 2D Cartesian
 (projected) space instead of the global icosahedral/spherical approach.
 
 Required args:
-    x_min, x_max, y_min, y_max (float): bounding box of the projected grid
-        in the native coordinate system (e.g. metres for Lambert Conformal).
-
+    x_min, x_max, y_min, y_max (float): lon/lat domain bounds in degrees
+        (projected to Cartesian (x, y) internally; see create_regional_mesh_from_corners).
 Optional args (same as global model):
     levels (int|None): max mesh levels
     hierarchical (bool): hierarchical mesh
