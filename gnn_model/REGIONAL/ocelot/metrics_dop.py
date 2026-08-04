@@ -81,9 +81,6 @@ def wmse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     entry_mse = torch.nn.functional.mse_loss(
         pred, target, reduction="none"
     )  # (..., N, d_state)
-    print("entry_mse:", entry_mse.shape)       # (..., 50974, 22)
-
-    print("pred_std:", pred_std.shape)         # (22,)
 
     print("broadcasted pred_std:",
           (pred_std[None, None, :]).shape)  # (1, 1, 22)
