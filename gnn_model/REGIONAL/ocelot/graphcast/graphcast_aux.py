@@ -95,11 +95,11 @@ def inter_mesh_connection(from_mesh, to_mesh):
     """
     Connect from_mesh to to_mesh
     """
-    kd_tree = scipy.spatial.cKDTree(to_mesh.vertices)
+    from scipy.spatial import cKDTree
+    kd_tree = cKDTree(to_mesh.vertices)
 
     # Each node on lower (from) mesh will connect to 1 or 2 on level above
-    # pylint: disable-next=protected-access
-    radius = 1.1 * gc_gc._get_max_edge_distance(from_mesh)
+    radius = 1.1 * _get_max_edge_distance(from_mesh)
     query_indices = kd_tree.query_ball_point(x=from_mesh.vertices, r=radius)
 
     from_edge_indices = []
