@@ -23,6 +23,10 @@ SENTINEL_ATOL = 0.25
 SENTINEL_INNOVATION_LO = -12.0
 SENTINEL_INNOVATION_HI = -7.0  # widened from -8.5 to catch surface_obs leakage
 
+# Sentinel value injected into raw observation (xa) space for missing channels.
+SENTINEL_OBS = SENTINEL_INNOVATION      # -9.0, exact fill value in xa
+SENTINEL_OBS_ATOL = SENTINEL_ATOL       # tolerance for matching the xa sentinel
+
 STANDARD_PRESSURE_LEVELS = np.array(
     [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10],
     dtype=float,
