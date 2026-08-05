@@ -1749,6 +1749,10 @@ def main():
             print(f"\n[ERROR] Failed to compute FSOI for pair {pair_idx}: {e}")
             import traceback
             traceback.print_exc()
+            # Reclaim GPU memory after a failure (e.g. CUDA OOM) so fragmentation
+            # does not cascade into subsequent pairs.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             continue
 
     print(f"\n✓ FSOI computation complete for {len(all_results)} pairs")
