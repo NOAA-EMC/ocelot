@@ -309,8 +309,8 @@ def write_closure_diagnostics(
                per-stratum error change with better-than-random reliability.
   FAIL       : sign_agreement < 55% — FSOI sign is indistinguishable from random
                at this stratum.  Expected causes:
-                 (a) near-zero signal (ea_p ≈ eb_p at this level/variable);
-                 (b) GNN nonlinearity at 3-4σ innovations breaks the tangent-
+                 (a) near-zero signal (ea_p ~ eb_p at this level/variable);
+                 (b) GNN nonlinearity at 3-4 sigma innovations breaks the tangent-
                      linear approximation for this stratum specifically;
                  (c) cross-level message passing means per-stratum gradients do
                      not isolate the stratum being scored.
