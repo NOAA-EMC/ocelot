@@ -14,10 +14,15 @@ Author: Azadeh Gholoubi
 """
 
 import argparse
+import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
 
 STANDARD_PRESSURE_LEVELS = [
@@ -996,6 +1001,10 @@ def main():
 
     df_inst = pd.read_csv(inst_file)
     print(f"  Loaded instrument data: {len(df_inst)} rows")
+
+    # Variable-stratified runs write one row per target_variable; average over
+    # them so instrument-level plots use the single-metric scale.
+    df_inst = collapse_target_variable_rows(df_inst)
 
     df_ch = None
     if ch_file.exists():

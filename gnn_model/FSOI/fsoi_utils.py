@@ -2271,6 +2271,44 @@ def aggregate_fsoi_by_channel(
     return pd.DataFrame(records)
 
 
+def collapse_target_variable_rows(
+    df: pd.DataFrame,
+    keys: Tuple[str, ...] = ("pair_idx", "instrument"),
+) -> pd.DataFrame:
+    """Collapse per-``target_variable`` rows back to one row per ``keys``.
+
+    Variable-stratified target runs (e.g. surface_obs) write one row per
+    ``target_variable`` — the *same* observations scored against each target
+    metric. Averaging the impact columns over ``target_variable`` reproduces the
+    single-metric scale of non-stratified runs (and keeps surface comparable to
+    radiosonde/aircraft targets); observation counts, identical across those
+    rows, are preserved. Stratification-only columns are dropped. Returns ``df``
+    unchanged when no multi-valued ``target_variable`` column is present.
+    """
+    if "target_variable" not in df.columns or df["target_variable"].nunique(dropna=True) <= 1:
+        return df
+    key_cols = [k for k in keys if k in df.columns]
+    if not key_cols:
+        return df
+    strat_cols = {
+        "target_variable", "target_channel", "p_idx", "p_hpa",
+        "ea_p", "eb_p", "ea_total", "eb_total",
+    }
+    count_cols = {
+        "n_observations", "raw_n_observations", "sampled_n_observations",
+        "n_channels", "instrument_id", "sample_scale", "is_subsampled",
+    }
+    agg: Dict[str, str] = {}
+    for col in df.columns:
+        if col in key_cols or col in strat_cols:
+            continue
+        if col in count_cols or df[col].dtype == object or df[col].dtype == bool:
+            agg[col] = "first"
+        else:
+            agg[col] = "mean"
+    return df.groupby(list(key_cols), dropna=False).agg(agg).reset_index()
+
+
 def aggregate_fsoi_by_instrument(
     fsoi_values: Dict[str, torch.Tensor],
     instrument_name_to_id: Dict[str, int],

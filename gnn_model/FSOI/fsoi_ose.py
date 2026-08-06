@@ -43,6 +43,11 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import sys
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
+
 
 def _mesh_channel_names(mesh_instrument: str, n_channels: int) -> np.ndarray:
     """Human-readable channel labels for saved mesh OSE fields."""
@@ -347,6 +352,10 @@ def compare_ose_vs_fsoi(
     fsoi = pd.read_csv(fsoi_inst_csv)
 
     impact_col = 'sum_impact_scaled' if 'sum_impact_scaled' in fsoi.columns else 'sum_impact'
+
+    # Collapse per-target_variable rows to the single-metric scale so the FSOI
+    # prediction matches the OSE error definition and the instrument ranking.
+    fsoi = collapse_target_variable_rows(fsoi)
 
     # Aggregate FSOI per (pair_idx, instrument) — sum across levels/variables
     fsoi_agg = (

@@ -42,6 +42,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
+
 try:
     import yaml
 except ImportError:
@@ -64,6 +68,7 @@ def load_and_aggregate_fsoi(fsoi_dirs: list[str], min_pairs: int = 20) -> pd.Dat
                 continue
             try:
                 df = pd.read_csv(path)
+                df = collapse_target_variable_rows(df)
                 df['_source'] = str(path)
                 frames.append(df)
                 print(f"  Loaded: {path} ({len(df)} rows, "

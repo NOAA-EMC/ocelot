@@ -16,6 +16,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import sys
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
 # Configuration
 FSOI_CSV = 'FSOI/fsoi_outputs/radiosonde_temp_impact/csv/fsoi_by_channel.csv'
@@ -74,6 +79,12 @@ def load_and_prepare_data():
     print(f"Loading data from {FSOI_CSV}...")
     df = pd.read_csv(FSOI_CSV)
     print(f"Loaded {len(df)} records")
+
+    # Average over target_variable so channel/pressure cells stay on the
+    # single-metric scale (keeps channel and pressure axes intact).
+    df = collapse_target_variable_rows(
+        df, keys=("pair_idx", "instrument", "channel", "pressure_level_idx")
+    )
 
     # Ensure pressure_hpa exists (can be synthesized from pressure_level_idx)
     df = _ensure_pressure_column(df)
