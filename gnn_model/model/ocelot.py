@@ -3,8 +3,6 @@
 This module defines the end-to-end GNN model, including observation encoders,
 latent mesh processors, target decoders, rollout logic, losses, and diagnostic
 output utilities used during training, validation, and prediction.
-
-Author: Azadeh Gholoubi
 """
 
 import os
@@ -30,6 +28,8 @@ from model.processor.sliding_window_transformer import SlidingWindowTransformer
 from model.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
 from model.mesh.hierarchical_mesh import HierarchicalMesh
 from model.processor.processor_factory import ProcessorFactory
+from configs.model_config import ModelConfig
+from configs.observation_config import ObservationConfig
 
 from utils import make_mlp
 from loss import weighted_huber_loss, weighted_mse_loss
@@ -43,7 +43,7 @@ from model.mesh.mesh_factory import MeshFactory
 def _build_instrument_map(observation_config: dict) -> dict[str, int]:
     order = []
     for group in ("satellite", "conventional"):
-        if group in observation_config:
+        if group in observation_config.keys():
             order += sorted(observation_config[group].keys())
     return {name: i for i, name in enumerate(order)}
 
@@ -82,7 +82,7 @@ def _canonical_variable_name(feature_name: str) -> str:
     return mapping.get(key, feature_name)
 
 
-class Ocelot(pl.LightningModule):
+class Ocelot(nn.Module):
     """
     A Graph Neural Network (GNN) model for processing structured spatiotemporal data.
     Key Features:
@@ -98,114 +98,63 @@ class Ocelot(pl.LightningModule):
 
     def __init__(
         self,
-        observation_config,
-        model_config,
-        optimizer_config,
-        loss_config,
-        schedule_config,
-        mesh_variable_config,
-        feature_stats=None,
-        instrument_weights=None,
-        channel_weights=None,
-        max_rollout_steps=1,
-        rollout_schedule="fixed",
-        latent_step_hours=3,
-        val_csv_enabled=True,
-        val_csv_out_dir="val_csv",
-        val_csv_num_batches=1,
-        val_csv_every_n_epochs=1,
-        val_csv_max_rows=None,
-        val_csv_sample_seed=0,
-        detect_anomaly=False,
+        model_config : ModelConfig,
+        observation_config: ObservationConfig,
         verbose=False,
-        **legacy_config,
     ):
         """
         Initializes the GNNLightning model with an encoder, processor, and decoder.
 
         Parameters:
-        input_dim (int): Number of input features per observation node (before encoding).
-        hidden_dim (int): Size of the hidden representation used in all layers.
-        target_dim (int): Number of features to predict at each target node.
-        lr (float, optional): Learning rate for the optimizer (default: 1e-4).
+        model_config (dict): Configuration dictionary for the model architecture and hyperparameters.
+        observation_config (dict): Configuration dictionary for observation features.
+        mesh_variable_config (dict): Configuration dictionary for mesh variables.
+        verbose (bool, optional): If True, enables verbose logging (default: False).
         """
         super().__init__()
 
-        hidden_dim = int(model_config['hidden_dim'])
-        mesh_arch_config = model_config['mesh']
-        encoder_config = model_config['encoder']
-        processor_config = model_config['processor']
-        decoder_config = model_config['decoder']
-        embeddings_config = model_config['embeddings']
+        self.verbose = verbose
 
-        mesh_type = mesh_arch_config['type']
-        mesh_levels = int(mesh_arch_config['levels'])
-        mesh_resolution = int(mesh_arch_config.get('splits', mesh_arch_config.get('resolution')))
+        hidden_dim = model_config.hidden_dim
+        mesh_arch_config = model_config.mesh
+        encoder_config = model_config.encoder
+        processor_config = model_config.processor
+        decoder_config = model_config.decoder
+        embeddings_config = model_config.embeddings
+
+        mesh_type = mesh_arch_config.type
+        mesh_levels = mesh_arch_config.levels
+        mesh_resolution = int(mesh_arch_config.splits if hasattr(mesh_arch_config, 'splits') else mesh_arch_config.resolution)
 
         # Normalize to int so Lightning hparams merge is stable across module/datamodule.
-        latent_step_hours = int(latent_step_hours)
-        self.verbose = verbose
-        self.detect_anomaly = detect_anomaly
-        self.feature_stats = feature_stats
-        self.save_hyperparameters()
-        self.optimizer_type = str(optimizer_config['type']).lower()
-        self.lr = float(optimizer_config['lr'])
-        self.weight_decay = float(optimizer_config['weight_decay'])
-        self.huber_delta = float(loss_config.get('delta', 0.1))
-        self.loss_type = str(loss_config['type']).lower()
-        if self.loss_type not in ("huber", "mse"):
-            raise ValueError(f"loss_type must be 'huber' or 'mse' (got: {self.loss_type!r})")
-        self.lr_schedule = str(schedule_config['type'])
-        self.warmup_pct = float(schedule_config.get('warmup_pct', 0.05))
-        self.warmup_start_factor = float(schedule_config.get('warmup_start_factor', 0.01))
-        self.min_lr = float(schedule_config.get('min_lr', 1e-6))
-        self.plateau_factor = float(schedule_config.get('factor', 0.5))
-        self.plateau_patience = int(schedule_config.get('patience', 3))
-        self.instrument_weights = instrument_weights or {}
-        self.channel_weights = channel_weights or {}
-        self.max_rollout_steps = max_rollout_steps
-        self.rollout_schedule = rollout_schedule
-        self.latent_step_hours = latent_step_hours
-
-        # Diagnostic validation CSV controls
-        self.val_csv_enabled = bool(val_csv_enabled)
-        self.val_csv_out_dir = str(val_csv_out_dir)
-        self.val_csv_num_batches = int(val_csv_num_batches)
-        self.val_csv_every_n_epochs = int(val_csv_every_n_epochs)
-        self.val_csv_max_rows = int(val_csv_max_rows) if val_csv_max_rows is not None else None
-        self.val_csv_sample_seed = int(val_csv_sample_seed)
-
-        self.scan_angle_conditioning = str(embeddings_config['scan_angle_conditioning'])
-        if self.scan_angle_conditioning not in ("pad", "project"):
-            raise ValueError(
-                f"scan_angle_conditioning must be 'pad' or 'project' (got: {self.scan_angle_conditioning!r})"
-            )
-
-        self.pressure_level_conditioning = str(embeddings_config['pressure_level_conditioning'])
-        if self.pressure_level_conditioning not in ("pad", "project"):
-            raise ValueError(
-                f"pressure_level_conditioning must be 'pad' or 'project' (got: {self.pressure_level_conditioning!r})"
-            )
+        
+        self.feature_stats = observation_config.feature_stats
+        self.instrument_weights = observation_config.instrument_weights
+        self.channel_weights = observation_config.channel_weights
+        self.latent_step_hours = model_config.latent_step_hours
+        self.scan_angle_conditioning = embeddings_config.scan_angle_conditioning
+        self.pressure_level_conditioning = embeddings_config.pressure_level_conditioning
 
         self.observation_config = observation_config
 
         edge_dims = [
-            config.get('edge_dim')
+            config.edge_dim
             for config in (encoder_config, decoder_config)
-            if config['type'] == 'gat' and config.get('edge_dim') is not None
+            if config.type == 'gat' and config.edge_dim is not None
         ]
+        
         self.use_bipartite_edge_attr = bool(edge_dims)
         self.bipartite_edge_attr_dim = int(edge_dims[0]) if edge_dims else 4
 
         # Load mesh-grid variable config
-        self.enable_mesh_pred = mesh_variable_config.get('enable_mesh_pred', False)
-        self.mesh_variable_config = mesh_variable_config
-        self.mesh_instruments = list(mesh_variable_config.get('variables', {}).keys())
-        self.mesh_pressure_level_idx = mesh_variable_config.get('mesh_pressure_level_idx', 0)
+        self.obs_mesh_config = observation_config.mesh_config
+        self.enable_mesh_pred = self.obs_mesh_config['enable_mesh_pred'] if 'enable_mesh_pred' in self.obs_mesh_config else False
+        self.mesh_instruments = list(self.obs_mesh_config['variables'].keys())
+        self.mesh_pressure_level_idx = self.obs_mesh_config['mesh_pressure_level_idx']
         if self.verbose:
             print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
-            print(f"[DEBUG CONFIG] mesh_variable_config: {self.mesh_variable_config}")
-            print(f"[DEBUG CONFIG] variables in config: {self.mesh_variable_config.get('variables', {})}")
+            print(f"[DEBUG CONFIG] mesh_config: {self.obs_mesh_config}")
+            # print(f"[DEBUG CONFIG] variables in config: {self.obs_mesh_config.variables}")
             print(f"[DEBUG CONFIG] Instruments for mesh prediction: {self.mesh_instruments}")
             print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
 
@@ -335,57 +284,57 @@ class Ocelot(pl.LightningModule):
                 edge_type_tuple_enc = (node_type_input, "to", "mesh")
                 enc_key = self._edge_key(edge_type_tuple_enc)
 
-                if encoder_config['type'] == "gat":
+                if encoder_config.type == "gat":
                     self.observation_encoders[enc_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
                         hidden_dim=hidden_dim,
-                        layers=encoder_config['layers'],
-                        heads=encoder_config['heads'],
-                        dropout=encoder_config['dropout'],
-                        edge_dim=encoder_config.get('edge_dim'),
-                        dst_chunk_size=encoder_config.get('dst_chunk_size'),
-                        dst_chunk_threshold=encoder_config['dst_chunk_threshold'],
-                        use_activation_checkpointing=encoder_config['use_activation_checkpointing'],
+                        layers=encoder_config.layers,
+                        heads=encoder_config.heads,
+                        dropout=encoder_config.dropout,
+                        edge_dim=getattr(encoder_config, 'edge_dim', None),
+                        dst_chunk_size=getattr(encoder_config, 'dst_chunk_size', None),
+                        dst_chunk_threshold=encoder_config.dst_chunk_threshold,
+                        use_activation_checkpointing=encoder_config.use_activation_checkpointing,
                     )
                 else:
                     self.observation_encoders[enc_key] = InteractionNet(
                         edge_index=None,
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
-                        hidden_layers=encoder_config['hidden_layers'],
-                        update_edges=encoder_config['update_edges'],
-                        edge_chunk_sizes=encoder_config.get('edge_chunk_sizes'),
-                        aggr_chunk_sizes=encoder_config.get('aggr_chunk_sizes'),
-                        aggr=encoder_config['aggr'],
+                        hidden_layers=encoder_config.hidden_layers,
+                        update_edges=encoder_config.update_edges,
+                        edge_chunk_sizes=getattr(encoder_config, 'edge_chunk_sizes', None),
+                        aggr_chunk_sizes=getattr(encoder_config, 'aggr_chunk_sizes', None),
+                        aggr=encoder_config.aggr,
                     )
                 # Decoder GNN (mesh -> target)
                 edge_type_tuple_dec = ("mesh", "to", node_type_target)
                 dec_key = self._edge_key(edge_type_tuple_dec)
 
-                if decoder_config['type'] == "gat":
+                if decoder_config.type == "gat":
                     self.observation_decoders[dec_key] = BipartiteGAT(
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
                         hidden_dim=hidden_dim,
-                        layers=decoder_config['layers'],
-                        heads=decoder_config['heads'],
-                        dropout=decoder_config['dropout'],
-                        edge_dim=decoder_config.get('edge_dim'),
-                        dst_chunk_size=decoder_config.get('dst_chunk_size'),
-                        dst_chunk_threshold=decoder_config['dst_chunk_threshold'],
-                        use_activation_checkpointing=decoder_config['use_activation_checkpointing'],
+                        layers=decoder_config.layers,
+                        heads=decoder_config.heads,
+                        dropout=decoder_config.dropout,
+                        edge_dim=getattr(decoder_config, 'edge_dim', None),
+                        dst_chunk_size=getattr(decoder_config, 'dst_chunk_size', None),
+                        dst_chunk_threshold=decoder_config.dst_chunk_threshold,
+                        use_activation_checkpointing=decoder_config.use_activation_checkpointing,
                     )
                 else:
                     self.observation_decoders[dec_key] = InteractionNet(
                         edge_index=None,
                         send_dim=hidden_dim,
                         rec_dim=hidden_dim,
-                        hidden_layers=decoder_config['hidden_layers'],
-                        update_edges=decoder_config['update_edges'],
-                        edge_chunk_sizes=decoder_config.get('edge_chunk_sizes'),
-                        aggr_chunk_sizes=decoder_config.get('aggr_chunk_sizes'),
-                        aggr=decoder_config['aggr'],
+                        hidden_layers=decoder_config.hidden_layers,
+                        update_edges=decoder_config.update_edges,
+                        edge_chunk_sizes=getattr(decoder_config, 'edge_chunk_sizes', None),
+                        aggr_chunk_sizes=getattr(decoder_config, 'aggr_chunk_sizes', None),
+                        aggr=decoder_config.aggr,
                     )
 
                 # Initial MLP to project raw features to hidden_dim
@@ -703,78 +652,6 @@ class Ocelot(pl.LightningModule):
                 return instruments[inst_name].get("features", None)
         return None
 
-    def _compute_channel_loss(
-        self,
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor,
-        instrument_ids: Optional[torch.Tensor],
-        valid_mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        if self.loss_type == "mse":
-            return weighted_mse_loss(
-                y_pred,
-                y_true,
-                instrument_ids=instrument_ids,
-                channel_weights=self.channel_weights,
-                rebalancing=True,
-                valid_mask=valid_mask,
-            )
-        return weighted_huber_loss(
-            y_pred,
-            y_true,
-            instrument_ids=instrument_ids,
-            channel_weights=self.channel_weights,
-            delta=self.huber_delta,
-            rebalancing=True,
-            valid_mask=valid_mask,
-        )
-
-    def on_fit_start(self):
-        # Reset one-time debug cache each run.
-        self._edge_attr_debug_seen = set()
-        if getattr(self, "detect_anomaly", False):
-            # enable once per run, not every batch
-            torch.autograd.set_detect_anomaly(True)
-            if self.trainer.is_global_zero:
-                log.debug("[ANOMALY] torch.autograd anomaly mode enabled once at fit start.")
-
-    def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
-        """Converts an edge_type tuple to a string key for ModuleDict."""
-        return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
-
-    def on_train_epoch_start(self):
-        super().on_train_epoch_start()
-        rank = int(os.environ.get("RANK", "0"))
-
-        # One concise banner (only once on global zero)
-        if getattr(self.trainer, "is_global_zero", True):
-            print(f"=== Starting Epoch {self.current_epoch} ===")
-
-        print(f"[Rank {rank}] === TRAIN EPOCH {self.current_epoch} START ===")
-
-        dm = self.trainer.datamodule
-        train_start = getattr(dm.hparams, "train_start", None)
-        train_end = getattr(dm.hparams, "train_end", None)
-        sum_id = id(getattr(dm, "train_data_summary", None))
-        print(f"[TrainWindow] {train_start} .. {train_end} (sum_id={sum_id})")
-
-        # reset first-batch flag for this epoch
-        self._printed_first_train_batch = False
-
-        # learning rate tracking
-        opts = self.optimizers()
-        opt = opts[0] if isinstance(opts, (list, tuple)) else opts
-        current_lr = opt.param_groups[0]["lr"]
-        self.log("learning_rate", current_lr, prog_bar=False, on_epoch=True, on_step=False)
-
-    def on_validation_epoch_start(self):
-        super().on_validation_epoch_start()
-        rank = int(os.environ.get("RANK", "0"))
-        print(f"\n[Rank {rank}] === VAL EPOCH {self.current_epoch} START ===")
-        dm = self.trainer.datamodule
-        print(f"[ValWindow]   {getattr(dm.hparams, 'val_start', None)} .. {getattr(dm.hparams, 'val_end', None)} "
-              f"(sum_id={id(getattr(dm, 'val_data_summary', None))})")
-        self._printed_first_val_batch = False
 
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
         """
@@ -823,7 +700,7 @@ class Ocelot(pl.LightningModule):
 
         if inst_name not in self.feature_stats:
             # Some configs store stats under category keys; try a second chance lookup
-            cand = self.feature_stats.get(found_in_obs_type, {})
+            cand = self.observation.feature_stats.get(found_in_obs_type, {})
             if inst_name in cand:
                 stats_block = cand[inst_name]
             else:
@@ -981,7 +858,7 @@ class Ocelot(pl.LightningModule):
         Processor₄ → mesh_state₄ → Decoder₄ → Predictions [T+9 to T+12)
         """
 
-        step_info = self._get_latent_step_info(data)
+        step_info = self.model._get_latent_step_info(data)
         step_mapping = step_info["step_mapping"]
         num_latent_steps = step_info["num_steps"]
         edge_mapping = self._map_step_edges(data, step_mapping)
@@ -1152,54 +1029,6 @@ class Ocelot(pl.LightningModule):
         return predictions
 
 
-    def get_current_rollout_steps(self):
-        """
-        Determines the current number of rollout steps based on training progress.
-        Implements curriculum learning where rollout length increases over time.
-        """
-        if not hasattr(self, "max_rollout_steps"):
-            return 1  # Default to single step
-
-        if not hasattr(self, "rollout_schedule"):
-            return self.max_rollout_steps
-
-        current_epoch = self.current_epoch
-        current_step = self.global_step  # This tracks gradient descent updates
-
-        if self.rollout_schedule == "graphcast":
-            # GraphCast schedule based on gradient descent updates
-            # Graphcast: 300,000 gradient descent updates - 1 autoregressive
-            #            300,001 to 311,000: add 1 per 1000 updates
-            #           (i.e., use 1000 steps for each autoregressive step)
-            # testing functionality: train 1 rollout for 5 epochs [0-4], add 1 for every epoch
-            threshold = 5  # 300000 # MK: using 5 for testing
-            interval = 1  # 1000
-            if current_step < threshold:
-                return 1
-            else:
-                additional_steps = 2 + (current_step - threshold) // interval
-                return min(additional_steps, self.max_rollout_steps)
-
-        elif self.rollout_schedule == "linear":
-            # Linearly increase from 1 to max_rollout_steps over training
-            max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 100
-            progress = min(current_epoch / max_epochs, 1.0)
-            current_steps = 1 + int(progress * (self.max_rollout_steps - 1))
-            return current_steps
-
-        elif self.rollout_schedule == "step":
-            # Step-wise increase (GraphCast style)
-            if current_epoch < 10:
-                return 1
-            elif current_epoch < 20:
-                return 2
-            else:
-                return min(self.max_rollout_steps, 3 + (current_epoch - 20) // 10)
-
-        else:
-            # "fixed"
-            return self.max_rollout_steps
-
     @staticmethod
     def _get_latent_step_info(data: HeteroData) -> dict:
         """
@@ -1258,7 +1087,7 @@ class Ocelot(pl.LightningModule):
         results = {}
 
         # LATENT ROLLOUT: Extract from step-specific nodes
-        step_info = self._get_latent_step_info(batch)
+        step_info = self.model._get_latent_step_info(batch)
         step_mapping = step_info["step_mapping"]
 
         for base_type, steps_dict in step_mapping.items():
@@ -1291,412 +1120,6 @@ class Ocelot(pl.LightningModule):
 
         return results
 
-    def training_step(self, batch, batch_idx):
-        print("[DIAG] Entered training_step()")
-        if torch.cuda.is_available():
-            gpu_id = torch.cuda.current_device()
-            allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
-            print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
-
-        # Print first-batch info for window validation
-        if not getattr(self, "_printed_first_train_batch", False):
-            bt = getattr(batch, "input_time", None) or getattr(batch, "time", None)
-            print(f"[FirstTrainBatch] batch_idx=0 time={bt}")
-            self._printed_first_train_batch = True
-
-        print(f"[training_step] batch: {getattr(batch, 'bin_name', 'N/A')}")
-
-        # ---- Forward pass and loss calculation ----
-        all_predictions = self(batch)
-
-        # Extract ground truths based on rollout mode
-        ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
-
-        total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
-        num_predictions = 0
-
-        # Calculate loss for each observation type and add it to the total
-        for node_type, preds_list in all_predictions.items():
-            if node_type not in ground_truth_data:
-                continue
-
-            # Get the base instrument name (e.g., "atms" from "atms_target")
-            # Add handling for target_step in latent mode
-            if "_target_step" in node_type:
-                inst_name = node_type.split("_target_step")[0]
-            else:
-                inst_name = node_type.replace("_target", "")
-            inst_id = self.instrument_name_to_id.get(inst_name, None)
-            instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
-
-            gt_data = ground_truth_data[node_type]
-            gts_list = gt_data["gts_list"]
-            instrument_ids_list = gt_data["instrument_ids_list"]
-            valid_mask_list = gt_data["valid_mask_list"]
-
-            for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
-                zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
-            ):
-                # Skip if either prediction or ground truth is None or empty
-                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
-                    continue
-
-                # Ensure finite tensors
-                if not torch.isfinite(y_pred).all():
-                    y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
-                if not torch.isfinite(y_true).all():
-                    y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
-
-                # Skip if mask exists but nothing valid
-                if valid_mask is not None and valid_mask.sum() == 0:
-                    continue
-
-                # Shape validation before loss calculation
-                if y_pred.shape[0] != y_true.shape[0]:
-                    print(f"[ERROR] Shape mismatch for {node_type} step {step}:")
-                    print(f"  y_pred: {y_pred.shape} ({y_pred.shape[0]} obs)")
-                    print(f"  y_true: {y_true.shape} ({y_true.shape[0]} obs)")
-                    print(f"  Skipping this prediction to avoid crash")
-                    continue
-
-                channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
-
-                if not torch.isfinite(channel_loss):
-                    if self.trainer.is_global_zero:
-                        print(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
-                    continue
-
-                # Apply the overall instrument weight
-                weighted_loss = channel_loss * instrument_weight
-
-                # Add the loss for this instrument to the total
-                total_loss = total_loss + weighted_loss
-                num_predictions += 1
-
-        dummy_loss = 0.0
-        for param in self.parameters():
-            dummy_loss += param.sum() * 0.0
-        # Average the loss over all observation types that had predictions
-        avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
-        avg_loss = avg_loss + dummy_loss
-
-        # Log rollout steps appropriately
-        step_info = self._get_latent_step_info(batch)
-        latent_rollout_steps = step_info["num_steps"]
-        if self.verbose:
-            print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
-
-        self.log(
-            "train_loss",
-            avg_loss,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-            batch_size=1,
-        )
-        self.log("rollout_steps", float(latent_rollout_steps), on_step=True, sync_dist=False)
-        if self.trainer.is_global_zero and batch_idx == 0:
-            print(f"[TRAIN] Epoch {self.current_epoch} - train_loss: {avg_loss.cpu().item():.6f}")
-
-        return avg_loss
-
-    def validation_step(self, batch, batch_idx):
-        log.info(f"VALIDATION STEP batch: {batch.bin_name}")
-
-        # Build decoder names from config (all possible node_types with targets)
-        decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
-
-        # Prepare metrics storage
-        all_step_rmse = {name: [] for name in decoder_names}
-        all_step_mae = {name: [] for name in decoder_names}
-        all_step_bias = {name: [] for name in decoder_names}
-        all_losses = []
-
-        # Determine rollout steps based on mode
-        step_info = self._get_latent_step_info(batch)
-        latent_rollout_steps = step_info["num_steps"]
-        log.info(f"[validation_step] latent rollout steps: {latent_rollout_steps}")
-
-        # Forward pass: Dict[node_type, List[Tensor]] per step
-        # all_predictions = self(batch)
-        # if isinstance(all_predictions, tuple):
-        #     all_predictions, _ = all_predictions
-
-        # Forward pass: Dict[node_type, List[Tensor]] per step
-        result = self(batch)
-
-        # Check if the result is a tuple (only happens in validation mode now)
-        if isinstance(result, tuple):
-            all_predictions, mesh_features_per_step = result
-        else:
-            # This path shouldn't be hit in validation_step, but is a good safeguard.
-            all_predictions = result
-            mesh_features_per_step = []  # Initialize empty list if somehow missed
-
-        # Extract ground truths based on rollout mode
-        ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
-
-        total_loss = torch.tensor(0.0, device=self.device)
-        num_predictions = 0
-
-        # --- Loop over all node_types/decoders ---
-        for node_type, preds_list in all_predictions.items():
-            log.info(f"[validation_step] Processing node_type: {node_type}")
-            if node_type not in ground_truth_data:
-                continue
-
-            feats = None
-            # Latent mode: target_step0, target_step1, etc
-            if "_target_step" in node_type:
-                inst_name = node_type.split("_target_step")[0]
-            else:
-                inst_name = node_type.replace("_target", "")
-            inst_id = self.instrument_name_to_id.get(inst_name, None)
-            instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
-
-            gt_data = ground_truth_data[node_type]
-            gts_list = gt_data["gts_list"]
-            instrument_ids_list = gt_data["instrument_ids_list"]
-            valid_mask_list = gt_data["valid_mask_list"]
-
-            n_steps = min(len(preds_list), len(gts_list))
-
-            for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
-                zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
-            ):
-                log.info(f"[validation_step] {node_type} - step {step+1}/{n_steps}")
-                # Skip if either prediction or ground truth is None or empty
-                if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
-                    continue
-                if y_pred.shape != y_true.shape:
-                    continue
-
-                if not torch.isfinite(y_pred).all():
-                    y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
-                if not torch.isfinite(y_true).all():
-                    y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
-
-                if valid_mask is not None:
-                    valid_mask = valid_mask.to(dtype=torch.bool, device=y_pred.device)
-                    if valid_mask.numel() == 0 or valid_mask.sum() == 0:
-                        continue  # nothing valid for this node_type/step
-
-                # Get the channel-weighted loss
-                channel_loss = self._compute_channel_loss(
-                    y_pred,
-                    y_true,
-                    instrument_ids,
-                    valid_mask,
-                )
-
-                if not torch.isfinite(channel_loss):
-                    if self.trainer.is_global_zero:
-                        log.info(f"[WARN] Non-finite channel_loss for {node_type} at step {step}; skipping this term.")
-                    continue
-
-                # Apply the overall instrument weight
-                weighted_loss = channel_loss * instrument_weight
-
-                total_loss = total_loss + weighted_loss
-                num_predictions += 1
-                self.log(
-                    f"val_loss_{node_type}",
-                    weighted_loss.detach(),
-                    sync_dist=False,
-                    on_epoch=True,
-                    batch_size=1,
-                    prog_bar=False,
-                    logger=True,
-                    rank_zero_only=True,
-                )
-
-                # --- Metrics Calculation ---
-                y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
-                y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
-
-                if valid_mask is not None:
-                    # reduce only over valid elements
-                    vm = valid_mask
-                    # RMSE
-                    mse_elems = (y_pred_unnorm - y_true_unnorm).pow(2)
-                    rmse = torch.sqrt((mse_elems[vm]).mean() + 1e-12)
-                    # MAE
-                    mae = (y_pred_unnorm - y_true_unnorm).abs()
-                    mae = (mae[vm]).mean()
-                    # Bias
-                    bias = y_pred_unnorm - y_true_unnorm
-                    bias = (bias[vm]).mean()
-
-                    # Keep per-channel vectors to match the logging format
-                    # (compute channelwise means with masking)
-                    # shape handling:
-                    vm_f = vm.float()
-                    denom_ch = vm_f.sum(dim=0).clamp_min(1.0)
-                    rmse_ch = torch.sqrt((mse_elems * vm_f).sum(dim=0) / denom_ch + 1e-12)
-                    mae_ch = (mae := ((y_pred_unnorm - y_true_unnorm).abs() * vm_f).sum(dim=0) / denom_ch)
-                    bias_ch = ((y_pred_unnorm - y_true_unnorm) * vm_f).sum(dim=0) / denom_ch
-
-                    step_rmse = rmse_ch
-                    step_mae = mae_ch
-                    step_bias = bias_ch
-                else:
-                    step_rmse = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
-                    step_mae = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
-                    step_bias = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
-
-                all_step_rmse[node_type].append(step_rmse)
-                all_step_mae[node_type].append(step_mae)
-                all_step_bias[node_type].append(step_bias)
-
-                if (
-                    self.trainer.is_global_zero  # only main process
-                    and step == 0  # only concatenate latent rollout once
-                    and self.val_csv_enabled
-                    and batch_idx < max(1, self.val_csv_num_batches)
-                    and (self.current_epoch % max(1, self.val_csv_every_n_epochs) == 0)
-                ):
-                    # --- CSV save block ---
-                    out_dir = self.val_csv_out_dir
-                    os.makedirs(out_dir, exist_ok=True)
-
-                    # LATENT ROLLOUT: Concatenate all steps into standard format
-                    self._save_latent_concatenated_csv(
-                        batch, node_type, preds_list, gts_list,
-                        valid_mask_list, out_dir, batch_idx
-                    )
-
-            # Placeholder logging for missing steps (to ensure stable CSV shape for loggers)
-            num_channels = all_step_rmse[node_type][0].shape[0] if all_step_rmse[node_type] else 1
-            for step in range(n_steps, self.max_rollout_steps):
-                placeholder_metric = torch.tensor(float("nan"), device=self.device)
-
-        # --- Average metrics across steps for each node_type ---
-        for node_type in decoder_names:
-            if all_step_rmse[node_type]:
-                avg_rmse = torch.stack(all_step_rmse[node_type]).mean(dim=0)
-                avg_mae = torch.stack(all_step_mae[node_type]).mean(dim=0)
-                avg_bias = torch.stack(all_step_bias[node_type]).mean(dim=0)
-
-        if self.trainer.is_global_zero and batch_idx == 0:
-            for node_type in decoder_names:
-                if all_step_rmse[node_type]:
-                    print(f"[VAL] {node_type} RMSE (avg): {torch.stack(all_step_rmse[node_type]).mean().item():.4f}")
-
-        if self.verbose and self.trainer.is_global_zero and batch_idx == 0:
-            for node_type in decoder_names:
-                if node_type not in all_predictions or not all_predictions[node_type]:
-                    continue
-                y_pred = all_predictions[node_type][0]
-                y_true = ground_truth_data[node_type]["gts_list"][0]
-                y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
-                y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
-
-                n_channels = y_pred_unnorm.shape[1]
-                for i in range(min(5, n_channels)):
-                    try:
-                        plt.figure()
-                        # Get data and remove any NaN/inf values
-                        y_true_data = y_true_unnorm[:, i].cpu().numpy()
-                        y_pred_data = y_pred_unnorm[:, i].cpu().numpy()
-
-                        # Filter out non-finite values
-                        y_true_finite = y_true_data[np.isfinite(y_true_data)]
-                        y_pred_finite = y_pred_data[np.isfinite(y_pred_data)]
-
-                        # Skip if no finite data
-                        if len(y_true_finite) == 0 or len(y_pred_finite) == 0:
-                            plt.close()
-                            continue
-
-                        # Use auto bins or limit to reasonable number
-                        n_bins = min(50, max(10, len(y_true_finite) // 20))
-
-                        plt.hist(
-                            y_true_finite,
-                            bins=n_bins,
-                            alpha=0.6,
-                            color="blue",
-                            label="y_true",
-                        )
-                        plt.hist(
-                            y_pred_finite,
-                            bins=n_bins,
-                            alpha=0.6,
-                            color="orange",
-                            label="y_pred",
-                        )
-                        plt.xlabel(f"{node_type} - Channel {i+1}")
-                        plt.ylabel("Frequency")
-                        plt.title(f"Histogram - {node_type} Channel {i+1} (Epoch {self.current_epoch})")
-                        plt.legend()
-                        plt.tight_layout()
-                    except Exception as e:
-                        print(f"Warning: Could not create histogram for {node_type} channel {i+1}: {e}")
-                        plt.close()
-                        continue
-                    plt.savefig(f"hist_{node_type}_ch_{i+1}_epoch{self.current_epoch}.png")
-                    plt.close()
-
-        # --- Final loss calculation for the entire validation step ---
-        avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
-
-        self.log(
-            "val_loss",
-            avg_loss,
-            on_epoch=True,
-            prog_bar=True,
-            sync_dist=True,
-            batch_size=1,
-        )
-        if self.trainer.is_global_zero:
-            print(f"--- Epoch {self.current_epoch} Validation ---")
-            print(f"val_loss: {avg_loss.item():.6f}")
-
-        # Save mesh features from first batch for epoch-end processing
-        if batch_idx == 0 and self.enable_mesh_pred:
-            self._last_val_mesh_features = mesh_features_per_step
-            self._last_val_batch = batch
-
-        return avg_loss
-
-    def on_validation_epoch_end(self):
-        """Generate mesh predictions at END of validation epoch."""
-        if not self.enable_mesh_pred or not self.trainer.is_global_zero:
-            return
-
-        # Check if we saved mesh features during validation
-        if not hasattr(self, '_last_val_mesh_features') or self._last_val_mesh_features is None:
-            print("[MESH PRED] No mesh features from validation, skipping")
-            return
-
-        try:
-            with torch.no_grad():
-                temp_mesh_pred_edges = self._get_mesh_pred_edges()
-                init_time_unix = self._extract_init_time_unix(self._last_val_batch)
-                mesh_predictions = self._decode_all_steps_to_mesh(
-                    self._last_val_mesh_features,
-                    temp_mesh_pred_edges,
-                    init_time_unix
-                )
-                if mesh_predictions:
-                    self._save_mesh_predictions(
-                        mesh_predictions,
-                        temp_mesh_pred_edges,
-                        batch_idx=0,
-                        epoch=self.current_epoch,
-                        mode='val',
-                        batch=self._last_val_batch,
-                        output_dir='val_mesh_csv'
-                    )
-        except Exception as e:
-            print(f"[MESH PRED] Failed (non-critical): {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            # Clean up
-            self._last_val_mesh_features = None
-            self._last_val_batch = None
 
     def _resolve_init_ts(self, batch):
         """Return raw init timestamp (int/float unix, pd.Timestamp, or datetime), or None."""
@@ -1795,6 +1218,114 @@ class Ocelot(pl.LightningModule):
         if isinstance(ts, datetime):
             return int(ts.timestamp())
         return int(float(ts))
+
+
+    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
+        """Decode all forecast steps to mesh grid."""
+
+        if not mesh_features_per_step:  # Check if the list is empty
+            print("[MESH PRED] No mesh features available")
+            return {}
+
+        predictions = {}
+
+        with torch.no_grad():
+            for inst_name in self.mesh_instruments:
+                if not self._is_mesh_pred_variable(inst_name):
+                    continue
+
+                if inst_name not in mesh_pred_edges:
+                    continue
+
+                predictions[inst_name] = []
+
+                # Decode each step
+                for step_idx, mesh_feat in enumerate(mesh_features_per_step):
+                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name],
+                                                         step_idx=step_idx,
+                                                         init_time_unix=init_time_unix
+                                                         )
+                    predictions[inst_name].append(pred)
+
+        return predictions
+
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, step_idx, init_time_unix=None):
+        """Decode one step's mesh features to mesh grid."""
+        # Get decoder
+        decoder_key = f"mesh__to__{inst_name}_target"
+        decoder = self.observation_decoders[decoder_key]
+
+        # Move edges to correct device (they're stored on CPU)
+        device = mesh_features.device
+        edge_index = edges['edge_index'].to(device)
+        edge_attr = edges['edge_attr'].to(device)
+
+        original_edge_index = decoder.edge_index
+        decoder.edge_index = edge_index
+
+        # Fix for pressure info in inference mode
+        # Set it to level = 0 (1000mb) by default.
+        N = edges['num_nodes']
+
+        # Condition decoder on viewing geometry — mirrors the regular forward pass logic.
+        # Only radiosonde/aircraft use pressure level conditioning; all other instruments
+        # (satellites, surface obs, etc.) use zeros, consistent with their training setup.
+        base_inst = inst_name.replace('_target', '')
+        if base_inst in ['radiosonde', 'aircraft']:
+            fixed_idx = torch.full((N,), self.mesh_pressure_level_idx, dtype=torch.long, device=device)
+            pressure_emb = self.pressure_level_embedder(fixed_idx)  # [N, 8]
+            if self.pressure_level_projector is not None:
+                rec_rep = self.pressure_level_projector(pressure_emb)
+            else:
+                padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                rec_rep = torch.cat([
+                    torch.zeros(N, padding_dim, device=device),
+                    pressure_emb
+                ], dim=-1)  # [N, hidden_dim]
+
+            print(f"[MESH PRED] Decoding {inst_name} conditioned on pressure level "
+                  f"{self.mesh_pressure_level_idx} "
+                  f"({[1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10][self.mesh_pressure_level_idx]} hPa)")
+        else:
+            # Satellites, surface obs etc.: no pressure conditioning (same as training)
+            rec_rep = torch.zeros(N, self.hidden_dim, device=device)
+            print(f"[MESH PRED] Decoding {inst_name} with zero initialization (no pressure conditioning)")
+
+        # --- Target-time conditioning (mirrors regular decoder) ---
+        if init_time_unix is None:
+            raise ValueError(
+                f"[MESH PRED] init_time_unix is required for target-time conditioning "
+                f"but was not provided for instrument '{inst_name}'. "
+                f"Pass the analysis time as a Unix timestamp when calling mesh prediction."
+            )
+
+        # Compute valid time = init + lead
+        lead_seconds = int(round((step_idx + 0.5) * self.latent_step_hours * 3600))
+        target_time_unix = int(int(init_time_unix) + lead_seconds)
+
+        # Build time features using the same convention as _encode_target_time_features()
+        # LST is estimated from mesh node longitude
+        lons_deg = edges['lons'].cpu().numpy()  # [N]
+        target_times_unix = np.full(N, target_time_unix, dtype=np.int64)
+        time_feat_np = _encode_target_time_features(target_times_unix, lons_deg)  # [N, 5]
+        time_feat = torch.from_numpy(time_feat_np).float().to(device)
+        time_emb = self.target_time_embedder(time_feat)  # [N, 8]
+        rec_rep = rec_rep + self.target_time_projector(time_emb)  # additive bias
+
+        # Decode
+        decoded = decoder(
+            send_rep=mesh_features,
+            rec_rep=rec_rep,
+            edge_rep=edge_attr
+        )
+
+        decoder.edge_index = original_edge_index
+
+        # Apply output mapper
+        output_key = f"{inst_name}_target"
+        predictions = self.output_mappers[output_key](decoded)
+
+        return predictions
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
                                       valid_mask_list, out_dir, batch_idx, mode='val'):
@@ -2188,435 +1719,3 @@ class Ocelot(pl.LightningModule):
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
-
-    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
-        """
-        Save predictions on mesh grid - one file per forecast hour.
-
-        Args:
-            predictions: Dict of predictions per instrument
-            batch_idx: Batch index
-            epoch: Epoch number
-            mode: 'val' or 'predict'
-            batch: Batch data (for extracting input_time)
-            output_dir: Directory to save files
-        """
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Extract init time for logging
-        init_time_str = self._extract_init_time_str(batch)
-
-        # Calculate forecast hours
-        num_steps = len(next(iter(predictions.values())))
-        latent_step_hours = self.latent_step_hours
-        forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
-
-        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
-
-        for inst_name, pred_list in predictions.items():
-            edges = mesh_pred_edges[inst_name]
-            mesh_lats = edges['lats']
-            mesh_lons = edges['lons']
-            base_inst_name = inst_name.replace('_target', '')
-
-            # Get target variables (only the ones we want to predict on mesh)
-            mesh_vars = self.mesh_variable_config.get('variables', {}).get(inst_name, [])
-
-            # Get ALL features and find indices of target variables
-            obs_type = "satellite" if inst_name in self.observation_config.get("satellite", {}) else "conventional"
-            all_features = self.observation_config[obs_type][inst_name]['features']
-
-            # Find indices of target variables
-            mesh_indices = [i for i, feat in enumerate(all_features) if feat in mesh_vars]
-
-            for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
-                # Unnormalize using existing method
-                node_type = f"{inst_name}_target"
-                pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
-                pred_np = pred_unnorm.detach().cpu().numpy()
-
-                df = pd.DataFrame({
-                    'mesh_idx': np.arange(len(mesh_lats), dtype=np.int64),
-                    'lat': mesh_lats,
-                    'lon': mesh_lons,
-                })
-
-                # Only add pressure columns for instruments that use pressure-level conditioning
-                if base_inst_name in ['radiosonde', 'aircraft']:
-                    STANDARD_PRESSURE_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
-                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.mesh_pressure_level_idx]
-                    log_pressure_height = -8000.0 * np.log(np.clip(pressure_hpa, 1.0, 1100.0) / 1013.25)
-
-                    df['pressure_hPa'] = pressure_hpa
-                    df['pressure_level_idx'] = self.mesh_pressure_level_idx
-                    df['pressure_level_label'] = f"{pressure_hpa}hPa"
-                    df['log_pressure_height_m'] = log_pressure_height
-                    df['log_pressure_height_norm'] = log_pressure_height / 20000.0
-
-                # Add only target variable predictions
-                for feat_idx in mesh_indices:
-                    feat_name = all_features[feat_idx]
-                    df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
-
-                # Use init_time if available, otherwise fall back to batch_idx
-                if init_time_str != 'unknown':
-                    if mode == 'predict':
-                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}.csv'
-                    else:
-                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
-                else:
-                    filepath = f'{output_dir}/{base_inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
-                df.to_csv(filepath, index=False)
-                print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
-
-    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
-        """Decode all forecast steps to mesh grid."""
-
-        if not mesh_features_per_step:  # Check if the list is empty
-            print("[MESH PRED] No mesh features available")
-            return {}
-
-        predictions = {}
-
-        with torch.no_grad():
-            for inst_name in self.mesh_instruments:
-                if not self._is_mesh_pred_variable(inst_name):
-                    continue
-
-                if inst_name not in mesh_pred_edges:
-                    continue
-
-                predictions[inst_name] = []
-
-                # Decode each step
-                for step_idx, mesh_feat in enumerate(mesh_features_per_step):
-                    pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name],
-                                                         step_idx=step_idx,
-                                                         init_time_unix=init_time_unix
-                                                         )
-                    predictions[inst_name].append(pred)
-
-        return predictions
-
-    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, step_idx, init_time_unix=None):
-        """Decode one step's mesh features to mesh grid."""
-        # Get decoder
-        decoder_key = f"mesh__to__{inst_name}_target"
-        decoder = self.observation_decoders[decoder_key]
-
-        # Move edges to correct device (they're stored on CPU)
-        device = mesh_features.device
-        edge_index = edges['edge_index'].to(device)
-        edge_attr = edges['edge_attr'].to(device)
-
-        original_edge_index = decoder.edge_index
-        decoder.edge_index = edge_index
-
-        # Fix for pressure info in inference mode
-        # Set it to level = 0 (1000mb) by default.
-        N = edges['num_nodes']
-
-        # Condition decoder on viewing geometry — mirrors the regular forward pass logic.
-        # Only radiosonde/aircraft use pressure level conditioning; all other instruments
-        # (satellites, surface obs, etc.) use zeros, consistent with their training setup.
-        base_inst = inst_name.replace('_target', '')
-        if base_inst in ['radiosonde', 'aircraft']:
-            fixed_idx = torch.full((N,), self.mesh_pressure_level_idx, dtype=torch.long, device=device)
-            pressure_emb = self.pressure_level_embedder(fixed_idx)  # [N, 8]
-            if self.pressure_level_projector is not None:
-                rec_rep = self.pressure_level_projector(pressure_emb)
-            else:
-                padding_dim = self.hidden_dim - self.pressure_level_embed_dim
-                rec_rep = torch.cat([
-                    torch.zeros(N, padding_dim, device=device),
-                    pressure_emb
-                ], dim=-1)  # [N, hidden_dim]
-
-            print(f"[MESH PRED] Decoding {inst_name} conditioned on pressure level "
-                  f"{self.mesh_pressure_level_idx} "
-                  f"({[1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10][self.mesh_pressure_level_idx]} hPa)")
-        else:
-            # Satellites, surface obs etc.: no pressure conditioning (same as training)
-            rec_rep = torch.zeros(N, self.hidden_dim, device=device)
-            print(f"[MESH PRED] Decoding {inst_name} with zero initialization (no pressure conditioning)")
-
-        # --- Target-time conditioning (mirrors regular decoder) ---
-        if init_time_unix is None:
-            raise ValueError(
-                f"[MESH PRED] init_time_unix is required for target-time conditioning "
-                f"but was not provided for instrument '{inst_name}'. "
-                f"Pass the analysis time as a Unix timestamp when calling mesh prediction."
-            )
-
-        # Compute valid time = init + lead
-        lead_seconds = int(round((step_idx + 0.5) * self.latent_step_hours * 3600))
-        target_time_unix = int(int(init_time_unix) + lead_seconds)
-
-        # Build time features using the same convention as _encode_target_time_features()
-        # LST is estimated from mesh node longitude
-        lons_deg = edges['lons'].cpu().numpy()  # [N]
-        target_times_unix = np.full(N, target_time_unix, dtype=np.int64)
-        time_feat_np = _encode_target_time_features(target_times_unix, lons_deg)  # [N, 5]
-        time_feat = torch.from_numpy(time_feat_np).float().to(device)
-        time_emb = self.target_time_embedder(time_feat)  # [N, 8]
-        rec_rep = rec_rep + self.target_time_projector(time_emb)  # additive bias
-
-        # Decode
-        decoded = decoder(
-            send_rep=mesh_features,
-            rec_rep=rec_rep,
-            edge_rep=edge_attr
-        )
-
-        decoder.edge_index = original_edge_index
-
-        # Apply output mapper
-        output_key = f"{inst_name}_target"
-        predictions = self.output_mappers[output_key](decoded)
-
-        return predictions
-
-    def on_after_backward(self):
-        # Check if encoded gradient is available
-        if hasattr(self, "_encoded_ref"):
-            if self._encoded_ref is not None:
-                if self._encoded_ref.grad is not None:
-                    log.debug(f"[DEBUG] encoded.grad norm: {self._encoded_ref.grad.norm().item():.6f}")
-                else:
-                    log.debug("[DEBUG] encoded.grad is still None after backward.")
-            else:
-                log.debug("[DEBUG] _encoded_ref is None")
-
-        # x_hidden grad
-        if hasattr(self, "_x_hidden_ref"):
-            if self._x_hidden_ref is not None and self._x_hidden_ref.grad is not None:
-                log.debug(f"[DEBUG] x_hidden.grad norm: {self._x_hidden_ref.grad.norm().item():.6f}")
-            else:
-                log.debug("[DEBUG] x_hidden.grad is still None after backward.")
-
-        # Print all parameter gradients
-        if self.trainer.is_global_zero:
-            total_grad_norm = 0.0
-            for name, param in self.named_parameters():
-                if param.grad is not None:
-                    norm = param.grad.data.norm(2)
-                    log.debug(f"[DEBUG] Grad for {name}: {norm:.6f}")
-                    total_grad_norm += norm.item() ** 2
-                else:
-                    log.debug(f"[DEBUG] Grad for {name}: None")
-            total_grad_norm = total_grad_norm**0.5
-            log.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
-
-    def predict_step(self, batch, batch_idx):
-        """
-        Prediction step for inference mode.
-
-        This method:
-        1. Runs forward pass to generate predictions
-        2. Saves predictions to CSV files
-        3. Does NOT compute loss or gradients
-
-        Args:
-            batch: Input batch data
-            batch_idx: Batch index
-
-        Returns:
-            dict: Predictions for all node types
-        """
-        print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
-
-        target_init_filter = os.environ.get("PREDICT_INIT_TIME_FILTER", "").strip()
-        if target_init_filter:
-            batch_init_time = self._extract_init_time_str(batch)
-            if batch_init_time != target_init_filter:
-                print(
-                    f"[PREDICT] Skipping batch {batch_idx}: init_time={batch_init_time} "
-                    f"does not match PREDICT_INIT_TIME_FILTER={target_init_filter}"
-                )
-                return {}
-
-        # Forward pass
-        forward_output = self(batch)
-        if isinstance(forward_output, tuple):
-            all_predictions, mesh_features_per_step = forward_output
-        else:
-            all_predictions = forward_output
-            mesh_features_per_step = None
-
-        # Extract ground truths and metadata
-        ground_truth_data = self._extract_ground_truths_and_metadata(batch, all_predictions)
-
-        # Determine rollout steps
-        step_info = self._get_latent_step_info(batch)
-        latent_rollout_steps = step_info["num_steps"]
-        print(f"[PREDICT] Latent rollout steps: {latent_rollout_steps}")
-
-        # Save predictions for each instrument
-        for node_type, preds_list in all_predictions.items():
-            print(f"[PREDICT] Processing node_type: {node_type}")
-
-            if node_type not in ground_truth_data:
-                continue
-
-            gt_data = ground_truth_data[node_type]
-            gts_list = gt_data["gts_list"]
-            valid_mask_list = gt_data["valid_mask_list"]
-
-            # Check if any real ground truth data exists
-            has_real_targets = any(
-                gt is not None and gt.numel() > 0
-                for gt in gts_list
-            )
-
-            if not has_real_targets:
-                print(f"[PREDICT] Pred step: Skipping {node_type} - no ground truth data (inference mode)")
-                continue
-
-            # Save to CSV
-            # if batch_idx < 10:
-            out_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
-            self._save_latent_concatenated_csv(
-                batch=batch,
-                node_type=node_type,
-                preds_list=preds_list,
-                gts_list=gts_list,
-                valid_mask_list=valid_mask_list,
-                out_dir=out_dir,
-                batch_idx=batch_idx,
-                mode='predict'
-            )
-
-        # Save mesh predictions (target variables on grid)
-        if self.enable_mesh_pred:
-            try:
-                with torch.no_grad():
-                    # Use mesh features from forward pass
-                    if not mesh_features_per_step:
-                        print("[PREDICT] No mesh features available for mesh predictions")
-                    else:
-                        mesh_pred_edges = self._get_mesh_pred_edges()
-                        init_time_unix = self._extract_init_time_unix(batch)
-                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges, init_time_unix)
-                        if mesh_predictions:
-                            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
-                            self._save_mesh_predictions(
-                                mesh_predictions,
-                                mesh_pred_edges,
-                                batch_idx=batch_idx,
-                                epoch=0,
-                                mode='predict',
-                                batch=batch,
-                                output_dir=mesh_dir
-                            )
-            except Exception as e:
-                print(f"[PREDICT] Mesh prediction failed (non-critical): {e}")
-                import traceback
-                traceback.print_exc()
-
-        return all_predictions
-
-    def on_predict_epoch_start(self):
-        """Setup before prediction epoch starts."""
-        print("[PREDICT] Starting prediction epoch")
-        if not self.enable_mesh_pred:
-            print("[WARN] enable_mesh_pred is False — mesh grid outputs will NOT be generated. "
-                  "Set 'enable_mesh_pred: true' in mesh_config.yaml to produce gridded outputs.")
-        self._mesh_predictions_buffer = {}
-        self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
-        os.makedirs(self._prediction_output_dir, exist_ok=True)
-        # Create pred_csv subdirectories
-        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space'), exist_ok=True)
-        os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid'), exist_ok=True)
-        print(f"[PREDICT] Output directory: {self._prediction_output_dir}")
-
-    def on_predict_batch_end(self, outputs, batch, batch_idx):
-        """Cleanup after each prediction batch."""
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    def on_predict_epoch_end(self):
-        """Cleanup and summary after prediction epoch ends."""
-        print("[PREDICT] Prediction epoch completed")
-        self._cached_mesh_pred_edges = None
-
-        # Generate summary statistics
-        if hasattr(self, '_prediction_output_dir'):
-            obs_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
-            if os.path.exists(obs_dir):
-                csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]
-                print(f"[PREDICT] Generated {len(csv_files)} observation CSV files (obs-space)")
-
-            mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
-            if os.path.exists(mesh_dir):
-                mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
-                print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
-
-    def configure_optimizers(self):
-        if self.optimizer_type != "adamw":
-            raise ValueError(f"Unsupported optimizer type: {self.optimizer_type}")
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-
-        # TenYearTrain-style schedule: warmup + cosine decay (robust to noisy validation)
-        if self.lr_schedule == "cosine_warmup":
-            max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 328
-            warmup_epochs = max(1, int(self.warmup_pct * max_epochs))
-            warmup_epochs = min(warmup_epochs, max(1, max_epochs - 1))
-
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=max_epochs - warmup_epochs,
-                eta_min=self.min_lr,
-            )
-
-            from torch.optim.lr_scheduler import LinearLR, SequentialLR
-
-            warmup_scheduler = LinearLR(
-                optimizer,
-                start_factor=self.warmup_start_factor,
-                end_factor=1.0,
-                total_iters=warmup_epochs,
-            )
-
-            combined_scheduler = SequentialLR(
-                optimizer,
-                schedulers=[warmup_scheduler, scheduler],
-                milestones=[warmup_epochs],
-            )
-
-            if self.trainer.is_global_zero:
-                print("[LR Schedule] Cosine decay with warmup")
-                print(f"  Warmup epochs: {warmup_epochs} ({self.warmup_start_factor}×lr → 1.0×lr)")
-                print(f"  Cosine decay: {max_epochs - warmup_epochs} epochs (lr → {self.min_lr})")
-                print(f"  Total epochs: {max_epochs}")
-
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": combined_scheduler,
-                    "interval": "epoch",
-                    "frequency": 1,
-                },
-            }
-
-        # Default: validation-loss plateau schedule (existing behavior)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=self.plateau_factor,
-            patience=self.plateau_patience,
-            min_lr=self.min_lr,
-        )
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "monitor": "val_loss",
-                "interval": "epoch",
-                "frequency": 1,
-            },
-        }
-

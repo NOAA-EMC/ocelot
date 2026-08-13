@@ -1,4 +1,5 @@
 hidden_dim: 192
+latent_step_hours: 3
 
 mesh:
   type: fixed  # fixed | hierarchical
@@ -30,3 +31,5 @@ embeddings:
   pressure_level_dim: 8
   target_time_dim: 8
   num_pressure_levels: 16
+  scan_angle_conditioning: project
+  pressure_level_conditioning: project

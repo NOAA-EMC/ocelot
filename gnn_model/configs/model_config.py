@@ -1,5 +1,6 @@
 
 import yaml
+
 from .config_base import (
     BoolField,
     Choices,
@@ -9,6 +10,8 @@ from .config_base import (
     ListField,
     Optional,
 )
+
+from .observation_config import ObservationConfig
 
 
 class MeshConfig(ConfigBase):
@@ -85,6 +88,8 @@ class EmbeddingsConfig(ConfigBase):
 
 class ModelConfig(ConfigBase):
     hidden_dim = IntField()
+    latent_step_hours = IntField()
+    
     mesh = Choices({
         'fixed': FixedMeshConfig(),
         'hierarchical': HierarchicalMeshConfig(),
@@ -110,10 +115,10 @@ class ModelConfig(ConfigBase):
         with open(config_path) as config_file:
             self.load(yaml.safe_load(config_file))
 
-        flat_processors = {'interaction', 'sliding_window'}
-        mesh_is_fixed = self.mesh.type == 'fixed'
-        processor_is_flat = self.processor.type in flat_processors
-        if mesh_is_fixed != processor_is_flat:
+        self.flat_processors = {'interaction', 'sliding_window'}
+        self.mesh_is_fixed = self.mesh.type == 'fixed'
+        self.processor_is_flat = self.processor.type in self.flat_processors
+        if self.mesh_is_fixed != self.processor_is_flat:
             raise ValueError(
                 f"Processor type '{self.processor.type}' is incompatible with "
                 f"mesh type '{self.mesh.type}'"

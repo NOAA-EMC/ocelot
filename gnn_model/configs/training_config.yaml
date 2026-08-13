@@ -1,13 +1,11 @@
 experiment_name: baseline_v1
 checkpoint_dir: checkpoints/baseline_v1
 observation_config_path: configs/observation_config.yaml
-mesh_variable_config_path: configs/mesh_config.yaml
 seed: null
 
 data:
   path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7
   window_hours: 12
-  latent_step_hours: 3
   max_rollout_steps: 1
 
   sampler:
@@ -22,6 +20,7 @@ trainer:
   precision: 16-mixed
   devices: 2
   num_nodes: 4
+  detect_anomaly: false
   early_stopping:
     patience: 25
     min_delta: 1.0e-5

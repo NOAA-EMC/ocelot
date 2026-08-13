@@ -3,7 +3,7 @@ checkpoint: checkpoints/baseline_v1/last.ckpt
 output_dir: predictions/baseline_v1
 
 data:
-  path: /scratch3/NCEPDEV/da/Azadeh.Gholoubi/zarr
+  path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7
   start_date: 2025-01-01
   end_date: 2025-01-02
   batch_size: 1

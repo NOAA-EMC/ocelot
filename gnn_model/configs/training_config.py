@@ -77,6 +77,7 @@ class TrainingDataConfig(ConfigBase):
     window_hours = Optional(IntField(), default=12)
     latent_step_hours = Optional(IntField(), default=3)
     max_rollout_steps = Optional(IntField(), default=1)
+    rollout_schedule = Optional(Choices(['step', 'linear', 'graphcast', 'fixed']), default='step')
     batch_size = Optional(IntField(), default=1)
     num_neighbors = Optional(IntField(), default=3)
 
@@ -111,6 +112,7 @@ class TrainerConfig(ConfigBase):
     limit_train_batches = Optional(IntField())
     limit_val_batches = Optional(IntField())
     early_stopping = Optional(EarlyStoppingConfig(), default={})
+    detect_anomaly = Optional(BoolField(), default=False)
 
 
 class OptimizerConfig(ConfigBase):
@@ -123,12 +125,12 @@ class AdamWConfig(OptimizerConfig):
 
 
 class CsvOutputConfig(ConfigBase):
+    enabled = Optional(BoolField(), default=False)
     output_dir = Optional(StrField(), default='val_csv')
-    disable = Optional(BoolField(), default=False)
     num_batches = Optional(IntField(), default=1)
     every_n_epochs = Optional(IntField(), default=1)
     max_rows = Optional(IntField())
-    seed = Optional(IntField(), default=0)
+    sample_seed = Optional(IntField(), default=0)
 
 
 class ValidationModeConfig(ConfigBase):
@@ -191,7 +193,6 @@ class TrainingConfig(ConfigBase):
     experiment_name = StrField()
     checkpoint_dir = StrField()
     observation_config_path = Optional(StrField(), default='configs/observation_config.yaml')
-    mesh_variable_config_path = Optional(StrField(), default='configs/mesh_config.yaml')
     seed = Optional(IntField())
     verbose = Optional(BoolField(), default=False)
     debug_mode = Optional(BoolField(), default=False)

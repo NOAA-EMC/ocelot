@@ -18,7 +18,7 @@ import torch
 from lightning.pytorch.strategies import DDPStrategy
 
 from gnn_datamodule import GNNDataModule
-from gnn_model import GNNLightning
+from model.ocelot import Ocelot
 from weight_utils import load_weights_from_yaml
 from datetime import timedelta
 
@@ -137,13 +137,9 @@ def main():
     print(f"\nLoading model from checkpoint: {args.checkpoint}")
 
     try:
-        model = GNNLightning.load_from_checkpoint(
+        model = Ocelot.load_from_checkpoint(
             args.checkpoint,
             observation_config=observation_config,
-            mesh_config=mesh_config,
-            feature_stats=feature_stats,
-            instrument_weights=instrument_weights,
-            channel_weights=channel_weights,
             strict=False,
         )
         print("Model loaded successfully!")
@@ -156,19 +152,15 @@ def main():
 
         # Filter hparams to match the current constructor signature (robust to checkpoint drift)
         try:
-            sig = inspect.signature(GNNLightning.__init__)
+            sig = inspect.signature(Ocelot.__init__)
             allowed = set(sig.parameters.keys())
             allowed.discard('self')
             filtered_hparams = {k: v for k, v in (hparams or {}).items() if k in allowed}
         except Exception:
             filtered_hparams = dict(hparams or {})
 
-        model = GNNLightning(
+        model = Ocelot(
             observation_config=observation_config,
-            mesh_config=mesh_config,
-            feature_stats=feature_stats,
-            instrument_weights=instrument_weights,
-            channel_weights=channel_weights,
             **filtered_hparams
         )
 

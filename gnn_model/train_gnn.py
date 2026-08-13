@@ -13,6 +13,7 @@ import yaml
 
 from configs.model_config import ModelConfig
 from configs.training_config import TrainingConfig
+from configs.observation_config import ObservationConfig
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,8 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
 
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)
+    observation_config = ObservationConfig(training_config.observation_config_path)
+
     verbose = bool(verbose or training_config.verbose)
     if verbose:
         log.set_log_level(LogLevel.Debug)
@@ -280,26 +283,16 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     seed = 42 if training_config.debug_mode else (training_config.seed or 12345)
     pl.seed_everything(seed, workers=True)
 
-    observation_path = training_config.observation_config_path
-    observation_config, feature_stats, instrument_weights, channel_weights, _ = (
-        load_weights_from_yaml(observation_path)
-    )
-    pipeline_config = _load_yaml(observation_path).get("pipeline", {})
-    mesh_variable_config = _load_yaml(training_config.mesh_variable_config_path)
     windows = _build_window_plan(training_config)
 
     print(f"Training period:   {windows.train_start} -> {windows.train_end}")
     print(f"Validation period: {windows.val_start} -> {windows.val_end}")
 
     setup_start = time.time()
-    model = OcelotFactory.create_model(
+    model = OcelotFactory.create_training_module(
         model_config=model_config,
         training_config=training_config,
         observation_config=observation_config,
-        feature_stats=feature_stats,
-        instrument_weights=instrument_weights,
-        channel_weights=channel_weights,
-        mesh_variable_config=mesh_variable_config,
         verbose=verbose,
     )
 
