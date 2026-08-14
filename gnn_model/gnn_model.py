@@ -26,6 +26,7 @@ from interaction_hierarchical_processor import HierarchicalProcessor
 from utils import make_mlp
 from interaction_net import InteractionNet
 from create_mesh_graph_global import create_mesh
+from create_mesh_graph_regional import create_regional_mesh_structure
 from torch_geometric.data import HeteroData
 from typing import Dict, Tuple, List, Optional
 from torch_geometric.utils import scatter
@@ -101,6 +102,13 @@ class GNNLightning(pl.LightningModule):
         mesh_resolution=6,
         mesh_type="fixed",  # "fixed" or "hierarchical"
         mesh_levels=4,
+        mesh_geometry: str = "global",  # "global" (icosahedral) or "regional" (projected Cartesian)
+        lon_min: float | None = None,
+        lon_max: float | None = None,
+        lat_min: float | None = None,
+        lat_max: float | None = None,
+        mesh_cutoff_factor: float = 0.67,
+        mesh_num_neighbors: int = 4,
         num_layers=4,
         lr=1e-4,
         instrument_weights=None,
@@ -257,6 +265,16 @@ class GNNLightning(pl.LightningModule):
         self.mesh_type = mesh_type
         self.mesh_levels = mesh_levels
 
+        self.mesh_geometry = str(mesh_geometry)
+        if self.mesh_geometry not in ("global", "regional"):
+            raise ValueError(f"mesh_geometry must be 'global' or 'regional' (got: {self.mesh_geometry!r})")
+        if self.mesh_geometry == "regional":
+            for name, val in (("lon_min", lon_min), ("lon_max", lon_max), ("lat_min", lat_min), ("lat_max", lat_max)):
+                if val is None:
+                    raise ValueError(f"{name} must be set when mesh_geometry='regional'")
+        self.mesh_cutoff_factor = float(mesh_cutoff_factor)
+        self.mesh_num_neighbors = int(mesh_num_neighbors)
+
         # bipartite GATs consume the computed spatial edge_attr
         # directly, with edge_dim=bipartite_edge_attr_dim (GraphCast-style features are 4-dim).
         if self.bipartite_edge_attr_dim <= 0:
@@ -279,12 +297,25 @@ class GNNLightning(pl.LightningModule):
         # - "hierarchical": Multiple mesh levels with up/down connections (U-Net-style latent hierarchy)
         hierarchical_mode = (mesh_type == "hierarchical")
 
-        self.mesh_structure = create_mesh(
-            splits=mesh_resolution,
-            levels=mesh_levels,
-            hierarchical=hierarchical_mode,
-            plot=False
-        )
+        if self.mesh_geometry == "regional":
+            self.mesh_structure = create_regional_mesh_structure(
+                lon_min=lon_min,
+                lon_max=lon_max,
+                lat_min=lat_min,
+                lat_max=lat_max,
+                hierarchical=hierarchical_mode,
+                mesh_splits=mesh_levels,
+                plot=False,
+                cutoff_factor=self.mesh_cutoff_factor,
+                num_neighbors=self.mesh_num_neighbors,
+            )
+        else:
+            self.mesh_structure = create_mesh(
+                splits=mesh_resolution,
+                levels=mesh_levels,
+                hierarchical=hierarchical_mode,
+                plot=False
+            )
 
         # Store whether we're in hierarchical mode
         self.is_hierarchical = hierarchical_mode

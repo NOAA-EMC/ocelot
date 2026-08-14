@@ -241,6 +241,20 @@ def main():
         choices=["fixed", "hierarchical"],
     )
     parser.add_argument("--mesh_levels", type=int, default=4)
+    parser.add_argument(
+        "--mesh_geometry",
+        type=str,
+        default="global",
+        choices=["global", "regional"],
+        help="'global' builds the icosahedral mesh; 'regional' builds a projected-Cartesian "
+             "limited-area mesh bounded by --lon_min/--lon_max/--lat_min/--lat_max.",
+    )
+    parser.add_argument("--lon_min", type=float, default=None)
+    parser.add_argument("--lon_max", type=float, default=None)
+    parser.add_argument("--lat_min", type=float, default=None)
+    parser.add_argument("--lat_max", type=float, default=None)
+    parser.add_argument("--mesh_cutoff_factor", type=float, default=0.67)
+    parser.add_argument("--mesh_num_neighbors", type=int, default=4)
 
     # Determinism and sequential stride
     parser.add_argument("--seed", type=int, default=None)
@@ -468,6 +482,13 @@ def main():
         mesh_resolution=mesh_resolution,
         mesh_type=str(args.mesh_type),
         mesh_levels=int(args.mesh_levels),
+        mesh_geometry=str(args.mesh_geometry),
+        lon_min=args.lon_min,
+        lon_max=args.lon_max,
+        lat_min=args.lat_min,
+        lat_max=args.lat_max,
+        mesh_cutoff_factor=float(args.mesh_cutoff_factor),
+        mesh_num_neighbors=int(args.mesh_num_neighbors),
         verbose=bool(args.verbose),
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,

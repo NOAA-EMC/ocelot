@@ -25,9 +25,31 @@ from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from process_timeseries import extract_features, organize_bins_times
 from create_mesh_graph_global import obs_mesh_conn
+from create_mesh_graph_regional import obs_mesh_conn_regional, project_coords
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
+
+
+def _mesh_conn(grid_lat, grid_lon, mesh_structure, o2m):
+    """Dispatch obs<->mesh connectivity by mesh geometry (global vs regional)."""
+    if mesh_structure.get("geometry") == "regional":
+        obs_xy = project_coords(grid_lat, grid_lon)
+        return obs_mesh_conn_regional(
+            obs_xy,
+            mesh_structure["G_bottom_mesh"],
+            cutoff_factor=mesh_structure.get("cutoff_factor", 0.67),
+            num_neighbors=mesh_structure.get("num_neighbors", 4),
+            o2m=o2m,
+        )
+    return obs_mesh_conn(
+        grid_lat,
+        grid_lon,
+        mesh_structure["m2m_graphs"],
+        mesh_structure["mesh_lat_lon_list"],
+        mesh_structure["mesh_list"],
+        o2m=o2m,
+    )
 
 
 def _resolve_zarr_path(data_path: str, zname: str, start_date: str) -> tuple[str, bool]:
@@ -590,12 +612,10 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_input].lat = _t32(grid_lat_deg)
                 data[node_type_input].lon = _t32(grid_lon_deg)
 
-                edge_index_encoder, edge_attr_encoder = obs_mesh_conn(
+                edge_index_encoder, edge_attr_encoder = _mesh_conn(
                     grid_lat_deg,
                     grid_lon_deg,
-                    self.mesh_structure["m2m_graphs"],
-                    self.mesh_structure["mesh_lat_lon_list"],
-                    self.mesh_structure["mesh_list"],
+                    self.mesh_structure,
                     o2m=True,
                 )
                 data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
@@ -713,12 +733,10 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].lon = _t32(target_lon_deg)
 
                 if len(target_lat_deg) > 0:
-                    edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                    edge_index_decoder, edge_attr_decoder = _mesh_conn(
                         target_lat_deg,
                         target_lon_deg,
-                        self.mesh_structure["m2m_graphs"],
-                        self.mesh_structure["mesh_lat_lon_list"],
-                        self.mesh_structure["mesh_list"],
+                        self.mesh_structure,
                         o2m=False,
                     )
                     data["mesh", "to", node_type_target].edge_index = edge_index_decoder
