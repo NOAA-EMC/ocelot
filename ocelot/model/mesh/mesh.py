@@ -1,11 +1,13 @@
 import numpy as np
-import torch
+import matplotlib
 from matplotlib import pyplot as plt
+import torch
+import torch_geometric as pyg
 
-from .deepmind import icosahedral_mesh as gc_im
-from .deepmind import grid_mesh_connectivity as gc_gm
-from .deepmind import model_utils as gc_mu
-from .deepmind.graphcast_aux import _get_max_edge_distance
+from ocelot.model.mesh.deepmind import icosahedral_mesh as gc_im
+from ocelot.model.mesh.deepmind import grid_mesh_connectivity as gc_gm
+from ocelot.model.mesh.deepmind import model_utils as gc_mu
+from ocelot.model.mesh.deepmind.graphcast_aux import _get_max_edge_distance
 
 
 DEFAULT_DTYPE = torch.float32
@@ -136,7 +138,7 @@ class Mesh(torch.nn.Module):
 
         self._create_mesh(levels=levels, splits=resolution)
 
-    def plot():
+    def plot(self, title: str = None):
         """
         Plot flattened global graph
         """
@@ -192,7 +194,30 @@ class Mesh(torch.nn.Module):
             axis.set_title(title)
 
         return fig, axis
-    
+
+    def edge_key(self, edge_type: Tuple[str, str, str]) -> str:
+        """Converts an edge_type tuple to a string key for ModuleDict."""
+        return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
+
+    def map_step_edges(self, data: HeteroData, step_mapping: dict) -> dict:
+        """
+        Create mapping from step-specific edges to base decoder keys.
+        Returns dict mapping step edges to decoder keys.
+        """
+        edge_mapping = {}
+
+        for edge_type in data.edge_index_dict.keys():
+            src_type, rel, dst_type = edge_type
+            if "_target_step" in dst_type and src_type == "mesh":
+                # Find the base target type for this step
+                for base_type, steps in step_mapping.items():
+                    for step_num, step_node_type in steps.items():
+                        if step_node_type == dst_type:
+                            base_edge_key = self.edge_key(("mesh", "to", base_type))
+                            edge_mapping[edge_type] = base_edge_key
+                            break
+
+        return edge_mapping
 
     def _register_buffers(self):
         self.register_buffer("x", self._as_f32(self.mesh_features_torch[0]))

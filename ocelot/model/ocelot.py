@@ -6,38 +6,25 @@ output utilities used during training, validation, and prediction.
 """
 
 import os
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from typing import Dict, Tuple, List, Optional
 
-import lightning.pytorch as pl
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch_geometric.data import HeteroData
 
 from logger import log
 
-from model.coder.attn_bipartite import BipartiteGAT
-from model.coder.interaction_net import InteractionNet
-from model.processor.interaction_processor import InteractionProcessor
-from model.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
-from model.processor.sliding_window_transformer import SlidingWindowTransformer
-from model.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
-from model.mesh.hierarchical_mesh import HierarchicalMesh
-from model.processor.processor_factory import ProcessorFactory
-from configs.model_config import ModelConfig
-from configs.observation_config import ObservationConfig
-
-from utils import make_mlp
-from loss import weighted_huber_loss, weighted_mse_loss
-from process_timeseries import _encode_target_time_features
-
-####
-from model.mesh.mesh import Mesh
-from model.mesh.mesh_factory import MeshFactory
+from ocelot.model.coder.attn_bipartite import BipartiteGAT
+from ocelot.model.coder.interaction_net import InteractionNet
+from ocelot.model.processor.processor_factory import ProcessorFactory
+from ocelot.configs.model_config import ModelConfig
+from ocelot.configs.observation_config import ObservationConfig
+from ocelot.utils import make_mlp
+from ocelot.process_timeseries import _encode_target_time_features
+from ocelot.model.mesh.mesh_factory import MeshFactory
 
 
 def _build_instrument_map(observation_config: ObservationConfig) -> dict[str, int]:
@@ -281,7 +268,7 @@ class Ocelot(nn.Module):
 
                 # Encoder GNN (obs -> mesh)
                 edge_type_tuple_enc = (node_type_input, "to", "mesh")
-                enc_key = self._edge_key(edge_type_tuple_enc)
+                enc_key = self.mesh.edge_key(edge_type_tuple_enc)
 
                 if encoder_config.type == "gat":
                     self.observation_encoders[enc_key] = BipartiteGAT(
@@ -309,7 +296,7 @@ class Ocelot(nn.Module):
                     )
                 # Decoder GNN (mesh -> target)
                 edge_type_tuple_dec = ("mesh", "to", node_type_target)
-                dec_key = self._edge_key(edge_type_tuple_dec)
+                dec_key = self.mesh.edge_key(edge_type_tuple_dec)
 
                 if decoder_config.type == "gat":
                     self.observation_decoders[dec_key] = BipartiteGAT(
@@ -351,15 +338,6 @@ class Ocelot(nn.Module):
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
-        # processor_type = processor_config['type']
-        # processor_params = {
-        #     'hidden_dim': self.hidden_dim,
-        #     **{key: value for key, value in processor_config.items() if key != 'type'},
-        # }
-        # if processor_type == 'interaction':
-        #     processor_params.update(node_types=node_types, edge_types=edge_types)
-        # elif processor_type in ('hierarchical_interaction', 'hierarchical_sliding_window'):
-        #     processor_params['num_levels'] = self.mesh.num_levels
         self.processor = ProcessorFactory.build(self.mesh, 
                                                 hidden_dim=self.hidden_dim, 
                                                 processor_config=processor_config)
@@ -792,7 +770,7 @@ class Ocelot(nn.Module):
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
                 device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device
 
-                encoder = self.observation_encoders[self._edge_key(edge_type)]
+                encoder = self.observation_encoders[self.mesh.edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
                 edge_features = self._edge_features(
@@ -862,7 +840,7 @@ class Ocelot(nn.Module):
         step_info = self.model._get_latent_step_info(data)
         step_mapping = step_info["step_mapping"]
         num_latent_steps = step_info["num_steps"]
-        edge_mapping = self._map_step_edges(data, step_mapping)
+        edge_mapping = self.mesh.map_step_edges(data, step_mapping)
         
         log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         log.debug(f"[LATENT] Step mapping: {step_mapping}")
@@ -1059,26 +1037,6 @@ class Ocelot(nn.Module):
             "step_mapping": step_info,
             "num_steps": max_step + 1 if max_step >= 0 else 0
         }
-
-    def _map_step_edges(self, data: HeteroData, step_mapping: dict) -> dict:
-        """
-        Create mapping from step-specific edges to base decoder keys.
-        Returns dict mapping step edges to decoder keys.
-        """
-        edge_mapping = {}
-
-        for edge_type in data.edge_index_dict.keys():
-            src_type, rel, dst_type = edge_type
-            if "_target_step" in dst_type and src_type == "mesh":
-                # Find the base target type for this step
-                for base_type, steps in step_mapping.items():
-                    for step_num, step_node_type in steps.items():
-                        if step_node_type == dst_type:
-                            base_edge_key = self._edge_key(("mesh", "to", base_type))
-                            edge_mapping[edge_type] = base_edge_key
-                            break
-
-        return edge_mapping
 
     def _extract_ground_truths_and_metadata(self, batch, all_predictions):
         """
@@ -1720,8 +1678,3 @@ class Ocelot(nn.Module):
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
-
-    # Question: Move to mesh?
-    def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
-        """Converts an edge_type tuple to a string key for ModuleDict."""
-        return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"

@@ -17,9 +17,9 @@ from torch_geometric.data import HeteroData
 
 from logger import log
 
-from .hierarchical_processor_base import HierarchicalProcessorBase
-from ..mesh.hierarchical_mesh import HierarchicalMesh
-from ..coder.interaction_net import InteractionNet
+from ocelot.model.processor.hierarchical_processor_base import HierarchicalProcessorBase
+from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
+from ocelot.model.coder.interaction_net import InteractionNet
 
 
 class HierarchicalInteractionProcessor(HierarchicalProcessorBase):

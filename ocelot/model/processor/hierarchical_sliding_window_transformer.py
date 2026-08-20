@@ -17,8 +17,8 @@ from torch_geometric.data import HeteroData
 
 from logger import log
 
-from .processor_base import ProcessorBase
-from ..mesh.hierarchical_mesh import HierarchicalMesh
+from ocelot.model.processor.processor_base import ProcessorBase
+from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
 
 class TemporalPositionalEncoding(nn.Module):

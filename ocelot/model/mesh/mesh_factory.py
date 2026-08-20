@@ -1,7 +1,7 @@
 
-from .mesh import Mesh
-from .fixed_mesh import FixedMesh
-from .hierarchical_mesh import HierarchicalMesh
+from ocelot.model.mesh.mesh import Mesh
+from ocelot.model.mesh.fixed_mesh import FixedMesh
+from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
 
 MeshTypes = {

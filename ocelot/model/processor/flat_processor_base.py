@@ -1,6 +1,6 @@
 
-from ..mesh.fixed_mesh import FixedMesh
-from .processor_base import ProcessorBase
+from ocelot.model.mesh.fixed_mesh import FixedMesh
+from ocelot.model.processor.processor_base import ProcessorBase
 
 
 class FlatProcessorBase(ProcessorBase):

@@ -1,9 +1,5 @@
 import os, sys
 from typing import Dict, Tuple, List, Optional
-
-# gnn_model is the root directory
-sys.path.append(os.path.realpath(os.path.join(os.path.dirname(__file__), '..')))
-
 import lightning.pytorch as pl
 import os
 import torch
@@ -11,8 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import HeteroData
 
-from model.ocelot import Ocelot
-from configs.training_config import TrainingConfig
+from ocelot.model.ocelot import Ocelot
+from ocelot.configs.training_config import TrainingConfig
 
 
 class OcelotTrainingModule(pl.LightningModule):

@@ -12,15 +12,20 @@ import yaml
 import pandas as pd
 import socket
 import inspect
+from datetime import timedelta
+
+sys.path.append(
+    os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+)
 
 import lightning.pytorch as pl
 import torch
 from lightning.pytorch.strategies import DDPStrategy
 
-from gnn_datamodule import GNNDataModule
-from model.ocelot import Ocelot
-from weight_utils import load_weights_from_yaml
-from datetime import timedelta
+from ocelot.gnn_datamodule import GNNDataModule
+from ocelot.model.ocelot import Ocelot
+from ocelot.weight_utils import load_weights_from_yaml
+
 
 torch.set_float32_matmul_precision("medium")
 

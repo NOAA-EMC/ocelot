@@ -1,8 +1,4 @@
 import os, sys
-
-# gnn_model is the root directory
-sys.path.append(os.path.realpath(os.path.join(os.path.dirname(__file__), '..')))
-
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn

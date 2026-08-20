@@ -1,6 +1,6 @@
 import yaml
 
-from .config_base import (
+from ocelot.configs.config_base import (
     BoolField,
     ConfigBase,
     DatetimeField,

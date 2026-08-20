@@ -1,10 +1,10 @@
-from configs.model_config import ProcessorConfig
-from .processor_base import ProcessorBase
-from .interaction_processor import InteractionProcessor
-from .sliding_window_transformer import SlidingWindowTransformer
-from .hierarchical_interaction_processor import HierarchicalInteractionProcessor
-from .hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
-from ..mesh.mesh import Mesh
+from ocelot.configs.model_config import ProcessorConfig
+from ocelot.model.processor.processor_base import ProcessorBase
+from ocelot.model.processor.interaction_processor import InteractionProcessor
+from ocelot.model.processor.sliding_window_transformer import SlidingWindowTransformer
+from ocelot.model.processor.hierarchical_interaction_processor import HierarchicalInteractionProcessor
+from ocelot.model.processor.hierarchical_sliding_window_transformer import HierarchicalSlidingWindowTransformer
+from ocelot.model.mesh.mesh import Mesh
 
 processor_types = {
     "interaction": InteractionProcessor,

@@ -9,6 +9,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+sys.path.append(
+    os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+)
+
 import yaml
 
 from configs.model_config import ModelConfig

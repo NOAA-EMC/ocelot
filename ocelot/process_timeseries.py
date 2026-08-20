@@ -11,7 +11,8 @@ import hashlib
 import numpy as np
 import pandas as pd
 import torch
-from timing_utils import timing_resource_decorator
+
+from ocelot.timing_utils import timing_resource_decorator
 
 # Maximum number of channels supported for per-channel variable mapping
 MAX_SUPPORTED_CHANNELS = 9

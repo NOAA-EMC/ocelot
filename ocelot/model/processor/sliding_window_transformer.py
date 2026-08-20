@@ -11,12 +11,10 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
-from torch_geometric.data import HeteroData
 
-from logger import log
-from ..mesh.fixed_mesh import FixedMesh
-from .flat_processor_base import FlatProcessorBase
-from configs.model_config import ProcessorConfig
+from ocelot.configs.model_config import ProcessorConfig
+from ocelot.model.mesh.fixed_mesh import FixedMesh
+from ocelot.model.processor.flat_processor_base import FlatProcessorBase
 
 
 class TemporalPositionalEncoding(nn.Module):
@@ -173,7 +171,7 @@ class SlidingWindowTransformer(FlatProcessorBase):
         self.posenc = TemporalPositionalEncoding(hidden_dim, max_len=processor_config.window)
         self.spatial_mix = SpatialMixBlock(hidden_dim, dropout=processor_config.dropout)
         self.register_buffer("_dummy", torch.empty(0))  # for device inference
-        self.cache: deque[torch.Tensor] = deque(maxlen=window)
+        self.cache: deque[torch.Tensor] = deque(maxlen=processor_config.window)
 
     def reset(self):
         self.cache.clear()

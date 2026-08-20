@@ -7,8 +7,8 @@ Author: Azadeh Gholoubi
 
 import torch.nn as nn
 
-from .processor_base import ProcessorBase
-from ..mesh.hierarchical_mesh import HierarchicalMesh
+from ocelot.model.processor.processor_base import ProcessorBase
+from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
 
 class HierarchicalProcessorBase(ProcessorBase):

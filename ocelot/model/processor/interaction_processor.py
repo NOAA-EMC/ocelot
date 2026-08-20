@@ -10,11 +10,11 @@ import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 from torch_geometric.data import HeteroData
 
-from logger import log
-from ..mesh.fixed_mesh import FixedMesh
-from configs.model_config import ProcessorConfig
-from .interaction_network import InteractionNetwork
-from .flat_processor_base import FlatProcessorBase
+from ocelot.logger import log
+from ocelot.model.mesh.fixed_mesh import FixedMesh
+from ocelot.configs.model_config import ProcessorConfig
+from ocelot.model.processor.interaction_network import InteractionNetwork
+from ocelot.model.processor.flat_processor_base import FlatProcessorBase
 
 
 class InteractionProcessor(FlatProcessorBase):
