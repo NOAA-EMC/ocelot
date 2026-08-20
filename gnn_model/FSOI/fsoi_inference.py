@@ -7,7 +7,8 @@ This script:
 3. For each (prev, curr) pair:
    - Computes analysis adjoint (ga)
    - Computes background adjoint (gb)
-   - Computes FSOI = δx ⊙ (ga + gb)
+   - Computes FSOI = impact_factor * (xa - xb) * (ga + gb)
+     where the standard trapezoidal setting is impact_factor = 0.5
 4. Aggregates and saves results
 
 Usage:
@@ -381,8 +382,14 @@ def compute_fsoi_for_pair(
     """
     Compute FSOI for a single (prev, curr) batch pair.
 
-    This is the core FSOI computation implementing:
-    FSOI(k) = δx(k) ⊙ (ga(k) + gb(k))
+    This is the core FSOI computation implementing the trapezoidal
+    endpoint-gradient approximation:
+
+    FSOI(k) = impact_factor * (xa(k) - xb(k)) * (ga(k) + gb(k))
+
+    The standard setting is impact_factor = 0.5, so this becomes:
+
+    FSOI(k) = 0.5 * (xa(k) - xb(k)) * (ga(k) + gb(k))
 
     Args:
         model: Trained GNN model (frozen)
@@ -679,7 +686,7 @@ def compute_fsoi_for_pair(
         # ── Mesh-space verification path ─────────────────────────────────────
         # When gfs_reference is provided, replace the obs-space error function
         # with mesh-space MSE(OCELOT_mesh_pred, GFS_analysis).
-        # The innovation δx = xa - xb and the FSOI formula are unchanged —
+        # The innovation xa - xb and the trapezoidal FSOI formula are unchanged;
         # only the error metric (and its gradients) changes.
         if gfs_reference is not None and init_time_unix is not None:
             from fsoi_utils import compute_forecast_error_on_mesh
@@ -1134,7 +1141,10 @@ def compute_fsoi_for_pair(
             # ========================================
             # STEP 6: Compute FSOI
             # ========================================
-            print("[6/6] Computing FSOI = δx ⊙ (ga + gb)...")
+            print(
+                "[6/6] Computing FSOI = "
+                "impact_factor * (xa - xb) * (ga + gb)..."
+            )
 
             # xa and xb are shape-aligned after the ALIGNMENT block above
             fsoi_values, innovations, gradient_sums = compute_fsoi_per_observation(

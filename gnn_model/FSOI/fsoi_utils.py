@@ -1565,13 +1565,17 @@ def compute_fsoi_per_observation(
     """
     Compute per-observation FSOI using the trapezoidal formula:
 
-    FSOI = impact_factor * δx ⊙ (ga + gb)
+    FSOI = impact_factor * delta_x * (ga + gb)
+
+    The standard trapezoidal setting is impact_factor = 0.5:
+
+    FSOI = 0.5 * (xa - xb) * (ga + gb)
 
     where:
-    - δx = xa - xb (innovation)
+    - delta_x = xa - xb (innovation)
     - ga = gradient of error w.r.t. analysis
     - gb = gradient of error w.r.t. background
-    - ⊙ = elementwise multiplication
+    - * is elementwise multiplication
 
     Args:
         xa: Analysis observation values

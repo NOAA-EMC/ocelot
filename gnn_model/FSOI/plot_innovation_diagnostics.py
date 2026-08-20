@@ -36,6 +36,35 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy.stats import norm as scipy_norm  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
+
+# Journal-quality defaults applied to every figure in this module.
+plt.rcParams.update({
+    "font.family": "DejaVu Sans",
+    "mathtext.fontset": "dejavusans",
+    "axes.linewidth": 0.7,
+    "figure.facecolor": "white",
+    "savefig.facecolor": "white",
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
+
+_INSTR_DISPLAY = {
+    "amsua": "AMSU-A", "atms": "ATMS", "avhrr": "AVHRR", "ssmis": "SSMIS",
+    "seviri_asr": "SEVIRI ASR", "seviri_csr": "SEVIRI CSR", "ascat": "ASCAT",
+    "radiosonde": "Radiosonde", "aircraft": "Aircraft", "surface_obs": "Surface obs",
+}
+
+
+def _save_journal(fig, out_dir: Path, stem: str, suffix: str, make_legacy: bool) -> None:
+    """Save a figure at 300 dpi as PNG and PDF, plus a legacy stem name."""
+    fig.savefig(out_dir / f"{stem}_{suffix}.png", dpi=300, bbox_inches="tight")
+    fig.savefig(out_dir / f"{stem}_{suffix}.pdf", dpi=300, bbox_inches="tight")
+    if make_legacy:
+        fig.savefig(out_dir / f"{stem}.png", dpi=300, bbox_inches="tight")
+        fig.savefig(out_dir / f"{stem}.pdf", dpi=300, bbox_inches="tight")
+    print(f"  Saved: {out_dir / f'{stem}_{suffix}.png'}")
 
 
 # Conventional preprocessing fills missing channel values with SENT=-9.0 in
@@ -159,6 +188,11 @@ def plot_innovation_histograms(df_scatter: pd.DataFrame, out_dir: Path) -> None:
     if not instruments:
         return
 
+    hist_fill = "#7fa8d0"
+    gauss_col = "#b03030"
+    mean_col = "#e08a00"
+    flag_col = "#b03030"
+
     for inst in instruments:
         inst_df = df_scatter[df_scatter["instrument"].astype(str) == inst]
         grouped = list(inst_df.groupby("channel", dropna=True))
@@ -168,66 +202,86 @@ def plot_innovation_histograms(df_scatter: pd.DataFrame, out_dir: Path) -> None:
 
         ncols = min(4, n)
         nrows = (n + ncols - 1) // ncols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows),
+        fig, axes = plt.subplots(nrows, ncols, figsize=(3.4 * ncols, 2.7 * nrows),
                                  squeeze=False)
 
         for i, (ch, group_df) in enumerate(grouped):
             ax = axes[i // ncols][i % ncols]
             var_name = _channel_label(inst, ch)
-            title = f"{inst} / {var_name}"
 
             sub = group_df["innovation"].dropna().to_numpy(dtype=float)
             sub = _drop_sentinel_innovations(sub)
             if len(sub) < 10:
-                ax.set_title(f"{title}\n(insufficient data)")
+                ax.set_title(f"{var_name}\n(insufficient data)", fontsize=9,
+                             color="0.5")
                 ax.axis("off")
                 continue
 
-            vals = sub
-            mu, sigma = float(np.mean(vals)), float(np.std(vals))
-            skew = float(np.mean(((vals - mu) / (sigma + 1e-12)) ** 3))
+            mu, sigma = float(np.mean(sub)), float(np.std(sub))
+            skew = float(np.mean(((sub - mu) / (sigma + 1e-12)) ** 3))
             bias_ratio = abs(mu) / (sigma + 1e-12)
+            non_gauss = bias_ratio > 0.10 or abs(skew) > 1.0
 
-            # Clip extreme outliers for plotting (keep 99.5th percentile)
-            p_lo, p_hi = np.percentile(vals, [0.25, 99.75])
-            plot_vals = vals[(vals >= p_lo) & (vals <= p_hi)]
+            # Clip extreme outliers for plotting (keep central 99.5%).
+            p_lo, p_hi = np.percentile(sub, [0.25, 99.75])
+            plot_vals = sub[(sub >= p_lo) & (sub <= p_hi)]
 
-            ax.hist(plot_vals, bins=50, density=True, alpha=0.6, color="steelblue",
-                    edgecolor="none", label="Observed (sentinel-masked)")
-            # Fitted Gaussian
+            ax.hist(plot_vals, bins=45, density=True, color=hist_fill,
+                    edgecolor="white", linewidth=0.2, zorder=2)
             x_fit = np.linspace(p_lo, p_hi, 300)
-            ax.plot(x_fit, scipy_norm.pdf(x_fit, mu, sigma), "r-", lw=1.5,
-                    label=f"N({mu:.3f}, {sigma:.3f})")
-            ax.axvline(0, color="k", lw=0.8, linestyle="--")
-            ax.axvline(mu, color="orange", lw=1.2, linestyle="-", label=f"μ={mu:.3f}")
+            ax.plot(x_fit, scipy_norm.pdf(x_fit, mu, sigma), color=gauss_col,
+                    lw=1.6, zorder=4)
+            ax.axvline(0, color="0.35", lw=0.8, linestyle="--", zorder=3)
+            ax.axvline(mu, color=mean_col, lw=1.3, linestyle="-", zorder=3)
 
-            color = "red" if bias_ratio > 0.10 or abs(skew) > 1.0 else "black"
-            flag = " [WARN]" if color == "red" else ""
-            ax.set_title(f"{title}{flag}\nμ={mu:.3f}  σ={sigma:.3f}  skew={skew:.2f}",
-                         fontsize=9, color=color)
-            ax.set_xlabel("Innovation (xa - xb)", fontsize=8)
-            ax.set_ylabel("Density", fontsize=8)
-            ax.legend(fontsize=7)
-            ax.grid(True, alpha=0.2)
+            ax.text(0.03, 0.96,
+                    f"$\\mu$={mu:.2f}  $\\sigma$={sigma:.2f}\nskew={skew:.2f}",
+                    transform=ax.transAxes, va="top", ha="left", fontsize=7.5,
+                    bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="0.75",
+                              alpha=0.85))
+
+            ax.set_title(var_name + ("  \u25cf" if non_gauss else ""),
+                         fontsize=9.5, fontweight="bold" if non_gauss else "normal",
+                         color=flag_col if non_gauss else "0.15")
+            if non_gauss:
+                for sp in ax.spines.values():
+                    sp.set_edgecolor(flag_col)
+                    sp.set_linewidth(1.4)
+            else:
+                for side in ("top", "right"):
+                    ax.spines[side].set_visible(False)
+            ax.tick_params(labelsize=7.5)
+            ax.grid(True, alpha=0.18, zorder=0)
+            if i // ncols == nrows - 1:
+                ax.set_xlabel(r"Innovation $x_a - x_b$ ($\sigma$)", fontsize=8.5)
+            if i % ncols == 0:
+                ax.set_ylabel("Density", fontsize=8.5)
 
         # Hide unused panels
         for j in range(n, nrows * ncols):
             axes[j // ncols][j % ncols].axis("off")
 
-        fig.suptitle(f"Innovation Distributions: {inst}\n"
-                     "(sentinel range [-12, -8.5] masked; WARN: |μ/σ| > 10% or |skewness| > 1.0)",
-                     fontsize=11, y=1.01)
-        fig.tight_layout()
+        inst_disp = _INSTR_DISPLAY.get(inst.lower(), inst.upper())
+        fig.suptitle(f"Innovation distributions \u2014 {inst_disp}",
+                     fontsize=13, fontweight="bold", y=0.995)
+        fig.text(0.5, 0.955,
+                 r"Marked panels ($\bullet$, red frame) are non-Gaussian: "
+                 r"$|skew| > 1$ or $|\mu/\sigma| > 0.1$",
+                 ha="center", fontsize=8.5, color="0.4")
+
+        legend_handles = [
+            Patch(facecolor=hist_fill, edgecolor="white", label="Observed (sentinel-masked)"),
+            Line2D([0], [0], color=gauss_col, lw=1.6, label="Gaussian fit"),
+            Line2D([0], [0], color=mean_col, lw=1.3, label=r"Mean $\mu$"),
+            Line2D([0], [0], color="0.35", lw=0.8, ls="--", label="Zero"),
+        ]
+        fig.legend(handles=legend_handles, loc="lower center", ncol=4,
+                   fontsize=8.5, frameon=False, bbox_to_anchor=(0.5, -0.01))
+        fig.tight_layout(rect=(0, 0.03, 1, 0.94))
 
         suffix = _slugify_instrument(inst)
-        out = out_dir / f"innovation_histograms_{suffix}.png"
-        fig.savefig(out, dpi=150, bbox_inches="tight")
-        print(f"  Saved: {out}")
-        if len(instruments) == 1 or suffix == "aircraft":
-            # Keep legacy filename for compatibility with existing paths.
-            out_legacy = out_dir / "innovation_histograms.png"
-            fig.savefig(out_legacy, dpi=150, bbox_inches="tight")
-            print(f"  Saved: {out_legacy}")
+        make_legacy = len(instruments) == 1 or suffix == "aircraft"
+        _save_journal(fig, out_dir, "innovation_histograms", suffix, make_legacy)
         plt.close(fig)
 
 
@@ -313,29 +367,33 @@ def plot_background_quality_summary(df_diag: pd.DataFrame, out_dir: Path) -> Non
         if summary.empty:
             continue
 
-        fig, ax = plt.subplots(figsize=(10, max(4, len(summary) * 0.4)))
-        colors = ["green" if v < 0.05 else ("orange" if v < 0.20 else "red")
+        fig, ax = plt.subplots(figsize=(9, max(3.2, len(summary) * 0.42)))
+        good, mod, poor = "#2e7d32", "#e08a00", "#b03030"
+        colors = [good if v < 0.05 else (mod if v < 0.20 else poor)
                   for v in summary.values]
         summary.index = [_channel_label(str(inst), c) for c in summary.index]
-        summary.plot(kind="barh", ax=ax, color=colors, alpha=0.8)
+        summary.plot(kind="barh", ax=ax, color=colors, alpha=0.9,
+                     edgecolor="white", linewidth=0.4, zorder=3)
 
-        ax.axvline(0.05, color="green", lw=1.2, linestyle="--", label="5% (good)")
-        ax.axvline(0.20, color="red", lw=1.2, linestyle="--", label="20% (poor)")
-        ax.set_xlabel("Median normalized RMSE  [RMSE(δx) / obs_range]")
-        ax.set_title(f"Background Field Quality: {inst} (per channel)\n"
-                     "(Green < 5%: good  |  Orange < 20%: moderate  |  Red >= 20%: poor)")
-        ax.legend()
-        ax.grid(True, alpha=0.2, axis="x")
+        ax.axvline(0.05, color=good, lw=1.1, linestyle="--", zorder=2,
+                   label="5% (good)")
+        ax.axvline(0.20, color=poor, lw=1.1, linestyle="--", zorder=2,
+                   label="20% (poor)")
+        ax.set_xlabel(r"Median normalized RMSE  $\mathrm{RMSE}(\delta x)\,/\,$obs range",
+                      fontsize=11)
+        inst_disp = _INSTR_DISPLAY.get(str(inst).lower(), str(inst).upper())
+        ax.set_title(f"Background-field quality by channel \u2014 {inst_disp}",
+                     fontsize=12, fontweight="bold", loc="left")
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.legend(fontsize=8, frameon=False, loc="lower right")
+        ax.grid(True, alpha=0.2, axis="x", zorder=0)
 
-        plt.tight_layout()
+        fig.tight_layout()
         suffix = _slugify_instrument(str(inst))
-        out = out_dir / f"background_quality_summary_{suffix}.png"
-        fig.savefig(out, dpi=150, bbox_inches="tight")
-        print(f"  Saved: {out}")
-        if df_diag["instrument"].nunique(dropna=True) == 1 or suffix == "aircraft":
-            out_legacy = out_dir / "background_quality_summary.png"
-            fig.savefig(out_legacy, dpi=150, bbox_inches="tight")
-            print(f"  Saved: {out_legacy}")
+        make_legacy = (df_diag["instrument"].nunique(dropna=True) == 1
+                       or suffix == "aircraft")
+        _save_journal(fig, out_dir, "background_quality_summary", suffix, make_legacy)
         plt.close(fig)
 
         poor = summary[summary >= 0.20]
@@ -350,50 +408,92 @@ def plot_background_quality_summary(df_diag: pd.DataFrame, out_dir: Path) -> Non
 # ── Plot 4: Skewness summary ──────────────────────────────────────────────────
 
 def plot_skewness_summary(df_diag: pd.DataFrame, out_dir: Path) -> None:
-    """Heatmap of |skewness| per (instrument, channel).
+    """Signed innovation skewness per (instrument, channel).
 
-    |skewness| > 1.0 indicates non-Gaussian δx, which degrades the tangent-linear
-    FSOI approximation and should be flagged.
+    Prefer robust Bowley skewness when available. The sign is physically
+    meaningful: negative skew = a heavy left (cold/dry) tail, positive skew =
+    a heavy right tail. Classical |skewness| > 1 marks outlier-sensitive
+    asymmetry; robust |Bowley| > 0.3 marks a materially asymmetric IQR.
     """
     print("Creating skewness summary...")
 
-    if "innovation_skewness" not in df_diag.columns:
-        print("  Skipping: no innovation_skewness column")
+    if "innovation_bowley_skewness" in df_diag.columns:
+        skew_col = "innovation_bowley_skewness"
+        band = 0.3
+        ylabel = "Bowley innovation skewness (mean over cycles)"
+        band_label = "Near-symmetric band ($|B| \\leq 0.3$)"
+        title_prefix = "Robust innovation skewness by channel"
+    elif "innovation_skewness" in df_diag.columns:
+        skew_col = "innovation_skewness"
+        band = 1.0
+        ylabel = "Innovation skewness (mean over cycles)"
+        band_label = "Near-Gaussian band ($|skew| \\leq 1$)"
+        title_prefix = "Innovation skewness by channel"
+    else:
+        print("  Skipping: no innovation skewness column")
         return
 
+    n_inst = df_diag["instrument"].nunique(dropna=True)
+    pos_col = "#c0392b"   # right tail
+    neg_col = "#2c6fbb"   # left tail
+
     for inst, inst_df in df_diag.groupby("instrument", dropna=True):
-        summary = (inst_df.groupby("channel")["innovation_skewness"]
+        summary = (inst_df.groupby("channel")[skew_col]
                           .mean()
-                          .abs()
                           .sort_index())
         if summary.empty:
             continue
 
-        fig, ax = plt.subplots(figsize=(max(8, len(summary) * 0.7), 4.5))
-        bars = ax.bar([_channel_label(str(inst), c) for c in summary.index], summary.values,
-                      color=["red" if v > 1.0 else "goldenrod" for v in summary.values],
-                      alpha=0.85)
-        ax.axhline(1.0, color="k", linestyle="--", linewidth=1.0, label="|skewness| = 1.0")
-        ax.set_xlabel("Channel")
-        ax.set_ylabel("Mean |skewness|")
-        ax.set_title(f"Innovation Skewness Summary: {inst}\n"
-                     "(> 1.0: non-Gaussian — FSOI linearity assumption may break)")
-        ax.grid(True, alpha=0.2, axis="y")
-        ax.legend()
+        labels = [_channel_label(str(inst), c) for c in summary.index]
+        vals = np.asarray(summary.values, dtype=float)
+        n = len(vals)
 
-        for bar, val in zip(bars, summary.values):
-            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(),
-                    f"{val:.2f}", ha="center", va="bottom", fontsize=7)
+        fig, ax = plt.subplots(figsize=(max(7.5, n * 0.55), 4.2))
 
-        plt.tight_layout()
+        ax.axhspan(-band, band, color="0.9", zorder=0)
+        bars = ax.bar(range(n), vals, edgecolor="white", linewidth=0.5, zorder=3,
+                      color=[pos_col if v >= 0 else neg_col for v in vals])
+        for bar, v in zip(bars, vals):
+            bar.set_alpha(0.95 if abs(v) > band else 0.55)
+
+        ax.axhline(0.0, color="0.2", lw=0.8, zorder=2)
+        for y in (band, -band):
+            ax.axhline(y, color="0.35", linestyle="--", linewidth=0.9, zorder=2)
+
+        for i, v in enumerate(vals):
+            if abs(v) > band:
+                ax.annotate(f"{v:.1f}", (i, v), textcoords="offset points",
+                            xytext=(0, 3 if v >= 0 else -12), ha="center",
+                            fontsize=7.5, fontweight="bold",
+                            color=pos_col if v >= 0 else neg_col)
+
+        ax.set_xticks(range(n))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_xlabel("Channel", fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        inst_disp = _INSTR_DISPLAY.get(str(inst).lower(), str(inst).upper())
+        ax.set_title(f"{title_prefix} \u2014 {inst_disp}",
+                     fontsize=12, fontweight="bold", loc="left")
+
+        ymax = max(band * 1.4, float(np.nanmax(np.abs(vals))) * 1.2)
+        ax.set_ylim(-ymax, ymax)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.grid(True, axis="y", alpha=0.25, zorder=0)
+        ax.margins(x=0.01)
+
+        legend_handles = [
+            Patch(facecolor="0.9", label=band_label),
+            Patch(facecolor=neg_col, label="Left tail (skew < 0)"),
+            Patch(facecolor=pos_col, label="Right tail (skew > 0)"),
+        ]
+        ax.legend(handles=legend_handles, fontsize=8, loc="upper right",
+                  frameon=False)
+
+        fig.tight_layout()
         suffix = _slugify_instrument(str(inst))
-        out = out_dir / f"innovation_skewness_heatmap_{suffix}.png"
-        fig.savefig(out, dpi=150, bbox_inches="tight")
-        print(f"  Saved: {out}")
-        if df_diag["instrument"].nunique(dropna=True) == 1 or suffix == "aircraft":
-            out_legacy = out_dir / "innovation_skewness_heatmap.png"
-            fig.savefig(out_legacy, dpi=150, bbox_inches="tight")
-            print(f"  Saved: {out_legacy}")
+        _save_journal(fig, out_dir, "innovation_skewness_heatmap", suffix,
+                      n_inst == 1 or suffix == "aircraft")
         plt.close(fig)
 
 
