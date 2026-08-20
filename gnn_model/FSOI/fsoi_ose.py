@@ -65,6 +65,13 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 ABSOLUTE_SIGNAL_FLOOR = 1e-12
 REPRO_SIGNAL_MULTIPLIER = 10.0
+NORMALIZED_MEAN_LOSS_REDUCTIONS = {
+    "mean",
+    "mse",
+    "normalized",
+    "average",
+    "avg",
+}
 
 # Matched OSE/FSOI validation uses:
 #   delta_j_actual = J_control - J_denied
@@ -90,13 +97,22 @@ def _signal_threshold_from_repro(
         if np.isfinite(candidate):
             repro_error = candidate
             threshold = max(ABSOLUTE_SIGNAL_FLOOR, REPRO_SIGNAL_MULTIPLIER * candidate)
-            basis = "max(1e-12, 10*observed_control_reproducibility_error)"
+            basis = "max(1e-12, 10*control_reproducibility_error)"
 
     return threshold, repro_error, basis
 
 
 def _observed_repro_error_from_frame(df: pd.DataFrame) -> Optional[float]:
     """Extract the largest finite observed control reproducibility error."""
+    priority_cols = ("matched_control_reproducibility_error",)
+    for col in priority_cols:
+        if col not in df.columns:
+            continue
+        values = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        finite = values[np.isfinite(values)]
+        if not finite.empty:
+            return float(finite.abs().max())
+
     candidates = []
     for col in (
         "observed_control_reproducibility_error",
@@ -112,6 +128,15 @@ def _observed_repro_error_from_frame(df: pd.DataFrame) -> Optional[float]:
         if not finite.empty:
             candidates.append(float(finite.abs().max()))
     return max(candidates) if candidates else None
+
+
+def _serialize_provenance_value(value) -> str:
+    """Serialize simple config provenance fields for CSV output."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(str(v) for v in value)
+    return str(value)
 
 
 def _finite_signal(a: float, b: float, signal_threshold: float) -> bool:
@@ -410,6 +435,11 @@ def compute_ose_for_pair(
         'mesh_instrument': mesh_instrument if use_mesh_ose else '',
         'mesh_pressure_level_idx': mesh_pressure_level_idx if use_mesh_ose else '',
         'ose_spatial_npz': spatial_npz,
+        'loss_reduction': str(loss_reduction),
+        'target_instruments': _serialize_provenance_value(target_instruments),
+        'target_variables': _serialize_provenance_value(target_variables),
+        'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
+        'use_area_weights': bool(use_area_weights),
     }
 
 
@@ -433,6 +463,8 @@ def compute_matched_conditional_fsoi_for_pair(
     curr_bin: str,
     prev_bin: str,
     impact_factor: float = 0.5,
+    run_control_repro_check: bool = False,
+    control_reproducibility_error: Optional[float] = None,
 ) -> dict:
     """Compute apples-to-apples conditional FSOI for an OSE denial.
 
@@ -468,6 +500,9 @@ def compute_matched_conditional_fsoi_for_pair(
         return {}
     if not np.isclose(impact_factor, 0.5):
         raise ValueError("Matched endpoint FSOI requires impact_factor=0.5")
+    loss_reduction_key = str(loss_reduction).strip().lower()
+    if loss_reduction_key not in NORMALIZED_MEAN_LOSS_REDUCTIONS:
+        raise ValueError("Matched ATMS OSE validation requires a normalized-mean J")
 
     shared_kwargs = dict(
         forecast_lead_step=forecast_lead_step,
@@ -513,6 +548,15 @@ def compute_matched_conditional_fsoi_for_pair(
             grad_map[inst] = grad
         return loss, grad_map
 
+    def _loss_value_no_grad(inputs: Dict[str, torch.Tensor]) -> float:
+        batch_for_error = curr_batch.clone()
+        if target_instruments is not None:
+            prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
+        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=subsample_indices)
+        with torch.no_grad():
+            loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
+        return float(loss.detach().item())
+
     control_inputs = _make_inputs(denied=False)
     denied_inputs = _make_inputs(denied=True)
 
@@ -555,7 +599,24 @@ def compute_matched_conditional_fsoi_for_pair(
     j_denied_value = float(j_denied.detach().item())
     delta_j_actual = float(j_control_value - j_denied_value)
     ose_impact = float(j_denied_value - j_control_value)
-    signal_threshold, repro_error, threshold_basis = _signal_threshold_from_repro()
+    j_control_repeat_value = float("nan")
+    matched_control_repro_error = float("nan")
+    matched_control_repro_source = "none"
+    if control_reproducibility_error is not None:
+        try:
+            candidate_repro_error = abs(float(control_reproducibility_error))
+        except (TypeError, ValueError):
+            candidate_repro_error = float("nan")
+        if np.isfinite(candidate_repro_error):
+            matched_control_repro_error = candidate_repro_error
+            matched_control_repro_source = "representative_pair"
+    if run_control_repro_check:
+        j_control_repeat_value = _loss_value_no_grad(control_inputs)
+        matched_control_repro_error = abs(j_control_repeat_value - j_control_value)
+        matched_control_repro_source = "this_pair_repeat"
+    signal_threshold, repro_error, threshold_basis = _signal_threshold_from_repro(
+        matched_control_repro_error if np.isfinite(matched_control_repro_error) else None
+    )
     signal_valid = _finite_signal(matched_fsoi, delta_j_actual, signal_threshold)
     closure_ratio = (
         matched_fsoi / delta_j_actual
@@ -577,6 +638,11 @@ def compute_matched_conditional_fsoi_for_pair(
         'mesh_instrument': '',
         'mesh_pressure_level_idx': '',
         'ose_spatial_npz': '',
+        'loss_reduction': str(loss_reduction),
+        'target_instruments': _serialize_provenance_value(target_instruments),
+        'target_variables': _serialize_provenance_value(target_variables),
+        'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
+        'use_area_weights': bool(use_area_weights),
         'matched_comparison_mode': 'conditional_endpoint_same_sample_same_J',
         'matched_sign_convention': 'positive=detrimental; delta_j_actual=J_control-J_denied',
         'matched_fsoi': matched_fsoi,
@@ -587,6 +653,10 @@ def compute_matched_conditional_fsoi_for_pair(
         'delta_j_actual': delta_j_actual,
         'j_control': j_control_value,
         'j_denied': j_denied_value,
+        'matched_control_repeated': bool(run_control_repro_check),
+        'matched_control_repeat': j_control_repeat_value,
+        'matched_control_reproducibility_error': matched_control_repro_error,
+        'matched_control_reproducibility_source': matched_control_repro_source,
         'matched_closure_ratio': closure_ratio,
         'matched_signal_threshold': signal_threshold,
         'matched_signal_threshold_basis': threshold_basis,

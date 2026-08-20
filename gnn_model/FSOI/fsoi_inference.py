@@ -274,6 +274,8 @@ def _run_ose_check(
     mesh_pressure_level_idx: int = None,
     init_time_unix: int = None,
     spatial_output_dir: str = None,
+    run_matched_repro_check: bool = False,
+    matched_control_reproducibility_error: float = None,
 ):
     """Compute OSE impact and append to results['ose_records'].""" 
     from fsoi_ose import (
@@ -307,6 +309,8 @@ def _run_ose_check(
                 curr_bin=results.get('curr_bin', ''),
                 prev_bin=results.get('prev_bin', ''),
                 impact_factor=impact_factor,
+                run_control_repro_check=run_matched_repro_check,
+                control_reproducibility_error=matched_control_reproducibility_error,
             )
         else:
             rec = _ose_pair(
@@ -372,6 +376,7 @@ def compute_fsoi_for_pair(
     mesh_pressure_level_idx: int = 4,
     ose_spatial_output_dir: str = None,
     ose_spatial_pair_indices: set = None,
+    matched_control_reproducibility_error: float = None,
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -994,6 +999,8 @@ def compute_fsoi_for_pair(
                         and (ose_spatial_pair_indices is None or pair_idx in ose_spatial_pair_indices)
                         else None
                     ),
+                    run_matched_repro_check=(pair_idx == 0),
+                    matched_control_reproducibility_error=matched_control_reproducibility_error,
                 )
 
         else:
@@ -1213,6 +1220,8 @@ def compute_fsoi_for_pair(
                         and (ose_spatial_pair_indices is None or pair_idx in ose_spatial_pair_indices)
                         else None
                     ),
+                    run_matched_repro_check=(pair_idx == 0),
+                    matched_control_reproducibility_error=matched_control_reproducibility_error,
                 )
 
         # Memory control: only store full tensors if enabled (non-stratified path)
@@ -1718,7 +1727,10 @@ def main():
     if args.ose_instruments:
         ose_instruments = _expand_seviri_instrument_aliases(args.ose_instruments)
         print(f"[OSE] Observation-withholding experiment enabled for: {ose_instruments}")
-        print("[OSE] Adds 1 no-grad forward pass per pair per denial group.")
+        print(
+            "[OSE] Matched validation uses two gradient-enabled endpoint "
+            "evaluations per pair."
+        )
 
     # Main FSOI computation loop
     print("\n" + "=" * 80)
@@ -1732,6 +1744,7 @@ def main():
     all_float64_records = []
     all_diag_records = []
     all_ose_records = []
+    matched_control_reproducibility_error = None
 
     for pair_idx, (prev_batch, curr_batch) in enumerate(tqdm(fsoi_loader, desc="Computing FSOI")):
         try:
@@ -1789,6 +1802,7 @@ def main():
                 mesh_pressure_level_idx=args.mesh_pressure_level_idx if use_mesh_verification else 4,
                 ose_spatial_output_dir=ose_spatial_output_dir,
                 ose_spatial_pair_indices=ose_spatial_pair_indices,
+                matched_control_reproducibility_error=matched_control_reproducibility_error,
             )
 
             all_results.append(result)
@@ -1805,6 +1819,22 @@ def main():
                 all_diag_records.extend(result['diag_records'])
             if isinstance(result, dict) and result.get('ose_records'):
                 all_ose_records.extend(result['ose_records'])
+                if matched_control_reproducibility_error is None:
+                    for rec in result['ose_records']:
+                        try:
+                            candidate = abs(float(rec.get(
+                                'matched_control_reproducibility_error',
+                                np.nan,
+                            )))
+                        except (TypeError, ValueError):
+                            candidate = np.nan
+                        if np.isfinite(candidate):
+                            matched_control_reproducibility_error = candidate
+                            print(
+                                "[OSE Matched] Representative control "
+                                f"reproducibility error={candidate:.2e}"
+                            )
+                            break
 
         except Exception as e:
             print(f"\n[ERROR] Failed to compute FSOI for pair {pair_idx}: {e}")
@@ -2070,38 +2100,54 @@ def main():
         # Immediate matched endpoint comparison. The instrument CSV path is kept
         # only for call compatibility; compare_ose_vs_fsoi uses ose_results.csv.
         fsoi_inst_csv = output_path / "csv" / "fsoi_by_instrument.csv"
-        comp = compare_ose_vs_fsoi(ose_csv, fsoi_inst_csv)
-        if not comp.empty:
-            comp_csv = eval_dir / "ose_vs_fsoi_comparison.csv"
-            comp.to_csv(comp_csv, index=False)
-            signal_valid = comp.get(
-                "signal_valid",
-                pd.Series(True, index=comp.index),
-            ).fillna(False).astype(bool)
-            n_excluded = int((~signal_valid).sum())
-            signal_threshold = float(comp["signal_threshold"].iloc[0]) if "signal_threshold" in comp else np.nan
-            valid = comp.loc[signal_valid].dropna(subset=["closure_ratio"])
-            if not valid.empty:
-                med_r = float(valid["closure_ratio"].median())
-                sign_cases = valid["sign_agree"].dropna()
-                sign_pct = float(sign_cases.mean() * 100) if not sign_cases.empty else float("nan")
-                ose_col = "ose_fsoi_convention" if "ose_fsoi_convention" in valid else "delta_j_actual"
-                r_corr = float(valid[[ose_col, "fsoi_predicted"]]
-                               .corr().iloc[0, 1]) if len(valid) > 2 else float("nan")
-                print(f"[OSE] Comparison: median closure_ratio={med_r:.3f} "
-                      f"(target 1.0)  sign_agree={sign_pct:.0f}%  "
-                      f"Pearson r={r_corr:.3f}  "
-                      f"excluded_near_zero={n_excluded}/{len(comp)}  "
-                      f"threshold={signal_threshold:.2e}")
-                if abs(med_r - 1.0) > 0.30:
-                    print("[OSE] WARNING: closure_ratio far from 1.0 - "
-                          "nonlinear GNN effects may be significant for "
-                          f"{ose_instruments}")
-            else:
-                print(f"[OSE] Comparison: no above-threshold cycles; "
-                      f"excluded_near_zero={n_excluded}/{len(comp)}  "
-                      f"threshold={signal_threshold:.2e}")
-            print(f"[OSE] Comparison saved to {comp_csv}")
+        matched_cols = {"matched_fsoi", "delta_j_actual"}
+        verification_target = (
+            ose_df["verification_target"].fillna("")
+            if "verification_target" in ose_df.columns
+            else pd.Series("obs", index=ose_df.index)
+        )
+        has_matched_obs_records = (
+            matched_cols.issubset(ose_df.columns)
+            and ose_df["matched_fsoi"].notna().all()
+            and ose_df["delta_j_actual"].notna().all()
+            and verification_target.eq("obs").all()
+        )
+        if has_matched_obs_records:
+            comp = compare_ose_vs_fsoi(ose_csv, fsoi_inst_csv)
+            if not comp.empty:
+                comp_csv = eval_dir / "ose_vs_fsoi_comparison.csv"
+                comp.to_csv(comp_csv, index=False)
+                signal_valid = comp.get(
+                    "signal_valid",
+                    pd.Series(True, index=comp.index),
+                ).fillna(False).astype(bool)
+                n_excluded = int((~signal_valid).sum())
+                signal_threshold = float(comp["signal_threshold"].iloc[0]) if "signal_threshold" in comp else np.nan
+                valid = comp.loc[signal_valid].dropna(subset=["closure_ratio"])
+                if not valid.empty:
+                    med_r = float(valid["closure_ratio"].median())
+                    sign_cases = valid["sign_agree"].dropna()
+                    sign_pct = float(sign_cases.mean() * 100) if not sign_cases.empty else float("nan")
+                    ose_col = "ose_fsoi_convention" if "ose_fsoi_convention" in valid else "delta_j_actual"
+                    r_corr = float(valid[[ose_col, "fsoi_predicted"]]
+                                   .corr().iloc[0, 1]) if len(valid) > 2 else float("nan")
+                    print(f"[OSE] Comparison: median closure_ratio={med_r:.3f} "
+                          f"(target 1.0)  sign_agree={sign_pct:.0f}%  "
+                          f"Pearson r={r_corr:.3f}  "
+                          f"excluded_near_zero={n_excluded}/{len(comp)}  "
+                          f"threshold={signal_threshold:.2e}")
+                    if abs(med_r - 1.0) > 0.30:
+                        print("[OSE] WARNING: closure_ratio far from 1.0 - "
+                              "nonlinear GNN effects may be significant for "
+                              f"{ose_instruments}")
+                else:
+                    print(f"[OSE] Comparison: no above-threshold cycles; "
+                          f"excluded_near_zero={n_excluded}/{len(comp)}  "
+                          f"threshold={signal_threshold:.2e}")
+                print(f"[OSE] Comparison saved to {comp_csv}")
+        else:
+            print("[OSE] Matched OSE/FSOI comparison skipped: records do not "
+                  "contain observation-space matched endpoint columns.")
 
     # ── Write reproducibility result ─────────────────────────────────────
     if repro_enabled and all_results:

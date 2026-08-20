@@ -151,7 +151,7 @@ def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     ax.axvline(0, color="gray", lw=0.5)
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
-    ax.set_ylabel("FSOI predicted impact  (sum_impact_scaled)")
+    ax.set_ylabel("Matched conditional FSOI (raw sampled impact)")
     ax.set_xlabel("OSE delta J actual  (J_control - J_denied; positive = detrimental)")
     ax.set_title(
         f"OSE vs FSOI comparison\n"
@@ -316,28 +316,40 @@ def main() -> None:
     ose_raw = pd.read_csv(ose_raw_path)
     print(f"Loaded OSE results: {len(ose_raw)} pairs")
 
-    # Build comparison if not already done
-    if comp_path.is_file():
-        comp = pd.read_csv(comp_path)
-        has_matched_ose = bool({"ose_fsoi_convention", "delta_j_actual"} & set(comp.columns))
-        if not has_matched_ose:
-            print("Existing comparison uses legacy sign convention; rebuilding")
-            from fsoi_ose import compare_ose_vs_fsoi
-            comp = compare_ose_vs_fsoi(ose_raw_path, fsoi_inst_path)
-            if not comp.empty:
-                comp.to_csv(comp_path, index=False)
-                print(f"Rebuilt and saved comparison: {len(comp)} rows -> {comp_path}")
-        if has_matched_ose:
-            print(f"Loaded existing comparison: {len(comp)} rows")
-    else:
+    required_comparison_columns = {
+        "fsoi_predicted",
+        "ose_fsoi_convention",
+        "comparison_mode",
+        "signal_valid",
+        "closure_ratio",
+    }
+
+    def _build_comparison() -> pd.DataFrame:
         from fsoi_ose import compare_ose_vs_fsoi
-        comp = compare_ose_vs_fsoi(ose_raw_path, fsoi_inst_path)
-        if not comp.empty:
-            comp.to_csv(comp_path, index=False)
-            print(f"Built and saved comparison: {len(comp)} rows -> {comp_path}")
+        built = compare_ose_vs_fsoi(ose_raw_path, fsoi_inst_path)
+        if not built.empty:
+            built.to_csv(comp_path, index=False)
+            print(f"Built and saved comparison: {len(built)} rows -> {comp_path}")
         else:
             print("WARNING: could not build OSE vs FSOI comparison")
-            comp = pd.DataFrame()
+        return built
+
+    # Load only complete, current matched-comparison files; rebuild otherwise.
+    if comp_path.is_file():
+        comp = pd.read_csv(comp_path)
+        has_matched_ose = required_comparison_columns.issubset(comp.columns)
+        if has_matched_ose:
+            has_matched_ose = comp["comparison_mode"].eq(
+                "conditional_endpoint_same_sample_same_J"
+            ).all()
+        comparison_is_current = comp_path.stat().st_mtime >= ose_raw_path.stat().st_mtime
+        if has_matched_ose and comparison_is_current:
+            print(f"Loaded existing comparison: {len(comp)} rows")
+        else:
+            print("Existing comparison is stale, partial, or legacy; rebuilding")
+            comp = _build_comparison()
+    else:
+        comp = _build_comparison()
 
     # Generate plots
     stats = {}
@@ -369,10 +381,13 @@ def main() -> None:
         print(summary.to_string(index=False))
         flag = summary["validation_flag"].iloc[0]
         if flag == "PASS":
-            print("\n[OSE] PASS — FSOI rankings are supported by OSE cross-check.")
+            print(
+                "\n[OSE] PASS - Matched ATMS FSOI shows directional and "
+                "magnitude agreement with the ATMS replacement experiment."
+            )
         else:
-            print("\n[OSE] WARN — FSOI rankings may be affected by nonlinear GNN "
-                  "effects. Review scatter plot and closure ratios.")
+            print("\n[OSE] WARN - Matched ATMS FSOI agreement is limited. "
+                  "Review scatter plot and closure ratios.")
 
     print(f"\nDone. Output: {out_dir}")
 
