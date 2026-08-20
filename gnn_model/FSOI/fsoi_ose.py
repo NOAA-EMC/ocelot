@@ -37,9 +37,10 @@ one at the denied endpoint. Those same two losses provide both FSOI and the
 realized OSE error change. No retraining or additional background computation is
 needed.
 
-The "denied" perturbation is:
-    xa_ose[inst] = xb[inst]   for inst in denied_instruments
-    xa_ose[k]    = xa[k]      for k not in denied_instruments
+The "denied" perturbation is applied only to valid observed cells:
+    xa_ose[inst][valid]   = xb[inst][valid]   for denied instruments
+    xa_ose[inst][missing] = xa[inst][missing] for sentinel-filled cells
+    xa_ose[k]             = xa[k]             for other instruments
 
 This is the OCELOT-appropriate single-cycle OSE.  In a cycling NWP context the
 background would also degrade over time; here we measure the single-cycle impact,
@@ -296,6 +297,7 @@ def compute_ose_for_pair(
         replace_batch_inputs,
         compute_forecast_error,
         compute_forecast_error_on_mesh,
+        observation_valid_mask,
     )
     from fsoi_utils import prune_batch_targets_inplace
 
@@ -377,7 +379,10 @@ def compute_ose_for_pair(
     xa_ose = {}
     for inst, tensor in xa.items():
         if inst in present_denied and inst in xb:
-            xa_ose[inst] = xb[inst].detach().clone()
+            control_tensor = tensor.detach().clone()
+            background_tensor = xb[inst].detach().clone()
+            valid_obs = observation_valid_mask(control_tensor)
+            xa_ose[inst] = torch.where(valid_obs, background_tensor, control_tensor)
         else:
             xa_ose[inst] = tensor.detach().clone()
 
@@ -473,7 +478,9 @@ def compute_matched_conditional_fsoi_for_pair(
     It compares the same sampled denied rows on both sides:
 
         x_control = xa
-        x_denied  = (xa_except_denied, xb_denied)
+        x_denied  = xa with valid denied-instrument cells replaced by xb
+
+    Sentinel-filled missing channels remain unchanged at both endpoints.
 
         I_matched = 0.5 * (x_control - x_denied)^T
                     [grad J(x_control) + grad J(x_denied)]
@@ -484,7 +491,12 @@ def compute_matched_conditional_fsoi_for_pair(
     control error is larger than the denied error. No population scaling is
     applied to either side.
     """
-    from fsoi_utils import replace_batch_inputs, compute_forecast_error, prune_batch_targets_inplace
+    from fsoi_utils import (
+        replace_batch_inputs,
+        compute_forecast_error,
+        prune_batch_targets_inplace,
+        observation_valid_mask,
+    )
 
     if model.training:
         print("[OSE Matched] WARNING: model was in training mode; switching to eval()")
@@ -519,8 +531,14 @@ def compute_matched_conditional_fsoi_for_pair(
         inputs = {}
         for inst, tensor in xa.items():
             if inst in present_denied:
-                src = xb[inst] if denied else tensor
-                inputs[inst] = src.detach().clone().to(device).requires_grad_(True)
+                control_tensor = tensor.detach().clone().to(device)
+                if denied:
+                    background_tensor = xb[inst].detach().clone().to(device)
+                    valid_obs = observation_valid_mask(control_tensor)
+                    src = torch.where(valid_obs, background_tensor, control_tensor)
+                else:
+                    src = control_tensor
+                inputs[inst] = src.requires_grad_(True)
             else:
                 inputs[inst] = tensor.detach().clone().to(device)
         return inputs

@@ -60,6 +60,8 @@ from fsoi_utils import (  # noqa: E402
     verify_alignment,
     verify_gradients,
     validate_gradients,  # Hard check for ga/gb
+    SENTINEL_OBS,
+    SENTINEL_OBS_ATOL,
 )
 from fsoi_model_extensions import (  # noqa: E402
     predict_at_targets,  # Use the CORRECT graph construction method
@@ -214,7 +216,7 @@ def _compute_innovation_diagnostics(
             # Mask sentinel observations: process_timeseries.py fills missing
             # channels with exactly -9.0 in normalised space.  Exclude these
             # from all statistics so they don't contaminate means / RMSE.
-            valid = ~np.isclose(x, -9.0, atol=1e-3)
+            valid = ~np.isclose(x, SENTINEL_OBS, rtol=0.0, atol=SENTINEL_OBS_ATOL)
             d = d[valid]
             x = x[valid]
             n_valid = int(valid.sum())

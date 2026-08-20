@@ -18,14 +18,59 @@ import pandas as pd
 from collections import defaultdict
 
 
-SENTINEL_INNOVATION = -9.0
-SENTINEL_ATOL = 0.25
-SENTINEL_INNOVATION_LO = -12.0
-SENTINEL_INNOVATION_HI = -7.0  # widened from -8.5 to catch surface_obs leakage
+# process_timeseries.py clips valid normalized observations to [-6, 6] and
+# fills missing channels with exactly -9.0.  Sentinel detection should therefore
+# be done in observation space (xa), not innovation space (xa - xb).
+SENTINEL_OBS = -9.0
+SENTINEL_OBS_ATOL = 1e-3
 
-# Sentinel value injected into raw observation (xa) space for missing channels.
-SENTINEL_OBS = SENTINEL_INNOVATION      # -9.0, exact fill value in xa
-SENTINEL_OBS_ATOL = SENTINEL_ATOL       # tolerance for matching the xa sentinel
+# Backward-compatible innovation-space fallback used only when xa is unavailable
+# for post-hoc scatter sampling. Since innovation = -9.0 - xb at missing
+# positions, the value is a range, not an exact sentinel.
+SENTINEL_INNOVATION = SENTINEL_OBS
+SENTINEL_ATOL = SENTINEL_OBS_ATOL
+SENTINEL_INNOVATION_LO = -12.0
+SENTINEL_INNOVATION_HI = -7.0
+
+
+def observation_valid_mask(x_obs: torch.Tensor) -> torch.Tensor:
+    """Return True where an observation-channel tensor is not the -9 sentinel."""
+    sentinel = torch.as_tensor(SENTINEL_OBS, dtype=x_obs.dtype, device=x_obs.device)
+    return torch.isfinite(x_obs) & ~torch.isclose(
+        x_obs,
+        sentinel,
+        rtol=0.0,
+        atol=SENTINEL_OBS_ATOL,
+    )
+
+
+def _masked_fsoi_components(
+    xa_tensor: torch.Tensor,
+    xb_tensor: torch.Tensor,
+    g_sum: torch.Tensor,
+    impact_factor: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute FSOI components while excluding missing sentinel channels."""
+    dx_raw = xa_tensor - xb_tensor
+    valid = observation_valid_mask(xa_tensor)
+    if dx_raw.shape != g_sum.shape or dx_raw.shape != valid.shape:
+        raise RuntimeError(
+            "FSOI component shape mismatch: "
+            f"dx={tuple(dx_raw.shape)}, g_sum={tuple(g_sum.shape)}, "
+            f"valid={tuple(valid.shape)}"
+        )
+
+    zeros = torch.zeros_like(dx_raw)
+    nans = torch.full_like(dx_raw, float("nan"))
+    dx_valid = torch.where(valid, dx_raw, zeros)
+    g_valid = torch.where(valid, g_sum, zeros)
+    fsoi = impact_factor * dx_valid * g_valid
+
+    # Keep NaNs in diagnostics for missing channels so later means/counts use
+    # only real observed values. FSOI itself is zero at missing positions.
+    innovations = torch.where(valid, dx_raw, nans)
+    gradient_sums = torch.where(valid, g_sum, nans)
+    return fsoi, innovations, gradient_sums, valid
 
 STANDARD_PRESSURE_LEVELS = np.array(
     [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10],
@@ -256,8 +301,8 @@ def sample_innovation_vs_fsoi(
     -------------------------
     Missing observation channels are filled with exactly ``SENTINEL_OBS = -9.0``
     in normalised space by ``process_timeseries.py``.  The corresponding
-    innovation is ``xa - xb = -9.0 - xb``, which spreads across roughly
-    ``[-12, -8.5]`` because the background prediction ``xb`` varies.
+    innovation is ``xa - xb = -9.0 - xb``, which spreads over a range
+    because the background prediction ``xb`` varies.
     Masking on the innovation therefore requires an ad-hoc range and still
     leaks at the tails.
 
@@ -307,7 +352,7 @@ def sample_innovation_vs_fsoi(
             valid_mask = (
                 np.isfinite(f_np)
                 & np.isfinite(inn_np)
-                & ~np.isclose(xa_np, SENTINEL_OBS, atol=SENTINEL_OBS_ATOL)
+                & ~np.isclose(xa_np, SENTINEL_OBS, rtol=0.0, atol=SENTINEL_OBS_ATOL)
             )
         else:
             # Fallback: range mask on innovation (xa - xb spreads -9.0 by xb).
@@ -583,13 +628,21 @@ def compute_per_level_fsoi_by_variable(
             for inst in xa.keys():
                 if inst not in ga or inst not in gb or inst not in xb:
                     continue
-                dx = xa[inst].detach().cpu() - xb[inst].detach().cpu()
+                xa_cpu = xa[inst].detach().cpu()
+                xb_cpu = xb[inst].detach().cpu()
+                dx = xa_cpu - xb_cpu
                 gs = ga[inst] + gb[inst]
                 if dx.shape != gs.shape:
                     continue
-                fsoi_values[inst] = impact_factor * dx * gs
-                innovations[inst] = dx
-                gradient_sums[inst] = gs
+                fsoi_i, innov_i, gsum_i, _ = _masked_fsoi_components(
+                    xa_cpu,
+                    xb_cpu,
+                    gs,
+                    impact_factor,
+                )
+                fsoi_values[inst] = fsoi_i
+                innovations[inst] = innov_i
+                gradient_sums[inst] = gsum_i
 
             if not fsoi_values:
                 continue
@@ -1571,6 +1624,9 @@ def compute_fsoi_per_observation(
 
     FSOI = 0.5 * (xa - xb) * (ga + gb)
 
+    Missing observation channels have xa == SENTINEL_OBS (-9.0). They are
+    assigned zero FSOI and excluded from diagnostic means/counts.
+
     where:
     - delta_x = xa - xb (innovation)
     - ga = gradient of error w.r.t. analysis
@@ -1615,23 +1671,28 @@ def compute_fsoi_per_observation(
             continue
 
         # Compute innovation (δx) and adjoint sum
-        delta_x = xa[inst_name] - xb[inst_name]
         g_sum = ga[inst_name] + gb[inst_name]
 
-        # Elementwise product
-        fsoi = impact_factor * delta_x * g_sum
+        fsoi, innovation_diag, gsum_diag, valid_obs = _masked_fsoi_components(
+            xa[inst_name],
+            xb[inst_name],
+            g_sum,
+            impact_factor,
+        )
 
         fsoi_values[inst_name] = fsoi
-        innovations[inst_name] = delta_x
-        gradient_sums[inst_name] = g_sum
+        innovations[inst_name] = innovation_diag
+        gradient_sums[inst_name] = gsum_diag
 
         # Diagnostics
         impact_sum = fsoi.sum().item()
-        impact_mean = fsoi.mean().item()
-        positive_frac = (fsoi > 0).float().mean().item()
+        valid_values = fsoi[valid_obs]
+        impact_mean = valid_values.mean().item() if valid_values.numel() else float("nan")
+        positive_frac = (valid_values > 0).float().mean().item() if valid_values.numel() else float("nan")
+        missing_count = int((~valid_obs).sum().item())
 
         print(f"[FSOI] {inst_name}: sum={impact_sum:.6e}, mean={impact_mean:.6e}, "
-              f"positive={positive_frac*100:.1f}%")
+              f"positive={positive_frac*100:.1f}%, missing_sentinel={missing_count}")
 
     if return_components:
         return fsoi_values, innovations, gradient_sums
@@ -1869,7 +1930,9 @@ def compute_per_level_fsoi(
             # xa and xb are already shape-aligned: the caller (fsoi_inference)
             # subsampled xa[inst] to match xb[inst] before calling this function.
             # No second subsampling needed here.
-            dx = xa[inst].detach().cpu() - xb[inst].detach().cpu()
+            xa_cpu = xa[inst].detach().cpu()
+            xb_cpu = xb[inst].detach().cpu()
+            dx = xa_cpu - xb_cpu
             gs = ga_inst + gb_inst   # both are already on CPU (stored via .detach().cpu())
 
             if dx.shape[0] != gs.shape[0]:
@@ -1877,9 +1940,15 @@ def compute_per_level_fsoi(
                       f"shape mismatch, skipping")
                 continue
 
-            fsoi_p[inst] = impact_factor * dx * gs
-            innov_p[inst] = dx
-            gsum_p[inst] = gs
+            fsoi_i, innov_i, gsum_i, _ = _masked_fsoi_components(
+                xa_cpu,
+                xb_cpu,
+                gs,
+                impact_factor,
+            )
+            fsoi_p[inst] = fsoi_i
+            innov_p[inst] = innov_i
+            gsum_p[inst] = gsum_i
 
         if not fsoi_p:
             continue
@@ -2127,12 +2196,16 @@ def aggregate_fsoi_by_channel(
             })
             return record
 
-        # Select channel and optional mask
+        # Select channel and optional mask. Missing sentinel channels are NaN
+        # in innovations/gradient_sums, so keep only finite values.
         innov_vec = innov[:, ch]
         g_vec = g_sum[:, ch]
+        finite_mask = torch.isfinite(innov_vec) & torch.isfinite(g_vec)
         if mask is not None:
-            innov_vec = innov_vec[mask]
-            g_vec = g_vec[mask]
+            mask = mask.to(device=finite_mask.device, dtype=torch.bool)
+            finite_mask = finite_mask & mask
+        innov_vec = innov_vec[finite_mask]
+        g_vec = g_vec[finite_mask]
 
         if innov_vec.numel() == 0:
             record.update({
@@ -2175,7 +2248,6 @@ def aggregate_fsoi_by_channel(
         N, C = fsoi_tensor.shape
 
         inst_id = instrument_name_to_id.get(inst_name, -1)
-        sample = _sampling_record(sampling_info, inst_name, N)
 
         # Get pressure level info if available
         pressure_levels = None
@@ -2206,18 +2278,37 @@ def aggregate_fsoi_by_channel(
                 else:
                     print(f"[WARNING] {inst_name}: cannot broadcast target pressure (len={target_levels.numel()} vs N={N})")
 
+        valid_by_channel = None
+        if innovations is not None and inst_name in innovations:
+            innov_tensor = innovations[inst_name]
+            if torch.is_tensor(innov_tensor) and innov_tensor.shape == fsoi_tensor.shape:
+                valid_by_channel = torch.isfinite(innov_tensor).to(
+                    device=fsoi_tensor.device,
+                    dtype=torch.bool,
+                )
+
         # If we have pressure levels, stratify by them
         if pressure_levels is not None:
             # Group by pressure level and channel
             for ch in range(C):
                 ch_impacts = fsoi_tensor[:, ch]
+                if valid_by_channel is not None:
+                    channel_valid = valid_by_channel[:, ch]
+                else:
+                    channel_valid = torch.ones(N, dtype=torch.bool, device=fsoi_tensor.device)
 
                 # Get unique pressure levels
                 unique_levels = torch.unique(pressure_levels)
 
                 for press_level_idx in unique_levels:
                     # Mask for this pressure level
-                    mask = (pressure_levels == press_level_idx)
+                    pressure_mask = (pressure_levels == press_level_idx)
+                    mask = pressure_mask.to(
+                        device=fsoi_tensor.device,
+                        dtype=torch.bool,
+                    )
+                    raw_count = int(mask.sum().item())
+                    mask = mask & channel_valid
                     if not mask.any():
                         continue
 
@@ -2227,7 +2318,7 @@ def aggregate_fsoi_by_channel(
                     # Map pressure index to hPa value
                     press_idx_int = int(press_level_idx.item())
                     if pressure_hpa_tensor is not None:
-                        press_vals = pressure_hpa_tensor[mask]
+                        press_vals = pressure_hpa_tensor[pressure_mask]
                         press_hpa = float(press_vals.flatten()[0].item()) if press_vals.numel() > 0 else np.nan
                     elif 0 <= press_idx_int < len(STANDARD_PRESSURE_LEVELS):
                         press_hpa = STANDARD_PRESSURE_LEVELS[press_idx_int]
@@ -2246,6 +2337,7 @@ def aggregate_fsoi_by_channel(
                         'negative_count': (level_impacts < 0).sum().item(),
                         'zero_count': (level_impacts == 0).sum().item(),
                         'total_count': mask.sum().item(),
+                        'raw_total_count': raw_count,
                         'positive_frac': (level_impacts > 0).float().mean().item(),
                     }
 
@@ -2254,7 +2346,14 @@ def aggregate_fsoi_by_channel(
         else:
             # No pressure stratification - aggregate over all observations
             for ch in range(C):
-                ch_impacts = fsoi_tensor[:, ch]
+                if valid_by_channel is not None:
+                    channel_valid = valid_by_channel[:, ch]
+                else:
+                    channel_valid = torch.ones(N, dtype=torch.bool, device=fsoi_tensor.device)
+                ch_impacts = fsoi_tensor[:, ch][channel_valid]
+                valid_count = int(channel_valid.sum().item())
+                if valid_count == 0:
+                    continue
 
                 record = {
                     'instrument': inst_name,
@@ -2265,12 +2364,13 @@ def aggregate_fsoi_by_channel(
                     'positive_count': (ch_impacts > 0).sum().item(),
                     'negative_count': (ch_impacts < 0).sum().item(),
                     'zero_count': (ch_impacts == 0).sum().item(),
-                    'total_count': N,
+                    'total_count': valid_count,
+                    'raw_total_count': N,
                     'positive_frac': (ch_impacts > 0).float().mean().item(),
                 }
 
-                record = _attach_sampling(record, inst_name, N)
-                records.append(_attach_stats(record, inst_name, ch))
+                record = _attach_sampling(record, inst_name, valid_count)
+                records.append(_attach_stats(record, inst_name, ch, channel_valid))
 
     return pd.DataFrame(records)
 
@@ -2301,6 +2401,8 @@ def collapse_target_variable_rows(
     count_cols = {
         "n_observations", "raw_n_observations", "sampled_n_observations",
         "n_channels", "instrument_id", "sample_scale", "is_subsampled",
+        "n_valid_values", "n_total_values", "total_count", "raw_total_count",
+        "total_count_scaled",
     }
     agg: Dict[str, str] = {}
     for col in df.columns:
@@ -2340,19 +2442,36 @@ def aggregate_fsoi_by_instrument(
 
     for inst_name, fsoi_tensor in fsoi_values.items():
         inst_id = instrument_name_to_id.get(inst_name, -1)
-
-        # Sum over all observations and channels
-        total_impact = fsoi_tensor.sum().item()
-        mean_impact = fsoi_tensor.mean().item()
         n_obs = fsoi_tensor.shape[0]
         n_channels = fsoi_tensor.shape[1]
         sample = _sampling_record(sampling_info, inst_name, n_obs)
+        innov = innovations.get(inst_name) if innovations is not None else None
+        g_sum = gradient_sums.get(inst_name) if gradient_sums is not None else None
+
+        if innov is not None and innov.shape == fsoi_tensor.shape:
+            value_mask = torch.isfinite(innov)
+        else:
+            value_mask = torch.ones_like(fsoi_tensor, dtype=torch.bool)
+        fsoi_valid = fsoi_tensor[value_mask]
+        n_valid_values = int(value_mask.sum().item())
+        n_total_values = int(fsoi_tensor.numel())
+
+        if n_valid_values:
+            total_impact = fsoi_valid.sum().item()
+            mean_impact = fsoi_valid.mean().item()
+            positive_frac = (fsoi_valid > 0).float().mean().item()
+        else:
+            total_impact = 0.0
+            mean_impact = np.nan
+            positive_frac = np.nan
 
         record = {
             'instrument': inst_name,
             'instrument_id': inst_id,
             'n_observations': n_obs,
             'n_channels': n_channels,
+            'n_valid_values': n_valid_values,
+            'n_total_values': n_total_values,
             'raw_n_observations': sample['raw_n_observations'],
             'sampled_n_observations': sample['sampled_n_observations'],
             'sample_scale': sample['sample_scale'],
@@ -2360,15 +2479,37 @@ def aggregate_fsoi_by_instrument(
             'mean_impact': mean_impact,
             'sum_impact': total_impact,
             'sum_impact_scaled': total_impact * sample['sample_scale'],
-            'positive_frac': (fsoi_tensor > 0).float().mean().item(),
+            'positive_frac': positive_frac,
         }
 
-        innov = innovations.get(inst_name) if innovations is not None else None
-        g_sum = gradient_sums.get(inst_name) if gradient_sums is not None else None
-
         if innov is not None and g_sum is not None:
-            innov_vec = innov.reshape(-1)
-            g_vec = g_sum.reshape(-1)
+            stat_mask = (
+                innov.shape == g_sum.shape
+                and innov.shape == fsoi_tensor.shape
+            )
+            if stat_mask:
+                finite_mask = value_mask & torch.isfinite(g_sum)
+                innov_vec = innov[finite_mask]
+                g_vec = g_sum[finite_mask]
+            else:
+                innov_vec = torch.empty(0, dtype=fsoi_tensor.dtype, device=fsoi_tensor.device)
+                g_vec = torch.empty(0, dtype=fsoi_tensor.dtype, device=fsoi_tensor.device)
+
+            if innov_vec.numel() == 0:
+                record.update({
+                    'innovation_mean': np.nan,
+                    'innovation_std': np.nan,
+                    'innovation_abs_mean': np.nan,
+                    'innovation_rms': np.nan,
+                    'gradient_mean': np.nan,
+                    'gradient_abs_mean': np.nan,
+                    'gradient_rms': np.nan,
+                    'projection_mean': np.nan,
+                    'alignment_cosine': np.nan,
+                    'alignment_frac': np.nan,
+                })
+                records.append(record)
+                continue
 
             proj = innov_vec * g_vec
             dot = proj.sum()
