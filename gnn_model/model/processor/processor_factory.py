@@ -1,3 +1,4 @@
+from configs.model_config import ProcessorConfig
 from .processor_base import ProcessorBase
 from .interaction_processor import InteractionProcessor
 from .sliding_window_transformer import SlidingWindowTransformer
@@ -14,8 +15,10 @@ processor_types = {
 
 class ProcessorFactory:
     @staticmethod
-    def build(processor_type: str, mesh : Mesh, params: dict) -> ProcessorBase:
-        if processor_type not in processor_types:
-            raise ValueError(f"Unknown processor_type: {processor_type}")
-        print (f"Created {processor_type}.")
-        return processor_types[processor_type](mesh, **params)
+    def build(mesh : Mesh, hidden_dim: int, processor_config: ProcessorConfig) -> ProcessorBase:
+        if processor_config.type not in processor_types:
+            raise ValueError(f"Unknown processor_type: {processor_config.type}")
+            
+        print (f"Created {processor_config.type}.")
+
+        return processor_types[processor_config.type](mesh, hidden_dim, processor_config)

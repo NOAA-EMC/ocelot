@@ -12,6 +12,7 @@ from torch_geometric.data import HeteroData
 
 from logger import log
 from ..mesh.fixed_mesh import FixedMesh
+from configs.model_config import ProcessorConfig
 from .interaction_network import InteractionNetwork
 from .flat_processor_base import FlatProcessorBase
 
@@ -24,31 +25,26 @@ class InteractionProcessor(FlatProcessorBase):
     loop and residual connections.
     """
 
-    def __init__(
-        self,
-        mesh: FixedMesh,
-        hidden_dim: int,
-        node_types: List[str],
-        edge_types: List[Tuple[str, str, str]],
-        num_message_passing_steps: int,
-    ):
+    def __init__(self, mesh: FixedMesh, hidden_dim: int, processor_config: ProcessorConfig):
         super().__init__(mesh)
 
         if not isinstance(mesh, FixedMesh):
             raise ValueError("InteractionProcessor requires a FixedMesh instance")
 
-        self.num_message_passing_steps = num_message_passing_steps
+        self.num_message_passing_steps = processor_config.num_message_passing_steps
 
         self.layers = nn.ModuleList()
-        for _ in range(num_message_passing_steps):
+        for _ in range(processor_config.num_message_passing_steps):
             # This is now the simple, original InteractionNetwork call
-            self.layers.append(InteractionNetwork(hidden_dim, node_types, edge_types))
+            self.layers.append(
+                InteractionNetwork(hidden_dim, processor_config.node_types, processor_config.edge_types)
+            )
 
         self.norms = nn.ModuleList()
-        for _ in range(num_message_passing_steps):
+        for _ in range(processor_config.num_message_passing_steps):
             self.norms.append(
                 nn.ModuleDict(
-                    {node_type: nn.LayerNorm(hidden_dim) for node_type in node_types}
+                    {node_type: nn.LayerNorm(hidden_dim) for node_type in processor_config.node_types}
                 )
             )
 

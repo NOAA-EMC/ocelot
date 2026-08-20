@@ -35,16 +35,18 @@ from utils import make_mlp
 from loss import weighted_huber_loss, weighted_mse_loss
 from process_timeseries import _encode_target_time_features
 
-
 ####
 from model.mesh.mesh import Mesh
 from model.mesh.mesh_factory import MeshFactory
 
-def _build_instrument_map(observation_config: dict) -> dict[str, int]:
+
+def _build_instrument_map(observation_config: ObservationConfig) -> dict[str, int]:
+    obs = observation_config.observation_config
+
+    # QUESTION: Does the ordering of the instruments matter? Using dictionary order isn't going to work...
     order = []
-    for group in ("satellite", "conventional"):
-        if group in observation_config.keys():
-            order += sorted(observation_config[group].keys())
+    order += sorted(obs['satellite'].keys())
+    order += sorted(obs['conventional'].keys())
     return {name: i for i, name in enumerate(order)}
 
 
@@ -103,12 +105,11 @@ class Ocelot(nn.Module):
         verbose=False,
     ):
         """
-        Initializes the GNNLightning model with an encoder, processor, and decoder.
+        Initializes the Ocelot GNN model with an encoder, processor, and decoder.
 
         Parameters:
-        model_config (dict): Configuration dictionary for the model architecture and hyperparameters.
-        observation_config (dict): Configuration dictionary for observation features.
-        mesh_variable_config (dict): Configuration dictionary for mesh variables.
+        model_config (ModelConfig): Configuration object for the model architecture and hyperparameters.
+        observation_config (ObservationConfig): Configuration object for observation features.
         verbose (bool, optional): If True, enables verbose logging (default: False).
         """
         super().__init__()
@@ -127,15 +128,13 @@ class Ocelot(nn.Module):
         mesh_resolution = int(mesh_arch_config.splits if hasattr(mesh_arch_config, 'splits') else mesh_arch_config.resolution)
 
         # Normalize to int so Lightning hparams merge is stable across module/datamodule.
-        
-        self.feature_stats = observation_config.feature_stats
-        self.instrument_weights = observation_config.instrument_weights
-        self.channel_weights = observation_config.channel_weights
+        self.observation_config = observation_config
+        self.feature_stats = self.observation_config.feature_stats
+        self.instrument_weights = self.observation_config.instrument_weights
+        self.channel_weights = self.observation_config.channel_weights
         self.latent_step_hours = model_config.latent_step_hours
         self.scan_angle_conditioning = embeddings_config.scan_angle_conditioning
         self.pressure_level_conditioning = embeddings_config.pressure_level_conditioning
-
-        self.observation_config = observation_config
 
         edge_dims = [
             config.edge_dim
@@ -147,7 +146,7 @@ class Ocelot(nn.Module):
         self.bipartite_edge_attr_dim = int(edge_dims[0]) if edge_dims else 4
 
         # Load mesh-grid variable config
-        self.obs_mesh_config = observation_config.mesh_config
+        self.obs_mesh_config = self.observation_config.mesh_config
         self.enable_mesh_pred = self.obs_mesh_config['enable_mesh_pred'] if 'enable_mesh_pred' in self.obs_mesh_config else False
         self.mesh_instruments = list(self.obs_mesh_config['variables'].keys())
         self.mesh_pressure_level_idx = self.obs_mesh_config['mesh_pressure_level_idx']
@@ -165,7 +164,7 @@ class Ocelot(nn.Module):
         # Channel metadata used by FSOI variable filtering.
         # Format: {instrument_name: [ {"channel": int, "feature": str, "variable_name": str}, ... ]}
         self.instrument_channels: Dict[str, List[Dict]] = {}
-        for _, instruments in (self.observation_config or {}).items():
+        for _, instruments in (self.observation_config.observation_config or {}).items():
             for inst_name, cfg in (instruments or {}).items():
                 features = cfg.get("features", []) or []
                 ch_info = []
@@ -182,8 +181,8 @@ class Ocelot(nn.Module):
                 self.instrument_channels[inst_name] = ch_info
 
         # Normalize user-provided weights (accept names or ids)
-        self.instrument_weights = self._normalize_inst_weights(instrument_weights)
-        self.channel_weights = self._normalize_channel_weights(channel_weights)
+        self.instrument_weights = self._normalize_inst_weights(self.instrument_weights)
+        self.channel_weights = self._normalize_channel_weights(self.channel_weights)
 
         # Boolean masks per instrument for valid channels (weights > 0)
         self.channel_masks = {inst_id: (w > 0) for inst_id, w in self.channel_weights.items()}
@@ -207,9 +206,9 @@ class Ocelot(nn.Module):
         print(f"  - Mesh type: {mesh_type}")
         print(f"  - Mesh levels: {mesh_levels}")
         print(f"  - Mesh resolution (splits): {mesh_resolution}")
-        print(f"  - Processor type: {processor_config['type']}")
-        print(f"  - Encoder type: {encoder_config['type']}")
-        print(f"  - Decoder type: {decoder_config['type']}")
+        print(f"  - Processor type: {processor_config.type}")
+        print(f"  - Encoder type: {encoder_config.type}")
+        print(f"  - Decoder type: {decoder_config.type}")
         print(f"{'='*70}\n")
 
         self.mesh_resolution = mesh_resolution
@@ -223,7 +222,7 @@ class Ocelot(nn.Module):
         self.observation_decoders = nn.ModuleDict()
         self.output_mappers = nn.ModuleDict()  # For final prediction MLPs
 
-        first_instrument_config = next(iter(next(iter(observation_config.values())).values()))
+        first_instrument_config = next(iter(next(iter(self.observation_config.observation_config.values())).values()))
         hidden_layers = first_instrument_config.get("encoder_hidden_layers", 2)
 
         self.mlp_blueprint_end = [hidden_dim] * (hidden_layers + 1)
@@ -235,21 +234,21 @@ class Ocelot(nn.Module):
 
         # Create scan-angle embedders once to avoid loop-order surprises
         # These embeddings are used ONLY for decoder initialization
-        self.scan_angle_embed_dim = int(embeddings_config['scan_angle_dim'])
+        self.scan_angle_embed_dim = int(embeddings_config.scan_angle_dim)
         self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
 
         # Optional: project scan-angle embedding across the full hidden_dim so it can't be confined
-        # to a small trailing slice of the receiver representation.
+        # to a small trailing slice of the receiver representation.d
         if self.scan_angle_conditioning == "project":
             self.scan_angle_projector = nn.Linear(self.scan_angle_embed_dim, self.hidden_dim)
         else:
             self.scan_angle_projector = None
 
         # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
-        self.pressure_level_embed_dim = int(embeddings_config['pressure_level_dim'])
+        self.pressure_level_embed_dim = int(embeddings_config.pressure_level_dim)
         self.pressure_level_embedder = nn.Embedding(
-            num_embeddings=int(embeddings_config['num_pressure_levels']),
+            num_embeddings=int(embeddings_config.num_pressure_levels),
             embedding_dim=self.pressure_level_embed_dim
         )
 
@@ -261,7 +260,7 @@ class Ocelot(nn.Module):
 
         # Target valid-time + local solar time conditioning lives in the last 5 target_metadata columns.
         self.target_time_feature_dim = 5
-        self.target_time_embed_dim = int(embeddings_config['target_time_dim'])
+        self.target_time_embed_dim = embeddings_config.target_time_dim
         self.target_time_embedder = make_mlp([self.target_time_feature_dim, self.target_time_embed_dim])
         self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.hidden_dim)
 
@@ -269,7 +268,7 @@ class Ocelot(nn.Module):
         edge_types = [("mesh", "to", "mesh")]
 
 
-        for obs_type, instruments in observation_config.items():
+        for obs_type, instruments in self.observation_config.observation_config.items():
             for inst_name, cfg in instruments.items():
                 node_type_input = f"{inst_name}_input"
                 node_type_target = f"{inst_name}_target"
@@ -352,16 +351,18 @@ class Ocelot(nn.Module):
                 self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
-        processor_type = processor_config['type']
-        processor_params = {
-            'hidden_dim': self.hidden_dim,
-            **{key: value for key, value in processor_config.items() if key != 'type'},
-        }
-        if processor_type == 'interaction':
-            processor_params.update(node_types=node_types, edge_types=edge_types)
-        elif processor_type in ('hierarchical_interaction', 'hierarchical_sliding_window'):
-            processor_params['num_levels'] = self.mesh.num_levels
-        self.processor = ProcessorFactory.build(processor_type, self.mesh, processor_params)
+        # processor_type = processor_config['type']
+        # processor_params = {
+        #     'hidden_dim': self.hidden_dim,
+        #     **{key: value for key, value in processor_config.items() if key != 'type'},
+        # }
+        # if processor_type == 'interaction':
+        #     processor_params.update(node_types=node_types, edge_types=edge_types)
+        # elif processor_type in ('hierarchical_interaction', 'hierarchical_sliding_window'):
+        #     processor_params['num_levels'] = self.mesh.num_levels
+        self.processor = ProcessorFactory.build(self.mesh, 
+                                                hidden_dim=self.hidden_dim, 
+                                                processor_config=processor_config)
 
 
 
@@ -625,7 +626,7 @@ class Ocelot(nn.Module):
 
             # find expected target_dim from config
             target_dim = None
-            for group, instruments in self.observation_config.items():
+            for group, instruments in self.observation_config.observation_config.items():
                 if inst_name in instruments:
                     target_dim = instruments[inst_name]["target_dim"]
                     break
@@ -647,7 +648,7 @@ class Ocelot(nn.Module):
             inst_name = node_type.split("_target_step")[0]
         else:
             inst_name = node_type.replace("_target", "")
-        for obs_type, instruments in self.observation_config.items():
+        for obs_type, instruments in self.observation_config.observation_config.items():
             if inst_name in instruments:
                 return instruments[inst_name].get("features", None)
         return None
@@ -686,7 +687,7 @@ class Ocelot(nn.Module):
         # Find instrument block and feature order from the config
         feats = None
         found_in_obs_type = None
-        for obs_type, instruments in self.observation_config.items():
+        for obs_type, instruments in self.observation_config.observation_config.items():
             if inst_name in instruments:
                 feats = instruments[inst_name].get("features")
                 found_in_obs_type = obs_type
@@ -1719,3 +1720,8 @@ class Ocelot(nn.Module):
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
+
+    # Question: Move to mesh?
+    def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
+        """Converts an edge_type tuple to a string key for ModuleDict."""
+        return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"

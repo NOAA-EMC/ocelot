@@ -16,6 +16,7 @@ from torch_geometric.data import HeteroData
 from logger import log
 from ..mesh.fixed_mesh import FixedMesh
 from .flat_processor_base import FlatProcessorBase
+from configs.model_config import ProcessorConfig
 
 
 class TemporalPositionalEncoding(nn.Module):
@@ -158,24 +159,19 @@ class SlidingWindowTransformer(FlatProcessorBase):
     Call reset() at the start of each new sequence/bin;
     then call forward() each rollout step.
     """
-    def __init__(self,
-                 mesh: FixedMesh,
-                 hidden_dim: int,
-                 window: int = 4,
-                 depth: int = 2,
-                 num_heads: int = 4,
-                 dropout: float = 0.0,
-                 use_causal_mask: bool = True,
-                 spatial_mixing_steps: int = 1):
+
+    def __init__(self, mesh: FixedMesh, hidden_dim: int, processor_config: ProcessorConfig):
         super().__init__(mesh)
-        self.window = window
-        self.use_causal_mask = use_causal_mask
-        self.spatial_mixing_steps = int(spatial_mixing_steps)
+        self.window = processor_config.window
+        self.use_causal_mask = processor_config.use_causal_mask
+        self.spatial_mixing_steps = processor_config.spatial_mixing_steps
         self.blocks = nn.ModuleList([
-            TemporalBlock(hidden_dim, num_heads, dropout) for _ in range(depth)
+            TemporalBlock(hidden_dim, 
+                          processor_config.num_heads, 
+                          processor_config.dropout) for _ in range(processor_config.depth)
         ])
-        self.posenc = TemporalPositionalEncoding(hidden_dim, max_len=window)
-        self.spatial_mix = SpatialMixBlock(hidden_dim, dropout=dropout)
+        self.posenc = TemporalPositionalEncoding(hidden_dim, max_len=processor_config.window)
+        self.spatial_mix = SpatialMixBlock(hidden_dim, dropout=processor_config.dropout)
         self.register_buffer("_dummy", torch.empty(0))  # for device inference
         self.cache: deque[torch.Tensor] = deque(maxlen=window)
 

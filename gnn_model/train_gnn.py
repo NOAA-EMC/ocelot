@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 import yaml
 
 from configs.model_config import ModelConfig
-from configs.training_config import TrainingConfig
 from configs.observation_config import ObservationConfig
+from configs.training_config import TrainingConfig
 
 
 @dataclass(frozen=True)
@@ -131,8 +131,13 @@ def _mesh_structure(model, model_config: ModelConfig) -> dict:
 
 
 def _build_callbacks(config: TrainingConfig, windows: WindowPlan):
-    from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+
+    from callbacks import (
+        ResampleDataCallback,
+        SequentialDataCallback,
+        ValWindowCallback,
+    )
 
     class DelayedEarlyStopping(EarlyStopping):
         def __init__(self, *args, start_epoch=0, **kwargs):
@@ -270,7 +275,6 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     from gnn_datamodule import GNNDataModule
     from logger import LogLevel, log
     from model.ocelot_factory import OcelotFactory
-    from weight_utils import load_weights_from_yaml
 
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)
@@ -318,9 +322,9 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
         mesh_structure=mesh_structure,
         batch_size=training_config.data.batch_size,
         num_neighbors=training_config.data.num_neighbors,
-        feature_stats=feature_stats,
+        feature_stats=observation_config.feature_stats,
         verbose=verbose,
-        pipeline=pipeline_config,
+        pipeline=observation_config.pipeline,
         window_size=f"{training_config.data.window_hours}h",
         latent_step_hours=training_config.data.latent_step_hours,
         train_val_split_ratio=split_ratio,

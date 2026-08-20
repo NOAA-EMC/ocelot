@@ -20,9 +20,7 @@ class OcelotTrainingModule(pl.LightningModule):
         super().__init__()
         self.model = model
         self.training_config = training_config
-
         self._printed_first_train_batch = False
-
         self.save_hyperparameters()
 
 
