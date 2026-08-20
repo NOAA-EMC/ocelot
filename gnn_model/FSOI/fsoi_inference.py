@@ -68,6 +68,17 @@ from weight_utils import load_weights_from_yaml  # noqa: E402
 from torch_geometric.loader import DataLoader as PyGDataLoader  # noqa: E402
 
 
+def configure_deterministic_inference(seed: int = 42) -> None:
+    """Set conservative deterministic inference options where PyTorch allows it."""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+
 def find_checkpoint(checkpoint_path):
     """
     Find checkpoint file from path or directory.
@@ -275,62 +286,56 @@ def _run_ose_check(
             gfs_tensor_for_ose = gfs_reference.get(mesh_instrument)
         else:
             gfs_tensor_for_ose = gfs_reference
-        rec = _ose_pair(
-            model=model,
-            curr_batch=curr_batch,
-            xa=xa,
-            xb=xb,
-            denied_instruments=ose_instruments,
-            ea_control=ea_control,
-            observation_config=observation_config,
-            subsample_indices=subsample_indices,
-            target_instruments=target_instruments,
-            target_variables=target_variables,
-            target_pressure_levels=target_pressure_levels,
-            instrument_weights=instrument_weights,
-            channel_weights=channel_weights,
-            use_area_weights=use_area_weights,
-            loss_reduction=loss_reduction,
-            forecast_lead_step=lead_step,
-            pair_idx=pair_idx,
-            curr_bin=results.get('curr_bin', ''),
-            prev_bin=results.get('prev_bin', ''),
-            gfs_reference=gfs_tensor_for_ose,
-            mesh_instrument=mesh_instrument,
-            mesh_pressure_level_idx=mesh_pressure_level_idx,
-            init_time_unix=init_time_unix,
-            spatial_output_dir=spatial_output_dir,
-        )
+        if gfs_tensor_for_ose is None:
+            rec = _matched_fsoi_pair(
+                model=model,
+                curr_batch=curr_batch,
+                xa=xa,
+                xb=xb,
+                denied_instruments=ose_instruments,
+                observation_config=observation_config,
+                subsample_indices=subsample_indices,
+                target_instruments=target_instruments,
+                target_variables=target_variables,
+                target_pressure_levels=target_pressure_levels,
+                instrument_weights=instrument_weights,
+                channel_weights=channel_weights,
+                use_area_weights=use_area_weights,
+                loss_reduction=loss_reduction,
+                forecast_lead_step=lead_step,
+                pair_idx=pair_idx,
+                curr_bin=results.get('curr_bin', ''),
+                prev_bin=results.get('prev_bin', ''),
+                impact_factor=impact_factor,
+            )
+        else:
+            rec = _ose_pair(
+                model=model,
+                curr_batch=curr_batch,
+                xa=xa,
+                xb=xb,
+                denied_instruments=ose_instruments,
+                ea_control=ea_control,
+                observation_config=observation_config,
+                subsample_indices=subsample_indices,
+                target_instruments=target_instruments,
+                target_variables=target_variables,
+                target_pressure_levels=target_pressure_levels,
+                instrument_weights=instrument_weights,
+                channel_weights=channel_weights,
+                use_area_weights=use_area_weights,
+                loss_reduction=loss_reduction,
+                forecast_lead_step=lead_step,
+                pair_idx=pair_idx,
+                curr_bin=results.get('curr_bin', ''),
+                prev_bin=results.get('prev_bin', ''),
+                gfs_reference=gfs_tensor_for_ose,
+                mesh_instrument=mesh_instrument,
+                mesh_pressure_level_idx=mesh_pressure_level_idx,
+                init_time_unix=init_time_unix,
+                spatial_output_dir=spatial_output_dir,
+            )
         if rec:
-            if gfs_tensor_for_ose is None:
-                try:
-                    matched = _matched_fsoi_pair(
-                        model=model,
-                        curr_batch=curr_batch,
-                        xa=xa,
-                        xb=xb,
-                        denied_instruments=ose_instruments,
-                        observation_config=observation_config,
-                        subsample_indices=subsample_indices,
-                        target_instruments=target_instruments,
-                        target_variables=target_variables,
-                        target_pressure_levels=target_pressure_levels,
-                        instrument_weights=instrument_weights,
-                        channel_weights=channel_weights,
-                        use_area_weights=use_area_weights,
-                        loss_reduction=loss_reduction,
-                        forecast_lead_step=lead_step,
-                        pair_idx=pair_idx,
-                        curr_bin=results.get('curr_bin', ''),
-                        prev_bin=results.get('prev_bin', ''),
-                        impact_factor=impact_factor,
-                    )
-                    if matched:
-                        rec.update(matched)
-                except Exception as matched_err:
-                    print(f"[OSE Matched] WARNING on pair {pair_idx}: {matched_err}")
-            else:
-                print("[OSE Matched] Skipping obs-space matched FSOI for mesh OSE")
             results['ose_records'].append(rec)
             print(f"[OSE]   ea_control={rec['ea_control']:.4e}  "
                   f"ea_denied={rec['ea_denied']:.4e}  "
@@ -343,6 +348,7 @@ def _run_ose_check(
                       f"sign_agree={rec['matched_sign_agree']}")
     except Exception as ose_err:
         print(f"[OSE] ERROR on pair {pair_idx}: {ose_err}")
+        raise
 
 
 def compute_fsoi_for_pair(
@@ -387,6 +393,10 @@ def compute_fsoi_for_pair(
     Returns:
         Dict with FSOI results and metadata
     """
+    if model.training:
+        print("[MODEL] WARNING: model was in training mode; switching to eval() for FSOI")
+    model.eval()
+
     if verbose:
         print(f"\n{'=' * 80}")
         print(f"Computing FSOI for pair {pair_idx}")
@@ -1461,11 +1471,15 @@ def main():
     # Set device
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    configure_deterministic_inference()
+    print("[DETERMINISM] Set inference seeds and deterministic cuDNN flags where available")
 
     # Load trained model
     print(f"\nLoading model from checkpoint: {checkpoint_path}")
     model = GNNLightning.load_from_checkpoint(checkpoint_path)
     model.to(device)
+    model.eval()
+    print("[MODEL] Set model.eval() for deterministic inference/FSOI")
 
     # Set encoding order BEFORE freezing — this is a runtime-only attribute,
     # not a trained parameter. It changes the order instruments write to the
@@ -2039,31 +2053,55 @@ def main():
         eval_dir = output_path / "evaluation"
         eval_dir.mkdir(parents=True, exist_ok=True)
         ose_df = pd.DataFrame(all_ose_records)
+        repro_errors = []
+        for result in all_results:
+            try:
+                repro_error = abs(float(result.get('repro_ea_diff', np.nan)))
+            except (TypeError, ValueError):
+                repro_error = np.nan
+            if np.isfinite(repro_error):
+                repro_errors.append(repro_error)
+        observed_repro_error = max(repro_errors) if repro_errors else np.nan
+        ose_df['observed_control_reproducibility_error'] = observed_repro_error
         ose_csv = eval_dir / "ose_results.csv"
         ose_df.to_csv(ose_csv, index=False)
         print(f"\n[OSE] Saved {len(ose_df)} OSE records to {ose_csv}")
 
-        # Immediate comparison with FSOI if instrument CSV exists
+        # Immediate matched endpoint comparison. The instrument CSV path is kept
+        # only for call compatibility; compare_ose_vs_fsoi uses ose_results.csv.
         fsoi_inst_csv = output_path / "csv" / "fsoi_by_instrument.csv"
-        if fsoi_inst_csv.is_file():
-            comp = compare_ose_vs_fsoi(ose_csv, fsoi_inst_csv)
-            if not comp.empty:
-                comp_csv = eval_dir / "ose_vs_fsoi_comparison.csv"
-                comp.to_csv(comp_csv, index=False)
-                valid = comp.dropna(subset=["closure_ratio"])
-                if not valid.empty:
-                    med_r = float(valid["closure_ratio"].median())
-                    sign_pct = float(valid["sign_agree"].mean() * 100)
-                    r_corr = float(valid[["ose_impact", "fsoi_predicted"]]
-                                   .corr().iloc[0, 1]) if len(valid) > 2 else float("nan")
-                    print(f"[OSE] Comparison: median closure_ratio={med_r:.3f} "
-                          f"(target 1.0)  sign_agree={sign_pct:.0f}%  "
-                          f"Pearson r={r_corr:.3f}")
-                    if abs(med_r - 1.0) > 0.30:
-                        print("[OSE] WARNING: closure_ratio far from 1.0 — "
-                              "nonlinear GNN effects may be significant for "
-                              f"{ose_instruments}")
-                print(f"[OSE] Comparison saved to {comp_csv}")
+        comp = compare_ose_vs_fsoi(ose_csv, fsoi_inst_csv)
+        if not comp.empty:
+            comp_csv = eval_dir / "ose_vs_fsoi_comparison.csv"
+            comp.to_csv(comp_csv, index=False)
+            signal_valid = comp.get(
+                "signal_valid",
+                pd.Series(True, index=comp.index),
+            ).fillna(False).astype(bool)
+            n_excluded = int((~signal_valid).sum())
+            signal_threshold = float(comp["signal_threshold"].iloc[0]) if "signal_threshold" in comp else np.nan
+            valid = comp.loc[signal_valid].dropna(subset=["closure_ratio"])
+            if not valid.empty:
+                med_r = float(valid["closure_ratio"].median())
+                sign_cases = valid["sign_agree"].dropna()
+                sign_pct = float(sign_cases.mean() * 100) if not sign_cases.empty else float("nan")
+                ose_col = "ose_fsoi_convention" if "ose_fsoi_convention" in valid else "delta_j_actual"
+                r_corr = float(valid[[ose_col, "fsoi_predicted"]]
+                               .corr().iloc[0, 1]) if len(valid) > 2 else float("nan")
+                print(f"[OSE] Comparison: median closure_ratio={med_r:.3f} "
+                      f"(target 1.0)  sign_agree={sign_pct:.0f}%  "
+                      f"Pearson r={r_corr:.3f}  "
+                      f"excluded_near_zero={n_excluded}/{len(comp)}  "
+                      f"threshold={signal_threshold:.2e}")
+                if abs(med_r - 1.0) > 0.30:
+                    print("[OSE] WARNING: closure_ratio far from 1.0 - "
+                          "nonlinear GNN effects may be significant for "
+                          f"{ose_instruments}")
+            else:
+                print(f"[OSE] Comparison: no above-threshold cycles; "
+                      f"excluded_near_zero={n_excluded}/{len(comp)}  "
+                      f"threshold={signal_threshold:.2e}")
+            print(f"[OSE] Comparison saved to {comp_csv}")
 
     # ── Write reproducibility result ─────────────────────────────────────
     if repro_enabled and all_results:

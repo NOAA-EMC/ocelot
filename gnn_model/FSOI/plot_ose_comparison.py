@@ -3,12 +3,11 @@
 Plot OSE vs FSOI comparison to validate FSOI linearity assumption.
 
 Reads:
-  evaluation/ose_results.csv          — actual OSE impacts (ea_denied - ea_control)
+  evaluation/ose_results.csv          — matched OSE endpoint losses
   evaluation/ose_vs_fsoi_comparison.csv — merged OSE + FSOI predictions per pair
-  csv/fsoi_by_instrument.csv          — FSOI pair summaries
 
 Produced plots:
-  ose_vs_fsoi_scatter.png      — scatter: OSE impact vs FSOI predicted (per pair)
+  ose_vs_fsoi_scatter.png      — scatter: delta_J_actual vs FSOI predicted
   ose_vs_fsoi_timeseries.png   — time series: both over the evaluation window
   ose_closure_ratio.png        — histogram of closure ratio (target: centered on 1)
   ose_summary.csv              — correlation, slope, bias statistics
@@ -16,7 +15,7 @@ Produced plots:
 Scientific interpretation
 --------------------------
 A well-validated FSOI satisfies:
-  (1) High Pearson correlation (r > 0.85) between OSE impact and FSOI prediction
+  (1) High Pearson correlation (r > 0.85) between delta_J_actual and FSOI
   (2) Regression slope close to 1.0 (±0.2) — no systematic scaling error
   (3) Sign agreement > 90% — OSE and FSOI agree on helpful vs detrimental
   (4) Closure ratio median ~ 1.0 (±0.15)
@@ -73,16 +72,44 @@ def _linregress(x: np.ndarray, y: np.ndarray):
 
 # ── Plot 1: Scatter OSE vs FSOI ───────────────────────────────────────────────
 
+def _ose_comparison_col(comp: pd.DataFrame) -> str:
+    """Return the FSOI-compatible OSE column, positive = detrimental."""
+    if "ose_fsoi_convention" in comp.columns:
+        return "ose_fsoi_convention"
+    if "delta_j_actual" in comp.columns:
+        return "delta_j_actual"
+    raise ValueError(
+        "OSE/FSOI plots require ose_fsoi_convention or delta_j_actual. "
+        "Raw ose_impact has the opposite sign and is not valid for final "
+        "matched comparison plots."
+    )
+
+
+def _valid_signal_rows(comp: pd.DataFrame) -> pd.DataFrame:
+    """Drop near-zero rows already marked invalid by compare_ose_vs_fsoi."""
+    if "signal_valid" not in comp.columns:
+        return comp
+    return comp[comp["signal_valid"].fillna(False).astype(bool)]
+
+
+def _excluded_count(comp: pd.DataFrame) -> int:
+    if "near_zero_excluded" in comp.columns:
+        return int(comp["near_zero_excluded"].fillna(False).astype(bool).sum())
+    if "signal_valid" in comp.columns:
+        return int((~comp["signal_valid"].fillna(False).astype(bool)).sum())
+    return 0
+
+
 def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     """Scatter plot of FSOI predicted impact vs OSE actual impact per pair.
 
     Each point = one (pair, denied instrument). The diagonal y=x is the target.
     """
     print("Creating OSE vs FSOI scatter plot...")
-    col_ose = "ose_impact"
+    col_ose = _ose_comparison_col(comp)
     col_fsoi = "fsoi_predicted"
 
-    valid = comp.dropna(subset=[col_ose, col_fsoi])
+    valid = _valid_signal_rows(comp).dropna(subset=[col_ose, col_fsoi])
     if valid.empty:
         print("  Skipping: no matched pairs")
         return {}
@@ -91,7 +118,9 @@ def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     y = valid[col_fsoi].to_numpy(dtype=float)
 
     slope, intercept, r = _linregress(x, y)
-    sign_agree = float(valid.get("sign_agree", pd.Series([np.nan])).mean())
+    sign_cases = valid.get("sign_agree", pd.Series([np.nan])).dropna()
+    sign_agree = float(sign_cases.mean()) if not sign_cases.empty else float("nan")
+    n_excluded = _excluded_count(comp)
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
@@ -122,12 +151,12 @@ def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     ax.axvline(0, color="gray", lw=0.5)
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
-    ax.set_xlabel("OSE impact  (ea_denied − ea_control)")
     ax.set_ylabel("FSOI predicted impact  (sum_impact_scaled)")
+    ax.set_xlabel("OSE delta J actual  (J_control - J_denied; positive = detrimental)")
     ax.set_title(
         f"OSE vs FSOI comparison\n"
         f"r = {r:.3f}   slope = {slope:.3f}   sign_agree = {sign_agree:.0%}\n"
-        f"n = {len(valid)} pairs"
+        f"n = {len(valid)} pairs; excluded near zero = {n_excluded}"
     )
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.2)
@@ -144,7 +173,8 @@ def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     print(f"  Saved: {out}  (r={r:.3f}, slope={slope:.3f})")
 
     return {"r": r, "slope": slope, "intercept": intercept,
-            "sign_agree": sign_agree, "n_pairs": len(valid)}
+            "sign_agree": sign_agree, "n_pairs": len(valid),
+            "n_near_zero_excluded": n_excluded}
 
 
 # ── Plot 2: Time series ───────────────────────────────────────────────────────
@@ -154,8 +184,9 @@ def plot_ose_vs_fsoi_timeseries(comp: pd.DataFrame, ose_raw: pd.DataFrame,
     """Time series of OSE impact and FSOI prediction over the evaluation window."""
     print("Creating OSE vs FSOI time series...")
 
-    col_ose = "ose_impact"
+    col_ose = _ose_comparison_col(comp)
     col_fsoi = "fsoi_predicted"
+    comp = _valid_signal_rows(comp).copy()
 
     if "curr_bin" not in comp.columns:
         print("  Skipping: no curr_bin column")
@@ -196,7 +227,7 @@ def plot_ose_vs_fsoi_timeseries(comp: pd.DataFrame, ose_raw: pd.DataFrame,
         ax.grid(True, alpha=0.2)
 
     axes[-1][0].set_xlabel("Date")
-    fig.suptitle("OSE Impact vs FSOI Predicted Impact — Time Series", fontsize=11)
+    fig.suptitle("OSE delta_J_actual vs FSOI Predicted Impact — Time Series", fontsize=11)
     fig.tight_layout()
 
     out = out_dir / "ose_vs_fsoi_timeseries.png"
@@ -208,7 +239,7 @@ def plot_ose_vs_fsoi_timeseries(comp: pd.DataFrame, ose_raw: pd.DataFrame,
 # ── Plot 3: Closure ratio histogram ──────────────────────────────────────────
 
 def plot_closure_ratio_histogram(comp: pd.DataFrame, out_dir: Path) -> None:
-    """Histogram of closure_ratio = FSOI_predicted / OSE_impact.
+    """Histogram of closure_ratio = FSOI_predicted / delta_J_actual.
 
     Target: distribution centered on 1.0 with small spread.
     Values far from 1 reveal pairs where the linearization is poor.
@@ -235,7 +266,7 @@ def plot_closure_ratio_histogram(comp: pd.DataFrame, out_dir: Path) -> None:
                label=f"Median = {ratios.median():.3f}")
     ax.axvspan(0.70, 1.30, alpha=0.1, color="green", label="±30% acceptance band")
 
-    ax.set_xlabel("Closure ratio  (FSOI / OSE)")
+    ax.set_xlabel("Closure ratio  (FSOI / delta_J_actual)")
     ax.set_ylabel("Density")
     ax.set_title(
         f"FSOI/OSE Closure Ratio Distribution\n"
@@ -288,19 +319,25 @@ def main() -> None:
     # Build comparison if not already done
     if comp_path.is_file():
         comp = pd.read_csv(comp_path)
-        print(f"Loaded existing comparison: {len(comp)} rows")
-    elif fsoi_inst_path.is_file():
+        has_matched_ose = bool({"ose_fsoi_convention", "delta_j_actual"} & set(comp.columns))
+        if not has_matched_ose:
+            print("Existing comparison uses legacy sign convention; rebuilding")
+            from fsoi_ose import compare_ose_vs_fsoi
+            comp = compare_ose_vs_fsoi(ose_raw_path, fsoi_inst_path)
+            if not comp.empty:
+                comp.to_csv(comp_path, index=False)
+                print(f"Rebuilt and saved comparison: {len(comp)} rows -> {comp_path}")
+        if has_matched_ose:
+            print(f"Loaded existing comparison: {len(comp)} rows")
+    else:
         from fsoi_ose import compare_ose_vs_fsoi
         comp = compare_ose_vs_fsoi(ose_raw_path, fsoi_inst_path)
         if not comp.empty:
             comp.to_csv(comp_path, index=False)
-            print(f"Built and saved comparison: {len(comp)} rows → {comp_path}")
+            print(f"Built and saved comparison: {len(comp)} rows -> {comp_path}")
         else:
             print("WARNING: could not build OSE vs FSOI comparison")
             comp = pd.DataFrame()
-    else:
-        print(f"WARNING: {fsoi_inst_path} not found — scatter/timeseries unavailable")
-        comp = pd.DataFrame()
 
     # Generate plots
     stats = {}
@@ -313,6 +350,7 @@ def main() -> None:
     if stats:
         summary = pd.DataFrame([{
             "n_pairs": stats.get("n_pairs", 0),
+            "n_near_zero_excluded": stats.get("n_near_zero_excluded", 0),
             "pearson_r": stats.get("r", float("nan")),
             "regression_slope": stats.get("slope", float("nan")),
             "regression_intercept": stats.get("intercept", float("nan")),

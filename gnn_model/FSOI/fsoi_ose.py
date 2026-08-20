@@ -4,12 +4,26 @@ FSOI OSE (Observing System Experiment) module.
 Scientific purpose
 ------------------
 FSOI is derived from a tangent-linear approximation of the forecast-error change.
-An OSE directly measures the same change without any approximation:
+An OSE directly measures the same change without any approximation. For matched
+validation, define the OSE change with the FSOI-compatible sign convention:
 
-    OSE_X  =  ea( xa with X replaced by xb )  -  ea( xa full )
-    FSOI_X ≈  sum_k  0.5 * (xa_k - xb_k) * (ga_k + gb_k)
+    J_control      = J(xa full)
+    J_denied       = J(xa with X replaced by xb)
+    delta_J_actual = J_control - J_denied
+    FSOI_X         ~= sum_k 0.5 * (xa_k - xb_k) * (ga_k + gb_k)
 
-In the linear limit:  OSE_X ≈ FSOI_X
+Positive delta_J_actual means the control error was larger, so instrument X was
+detrimental for this verification target. In the linear limit:
+
+    FSOI_X ~= delta_J_actual
+
+The legacy OSE column keeps the opposite sign:
+
+    ose_impact = J_denied - J_control = -delta_J_actual
+
+Therefore FSOI and legacy ose_impact should have opposite signs under these
+definitions. Compare FSOI directly with delta_J_actual or with the derived
+ose_fsoi_convention column, not with raw ose_impact.
 
 Disagreement between them reveals where the GNN's nonlinearities break the
 tangent-linear assumption used by FSOI.  A Pearson correlation r > 0.90 and a
@@ -17,9 +31,11 @@ slope close to 1 on the scatter plot indicate FSOI rankings are reliable.
 
 Design
 ------
-We reuse the already-computed xa and xb from the FSOI pipeline so that the OSE
-adds only ONE extra no-grad forward pass per (pair, denied instrument) beyond the
-FSOI cost.  No retraining or additional background computation is needed.
+We reuse the already-computed xa and xb from the FSOI pipeline. The matched
+obs-space validation uses two gradient-enabled endpoint passes, one at xa and
+one at the denied endpoint. Those same two losses provide both FSOI and the
+realized OSE error change. No retraining or additional background computation is
+needed.
 
 The "denied" perturbation is:
     xa_ose[inst] = xb[inst]   for inst in denied_instruments
@@ -41,12 +57,14 @@ import torch
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import sys
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fsoi_utils import collapse_target_variable_rows  # noqa: E402
+
+ABSOLUTE_SIGNAL_FLOOR = 1e-12
+REPRO_SIGNAL_MULTIPLIER = 10.0
 
 # Matched OSE/FSOI validation uses:
 #   delta_j_actual = J_control - J_denied
@@ -56,11 +74,60 @@ from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 # compatibility: ose_impact = J_denied - J_control.
 
 
-def _finite_sign_agree(a: float, b: float, eps: float = 1e-12) -> bool:
-    """Compare signs only when both values have useful signal."""
+def _signal_threshold_from_repro(
+    observed_control_reproducibility_error: Optional[float] = None,
+) -> Tuple[float, float, str]:
+    """Return a numerical signal threshold and its reproducibility basis."""
+    repro_error = float("nan")
+    threshold = ABSOLUTE_SIGNAL_FLOOR
+    basis = "absolute_floor_no_reproducibility_error_available"
+
+    if observed_control_reproducibility_error is not None:
+        try:
+            candidate = abs(float(observed_control_reproducibility_error))
+        except (TypeError, ValueError):
+            candidate = float("nan")
+        if np.isfinite(candidate):
+            repro_error = candidate
+            threshold = max(ABSOLUTE_SIGNAL_FLOOR, REPRO_SIGNAL_MULTIPLIER * candidate)
+            basis = "max(1e-12, 10*observed_control_reproducibility_error)"
+
+    return threshold, repro_error, basis
+
+
+def _observed_repro_error_from_frame(df: pd.DataFrame) -> Optional[float]:
+    """Extract the largest finite observed control reproducibility error."""
+    candidates = []
+    for col in (
+        "observed_control_reproducibility_error",
+        "control_reproducibility_error",
+        "repro_ea_diff",
+        "ea_repro_diff",
+        "reproducibility_ea_diff",
+    ):
+        if col not in df.columns:
+            continue
+        values = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        finite = values[np.isfinite(values)]
+        if not finite.empty:
+            candidates.append(float(finite.abs().max()))
+    return max(candidates) if candidates else None
+
+
+def _finite_signal(a: float, b: float, signal_threshold: float) -> bool:
+    """Return True only when both values are finite and above the noise floor."""
     if not np.isfinite(a) or not np.isfinite(b):
         return False
-    if abs(a) <= eps or abs(b) <= eps:
+    return abs(a) > signal_threshold and abs(b) > signal_threshold
+
+
+def _finite_sign_agree(
+    a: float,
+    b: float,
+    signal_threshold: float = ABSOLUTE_SIGNAL_FLOOR,
+) -> bool:
+    """Compare signs only when both values have useful signal."""
+    if not _finite_signal(a, b, signal_threshold):
         return False
     return np.sign(a) == np.sign(b)
 
@@ -206,6 +273,10 @@ def compute_ose_for_pair(
         compute_forecast_error_on_mesh,
     )
     from fsoi_utils import prune_batch_targets_inplace
+
+    if model.training:
+        print("[OSE] WARNING: model was in training mode; switching to eval()")
+    model.eval()
 
     device = next(model.parameters()).device
 
@@ -383,6 +454,10 @@ def compute_matched_conditional_fsoi_for_pair(
     """
     from fsoi_utils import replace_batch_inputs, compute_forecast_error, prune_batch_targets_inplace
 
+    if model.training:
+        print("[OSE Matched] WARNING: model was in training mode; switching to eval()")
+    model.eval()
+
     device = next(model.parameters()).device
     present_denied = [i for i in denied_instruments if i in xa and i in xb]
     missing_denied = [i for i in denied_instruments if i not in xa or i not in xb]
@@ -391,6 +466,8 @@ def compute_matched_conditional_fsoi_for_pair(
     if not present_denied:
         print(f"[OSE Matched] No denied instruments present in xa/xb for pair {pair_idx}")
         return {}
+    if not np.isclose(impact_factor, 0.5):
+        raise ValueError("Matched endpoint FSOI requires impact_factor=0.5")
 
     shared_kwargs = dict(
         forecast_lead_step=forecast_lead_step,
@@ -425,9 +502,16 @@ def compute_matched_conditional_fsoi_for_pair(
             inputs=grad_inputs,
             retain_graph=False,
             create_graph=False,
-            allow_unused=True,
+            allow_unused=False,
         )
-        return loss, {inst: grad for inst, grad in zip(present_denied, grads)}
+        grad_map = {}
+        for inst, grad in zip(present_denied, grads):
+            if grad is None:
+                raise RuntimeError(f"Missing matched FSOI gradient for {inst}")
+            if not torch.isfinite(grad).all():
+                raise RuntimeError(f"Non-finite matched FSOI gradient for {inst}")
+            grad_map[inst] = grad
+        return loss, grad_map
 
     control_inputs = _make_inputs(denied=False)
     denied_inputs = _make_inputs(denied=True)
@@ -446,19 +530,17 @@ def compute_matched_conditional_fsoi_for_pair(
         g_c = grad_control.get(inst)
         g_d = grad_denied.get(inst)
         if g_c is None or g_d is None:
-            print(f"[OSE Matched] WARNING: Missing gradient for {inst}; skipping")
-            continue
+            raise RuntimeError(f"Missing matched FSOI gradient for {inst}")
 
         dx = control_inputs[inst].detach() - denied_inputs[inst].detach()
         if dx.shape != g_c.shape or dx.shape != g_d.shape:
-            print(
+            raise RuntimeError(
                 f"[OSE Matched] WARNING: Shape mismatch for {inst}: "
                 f"dx={tuple(dx.shape)}, g_control={tuple(g_c.shape)}, "
                 f"g_denied={tuple(g_d.shape)}"
             )
-            continue
 
-        matched_by_instrument[inst] = float((impact_factor * dx * (g_c + g_d)).sum().item())
+        matched_by_instrument[inst] = float((0.5 * dx * (g_c + g_d)).sum().item())
         sampled_rows[inst] = int(dx.shape[0])
 
         node_type = f"{inst}_input"
@@ -469,13 +551,32 @@ def compute_matched_conditional_fsoi_for_pair(
         sample_scales[inst] = float(raw_n / sampled_rows[inst]) if sampled_rows[inst] > 0 else 1.0
 
     matched_fsoi = float(sum(matched_by_instrument.values()))
-    delta_j_actual = float(j_control.detach().item() - j_denied.detach().item())
+    j_control_value = float(j_control.detach().item())
+    j_denied_value = float(j_denied.detach().item())
+    delta_j_actual = float(j_control_value - j_denied_value)
+    ose_impact = float(j_denied_value - j_control_value)
+    signal_threshold, repro_error, threshold_basis = _signal_threshold_from_repro()
+    signal_valid = _finite_signal(matched_fsoi, delta_j_actual, signal_threshold)
     closure_ratio = (
         matched_fsoi / delta_j_actual
-        if abs(delta_j_actual) > 1e-12 else float("nan")
+        if signal_valid else float("nan")
     )
 
     return {
+        'pair_idx': pair_idx,
+        'prev_bin': prev_bin,
+        'curr_bin': curr_bin,
+        'lead_step': forecast_lead_step,
+        'denied_instruments': ','.join(sorted(present_denied)),
+        'ea_control': j_control_value,
+        'ea_denied': j_denied_value,
+        'ose_impact': ose_impact,
+        'ose_sign': 'helpful' if ose_impact > 0 else 'detrimental',
+        'ose_relative_impact': ose_impact / (abs(j_control_value) + 1e-12),
+        'verification_target': 'obs',
+        'mesh_instrument': '',
+        'mesh_pressure_level_idx': '',
+        'ose_spatial_npz': '',
         'matched_comparison_mode': 'conditional_endpoint_same_sample_same_J',
         'matched_sign_convention': 'positive=detrimental; delta_j_actual=J_control-J_denied',
         'matched_fsoi': matched_fsoi,
@@ -484,10 +585,18 @@ def compute_matched_conditional_fsoi_for_pair(
             for inst in sorted(matched_by_instrument)
         ),
         'delta_j_actual': delta_j_actual,
-        'j_control': float(j_control.detach().item()),
-        'j_denied': float(j_denied.detach().item()),
+        'j_control': j_control_value,
+        'j_denied': j_denied_value,
         'matched_closure_ratio': closure_ratio,
-        'matched_sign_agree': _finite_sign_agree(matched_fsoi, delta_j_actual),
+        'matched_signal_threshold': signal_threshold,
+        'matched_signal_threshold_basis': threshold_basis,
+        'matched_observed_control_reproducibility_error': repro_error,
+        'matched_signal_valid': signal_valid,
+        'matched_sign_agree': _finite_sign_agree(
+            matched_fsoi,
+            delta_j_actual,
+            signal_threshold,
+        ),
         'matched_population_scaled': False,
         'matched_sampled_rows': ';'.join(
             f"{inst}:{sampled_rows[inst]}" for inst in sorted(sampled_rows)
@@ -514,21 +623,29 @@ def compare_ose_vs_fsoi(
       fsoi_predicted = matched_fsoi
 
     Both use the convention positive = detrimental and neither side is
-    population-scaled. Older outputs fall back to the aggregate instrument CSV.
+    population-scaled. Older outputs without matched endpoint columns now fail
+    instead of falling back to the legacy aggregate instrument CSV.
     """
     from pathlib import Path
 
     if not Path(ose_csv).is_file():
         print(f"[OSE Compare] {ose_csv} not found")
         return pd.DataFrame()
-    if not Path(fsoi_inst_csv).is_file():
-        print(f"[OSE Compare] {fsoi_inst_csv} not found")
-        return pd.DataFrame()
 
     ose = pd.read_csv(ose_csv)
-    fsoi = pd.read_csv(fsoi_inst_csv)
 
     matched_cols = {'matched_fsoi', 'delta_j_actual'}
+    missing = matched_cols.difference(ose.columns)
+    if missing:
+        raise ValueError(
+            "Final OSE/FSOI validation requires matched endpoint columns in "
+            f"{ose_csv}. Missing: {sorted(missing)}. Rerun OSE with the "
+            "matched conditional endpoint code; the legacy stratified/"
+            "population-scaled comparison is disabled."
+        )
+    signal_threshold, repro_error, threshold_basis = _signal_threshold_from_repro(
+        _observed_repro_error_from_frame(ose)
+    )
     if matched_cols.issubset(ose.columns) and ose['matched_fsoi'].notna().any():
         ose = ose.copy()
         ose['matched_fsoi'] = pd.to_numeric(ose['matched_fsoi'], errors='coerce')
@@ -536,9 +653,9 @@ def compare_ose_vs_fsoi(
         rows = []
         for _, row in ose.iterrows():
             if not np.isfinite(row.get('matched_fsoi', np.nan)):
-                continue
+                raise ValueError(f"Non-finite matched_fsoi in {ose_csv}, pair_idx={row.get('pair_idx')}")
             if not np.isfinite(row.get('delta_j_actual', np.nan)):
-                continue
+                raise ValueError(f"Non-finite delta_j_actual in {ose_csv}, pair_idx={row.get('pair_idx')}")
             denied = str(row.get('denied_instruments', '')).strip()
             instruments = [i.strip() for i in denied.split(',') if i.strip()]
             denied_label = instruments[0] if len(instruments) == 1 else denied
@@ -558,65 +675,37 @@ def compare_ose_vs_fsoi(
             return merged
         merged['fsoi_predicted'] = pd.to_numeric(merged['fsoi_predicted'], errors='coerce')
         merged['ose_fsoi_convention'] = pd.to_numeric(merged['ose_fsoi_convention'], errors='coerce')
-        eps = 1e-12
-        merged['closure_ratio'] = np.where(
-            merged['ose_fsoi_convention'].abs() > eps,
-            merged['fsoi_predicted'] / merged['ose_fsoi_convention'],
-            np.nan,
+        signal_valid = (
+            merged['fsoi_predicted'].abs().gt(signal_threshold) &
+            merged['ose_fsoi_convention'].abs().gt(signal_threshold)
         )
-        merged['sign_agree'] = (
+        sign_agree = (
             np.sign(merged['fsoi_predicted']) ==
             np.sign(merged['ose_fsoi_convention'])
         )
+        merged['signal_threshold'] = signal_threshold
+        merged['signal_threshold_basis'] = threshold_basis
+        merged['observed_control_reproducibility_error'] = repro_error
+        merged['signal_valid'] = signal_valid
+        merged['near_zero_excluded'] = ~signal_valid
+        merged['closure_ratio'] = np.where(
+            signal_valid,
+            merged['fsoi_predicted'] / merged['ose_fsoi_convention'],
+            np.nan,
+        )
+        merged['abs_magnitude_ratio'] = np.where(
+            signal_valid,
+            merged['fsoi_predicted'].abs() / merged['ose_fsoi_convention'].abs(),
+            np.nan,
+        )
+        merged['sign_agree'] = np.where(signal_valid, sign_agree, np.nan)
+        merged['n_total_cycles'] = len(merged)
+        merged['n_signal_valid_cycles'] = int(signal_valid.sum())
+        merged['n_near_zero_excluded_cycles'] = int((~signal_valid).sum())
         return merged
 
-    impact_col = 'sum_impact_scaled' if 'sum_impact_scaled' in fsoi.columns else 'sum_impact'
-
-    # Collapse per-target_variable rows to the single-metric scale so the FSOI
-    # prediction matches the OSE error definition and the instrument ranking.
-    fsoi = collapse_target_variable_rows(fsoi)
-
-    # Aggregate FSOI per (pair_idx, instrument) — sum across levels/variables
-    fsoi_agg = (
-        fsoi.groupby(['pair_idx', 'instrument'])[impact_col]
-        .sum()
-        .reset_index()
-        .rename(columns={impact_col: 'fsoi_predicted'})
+    raise ValueError(
+        "Final OSE/FSOI validation requires finite matched_fsoi and "
+        "delta_j_actual values. The legacy stratified/population-scaled "
+        "comparison is disabled."
     )
-
-    # Explode multi-instrument denial rows in OSE
-    rows = []
-    for _, row in ose.iterrows():
-        for inst in str(row['denied_instruments']).split(','):
-            inst = inst.strip()
-            rows.append({**row.to_dict(), 'denied_instrument': inst})
-    ose_long = pd.DataFrame(rows)
-
-    if ose_long.empty or fsoi_agg.empty:
-        return pd.DataFrame()
-
-    merged = ose_long.merge(
-        fsoi_agg,
-        left_on=['pair_idx', 'denied_instrument'],
-        right_on=['pair_idx', 'instrument'],
-        how='left',
-    )
-
-    # Sign conventions differ between FSOI and OSE:
-    #   FSOI > 0  → instrument is detrimental (increases forecast error)
-    #   ose_impact = ea_denied - ea_control
-    #     ose_impact < 0 → denying instrument helped → instrument was detrimental
-    #     ose_impact > 0 → denying instrument hurt  → instrument was beneficial
-    # So FSOI and ose_impact have OPPOSITE signs for the same physical conclusion.
-    # Negate ose_impact to put both in the "positive = detrimental" convention
-    # before computing sign agreement and closure ratio.
-    eps = 1e-12
-    ose_fsoi_convention = -merged['ose_impact']   # now positive = detrimental
-    merged['closure_ratio'] = np.where(
-        ose_fsoi_convention.abs() > eps,
-        merged['fsoi_predicted'] / ose_fsoi_convention,
-        np.nan,
-    )
-    merged['sign_agree'] = np.sign(merged['fsoi_predicted']) == np.sign(ose_fsoi_convention)
-
-    return merged
