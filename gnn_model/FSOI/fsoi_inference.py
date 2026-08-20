@@ -181,7 +181,8 @@ def _compute_innovation_diagnostics(
     """Compute per-instrument, per-channel innovation statistics.
 
     Returns a list of records (one per instrument×channel) with:
-      mean, std, skewness, rmse, obs_range, normalized_rmse
+      mean, std, skewness, median, IQR-scaled spread, Bowley skewness,
+      rmse, obs_range, normalized_rmse
     A normalized_rmse < 0.05 (~5% of obs range) indicates xb is a good
     background; > 0.20 suggests the background is unreliable.
     """
@@ -213,6 +214,10 @@ def _compute_innovation_diagnostics(
             rmse = float(np.sqrt(np.mean(d ** 2)))
             obs_range = float(np.ptp(x)) if len(x) > 1 else float(np.abs(x).max() + 1e-9)
             skew = float(np.mean(((d - mu) / (sigma + 1e-12)) ** 3)) if sigma > 1e-12 else 0.0
+            q1, q2, q3 = np.percentile(d, [25.0, 50.0, 75.0])
+            iqr = float(q3 - q1)
+            iqr_scaled = float(iqr / 1.349) if iqr > 1e-12 else 0.0
+            bowley_skew = float((q3 + q1 - 2.0 * q2) / iqr) if iqr > 1e-12 else 0.0
             records.append({
                 'pair_idx': pair_idx,
                 'curr_bin': curr_bin,
@@ -223,6 +228,9 @@ def _compute_innovation_diagnostics(
                 'innovation_mean': mu,
                 'innovation_std': sigma,
                 'innovation_skewness': skew,
+                'innovation_median': float(q2),
+                'innovation_iqr_scaled': iqr_scaled,
+                'innovation_bowley_skewness': bowley_skew,
                 'innovation_rmse': rmse,
                 'obs_range': obs_range,
                 'normalized_rmse': rmse / (obs_range + 1e-12),
@@ -247,6 +255,7 @@ def _run_ose_check(
     channel_weights: dict,
     use_area_weights: bool,
     loss_reduction: str,
+    impact_factor: float,
     lead_step: int,
     pair_idx: int,
     gfs_reference=None,
@@ -256,7 +265,10 @@ def _run_ose_check(
     spatial_output_dir: str = None,
 ):
     """Compute OSE impact and append to results['ose_records'].""" 
-    from fsoi_ose import compute_ose_for_pair as _ose_pair
+    from fsoi_ose import (
+        compute_matched_conditional_fsoi_for_pair as _matched_fsoi_pair,
+        compute_ose_for_pair as _ose_pair,
+    )
     print(f"[OSE] Computing denial experiment for: {ose_instruments} (pair {pair_idx})")
     try:
         if isinstance(gfs_reference, dict):
@@ -290,11 +302,45 @@ def _run_ose_check(
             spatial_output_dir=spatial_output_dir,
         )
         if rec:
+            if gfs_tensor_for_ose is None:
+                try:
+                    matched = _matched_fsoi_pair(
+                        model=model,
+                        curr_batch=curr_batch,
+                        xa=xa,
+                        xb=xb,
+                        denied_instruments=ose_instruments,
+                        observation_config=observation_config,
+                        subsample_indices=subsample_indices,
+                        target_instruments=target_instruments,
+                        target_variables=target_variables,
+                        target_pressure_levels=target_pressure_levels,
+                        instrument_weights=instrument_weights,
+                        channel_weights=channel_weights,
+                        use_area_weights=use_area_weights,
+                        loss_reduction=loss_reduction,
+                        forecast_lead_step=lead_step,
+                        pair_idx=pair_idx,
+                        curr_bin=results.get('curr_bin', ''),
+                        prev_bin=results.get('prev_bin', ''),
+                        impact_factor=impact_factor,
+                    )
+                    if matched:
+                        rec.update(matched)
+                except Exception as matched_err:
+                    print(f"[OSE Matched] WARNING on pair {pair_idx}: {matched_err}")
+            else:
+                print("[OSE Matched] Skipping obs-space matched FSOI for mesh OSE")
             results['ose_records'].append(rec)
-            print(f"[OSE]   ea_control={ea_control:.4e}  "
+            print(f"[OSE]   ea_control={rec['ea_control']:.4e}  "
                   f"ea_denied={rec['ea_denied']:.4e}  "
                   f"ose_impact={rec['ose_impact']:+.4e}  "
                   f"({rec['ose_sign']})")
+            if 'matched_fsoi' in rec:
+                print(f"[OSE Matched]   delta_j_actual={rec['delta_j_actual']:+.4e}  "
+                      f"matched_fsoi={rec['matched_fsoi']:+.4e}  "
+                      f"closure={rec['matched_closure_ratio']:.3f}  "
+                      f"sign_agree={rec['matched_sign_agree']}")
     except Exception as ose_err:
         print(f"[OSE] ERROR on pair {pair_idx}: {ose_err}")
 
@@ -927,7 +973,7 @@ def compute_fsoi_for_pair(
                     model, curr_batch, observation_config, ose_instruments,
                     target_instruments, target_variables, target_pressure_levels,
                     instrument_weights, channel_weights, use_area_weights,
-                    loss_reduction, lead_step, pair_idx,
+                    loss_reduction, impact_factor, lead_step, pair_idx,
                     gfs_reference=gfs_reference,
                     mesh_instrument=mesh_instrument,
                     mesh_pressure_level_idx=mesh_pressure_level_idx,
@@ -1146,7 +1192,7 @@ def compute_fsoi_for_pair(
                     model, curr_batch, observation_config, ose_instruments,
                     target_instruments, target_variables, target_pressure_levels,
                     instrument_weights, channel_weights, use_area_weights,
-                    loss_reduction, lead_step, pair_idx,
+                    loss_reduction, impact_factor, lead_step, pair_idx,
                     gfs_reference=gfs_reference,
                     mesh_instrument=mesh_instrument,
                     mesh_pressure_level_idx=mesh_pressure_level_idx,
@@ -1284,8 +1330,9 @@ def main():
         default=None,
         metavar="INST",
         help="Run OSE cross-check by replacing xa[X] with xb[X] for these "
-             "instruments (e.g. --ose_instruments atms amsua). Adds one no-grad "
-             "forward pass per pair. Results saved to evaluation/ose_results.csv.",
+             "instruments (e.g. --ose_instruments atms amsua). Also computes "
+             "matched conditional endpoint FSOI using the same sampled rows and "
+             "the same combined J. Results saved to evaluation/ose_results.csv.",
     )
     parser.add_argument(
         "--verification_target",

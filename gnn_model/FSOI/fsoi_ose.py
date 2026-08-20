@@ -48,6 +48,22 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
+# Matched OSE/FSOI validation uses:
+#   delta_j_actual = J_control - J_denied
+#   matched_fsoi   = 0.5 * dx^T * (grad J_control + grad J_denied)
+# with positive values meaning the denied instrument was detrimental.
+# The legacy ose_impact column keeps the opposite sign for backward
+# compatibility: ose_impact = J_denied - J_control.
+
+
+def _finite_sign_agree(a: float, b: float, eps: float = 1e-12) -> bool:
+    """Compare signs only when both values have useful signal."""
+    if not np.isfinite(a) or not np.isfinite(b):
+        return False
+    if abs(a) <= eps or abs(b) <= eps:
+        return False
+    return np.sign(a) == np.sign(b)
+
 
 def _mesh_channel_names(mesh_instrument: str, n_channels: int) -> np.ndarray:
     """Human-readable channel labels for saved mesh OSE fields."""
@@ -326,18 +342,179 @@ def compute_ose_for_pair(
     }
 
 
+def compute_matched_conditional_fsoi_for_pair(
+    model,
+    curr_batch,
+    xa: Dict[str, torch.Tensor],
+    xb: Dict[str, torch.Tensor],
+    denied_instruments: List[str],
+    observation_config: dict,
+    subsample_indices: Dict[str, Optional[torch.Tensor]],
+    target_instruments: Optional[List[str]],
+    target_variables: Optional[List[str]],
+    target_pressure_levels: Optional[List[float]],
+    instrument_weights: dict,
+    channel_weights: dict,
+    use_area_weights: bool,
+    loss_reduction: str,
+    forecast_lead_step: int,
+    pair_idx: int,
+    curr_bin: str,
+    prev_bin: str,
+    impact_factor: float = 0.5,
+) -> dict:
+    """Compute apples-to-apples conditional FSOI for an OSE denial.
+
+    This validation uses one combined forecast-error metric J, not the
+    per-variable/per-pressure stratified losses used for channel diagnostics.
+    It compares the same sampled denied rows on both sides:
+
+        x_control = xa
+        x_denied  = (xa_except_denied, xb_denied)
+
+        I_matched = 0.5 * (x_control - x_denied)^T
+                    [grad J(x_control) + grad J(x_denied)]
+
+        delta_j_actual = J(x_control) - J(x_denied)
+
+    Positive values mean the denied instrument was detrimental, because the
+    control error is larger than the denied error. No population scaling is
+    applied to either side.
+    """
+    from fsoi_utils import replace_batch_inputs, compute_forecast_error, prune_batch_targets_inplace
+
+    device = next(model.parameters()).device
+    present_denied = [i for i in denied_instruments if i in xa and i in xb]
+    missing_denied = [i for i in denied_instruments if i not in xa or i not in xb]
+    if missing_denied:
+        print(f"[OSE Matched] WARNING: {missing_denied} not in xa/xb - skipping those instruments")
+    if not present_denied:
+        print(f"[OSE Matched] No denied instruments present in xa/xb for pair {pair_idx}")
+        return {}
+
+    shared_kwargs = dict(
+        forecast_lead_step=forecast_lead_step,
+        instrument_weights=instrument_weights,
+        channel_weights=channel_weights,
+        use_area_weights=use_area_weights,
+        target_instruments=target_instruments,
+        target_variables=target_variables,
+        target_pressure_levels=target_pressure_levels,
+        loss_reduction=loss_reduction,
+    )
+
+    def _make_inputs(denied: bool) -> Dict[str, torch.Tensor]:
+        inputs = {}
+        for inst, tensor in xa.items():
+            if inst in present_denied:
+                src = xb[inst] if denied else tensor
+                inputs[inst] = src.detach().clone().to(device).requires_grad_(True)
+            else:
+                inputs[inst] = tensor.detach().clone().to(device)
+        return inputs
+
+    def _loss_and_grads(inputs: Dict[str, torch.Tensor]):
+        batch_for_error = curr_batch.clone()
+        if target_instruments is not None:
+            prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
+        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=subsample_indices)
+        loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
+        grad_inputs = [inputs[inst] for inst in present_denied]
+        grads = torch.autograd.grad(
+            outputs=loss,
+            inputs=grad_inputs,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+        return loss, {inst: grad for inst, grad in zip(present_denied, grads)}
+
+    control_inputs = _make_inputs(denied=False)
+    denied_inputs = _make_inputs(denied=True)
+
+    j_control, grad_control = _loss_and_grads(control_inputs)
+    torch.cuda.empty_cache()
+    j_denied, grad_denied = _loss_and_grads(denied_inputs)
+    torch.cuda.empty_cache()
+
+    matched_by_instrument = {}
+    sampled_rows = {}
+    raw_rows = {}
+    sample_scales = {}
+
+    for inst in present_denied:
+        g_c = grad_control.get(inst)
+        g_d = grad_denied.get(inst)
+        if g_c is None or g_d is None:
+            print(f"[OSE Matched] WARNING: Missing gradient for {inst}; skipping")
+            continue
+
+        dx = control_inputs[inst].detach() - denied_inputs[inst].detach()
+        if dx.shape != g_c.shape or dx.shape != g_d.shape:
+            print(
+                f"[OSE Matched] WARNING: Shape mismatch for {inst}: "
+                f"dx={tuple(dx.shape)}, g_control={tuple(g_c.shape)}, "
+                f"g_denied={tuple(g_d.shape)}"
+            )
+            continue
+
+        matched_by_instrument[inst] = float((impact_factor * dx * (g_c + g_d)).sum().item())
+        sampled_rows[inst] = int(dx.shape[0])
+
+        node_type = f"{inst}_input"
+        raw_n = sampled_rows[inst]
+        if node_type in curr_batch.node_types and getattr(curr_batch[node_type], "x", None) is not None:
+            raw_n = int(curr_batch[node_type].x.shape[0])
+        raw_rows[inst] = raw_n
+        sample_scales[inst] = float(raw_n / sampled_rows[inst]) if sampled_rows[inst] > 0 else 1.0
+
+    matched_fsoi = float(sum(matched_by_instrument.values()))
+    delta_j_actual = float(j_control.detach().item() - j_denied.detach().item())
+    closure_ratio = (
+        matched_fsoi / delta_j_actual
+        if abs(delta_j_actual) > 1e-12 else float("nan")
+    )
+
+    return {
+        'matched_comparison_mode': 'conditional_endpoint_same_sample_same_J',
+        'matched_sign_convention': 'positive=detrimental; delta_j_actual=J_control-J_denied',
+        'matched_fsoi': matched_fsoi,
+        'matched_fsoi_by_instrument': ';'.join(
+            f"{inst}:{matched_by_instrument[inst]:.17g}"
+            for inst in sorted(matched_by_instrument)
+        ),
+        'delta_j_actual': delta_j_actual,
+        'j_control': float(j_control.detach().item()),
+        'j_denied': float(j_denied.detach().item()),
+        'matched_closure_ratio': closure_ratio,
+        'matched_sign_agree': _finite_sign_agree(matched_fsoi, delta_j_actual),
+        'matched_population_scaled': False,
+        'matched_sampled_rows': ';'.join(
+            f"{inst}:{sampled_rows[inst]}" for inst in sorted(sampled_rows)
+        ),
+        'matched_raw_rows': ';'.join(
+            f"{inst}:{raw_rows[inst]}" for inst in sorted(raw_rows)
+        ),
+        'matched_sample_scale': ';'.join(
+            f"{inst}:{sample_scales[inst]:.8g}" for inst in sorted(sample_scales)
+        ),
+    }
+
+
 def compare_ose_vs_fsoi(
     ose_csv: "Path",
     fsoi_inst_csv: "Path",
 ) -> pd.DataFrame:
-    """Merge OSE results with FSOI predictions per (pair, denied instrument).
+    """Merge OSE results with FSOI predictions per denied instrument.
 
-    For each (pair_idx, denied_instrument), matches:
-      OSE:   ose_impact  = ea_denied - ea_control
-      FSOI:  fsoi_predicted = sum_impact_scaled  (for that instrument and pair)
+    When matched endpoint columns are present in ``ose_results.csv``, this
+    function uses them directly:
 
-    Returns merged DataFrame with closure_ratio = fsoi_predicted / ose_impact.
-    A ratio close to 1.0 means FSOI accurately predicts the actual impact.
+      delta_j_actual = J_control - J_denied
+      fsoi_predicted = matched_fsoi
+
+    Both use the convention positive = detrimental and neither side is
+    population-scaled. Older outputs fall back to the aggregate instrument CSV.
     """
     from pathlib import Path
 
@@ -350,6 +527,48 @@ def compare_ose_vs_fsoi(
 
     ose = pd.read_csv(ose_csv)
     fsoi = pd.read_csv(fsoi_inst_csv)
+
+    matched_cols = {'matched_fsoi', 'delta_j_actual'}
+    if matched_cols.issubset(ose.columns) and ose['matched_fsoi'].notna().any():
+        ose = ose.copy()
+        ose['matched_fsoi'] = pd.to_numeric(ose['matched_fsoi'], errors='coerce')
+        ose['delta_j_actual'] = pd.to_numeric(ose['delta_j_actual'], errors='coerce')
+        rows = []
+        for _, row in ose.iterrows():
+            if not np.isfinite(row.get('matched_fsoi', np.nan)):
+                continue
+            if not np.isfinite(row.get('delta_j_actual', np.nan)):
+                continue
+            denied = str(row.get('denied_instruments', '')).strip()
+            instruments = [i.strip() for i in denied.split(',') if i.strip()]
+            denied_label = instruments[0] if len(instruments) == 1 else denied
+            rec = row.to_dict()
+            rec['denied_instrument'] = denied_label
+            rec['instrument'] = denied_label
+            rec['fsoi_predicted'] = row.get('matched_fsoi')
+            rec['ose_fsoi_convention'] = row.get('delta_j_actual')
+            rec['comparison_mode'] = row.get(
+                'matched_comparison_mode',
+                'conditional_endpoint_same_sample_same_J',
+            )
+            rows.append(rec)
+
+        merged = pd.DataFrame(rows)
+        if merged.empty:
+            return merged
+        merged['fsoi_predicted'] = pd.to_numeric(merged['fsoi_predicted'], errors='coerce')
+        merged['ose_fsoi_convention'] = pd.to_numeric(merged['ose_fsoi_convention'], errors='coerce')
+        eps = 1e-12
+        merged['closure_ratio'] = np.where(
+            merged['ose_fsoi_convention'].abs() > eps,
+            merged['fsoi_predicted'] / merged['ose_fsoi_convention'],
+            np.nan,
+        )
+        merged['sign_agree'] = (
+            np.sign(merged['fsoi_predicted']) ==
+            np.sign(merged['ose_fsoi_convention'])
+        )
+        return merged
 
     impact_col = 'sum_impact_scaled' if 'sum_impact_scaled' in fsoi.columns else 'sum_impact'
 
