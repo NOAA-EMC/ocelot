@@ -134,9 +134,10 @@ class Ocelot(nn.Module):
 
         # Load mesh-grid variable config
         self.obs_mesh_config = self.observation_config.mesh_config
-        self.enable_mesh_pred = self.obs_mesh_config['enable_mesh_pred'] if 'enable_mesh_pred' in self.obs_mesh_config else False
-        self.mesh_instruments = list(self.obs_mesh_config['variables'].keys())
-        self.mesh_pressure_level_idx = self.obs_mesh_config['mesh_pressure_level_idx']
+        self.enable_mesh_pred = self.obs_mesh_config.enable_mesh_pred
+        self.mesh_instruments = list(self.obs_mesh_config.variables.keys())
+        self.mesh_pressure_level_idx = self.obs_mesh_config.mesh_pressure_level_idx
+        
         if self.verbose:
             print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
             print(f"[DEBUG CONFIG] mesh_config: {self.obs_mesh_config}")
@@ -837,7 +838,7 @@ class Ocelot(nn.Module):
         Processor₄ → mesh_state₄ → Decoder₄ → Predictions [T+9 to T+12)
         """
 
-        step_info = self.model._get_latent_step_info(data)
+        step_info = self._get_latent_step_info(data)
         step_mapping = step_info["step_mapping"]
         num_latent_steps = step_info["num_steps"]
         edge_mapping = self.mesh.map_step_edges(data, step_mapping)
@@ -858,7 +859,13 @@ class Ocelot(nn.Module):
 
         return predictions, None #, mesh_features_per_step
     
-    def _generate_predictions(self, data: HeteroData, step: int, step_mapping: dict, edge_mapping: dict, mesh_features_processed: torch.Tensor, predictions: dict) -> None:
+    def _generate_predictions(self, 
+                              data: HeteroData, 
+                              step: int, 
+                              step_mapping: dict, 
+                              edge_mapping: dict,
+                              mesh_features_processed: torch.Tensor, 
+                              predictions: dict) -> None:
 
         # Process all instruments for this step
         for base_type, steps_dict in step_mapping.items():
@@ -907,7 +914,7 @@ class Ocelot(nn.Module):
                     sa_emb = self.scan_angle_embedder(scan_angle)  # [N, scan_embed_dim]
 
                     # Diagnostic: verify scan angle varies
-                    if base_type == "atms_target" and self.global_step % 200 == 0:
+                    if base_type == "atms_target" and step % 200 == 0:
                         sa = data[step_node_type].x
                         if sa.numel() == 0:
                             print(f"[SCAN DIAG] scan_angle: shape={sa.shape} (empty)")
@@ -988,11 +995,11 @@ class Ocelot(nn.Module):
                 # The model learns to use the geometry information that's embedded in target_features_initial
 
                 # Diagnostic logging for radiosonde
-                if base_type == "radiosonde_target" and pressure_emb is not None and self.global_step % 200 == 0:
+                if base_type == "radiosonde_target" and pressure_emb is not None and step % 200 == 0:
                     print(f"[GRAPHDOP] Radiosonde: decoder conditioned on pressure (decoded shape={decoded_target_features.shape})")
 
                 # Diagnostic logging for satellites
-                if base_type == "atms_target" and sa_emb is not None and self.global_step % 200 == 0:
+                if base_type == "atms_target" and sa_emb is not None and step % 200 == 0:
                     print(f"ATMS: decoder conditioned on scan angle (decoded shape={decoded_target_features.shape})")
 
                 # Safety: verify mapper exists before using
@@ -1046,7 +1053,7 @@ class Ocelot(nn.Module):
         results = {}
 
         # LATENT ROLLOUT: Extract from step-specific nodes
-        step_info = self.model._get_latent_step_info(batch)
+        step_info = self._get_latent_step_info(batch)
         step_mapping = step_info["step_mapping"]
 
         for base_type, steps_dict in step_mapping.items():

@@ -121,7 +121,11 @@ class OptimizerConfig(ConfigBase):
 
 class AdamWConfig(OptimizerConfig):
     lr = Optional(FloatField(), default=5e-4)
+    lr_schedule = Optional(Choices(['plateau', 'cosine_warmup']), default='plateau')
     weight_decay = Optional(FloatField(), default=1e-5)
+    warmup_pct = Optional(FloatField(), default=0.05)
+    warmup_start_factor = Optional(FloatField(), default=0.01)
+    min_lr = Optional(FloatField(), default=1e-6)
 
 
 class CsvOutputConfig(ConfigBase):
@@ -192,6 +196,7 @@ class CosineWarmupScheduleConfig(ScheduleConfig):
 class TrainingConfig(ConfigBase):
     experiment_name = StrField()
     checkpoint_dir = StrField()
+    detect_anomaly = Optional(BoolField(), default=False)
     observation_config_path = Optional(StrField(), default='configs/observation_config.yaml')
     seed = Optional(IntField())
     verbose = Optional(BoolField(), default=False)

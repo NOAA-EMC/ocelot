@@ -1,14 +1,19 @@
 import os, sys
 from typing import Dict, Tuple, List, Optional
 import lightning.pytorch as pl
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import HeteroData
 
+import numpy as np
+from matplotlib import pyplot as plt
+
+from ocelot.logger import log
+from ocelot.loss import weighted_mse_loss, weighted_huber_loss
 from ocelot.model.ocelot import Ocelot
 from ocelot.configs.training_config import TrainingConfig
+from ocelot.configs.observation_config import ObservationConfig
 
 
 class OcelotTrainingModule(pl.LightningModule):
@@ -16,6 +21,7 @@ class OcelotTrainingModule(pl.LightningModule):
         super().__init__()
         self.model = model
         self.training_config = training_config
+        self.obs_config = ObservationConfig(self.training_config.observation_config_path)
         self._printed_first_train_batch = False
         self.save_hyperparameters()
 
@@ -105,7 +111,7 @@ class OcelotTrainingModule(pl.LightningModule):
                     print(f"  Skipping this prediction to avoid crash")
                     continue
 
-                channel_loss = self.model._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
+                channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
 
                 if not torch.isfinite(channel_loss):
                     if self.trainer.is_global_zero:
@@ -129,7 +135,7 @@ class OcelotTrainingModule(pl.LightningModule):
         # Log rollout steps appropriately
         step_info = self.model._get_latent_step_info(batch)
         latent_rollout_steps = step_info["num_steps"]
-        if self.verbose:
+        if self.training_config.verbose:
             print(f"[DEBUG] latent rollout steps: {latent_rollout_steps}")
 
         self.log(
@@ -188,7 +194,7 @@ class OcelotTrainingModule(pl.LightningModule):
         log.info(f"VALIDATION STEP batch: {batch.bin_name}")
 
         # Build decoder names from config (all possible node_types with targets)
-        decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.observation_config.items() for inst_name in instruments]
+        decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.obs_config.observation_config.items() for inst_name in instruments]
 
         # Prepare metrics storage
         all_step_rmse = {name: [] for name in decoder_names}
@@ -266,7 +272,7 @@ class OcelotTrainingModule(pl.LightningModule):
                         continue  # nothing valid for this node_type/step
 
                 # Get the channel-weighted loss
-                channel_loss = self.model._compute_channel_loss(
+                channel_loss = self._compute_channel_loss(
                     y_pred,
                     y_true,
                     instrument_ids,
@@ -335,12 +341,12 @@ class OcelotTrainingModule(pl.LightningModule):
                 if (
                     self.trainer.is_global_zero  # only main process
                     and step == 0  # only concatenate latent rollout once
-                    and training_config.validation.csv.enabled
-                    and batch_idx < max(1, training_config.validation.csv.num_batches)
-                    and (self.current_epoch % max(1, training_config.validation.csv.every_n_epochs) == 0)
+                    and self.training_config.validation.csv.enabled
+                    and batch_idx < max(1, self.training_config.validation.csv.num_batches)
+                    and (self.current_epoch % max(1, self.training_config.validation.csv.every_n_epochs) == 0)
                 ):
                     # --- CSV save block ---
-                    out_dir = training_config.validation.csv.out_dir
+                    out_dir = self.training_config.validation.csv.out_dir
                     os.makedirs(out_dir, exist_ok=True)
 
                     # LATENT ROLLOUT: Concatenate all steps into standard format
@@ -366,14 +372,14 @@ class OcelotTrainingModule(pl.LightningModule):
                 if all_step_rmse[node_type]:
                     print(f"[VAL] {node_type} RMSE (avg): {torch.stack(all_step_rmse[node_type]).mean().item():.4f}")
 
-        if self.verbose and self.trainer.is_global_zero and batch_idx == 0:
+        if self.training_config.verbose and self.trainer.is_global_zero and batch_idx == 0:
             for node_type in decoder_names:
                 if node_type not in all_predictions or not all_predictions[node_type]:
                     continue
                 y_pred = all_predictions[node_type][0]
                 y_true = ground_truth_data[node_type]["gts_list"][0]
-                y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
-                y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
+                y_pred_unnorm = self.model.unnormalize_standardscaler(y_pred, node_type)
+                y_true_unnorm = self.model.unnormalize_standardscaler(y_true, node_type)
 
                 n_channels = y_pred_unnorm.shape[1]
                 for i in range(min(5, n_channels)):
@@ -437,7 +443,7 @@ class OcelotTrainingModule(pl.LightningModule):
             print(f"val_loss: {avg_loss.item():.6f}")
 
         # Save mesh features from first batch for epoch-end processing
-        if batch_idx == 0 and self.enable_mesh_pred:
+        if batch_idx == 0 and self.obs_config.mesh_config.enable_mesh_pred:
             self._last_val_mesh_features = mesh_features_per_step
             self._last_val_batch = batch
 
@@ -446,7 +452,7 @@ class OcelotTrainingModule(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Generate mesh predictions at END of validation epoch."""
-        if not self.enable_mesh_pred or not self.trainer.is_global_zero:
+        if not self.obs_config.mesh_config.enable_mesh_pred or not self.trainer.is_global_zero:
             return
 
         # Check if we saved mesh features during validation
@@ -484,32 +490,30 @@ class OcelotTrainingModule(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        optimizer_config = self.training_config.optimizer
-        optimizer_type = optimizer_config.type
-        lr = optimizer_config.lr
-        weight_decay = optimizer_config.weight_decay
+        opt_config = self.training_config.optimizer
 
-        if optimizer_type != "adamw":
-            raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
-        optimizer = torch.optim.AdamW(self.parameters(), lr=lr, weight_decay=weight_decay)
+        if opt_config.type != "adamw":
+            raise ValueError(f"Unsupported optimizer type: {opt_config.type}")
+
+        optimizer = torch.optim.AdamW(self.parameters(), lr=opt_config.lr, weight_decay=opt_config.weight_decay)
 
         # TenYearTrain-style schedule: warmup + cosine decay (robust to noisy validation)
-        if self.lr_schedule == "cosine_warmup":
+        if opt_config.lr_schedule == "cosine_warmup":
             max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 328
-            warmup_epochs = max(1, int(self.warmup_pct * max_epochs))
+            warmup_epochs = max(1, int(opt_config.warmup_pct * max_epochs))
             warmup_epochs = min(warmup_epochs, max(1, max_epochs - 1))
 
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=max_epochs - warmup_epochs,
-                eta_min=self.min_lr,
+                eta_min=opt_config.min_lr,
             )
 
             from torch.optim.lr_scheduler import LinearLR, SequentialLR
 
             warmup_scheduler = LinearLR(
                 optimizer,
-                start_factor=self.warmup_start_factor,
+                start_factor=opt_config.warmup_start_factor,
                 end_factor=1.0,
                 total_iters=warmup_epochs,
             )
@@ -522,8 +526,8 @@ class OcelotTrainingModule(pl.LightningModule):
 
             if self.trainer.is_global_zero:
                 print("[LR Schedule] Cosine decay with warmup")
-                print(f"  Warmup epochs: {warmup_epochs} ({self.warmup_start_factor}×lr → 1.0×lr)")
-                print(f"  Cosine decay: {max_epochs - warmup_epochs} epochs (lr → {self.min_lr})")
+                print(f"  Warmup epochs: {warmup_epochs} ({opt_config.warmup_start_factor}×lr → 1.0×lr)")
+                print(f"  Cosine decay: {max_epochs - warmup_epochs} epochs (lr → {opt_config.min_lr})")
                 print(f"  Total epochs: {max_epochs}")
 
             return {
@@ -539,9 +543,9 @@ class OcelotTrainingModule(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
-            factor=self.plateau_factor,
-            patience=self.plateau_patience,
-            min_lr=self.min_lr,
+            factor=0.5,
+            patience=3,
+            min_lr=opt_config.min_lr,
         )
 
         return {
@@ -639,12 +643,13 @@ class OcelotTrainingModule(pl.LightningModule):
         instrument_ids: Optional[torch.Tensor],
         valid_mask: Optional[torch.Tensor],
     ) -> torch.Tensor:
+        
         if self.training_config.loss.type == "mse":
             return weighted_mse_loss(
                 y_pred,
                 y_true,
                 instrument_ids=instrument_ids,
-                channel_weights=self.channel_weights,
+                channel_weights=self.obs_config.channel_weights,
                 rebalancing=True,
                 valid_mask=valid_mask,
             )
@@ -652,7 +657,7 @@ class OcelotTrainingModule(pl.LightningModule):
             y_pred,
             y_true,
             instrument_ids=instrument_ids,
-            channel_weights=self.channel_weights,
+            channel_weights=self.obs_config.channel_weights,
             delta=self.training_config.loss.huber_delta,
             rebalancing=True,
             valid_mask=valid_mask,

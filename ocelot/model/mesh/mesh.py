@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib
-from matplotlib import pyplot as plt
+from torch_geometric.data import HeteroData
+from typing import Tuple
 import torch
 import torch_geometric as pyg
 
@@ -137,6 +138,10 @@ class Mesh(torch.nn.Module):
         self.mesh_lat_lon_torch: torch.tensor = None
 
         self._create_mesh(levels=levels, splits=resolution)
+    
+    @property
+    def mesh_structure(self) -> dict:
+        raise NotImplementedError("This should be implemented by subclasses")
 
     def plot(self, title: str = None):
         """

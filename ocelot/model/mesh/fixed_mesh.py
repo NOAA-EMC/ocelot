@@ -9,6 +9,19 @@ class FixedMesh(Mesh):
         super().__init__(levels, splits)
         self._register_buffers()
 
+    @property
+    def mesh_structure(self) -> dict:
+        structure = {
+            "m2m_graphs": self.m2m_graphs,
+            "mesh_lat_lon_list": self.mesh_lat_lon_list,
+            "mesh_list": self.mesh_list,
+            "m2m_edge_index_torch": self.m2m_edge_index_torch,
+            "m2m_features_torch": self.m2m_features_torch,
+            "mesh_features_torch": self.mesh_features_torch,
+            "mesh_lat_lon_torch": self.mesh_lat_lon_torch,
+        }
+        return structure
+
     def _create_m2m_graph(self, mesh_list):
 
         # Merge meshes
@@ -26,3 +39,5 @@ class FixedMesh(Mesh):
         m2m_graphs = [merged_mesh]  # Should be list of len 1
 
         return m2m_graphs
+
+

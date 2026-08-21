@@ -3,10 +3,10 @@ from model.ocelot_training import OcelotTrainingModule
 from model.ocelot_inference import OcelotInferenceModule
 from model.ocelot import Ocelot
 
-from configs.model_config import ModelConfig
-from configs.training_config import TrainingConfig
-from configs.inference_config import InferenceConfig
-from configs.observation_config import ObservationConfig
+from ocelot.configs.model_config import ModelConfig
+from ocelot.configs.training_config import TrainingConfig
+from ocelot.configs.inference_config import InferenceConfig
+from ocelot.configs.observation_config import ObservationConfig
 
 
 class OcelotFactory:

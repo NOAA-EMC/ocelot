@@ -112,7 +112,7 @@ class ObservationConfig(ConfigBase):
     channel_weights = MappingField(ListField(FloatField()))
     observation_config = StructuredField(ObservationGroupsConfig())
     feature_stats = MappingField(MappingField(ListField(FloatField())))
-    mesh_config = Optional(StructuredField(MeshVariablesConfig()), default={})
+    mesh_config = MeshVariablesConfig()
 
     def __init__(self, config_path: str):
         super().__init__()

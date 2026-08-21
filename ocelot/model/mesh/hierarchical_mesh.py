@@ -10,13 +10,69 @@ class HierarchicalMesh(Mesh):
     def __init__(self, levels: int, resolution: int, plot: bool = False):
         super().__init__(levels, resolution)
 
-        self.mesh_up_ei_list = None
-        self.mesh_down_ei_list = None
-        self.mesh_up_features_list = None
-        self.mesh_down_features_list = None
+        self.mesh_up_ei_list = []
+        self.mesh_down_ei_list = []
+        self.mesh_up_features_list = []
+        self.mesh_down_features_list = []
 
         self._init_hierarchical_edges()
         self._register_buffers()
+
+    @property
+    def mesh_structure(self) -> dict:
+        structure = {
+            "m2m_graphs": self.m2m_graphs,
+            "mesh_lat_lon_list": self.mesh_lat_lon_list,
+            "mesh_list": self.mesh_list,
+            "m2m_edge_index_torch": self.m2m_edge_index_torch,
+            "m2m_features_torch": self.m2m_features_torch,
+            "mesh_features_torch": self.mesh_features_torch,
+            "mesh_lat_lon_torch": self.mesh_lat_lon_torch,
+            "mesh_up_ei_list": self.mesh_up_ei_list,
+            "mesh_down_ei_list": self.mesh_down_ei_list,
+            "mesh_up_features_list": self.mesh_up_features_list,
+            "mesh_down_features_list": self.mesh_down_features_list,
+        }
+        return structure
+
+    def _init_hierarchical_edges(self):
+        # Up and down edges for hierarchy
+        # Reuse code for connecting grid to mesh?
+        for from_mesh, to_mesh in zip(self.m2m_graphs[:-1], self.m2m_graphs[1:]):
+            mesh_up_ei = self._inter_mesh_connection(from_mesh, to_mesh)
+            # Down is opposite direction of up
+            mesh_down_ei = np.stack((mesh_up_ei[1, :], mesh_up_ei[0, :]), axis=0)
+            self.mesh_up_ei_list.append(torch.tensor(mesh_up_ei, dtype=torch.long))
+            self.mesh_down_ei_list.append(torch.tensor(mesh_down_ei, dtype=torch.long))
+
+            from_mesh_lat_lon = self._vertice_cart_to_lat_lon(from_mesh.vertices)  # (N, 2)
+            to_mesh_lat_lon = self._vertice_cart_to_lat_lon(to_mesh.vertices)  # (N, 2)
+
+            # Extract features for hierarchical edges
+            _, _, mesh_up_features = gc_mu.get_bipartite_graph_spatial_features(
+                senders_node_lat=from_mesh_lat_lon[:, 0],
+                senders_node_lon=from_mesh_lat_lon[:, 1],
+                senders=mesh_up_ei[0, :],
+                receivers_node_lat=to_mesh_lat_lon[:, 0],
+                receivers_node_lon=to_mesh_lat_lon[:, 1],
+                receivers=mesh_up_ei[1, :],
+                **GC_SPATIAL_FEATURES_KWARGS,
+            )
+            _, _, mesh_down_features = gc_mu.get_bipartite_graph_spatial_features(
+                senders_node_lat=to_mesh_lat_lon[:, 0],
+                senders_node_lon=to_mesh_lat_lon[:, 1],
+                senders=mesh_down_ei[0, :],
+                receivers_node_lat=from_mesh_lat_lon[:, 0],
+                receivers_node_lon=from_mesh_lat_lon[:, 1],
+                receivers=mesh_down_ei[1, :],
+                **GC_SPATIAL_FEATURES_KWARGS,
+            )
+            self.mesh_up_features_list.append(
+                torch.tensor(mesh_up_features, dtype=DEFAULT_DTYPE)
+            )
+            self.mesh_down_features_list.append(
+                torch.tensor(mesh_down_features, dtype=DEFAULT_DTYPE)
+            )
 
 
     def _register_buffers(self):
@@ -46,56 +102,6 @@ class HierarchicalMesh(Mesh):
 
         return m2m_graphs
     
-    
-    def _init_hierarchical_edges(self):
-
-        # Up and down edges for hierarchy
-        # Reuse code for connecting grid to mesh?
-        mesh_up_ei_list = []
-        mesh_down_ei_list = []
-        mesh_up_features_list = []
-        mesh_down_features_list = []
-        for from_mesh, to_mesh in zip(self.m2m_graphs[:-1], self.m2m_graphs[1:]):
-            mesh_up_ei = self._inter_mesh_connection(from_mesh, to_mesh)
-            # Down is opposite direction of up
-            mesh_down_ei = np.stack((mesh_up_ei[1, :], mesh_up_ei[0, :]), axis=0)
-            mesh_up_ei_list.append(torch.tensor(mesh_up_ei, dtype=torch.long))
-            mesh_down_ei_list.append(torch.tensor(mesh_down_ei, dtype=torch.long))
-
-            from_mesh_lat_lon = self._vertice_cart_to_lat_lon(from_mesh.vertices)  # (N, 2)
-            to_mesh_lat_lon = self._vertice_cart_to_lat_lon(to_mesh.vertices)  # (N, 2)
-
-            # Extract features for hierarchical edges
-            _, _, mesh_up_features = gc_mu.get_bipartite_graph_spatial_features(
-                senders_node_lat=from_mesh_lat_lon[:, 0],
-                senders_node_lon=from_mesh_lat_lon[:, 1],
-                senders=mesh_up_ei[0, :],
-                receivers_node_lat=to_mesh_lat_lon[:, 0],
-                receivers_node_lon=to_mesh_lat_lon[:, 1],
-                receivers=mesh_up_ei[1, :],
-                **GC_SPATIAL_FEATURES_KWARGS,
-            )
-            _, _, mesh_down_features = gc_mu.get_bipartite_graph_spatial_features(
-                senders_node_lat=to_mesh_lat_lon[:, 0],
-                senders_node_lon=to_mesh_lat_lon[:, 1],
-                senders=mesh_down_ei[0, :],
-                receivers_node_lat=from_mesh_lat_lon[:, 0],
-                receivers_node_lon=from_mesh_lat_lon[:, 1],
-                receivers=mesh_down_ei[1, :],
-                **GC_SPATIAL_FEATURES_KWARGS,
-            )
-            mesh_up_features_list.append(
-                torch.tensor(mesh_up_features, dtype=DEFAULT_DTYPE)
-            )
-            mesh_down_features_list.append(
-                torch.tensor(mesh_down_features, dtype=DEFAULT_DTYPE)
-            )
-
-        self.mesh_up_ei_list = mesh_up_ei_list
-        self.mesh_down_ei_list = mesh_down_ei_list
-        self.mesh_up_features_list = mesh_up_features_list
-        self.mesh_down_features_list = mesh_down_features_list
-
     @staticmethod
     def _inter_mesh_connection(from_mesh, to_mesh):
         """

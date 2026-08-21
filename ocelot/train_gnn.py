@@ -15,9 +15,9 @@ sys.path.append(
 
 import yaml
 
-from configs.model_config import ModelConfig
-from configs.observation_config import ObservationConfig
-from configs.training_config import TrainingConfig
+from ocelot.configs.model_config import ModelConfig
+from ocelot.configs.observation_config import ObservationConfig
+from ocelot.configs.training_config import TrainingConfig
 
 
 @dataclass(frozen=True)
@@ -111,27 +111,6 @@ def _resolve_checkpoint(config: TrainingConfig):
 
     print("[INFO] No checkpoint, starting fresh training")
     return None
-
-
-def _mesh_structure(model, model_config: ModelConfig) -> dict:
-    mesh = model.mesh
-    structure = {
-        "m2m_graphs": mesh.m2m_graphs,
-        "mesh_lat_lon_list": mesh.mesh_lat_lon_list,
-        "mesh_list": mesh.mesh_list,
-        "m2m_edge_index_torch": mesh.m2m_edge_index_torch,
-        "m2m_features_torch": mesh.m2m_features_torch,
-        "mesh_features_torch": mesh.mesh_features_torch,
-        "mesh_lat_lon_torch": mesh.mesh_lat_lon_torch,
-    }
-    if model_config.mesh.type == "hierarchical":
-        structure.update(
-            mesh_up_ei_list=mesh.mesh_up_ei_list,
-            mesh_down_ei_list=mesh.mesh_down_ei_list,
-            mesh_up_features_list=mesh.mesh_up_features_list,
-            mesh_down_features_list=mesh.mesh_down_features_list,
-        )
-    return structure
 
 
 def _build_callbacks(config: TrainingConfig, windows: WindowPlan):
@@ -297,7 +276,7 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     print(f"Validation period: {windows.val_start} -> {windows.val_end}")
 
     setup_start = time.time()
-    model = OcelotFactory.create_training_module(
+    module = OcelotFactory.create_training_module(
         model_config=model_config,
         training_config=training_config,
         observation_config=observation_config,
@@ -309,21 +288,20 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
         print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
         checkpoint = torch.load(resume_path, map_location="cpu")
         state = checkpoint.get("state_dict", checkpoint)
-        missing, unexpected = model.load_state_dict(state, strict=False)
+        missing, unexpected = module.load_state_dict(state, strict=False)
         print(
             "[INFO] Weights-only load complete. "
             f"missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
         )
 
-    mesh_structure = _mesh_structure(model, model_config)
     date_range = training_config.data.sampler.date_range
     split_ratio = getattr(date_range, "train_val_split_ratio", 0.9)
     data_module = GNNDataModule(
         data_path=training_config.data.path,
         start_date=windows.train_start,
         end_date=windows.initial_train_end,
-        observation_config=observation_config,
-        mesh_structure=mesh_structure,
+        observation_config=observation_config.observation_config,
+        mesh_structure=module.model.mesh.mesh_structure,
         batch_size=training_config.data.batch_size,
         num_neighbors=training_config.data.num_neighbors,
         feature_stats=observation_config.feature_stats,
@@ -346,7 +324,7 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     print(f"Initial setup time: {(setup_end - setup_start) / 60:.2f} minutes")
 
     checkpoint_for_fit = None if training_config.load_weights_only else resume_path
-    trainer.fit(model, data_module, ckpt_path=checkpoint_for_fit)
+    trainer.fit(module, data_module, ckpt_path=checkpoint_for_fit)
 
     end_time = time.time()
     print(f"Training time: {(end_time - setup_end) / 60:.2f} minutes")

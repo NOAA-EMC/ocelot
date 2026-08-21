@@ -128,7 +128,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         step_info = self._get_latent_step_info(data)
         num_latent_steps = step_info["num_steps"]
         step_mapping = step_info["step_mapping"]
-        edge_mapping = self._map_step_edges(data, step_mapping)
+        edge_mapping = self.mesh.map_step_edges(data, step_mapping)
 
         log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         log.debug(f"[LATENT] Step mapping: {step_mapping}")
