@@ -1700,7 +1700,6 @@ def main():
     mesh_lats = mesh_lons = None
 
     if use_mesh_verification:
-        import numpy as np
         from FSOI.fsoi_gfs_loader import load_gfs_on_mesh
         from fsoi_utils import compute_forecast_error_on_mesh
 
@@ -1765,7 +1764,6 @@ def main():
             if use_mesh_verification:
                 from FSOI.fsoi_gfs_loader import load_gfs_on_mesh
                 from datetime import datetime, timezone
-                import numpy as np
 
                 # Parse valid time from curr_bin (end of current observation window)
                 curr_bin_name = _as_scalar_bin(curr_batch.bin_name)
