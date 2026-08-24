@@ -42,6 +42,13 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 
+VALID_MATCHED_COMPARISON_MODES = {
+    "conditional_endpoint_same_sample_same_J",
+    "conditional_endpoint_sample_mask_same_J",
+    "conditional_endpoint_full_mask_same_J",
+}
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_time(s: str) -> pd.Timestamp:
@@ -100,6 +107,30 @@ def _excluded_count(comp: pd.DataFrame) -> int:
     return 0
 
 
+def _comparison_mode_label(comp: pd.DataFrame) -> str:
+    if "comparison_mode" not in comp.columns or comp.empty:
+        return "matched endpoint"
+    modes = sorted(str(m) for m in comp["comparison_mode"].dropna().unique())
+    if len(modes) != 1:
+        return "mixed matched endpoints"
+    mode = modes[0]
+    labels = {
+        "conditional_endpoint_same_sample_same_J": "background replacement, same sampled rows",
+        "conditional_endpoint_sample_mask_same_J": "sample-mask denial, same sampled rows",
+        "conditional_endpoint_full_mask_same_J": "full-mask denial, all instrument rows",
+    }
+    return labels.get(mode, mode)
+
+
+def _fsoi_axis_label(comp: pd.DataFrame) -> str:
+    label = _comparison_mode_label(comp)
+    if label.startswith("full-mask"):
+        return "Conditional mask-denial impact (raw full-instrument)"
+    if label.startswith("sample-mask"):
+        return "Conditional mask-denial impact (raw sampled)"
+    return "Matched conditional FSOI (raw sampled impact)"
+
+
 def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     """Scatter plot of FSOI predicted impact vs OSE actual impact per pair.
 
@@ -151,10 +182,12 @@ def plot_ose_vs_fsoi_scatter(comp: pd.DataFrame, out_dir: Path) -> dict:
     ax.axvline(0, color="gray", lw=0.5)
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
-    ax.set_ylabel("Matched conditional FSOI (raw sampled impact)")
+    mode_label = _comparison_mode_label(valid)
+    ax.set_ylabel(_fsoi_axis_label(valid))
     ax.set_xlabel("OSE delta J actual  (J_control - J_denied; positive = detrimental)")
     ax.set_title(
         f"OSE vs FSOI comparison\n"
+        f"{mode_label}\n"
         f"r = {r:.3f}   slope = {slope:.3f}   sign_agree = {sign_agree:.0%}\n"
         f"n = {len(valid)} pairs; excluded near zero = {n_excluded}"
     )
@@ -339,9 +372,10 @@ def main() -> None:
         comp = pd.read_csv(comp_path)
         has_matched_ose = required_comparison_columns.issubset(comp.columns)
         if has_matched_ose:
-            has_matched_ose = comp["comparison_mode"].eq(
-                "conditional_endpoint_same_sample_same_J"
-            ).all()
+            has_matched_ose = (
+                comp["comparison_mode"].isin(VALID_MATCHED_COMPARISON_MODES).all()
+                and comp["comparison_mode"].nunique(dropna=True) == 1
+            )
         comparison_is_current = comp_path.stat().st_mtime >= ose_raw_path.stat().st_mtime
         if has_matched_ose and comparison_is_current:
             print(f"Loaded existing comparison: {len(comp)} rows")
@@ -380,13 +414,14 @@ def main() -> None:
         print(f"\nOSE validation summary:")
         print(summary.to_string(index=False))
         flag = summary["validation_flag"].iloc[0]
+        mode_label = _comparison_mode_label(comp)
         if flag == "PASS":
             print(
-                "\n[OSE] PASS - Matched ATMS FSOI shows directional and "
-                "magnitude agreement with the ATMS replacement experiment."
+                "\n[OSE] PASS - Matched conditional impact shows directional "
+                f"and magnitude agreement with the {mode_label} experiment."
             )
         else:
-            print("\n[OSE] WARN - Matched ATMS FSOI agreement is limited. "
+            print("\n[OSE] WARN - Matched conditional-impact agreement is limited. "
                   "Review scatter plot and closure ratios.")
 
     print(f"\nDone. Output: {out_dir}")

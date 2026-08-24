@@ -20,9 +20,12 @@
 # pass, and compares ea_denied vs ea_control.  fix commit 7f04963 ensures
 # replace_batch_inputs writes to the correct observation columns (not geo
 # encoding).  All pre-fix OSE results are invalid and have been deleted.
+# Set OSE_DENIAL_MODE=full_mask for whole-instrument input masking.
 #
 # Environment variables (override defaults):
 #   OSE_INSTRUMENTS     space-separated instrument names to deny (default: atms)
+#   OSE_DENIAL_MODE     background_replacement, sample_mask, or full_mask
+#                        (default: background_replacement)
 #   CHECKPOINT_PATH     path to .ckpt file
 #   FSOI_START_DATE     start date YYYY-MM-DD
 #   FSOI_END_DATE       end date YYYY-MM-DD
@@ -90,6 +93,7 @@ MESH_INSTRUMENT="${MESH_INSTRUMENT:-radiosonde}"
 MESH_PRESSURE_LEVEL_IDX="${MESH_PRESSURE_LEVEL_IDX:-4}"
 OSE_SAVE_SPATIAL_FIELDS="${OSE_SAVE_SPATIAL_FIELDS:-0}"
 OSE_SPATIAL_PAIR_INDICES="${OSE_SPATIAL_PAIR_INDICES:-0}"
+OSE_DENIAL_MODE="${OSE_DENIAL_MODE:-background_replacement}"
 
 # Parse denied instruments (default: atms)
 OSE_INSTRUMENTS="${OSE_INSTRUMENTS:-atms}"
@@ -124,6 +128,7 @@ echo "[CKPT]    $CKPT"
 echo "[CONFIG]  $CONFIG_FILE"
 echo "[DATES]   $START_DATE → $END_DATE"
 echo "[DENIED]  $OSE_INSTRUMENTS"
+echo "[MODE]    $OSE_DENIAL_MODE"
 echo "[VERIFY]  $FSOI_VERIFICATION_TARGET"
 if [ "$FSOI_VERIFICATION_TARGET" = "mesh" ]; then
     echo "[MESH]    instrument=$MESH_INSTRUMENT pressure_idx=$MESH_PRESSURE_LEVEL_IDX"
@@ -151,6 +156,7 @@ for inst in $OSE_INSTRUMENTS; do
 done
 
 EXTRA_ARGS="--verification_target $FSOI_VERIFICATION_TARGET"
+EXTRA_ARGS="$EXTRA_ARGS --ose_denial_mode $OSE_DENIAL_MODE"
 if [ "$FSOI_VERIFICATION_TARGET" = "mesh" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --gfs_root $GFS_ROOT"
     EXTRA_ARGS="$EXTRA_ARGS --mesh_instrument $MESH_INSTRUMENT"
@@ -193,4 +199,5 @@ echo "=================================================="
 echo "OSE run finished: $(date)"
 echo "Output: $OUTPUT_DIR"
 echo "Denied: $OSE_INSTRUMENTS"
+echo "Mode: $OSE_DENIAL_MODE"
 echo "=================================================="

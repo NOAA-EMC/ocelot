@@ -279,13 +279,17 @@ def _run_ose_check(
     spatial_output_dir: str = None,
     run_matched_repro_check: bool = False,
     matched_control_reproducibility_error: float = None,
+    ose_denial_mode: str = "background_replacement",
 ):
     """Compute OSE impact and append to results['ose_records'].""" 
     from fsoi_ose import (
         compute_matched_conditional_fsoi_for_pair as _matched_fsoi_pair,
         compute_ose_for_pair as _ose_pair,
     )
-    print(f"[OSE] Computing denial experiment for: {ose_instruments} (pair {pair_idx})")
+    print(
+        f"[OSE] Computing denial experiment for: {ose_instruments} "
+        f"(mode={ose_denial_mode}, pair {pair_idx})"
+    )
     try:
         if isinstance(gfs_reference, dict):
             gfs_tensor_for_ose = gfs_reference.get(mesh_instrument)
@@ -314,6 +318,7 @@ def _run_ose_check(
                 impact_factor=impact_factor,
                 run_control_repro_check=run_matched_repro_check,
                 control_reproducibility_error=matched_control_reproducibility_error,
+                denial_mode=ose_denial_mode,
             )
         else:
             rec = _ose_pair(
@@ -341,6 +346,7 @@ def _run_ose_check(
                 mesh_pressure_level_idx=mesh_pressure_level_idx,
                 init_time_unix=init_time_unix,
                 spatial_output_dir=spatial_output_dir,
+                denial_mode=ose_denial_mode,
             )
         if rec:
             results['ose_records'].append(rec)
@@ -380,6 +386,7 @@ def compute_fsoi_for_pair(
     ose_spatial_output_dir: str = None,
     ose_spatial_pair_indices: set = None,
     matched_control_reproducibility_error: float = None,
+    ose_denial_mode: str = "background_replacement",
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -1010,6 +1017,7 @@ def compute_fsoi_for_pair(
                     ),
                     run_matched_repro_check=(pair_idx == 0),
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
+                    ose_denial_mode=ose_denial_mode,
                 )
 
         else:
@@ -1234,6 +1242,7 @@ def compute_fsoi_for_pair(
                     ),
                     run_matched_repro_check=(pair_idx == 0),
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
+                    ose_denial_mode=ose_denial_mode,
                 )
 
         # Memory control: only store full tensors if enabled (non-stratified path)
@@ -1360,10 +1369,26 @@ def main():
         nargs="+",
         default=None,
         metavar="INST",
-        help="Run OSE cross-check by replacing xa[X] with xb[X] for these "
-             "instruments (e.g. --ose_instruments atms amsua). Also computes "
-             "matched conditional endpoint FSOI using the same sampled rows and "
-             "the same combined J. Results saved to evaluation/ose_results.csv.",
+        help="Run OSE cross-check by denying these instruments according to "
+             "--ose_denial_mode (e.g. --ose_instruments atms amsua). Also computes "
+             "conditional endpoint impact using the same combined J. "
+             "background_replacement and sample_mask use the matched sampled rows; "
+             "full_mask uses all current-batch rows for the denied instrument. "
+             "Results saved to evaluation/ose_results.csv.",
+    )
+    parser.add_argument(
+        "--ose_denial_mode",
+        type=str,
+        default="background_replacement",
+        choices=["background_replacement", "sample_mask", "full_mask"],
+        help=(
+            "How to construct the OSE denied endpoint. "
+            "background_replacement replaces denied xa values with xb on the "
+            "matched sampled rows. sample_mask masks the matched sampled rows "
+            "to the missing-observation sentinel. full_mask masks every current "
+            "batch row for the denied instrument and is closest to a whole-system "
+            "input denial."
+        ),
     )
     parser.add_argument(
         "--verification_target",
@@ -1738,6 +1763,7 @@ def main():
     if args.ose_instruments:
         ose_instruments = _expand_seviri_instrument_aliases(args.ose_instruments)
         print(f"[OSE] Observation-withholding experiment enabled for: {ose_instruments}")
+        print(f"[OSE] Denial mode: {args.ose_denial_mode}")
         print(
             "[OSE] Matched validation uses two gradient-enabled endpoint "
             "evaluations per pair."
@@ -1813,6 +1839,7 @@ def main():
                 ose_spatial_output_dir=ose_spatial_output_dir,
                 ose_spatial_pair_indices=ose_spatial_pair_indices,
                 matched_control_reproducibility_error=matched_control_reproducibility_error,
+                ose_denial_mode=args.ose_denial_mode,
             )
 
             all_results.append(result)

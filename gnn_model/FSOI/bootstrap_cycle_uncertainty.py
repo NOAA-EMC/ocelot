@@ -313,7 +313,7 @@ def _collapse_target_variable_rows(
     for col in df.columns:
         if col in key_cols or col in strat_cols:
             continue
-        if col in count_cols or df[col].dtype == object or df[col].dtype == bool:
+        if col in count_cols or not pd.api.types.is_numeric_dtype(df[col]) or pd.api.types.is_bool_dtype(df[col]):
             agg[col] = "first"
         else:
             agg[col] = "mean"
