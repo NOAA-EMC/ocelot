@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH --exclude=u22g09,u22g08,u22g10
-#SBATCH -A gpu-ai4wp
+#SBATCH -A gpu-emc-ai # gpu-ai4wp
 #SBATCH -p u1-h100
 #SBATCH -q gpu
 #SBATCH --gres=gpu:h100:1
@@ -8,7 +8,7 @@
 #SBATCH -J fsoi_ose
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=14:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=fsoi_ose_%j.out
 #SBATCH --error=fsoi_ose_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
