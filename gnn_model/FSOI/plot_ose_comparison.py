@@ -46,6 +46,9 @@ VALID_MATCHED_COMPARISON_MODES = {
     "conditional_endpoint_same_sample_same_J",
     "conditional_endpoint_sample_mask_same_J",
     "conditional_endpoint_full_mask_same_J",
+    "conditional_endpoint_channel_background_same_sample_same_J",
+    "conditional_endpoint_channel_sample_mask_same_J",
+    "conditional_endpoint_channel_full_mask_same_J",
 }
 
 
@@ -118,12 +121,21 @@ def _comparison_mode_label(comp: pd.DataFrame) -> str:
         "conditional_endpoint_same_sample_same_J": "background replacement, same sampled rows",
         "conditional_endpoint_sample_mask_same_J": "sample-mask denial, same sampled rows",
         "conditional_endpoint_full_mask_same_J": "full-mask denial, all instrument rows",
+        "conditional_endpoint_channel_background_same_sample_same_J": "channel background replacement, same sampled rows",
+        "conditional_endpoint_channel_sample_mask_same_J": "channel sample-mask denial, same sampled rows",
+        "conditional_endpoint_channel_full_mask_same_J": "channel full-mask denial, all instrument rows",
     }
     return labels.get(mode, mode)
 
 
 def _fsoi_axis_label(comp: pd.DataFrame) -> str:
     label = _comparison_mode_label(comp)
+    if label.startswith("channel full-mask"):
+        return "Conditional channel mask-denial impact (raw full-channel)"
+    if label.startswith("channel sample-mask"):
+        return "Conditional channel mask-denial impact (raw sampled)"
+    if label.startswith("channel background"):
+        return "Matched conditional channel FSOI (raw sampled impact)"
     if label.startswith("full-mask"):
         return "Conditional mask-denial impact (raw full-instrument)"
     if label.startswith("sample-mask"):

@@ -280,6 +280,7 @@ def _run_ose_check(
     run_matched_repro_check: bool = False,
     matched_control_reproducibility_error: float = None,
     ose_denial_mode: str = "background_replacement",
+    ose_channels: dict = None,
 ):
     """Compute OSE impact and append to results['ose_records'].""" 
     from fsoi_ose import (
@@ -319,6 +320,7 @@ def _run_ose_check(
                 run_control_repro_check=run_matched_repro_check,
                 control_reproducibility_error=matched_control_reproducibility_error,
                 denial_mode=ose_denial_mode,
+                denied_channels=ose_channels,
             )
         else:
             rec = _ose_pair(
@@ -347,6 +349,7 @@ def _run_ose_check(
                 init_time_unix=init_time_unix,
                 spatial_output_dir=spatial_output_dir,
                 denial_mode=ose_denial_mode,
+                denied_channels=ose_channels,
             )
         if rec:
             results['ose_records'].append(rec)
@@ -387,6 +390,7 @@ def compute_fsoi_for_pair(
     ose_spatial_pair_indices: set = None,
     matched_control_reproducibility_error: float = None,
     ose_denial_mode: str = "background_replacement",
+    ose_channels: dict = None,
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -1018,6 +1022,7 @@ def compute_fsoi_for_pair(
                     run_matched_repro_check=(pair_idx == 0),
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
                     ose_denial_mode=ose_denial_mode,
+                    ose_channels=ose_channels,
                 )
 
         else:
@@ -1243,6 +1248,7 @@ def compute_fsoi_for_pair(
                     run_matched_repro_check=(pair_idx == 0),
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
                     ose_denial_mode=ose_denial_mode,
+                    ose_channels=ose_channels,
                 )
 
         # Memory control: only store full tensors if enabled (non-stratified path)
@@ -1388,6 +1394,18 @@ def main():
             "to the missing-observation sentinel. full_mask masks every current "
             "batch row for the denied instrument and is closest to a whole-system "
             "input denial."
+        ),
+    )
+    parser.add_argument(
+        "--ose_channels",
+        nargs="*",
+        default=None,
+        metavar="INST:CHANNELS",
+        help=(
+            "Optional channel-level OSE selector. Examples: "
+            "--ose_channels ssmis:21,22 or --ose_channels ssmis:bt_ch_21. "
+            "Plain channel numbers are user-facing 1-based channel numbers; "
+            "use idx:<n> only for a zero-based column index."
         ),
     )
     parser.add_argument(
@@ -1760,14 +1778,35 @@ def main():
 
     # OSE instruments: expand seviri aliases and validate
     ose_instruments = None
+    ose_channels = None
     if args.ose_instruments:
         ose_instruments = _expand_seviri_instrument_aliases(args.ose_instruments)
         print(f"[OSE] Observation-withholding experiment enabled for: {ose_instruments}")
         print(f"[OSE] Denial mode: {args.ose_denial_mode}")
+        if args.ose_channels:
+            from fsoi_ose import parse_denied_channel_specs, format_denied_channel_specs
+
+            ose_channels = parse_denied_channel_specs(
+                args.ose_channels,
+                observation_config,
+                denied_instruments=ose_instruments,
+            )
+            unknown_channel_instruments = sorted(set(ose_channels) - set(ose_instruments))
+            if unknown_channel_instruments:
+                raise ValueError(
+                    "--ose_channels included instruments not listed in "
+                    f"--ose_instruments: {unknown_channel_instruments}"
+                )
+            print(
+                "[OSE] Channel intervention: "
+                f"{format_denied_channel_specs(ose_channels, observation_config)}"
+            )
         print(
             "[OSE] Matched validation uses two gradient-enabled endpoint "
             "evaluations per pair."
         )
+    elif args.ose_channels:
+        raise ValueError("--ose_channels requires --ose_instruments")
 
     # Main FSOI computation loop
     print("\n" + "=" * 80)
@@ -1840,6 +1879,7 @@ def main():
                 ose_spatial_pair_indices=ose_spatial_pair_indices,
                 matched_control_reproducibility_error=matched_control_reproducibility_error,
                 ose_denial_mode=args.ose_denial_mode,
+                ose_channels=ose_channels,
             )
 
             all_results.append(result)

@@ -26,6 +26,7 @@
 #   OSE_INSTRUMENTS     space-separated instrument names to deny (default: atms)
 #   OSE_DENIAL_MODE     background_replacement, sample_mask, or full_mask
 #                        (default: background_replacement)
+#   OSE_CHANNELS        optional channel selectors, e.g. "ssmis:21"
 #   CHECKPOINT_PATH     path to .ckpt file
 #   FSOI_START_DATE     start date YYYY-MM-DD
 #   FSOI_END_DATE       end date YYYY-MM-DD
@@ -94,6 +95,7 @@ MESH_PRESSURE_LEVEL_IDX="${MESH_PRESSURE_LEVEL_IDX:-4}"
 OSE_SAVE_SPATIAL_FIELDS="${OSE_SAVE_SPATIAL_FIELDS:-0}"
 OSE_SPATIAL_PAIR_INDICES="${OSE_SPATIAL_PAIR_INDICES:-0}"
 OSE_DENIAL_MODE="${OSE_DENIAL_MODE:-background_replacement}"
+OSE_CHANNELS="${OSE_CHANNELS:-}"
 
 # Parse denied instruments (default: atms)
 OSE_INSTRUMENTS="${OSE_INSTRUMENTS:-atms}"
@@ -112,7 +114,15 @@ DATE_TAG="${START_DATE//-/}_${END_DATE//-/}"
 
 # Build output dir name from denied instruments
 INST_TAG="${OSE_INSTRUMENTS// /_}"
-OUTPUT_DIR="${FSOI_OUTPUT_DIR:-FSOI/fsoi_outputs/ose_${INST_TAG}_${DATE_TAG}}"
+CHANNEL_TAG=""
+if [ -n "$OSE_CHANNELS" ]; then
+    CHANNEL_TAG="_ch_${OSE_CHANNELS}"
+    CHANNEL_TAG="${CHANNEL_TAG// /_}"
+    CHANNEL_TAG="${CHANNEL_TAG//:/_}"
+    CHANNEL_TAG="${CHANNEL_TAG//,/_}"
+    CHANNEL_TAG="${CHANNEL_TAG//=/}"
+fi
+OUTPUT_DIR="${FSOI_OUTPUT_DIR:-FSOI/fsoi_outputs/ose_${INST_TAG}${CHANNEL_TAG}_${DATE_TAG}}"
 
 # ── Validation ────────────────────────────────────────────────────────────────
 [ -f "$CKPT" ] || { echo "ERROR: checkpoint not found: $CKPT"; exit 1; }
@@ -129,6 +139,9 @@ echo "[CONFIG]  $CONFIG_FILE"
 echo "[DATES]   $START_DATE → $END_DATE"
 echo "[DENIED]  $OSE_INSTRUMENTS"
 echo "[MODE]    $OSE_DENIAL_MODE"
+if [ -n "$OSE_CHANNELS" ]; then
+    echo "[CHANNEL] $OSE_CHANNELS"
+fi
 echo "[VERIFY]  $FSOI_VERIFICATION_TARGET"
 if [ "$FSOI_VERIFICATION_TARGET" = "mesh" ]; then
     echo "[MESH]    instrument=$MESH_INSTRUMENT pressure_idx=$MESH_PRESSURE_LEVEL_IDX"
@@ -154,9 +167,18 @@ OSE_ARGS=""
 for inst in $OSE_INSTRUMENTS; do
     OSE_ARGS="$OSE_ARGS $inst"
 done
+OSE_CHANNEL_ARGS=""
+if [ -n "$OSE_CHANNELS" ]; then
+    for ch in $OSE_CHANNELS; do
+        OSE_CHANNEL_ARGS="$OSE_CHANNEL_ARGS $ch"
+    done
+fi
 
 EXTRA_ARGS="--verification_target $FSOI_VERIFICATION_TARGET"
 EXTRA_ARGS="$EXTRA_ARGS --ose_denial_mode $OSE_DENIAL_MODE"
+if [ -n "$OSE_CHANNEL_ARGS" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --ose_channels $OSE_CHANNEL_ARGS"
+fi
 if [ "$FSOI_VERIFICATION_TARGET" = "mesh" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --gfs_root $GFS_ROOT"
     EXTRA_ARGS="$EXTRA_ARGS --mesh_instrument $MESH_INSTRUMENT"
@@ -200,4 +222,7 @@ echo "OSE run finished: $(date)"
 echo "Output: $OUTPUT_DIR"
 echo "Denied: $OSE_INSTRUMENTS"
 echo "Mode: $OSE_DENIAL_MODE"
+if [ -n "$OSE_CHANNELS" ]; then
+    echo "Channels: $OSE_CHANNELS"
+fi
 echo "=================================================="

@@ -62,6 +62,7 @@ Can also be run stand-alone via compute_ose_for_pair() if xa/xb are available.
 
 from __future__ import annotations
 
+import re
 import torch
 import numpy as np
 import pandas as pd
@@ -195,6 +196,145 @@ def _input_channel_bounds(observation_config: dict, inst_name: str) -> Tuple[int
     raise KeyError(f"{inst_name} not found in observation_config")
 
 
+def _instrument_features(observation_config: dict, inst_name: str) -> List[str]:
+    """Return configured observation-channel feature names for one instrument."""
+    for instruments in observation_config.values():
+        if inst_name in instruments:
+            return list((instruments[inst_name] or {}).get("features", []))
+    raise KeyError(f"{inst_name} not found in observation_config")
+
+
+def _channel_number_from_name(name: str) -> Optional[int]:
+    """Extract a user-facing channel number from a feature name, if present."""
+    match = re.search(r"(\d+)$", str(name))
+    return int(match.group(1)) if match else None
+
+
+def _resolve_channel_index(
+    inst_name: str,
+    token: str,
+    observation_config: dict,
+) -> int:
+    """Resolve a channel token to a zero-based column index.
+
+    Plain integers are interpreted as user-facing channel numbers, so
+    ``21`` maps to ``bt_ch_21`` for SSMIS and therefore column index 20.
+    Use ``idx:20`` only when a zero-based column index is intended.
+    """
+    features = _instrument_features(observation_config, inst_name)
+    if not features:
+        raise ValueError(f"{inst_name}: no configured channels")
+
+    raw = str(token).strip()
+    if not raw:
+        raise ValueError(f"{inst_name}: empty OSE channel token")
+    lowered = raw.lower()
+    by_name = {str(name).lower(): i for i, name in enumerate(features)}
+    if lowered in by_name:
+        return by_name[lowered]
+
+    if lowered.startswith(("idx:", "index:")):
+        idx = int(lowered.split(":", 1)[1])
+        if 0 <= idx < len(features):
+            return idx
+        raise ValueError(
+            f"{inst_name}: zero-based channel index {idx} outside "
+            f"0..{len(features) - 1}"
+        )
+
+    match = re.search(r"(\d+)$", lowered)
+    if not match:
+        raise ValueError(
+            f"{inst_name}: cannot resolve OSE channel {token!r}; use a "
+            "configured feature name, a 1-based channel number, or idx:<zero-based-index>"
+        )
+    channel_number = int(match.group(1))
+    for i, feature in enumerate(features):
+        if _channel_number_from_name(feature) == channel_number:
+            return i
+
+    if 1 <= channel_number <= len(features):
+        return channel_number - 1
+    raise ValueError(
+        f"{inst_name}: channel number {channel_number} not found in configured "
+        f"features {features}"
+    )
+
+
+def parse_denied_channel_specs(
+    specs: Optional[List[str]],
+    observation_config: dict,
+    denied_instruments: Optional[List[str]] = None,
+) -> Dict[str, List[int]]:
+    """Parse OSE channel selectors into zero-based channel-index lists.
+
+    Accepted examples:
+      - ["ssmis:21"]
+      - ["ssmis:21,22"]
+      - ["ssmis:bt_ch_21"]
+      - ["21"] when exactly one denied instrument is supplied
+    """
+    if not specs:
+        return {}
+
+    denied = list(denied_instruments or [])
+    parsed: Dict[str, List[int]] = {}
+    for spec_group in specs:
+        for spec in str(spec_group).replace(";", " ").split():
+            if not spec.strip():
+                continue
+            if ":" in spec:
+                inst_name, channel_part = spec.split(":", 1)
+            elif "=" in spec:
+                inst_name, channel_part = spec.split("=", 1)
+            else:
+                if len(denied) != 1:
+                    raise ValueError(
+                        "OSE channel specs without an instrument prefix require "
+                        "exactly one --ose_instruments value"
+                    )
+                inst_name, channel_part = denied[0], spec
+
+            inst_name = inst_name.strip().lower()
+            channel_tokens = [tok.strip() for tok in channel_part.split(",") if tok.strip()]
+            if not channel_tokens:
+                raise ValueError(f"{inst_name}: empty OSE channel list in {spec!r}")
+
+            if len(channel_tokens) == 1 and channel_tokens[0].lower() in {"all", "*"}:
+                indices = list(range(len(_instrument_features(observation_config, inst_name))))
+            else:
+                indices = [
+                    _resolve_channel_index(inst_name, tok, observation_config)
+                    for tok in channel_tokens
+                ]
+            parsed.setdefault(inst_name, []).extend(indices)
+
+    return {
+        inst: sorted(set(indices))
+        for inst, indices in parsed.items()
+        if indices
+    }
+
+
+def format_denied_channel_specs(
+    denied_channels: Optional[Dict[str, List[int]]],
+    observation_config: dict,
+) -> str:
+    """Human-readable description of selected OSE channels."""
+    if not denied_channels:
+        return ""
+    parts = []
+    for inst in sorted(denied_channels):
+        features = _instrument_features(observation_config, inst)
+        labels = []
+        for idx in denied_channels[inst]:
+            if idx < 0 or idx >= len(features):
+                raise ValueError(f"{inst}: channel index {idx} outside configured features")
+            labels.append(f"{idx + 1}:{features[idx]}")
+        parts.append(f"{inst}[" + ",".join(labels) + "]")
+    return ";".join(parts)
+
+
 def _batch_input_channels(curr_batch, observation_config: dict, inst_name: str, device) -> torch.Tensor:
     """Extract full current input observation-channel tensor for one instrument."""
     node_type = f"{inst_name}_input"
@@ -216,19 +356,91 @@ def _make_denied_channels(
     control_tensor: torch.Tensor,
     background_tensor: Optional[torch.Tensor],
     denial_mode: str,
+    channel_indices: Optional[List[int]] = None,
 ) -> torch.Tensor:
     """Construct denied endpoint channels for one instrument."""
+    selected = torch.ones_like(control_tensor, dtype=torch.bool)
+    if channel_indices is not None:
+        if not channel_indices:
+            raise ValueError("channel_indices was provided but empty")
+        selected = torch.zeros_like(control_tensor, dtype=torch.bool)
+        idx = torch.as_tensor(channel_indices, device=control_tensor.device, dtype=torch.long)
+        if int(idx.min().item()) < 0 or int(idx.max().item()) >= control_tensor.shape[1]:
+            raise ValueError(
+                f"channel index outside tensor width {control_tensor.shape[1]}: "
+                f"{channel_indices}"
+            )
+        selected[:, idx] = True
+
+    from fsoi_utils import observation_valid_mask
+
+    valid_selected = observation_valid_mask(control_tensor) & selected
     if denial_mode == "background_replacement":
         if background_tensor is None:
             raise ValueError("background_replacement requires xb for the denied instrument")
-        from fsoi_utils import observation_valid_mask
-
-        valid_obs = observation_valid_mask(control_tensor)
-        return torch.where(valid_obs, background_tensor, control_tensor)
+        return torch.where(valid_selected, background_tensor, control_tensor)
 
     from fsoi_utils import SENTINEL_OBS
 
-    return torch.full_like(control_tensor, float(SENTINEL_OBS))
+    sentinel = torch.full_like(control_tensor, float(SENTINEL_OBS))
+    return torch.where(valid_selected, sentinel, control_tensor)
+
+
+def _selected_channel_scope(denied_channels: Optional[Dict[str, List[int]]]) -> bool:
+    return bool(denied_channels and any(v for v in denied_channels.values()))
+
+
+def _comparison_mode_for(denial_mode: str, channel_scope: bool) -> str:
+    if channel_scope:
+        return {
+            "background_replacement": "conditional_endpoint_channel_background_same_sample_same_J",
+            "sample_mask": "conditional_endpoint_channel_sample_mask_same_J",
+            "full_mask": "conditional_endpoint_channel_full_mask_same_J",
+        }[denial_mode]
+    return {
+        "background_replacement": "conditional_endpoint_same_sample_same_J",
+        "sample_mask": "conditional_endpoint_sample_mask_same_J",
+        "full_mask": "conditional_endpoint_full_mask_same_J",
+    }[denial_mode]
+
+
+def _denied_channel_columns(
+    denied_channels: Optional[Dict[str, List[int]]],
+    observation_config: dict,
+    present_denied: List[str],
+) -> Dict[str, str]:
+    """Serialize selected channel metadata for CSV records."""
+    if not _selected_channel_scope(denied_channels):
+        return {
+            "ose_intervention_scope": "instrument",
+            "denied_channel_indices": "",
+            "denied_channel_numbers": "",
+            "denied_channel_names": "",
+        }
+
+    idx_parts = []
+    num_parts = []
+    name_parts = []
+    for inst in sorted(present_denied):
+        indices = (denied_channels or {}).get(inst)
+        if not indices:
+            continue
+        features = _instrument_features(observation_config, inst)
+        names = [features[i] for i in indices]
+        numbers = [
+            str(_channel_number_from_name(name) or (idx + 1))
+            for idx, name in zip(indices, names)
+        ]
+        idx_parts.append(f"{inst}:" + ",".join(str(i) for i in indices))
+        num_parts.append(f"{inst}:" + ",".join(numbers))
+        name_parts.append(f"{inst}:" + ",".join(names))
+
+    return {
+        "ose_intervention_scope": "channel",
+        "denied_channel_indices": ";".join(idx_parts),
+        "denied_channel_numbers": ";".join(num_parts),
+        "denied_channel_names": ";".join(name_parts),
+    }
 
 
 def _finite_signal(a: float, b: float, signal_threshold: float) -> bool:
@@ -368,6 +580,7 @@ def compute_ose_for_pair(
     init_time_unix: Optional[int] = None,
     spatial_output_dir: Optional[str] = None,
     denial_mode: str = "background_replacement",
+    denied_channels: Optional[Dict[str, List[int]]] = None,
 ) -> dict:
     """Compute single-cycle OSE impact for one time pair.
 
@@ -382,6 +595,8 @@ def compute_ose_for_pair(
     denied_instruments : list of instrument names to withhold.
     denial_mode : how to construct the denied endpoint:
         background_replacement, sample_mask, or full_mask.
+    denied_channels : optional per-instrument zero-based channel indices. When
+        supplied, only those channels are denied.
 
     Returns
     -------
@@ -400,6 +615,7 @@ def compute_ose_for_pair(
 
     device = next(model.parameters()).device
     denial_mode = _normalize_denial_mode(denial_mode)
+    denied_channels = denied_channels or {}
 
     # Check which denied instruments are available for the requested endpoint.
     present_denied = []
@@ -478,7 +694,12 @@ def compute_ose_for_pair(
 
             if denied and inst in present_denied:
                 background_tensor = xb[inst].detach().clone().to(device) if inst in xb else None
-                inputs[inst] = _make_denied_channels(control_tensor, background_tensor, denial_mode)
+                inputs[inst] = _make_denied_channels(
+                    control_tensor,
+                    background_tensor,
+                    denial_mode,
+                    denied_channels.get(inst),
+                )
             else:
                 inputs[inst] = control_tensor
 
@@ -488,7 +709,12 @@ def compute_ose_for_pair(
             control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
             replace_idx[inst] = None
             inputs[inst] = (
-                _make_denied_channels(control_tensor, None, denial_mode)
+                _make_denied_channels(
+                    control_tensor,
+                    None,
+                    denial_mode,
+                    denied_channels.get(inst),
+                )
                 if denied else control_tensor
             )
 
@@ -561,6 +787,7 @@ def compute_ose_for_pair(
         'curr_bin': curr_bin,
         'lead_step': forecast_lead_step,
         'denied_instruments': ','.join(sorted(present_denied)),
+        **_denied_channel_columns(denied_channels, observation_config, present_denied),
         'ose_denial_mode': denial_mode,
         'ose_denial_description': DENIAL_MODE_DESCRIPTIONS[denial_mode],
         'ea_control': ea_control_fresh,
@@ -603,6 +830,7 @@ def compute_matched_conditional_fsoi_for_pair(
     run_control_repro_check: bool = False,
     control_reproducibility_error: Optional[float] = None,
     denial_mode: str = "background_replacement",
+    denied_channels: Optional[Dict[str, List[int]]] = None,
 ) -> dict:
     """Compute apples-to-apples conditional FSOI for an OSE denial.
 
@@ -641,6 +869,7 @@ def compute_matched_conditional_fsoi_for_pair(
 
     device = next(model.parameters()).device
     denial_mode = _normalize_denial_mode(denial_mode)
+    denied_channels = denied_channels or {}
     present_denied = []
     missing_denied = []
     for inst in denied_instruments:
@@ -695,7 +924,12 @@ def compute_matched_conditional_fsoi_for_pair(
                     control_tensor = tensor.detach().clone().to(device)
                 if denied:
                     background_tensor = xb[inst].detach().clone().to(device) if inst in xb else None
-                    src = _make_denied_channels(control_tensor, background_tensor, denial_mode)
+                    src = _make_denied_channels(
+                        control_tensor,
+                        background_tensor,
+                        denial_mode,
+                        denied_channels.get(inst),
+                    )
                 else:
                     src = control_tensor
                 inputs[inst] = src.requires_grad_(True)
@@ -707,7 +941,12 @@ def compute_matched_conditional_fsoi_for_pair(
             control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
             replace_idx[inst] = None
             src = (
-                _make_denied_channels(control_tensor, None, denial_mode)
+                _make_denied_channels(
+                    control_tensor,
+                    None,
+                    denial_mode,
+                    denied_channels.get(inst),
+                )
                 if denied else control_tensor
             )
             inputs[inst] = src.requires_grad_(True)
@@ -823,6 +1062,7 @@ def compute_matched_conditional_fsoi_for_pair(
         'curr_bin': curr_bin,
         'lead_step': forecast_lead_step,
         'denied_instruments': ','.join(sorted(present_denied)),
+        **_denied_channel_columns(denied_channels, observation_config, present_denied),
         'ose_denial_mode': denial_mode,
         'ose_denial_description': DENIAL_MODE_DESCRIPTIONS[denial_mode],
         'ea_control': j_control_value,
@@ -839,11 +1079,10 @@ def compute_matched_conditional_fsoi_for_pair(
         'target_variables': _serialize_provenance_value(target_variables),
         'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
         'use_area_weights': bool(use_area_weights),
-        'matched_comparison_mode': {
-            'background_replacement': 'conditional_endpoint_same_sample_same_J',
-            'sample_mask': 'conditional_endpoint_sample_mask_same_J',
-            'full_mask': 'conditional_endpoint_full_mask_same_J',
-        }[denial_mode],
+        'matched_comparison_mode': _comparison_mode_for(
+            denial_mode,
+            _selected_channel_scope(denied_channels),
+        ),
         'matched_sign_convention': 'positive=detrimental; delta_j_actual=J_control-J_denied',
         'matched_fsoi': matched_fsoi,
         'matched_fsoi_by_instrument': ';'.join(
