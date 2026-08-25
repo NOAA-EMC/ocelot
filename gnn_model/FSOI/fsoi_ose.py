@@ -461,6 +461,50 @@ def _finite_sign_agree(
     return np.sign(a) == np.sign(b)
 
 
+def _format_float_series(values) -> str:
+    """CSV-friendly full-precision float series."""
+    return ",".join(f"{float(v):.17g}" for v in values)
+
+
+def _normalize_path_t_values(t_values: Optional[List[float]]) -> Optional[List[float]]:
+    """Validate interpolation points for path-integrated FSOI diagnostics."""
+    if not t_values:
+        return None
+    values = [float(v) for v in t_values]
+    if len(values) < 2:
+        raise ValueError("Path integration requires at least two t values")
+    if not np.isclose(values[0], 0.0) or not np.isclose(values[-1], 1.0):
+        raise ValueError("Path integration t values must start at 0 and end at 1")
+    diffs = np.diff(values)
+    if not np.all(diffs > 0):
+        raise ValueError("Path integration t values must be strictly increasing")
+    if np.any(np.asarray(values) < -1e-12) or np.any(np.asarray(values) > 1.0 + 1e-12):
+        raise ValueError("Path integration t values must lie within [0, 1]")
+    return values
+
+
+def _integrate_directional_path(
+    t_values: List[float],
+    directional_derivatives: List[float],
+) -> Tuple[float, str]:
+    """Integrate grad J(x(t))^T dx over t."""
+    t = np.asarray(t_values, dtype=float)
+    s = np.asarray(directional_derivatives, dtype=float)
+    if t.shape != s.shape or t.size < 2:
+        raise ValueError("Path t values and derivatives must have the same length >= 2")
+
+    diffs = np.diff(t)
+    equal_spacing = bool(np.allclose(diffs, diffs[0], rtol=1e-8, atol=1e-12))
+    if equal_spacing and (len(t) % 2 == 1):
+        weights = np.ones(len(t), dtype=float)
+        weights[1:-1:2] = 4.0
+        weights[2:-1:2] = 2.0
+        return float((diffs[0] / 3.0) * np.sum(weights * s)), "composite_simpson"
+
+    # General fallback for nonuniform or even-count diagnostics.
+    return float(np.sum(0.5 * (s[:-1] + s[1:]) * diffs)), "trapezoid"
+
+
 def _mesh_channel_names(mesh_instrument: str, n_channels: int) -> np.ndarray:
     """Human-readable channel labels for saved mesh OSE fields."""
     try:
@@ -831,6 +875,7 @@ def compute_matched_conditional_fsoi_for_pair(
     control_reproducibility_error: Optional[float] = None,
     denial_mode: str = "background_replacement",
     denied_channels: Optional[Dict[str, List[int]]] = None,
+    path_integration_t_values: Optional[List[float]] = None,
 ) -> dict:
     """Compute apples-to-apples conditional FSOI for an OSE denial.
 
@@ -856,6 +901,12 @@ def compute_matched_conditional_fsoi_for_pair(
     Positive values mean the denied instrument was detrimental, because the
     control error is larger than the denied error. No population scaling is
     applied to either side.
+
+    Optional path integration evaluates grad J(x(t))^T dx at user-selected
+    interpolation points along x(t) = x_denied + t * (x_control - x_denied).
+    With the default five equally spaced points, the path integral uses
+    composite Simpson quadrature. This diagnostic tests whether two-endpoint
+    closure error is caused by curvature/nonlinearity along the endpoint path.
     """
     from fsoi_utils import (
         replace_batch_inputs,
@@ -999,6 +1050,7 @@ def compute_matched_conditional_fsoi_for_pair(
     torch.cuda.empty_cache()
 
     matched_by_instrument = {}
+    dx_by_instrument = {}
     sampled_rows = {}
     raw_rows = {}
     sample_scales = {}
@@ -1018,6 +1070,7 @@ def compute_matched_conditional_fsoi_for_pair(
             )
 
         matched_by_instrument[inst] = float((0.5 * dx * (g_c + g_d)).sum().item())
+        dx_by_instrument[inst] = dx
         sampled_rows[inst] = int(dx.shape[0])
 
         node_type = f"{inst}_input"
@@ -1055,6 +1108,103 @@ def compute_matched_conditional_fsoi_for_pair(
         matched_fsoi / delta_j_actual
         if signal_valid else float("nan")
     )
+
+    path_cols = {}
+    path_t_values = _normalize_path_t_values(path_integration_t_values)
+    if path_t_values is not None:
+        path_losses = []
+        path_directional = []
+        path_directional_by_inst = {inst: [] for inst in present_denied}
+
+        def _make_path_inputs(t_value: float) -> Dict[str, torch.Tensor]:
+            inputs_t = {}
+            for inst, tensor in control_inputs.items():
+                if inst in present_denied:
+                    src = denied_inputs[inst].detach() + float(t_value) * dx_by_instrument[inst]
+                    inputs_t[inst] = src.detach().clone().requires_grad_(True)
+                else:
+                    inputs_t[inst] = tensor.detach().clone().to(device)
+            return inputs_t
+
+        for t_value in path_t_values:
+            if np.isclose(t_value, 0.0):
+                loss_value = j_denied_value
+                grad_map = grad_denied
+            elif np.isclose(t_value, 1.0):
+                loss_value = j_control_value
+                grad_map = grad_control
+            else:
+                inputs_t = _make_path_inputs(t_value)
+                loss_t, grad_map = _loss_and_grads(inputs_t, control_replace_idx)
+                loss_value = float(loss_t.detach().item())
+                torch.cuda.empty_cache()
+
+            directional_total = 0.0
+            for inst in present_denied:
+                term = float((grad_map[inst] * dx_by_instrument[inst]).sum().item())
+                path_directional_by_inst[inst].append(term)
+                directional_total += term
+            path_losses.append(loss_value)
+            path_directional.append(directional_total)
+
+        path_integrated_fsoi, path_rule = _integrate_directional_path(
+            path_t_values,
+            path_directional,
+        )
+        path_signal_valid = _finite_signal(
+            path_integrated_fsoi,
+            delta_j_actual,
+            signal_threshold,
+        )
+        path_closure_ratio = (
+            path_integrated_fsoi / delta_j_actual
+            if path_signal_valid else float("nan")
+        )
+        matched_abs_error = (
+            abs(matched_fsoi - delta_j_actual)
+            if np.isfinite(matched_fsoi) and np.isfinite(delta_j_actual)
+            else float("nan")
+        )
+        path_abs_error = (
+            abs(path_integrated_fsoi - delta_j_actual)
+            if np.isfinite(path_integrated_fsoi) and np.isfinite(delta_j_actual)
+            else float("nan")
+        )
+        path_abs_error_improvement = (
+            matched_abs_error - path_abs_error
+            if np.isfinite(matched_abs_error) and np.isfinite(path_abs_error)
+            else float("nan")
+        )
+        path_relative_error_reduction = (
+            path_abs_error_improvement / matched_abs_error
+            if np.isfinite(path_abs_error_improvement) and matched_abs_error > signal_threshold
+            else float("nan")
+        )
+        path_cols = {
+            'path_integration_enabled': True,
+            'path_integration_t_values': _format_float_series(path_t_values),
+            'path_integration_rule': path_rule,
+            'path_j_values': _format_float_series(path_losses),
+            'path_directional_derivatives': _format_float_series(path_directional),
+            'path_directional_derivatives_by_instrument': ';'.join(
+                f"{inst}:{_format_float_series(path_directional_by_inst[inst])}"
+                for inst in sorted(path_directional_by_inst)
+            ),
+            'path_integrated_fsoi': path_integrated_fsoi,
+            'path_closure_ratio': path_closure_ratio,
+            'path_signal_valid': path_signal_valid,
+            'path_sign_agree': _finite_sign_agree(
+                path_integrated_fsoi,
+                delta_j_actual,
+                signal_threshold,
+            ),
+            'path_abs_error': path_abs_error,
+            'matched_abs_error': matched_abs_error,
+            'path_abs_error_improvement': path_abs_error_improvement,
+            'path_relative_error_reduction': path_relative_error_reduction,
+            'path_minus_matched_fsoi': path_integrated_fsoi - matched_fsoi,
+            'path_minus_delta_j_actual': path_integrated_fsoi - delta_j_actual,
+        }
 
     return {
         'pair_idx': pair_idx,
@@ -1116,6 +1266,7 @@ def compute_matched_conditional_fsoi_for_pair(
         'matched_sample_scale': ';'.join(
             f"{inst}:{sample_scales[inst]:.8g}" for inst in sorted(sample_scales)
         ),
+        **path_cols,
     }
 
 

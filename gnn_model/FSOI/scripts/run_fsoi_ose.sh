@@ -39,6 +39,9 @@
 #   MESH_PRESSURE_LEVEL_IDX pressure index for mesh radiosonde verification (default: 4 = 500 hPa)
 #   OSE_SAVE_SPATIAL_FIELDS 1 to save per-node full-minus-denied OSE fields
 #   OSE_SPATIAL_PAIR_INDICES space-separated pair indices to save (default: 0)
+#   OSE_PATH_INTEGRATION_PAIR_INDICES optional space-separated pair indices for
+#                        multi-point matched path-integration diagnostics
+#   OSE_PATH_INTEGRATION_T_VALUES optional t values (default: "0 0.25 0.5 0.75 1")
 #
 # Usage:
 #   sbatch FSOI/scripts/run_fsoi_ose.sh
@@ -96,6 +99,10 @@ OSE_SAVE_SPATIAL_FIELDS="${OSE_SAVE_SPATIAL_FIELDS:-0}"
 OSE_SPATIAL_PAIR_INDICES="${OSE_SPATIAL_PAIR_INDICES:-0}"
 OSE_DENIAL_MODE="${OSE_DENIAL_MODE:-background_replacement}"
 OSE_CHANNELS="${OSE_CHANNELS:-}"
+OSE_PATH_INTEGRATION_PAIR_INDICES="${OSE_PATH_INTEGRATION_PAIR_INDICES:-}"
+OSE_PATH_INTEGRATION_T_VALUES="${OSE_PATH_INTEGRATION_T_VALUES:-0 0.25 0.5 0.75 1}"
+OSE_PATH_INTEGRATION_PAIR_INDICES="${OSE_PATH_INTEGRATION_PAIR_INDICES//,/ }"
+OSE_PATH_INTEGRATION_T_VALUES="${OSE_PATH_INTEGRATION_T_VALUES//,/ }"
 
 # Parse denied instruments (default: atms)
 OSE_INSTRUMENTS="${OSE_INSTRUMENTS:-atms}"
@@ -150,6 +157,10 @@ fi
 if [ "$OSE_SAVE_SPATIAL_FIELDS" = "1" ]; then
     echo "[SPATIAL] save pairs: $OSE_SPATIAL_PAIR_INDICES"
 fi
+if [ -n "$OSE_PATH_INTEGRATION_PAIR_INDICES" ]; then
+    echo "[PATH]    path-integration pairs: $OSE_PATH_INTEGRATION_PAIR_INDICES"
+    echo "[PATH]    t values: $OSE_PATH_INTEGRATION_T_VALUES"
+fi
 echo "[OUTPUT]  $OUTPUT_DIR"
 echo ""
 
@@ -187,6 +198,10 @@ fi
 if [ "$OSE_SAVE_SPATIAL_FIELDS" = "1" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --ose_save_spatial_fields"
     EXTRA_ARGS="$EXTRA_ARGS --ose_spatial_pair_indices $OSE_SPATIAL_PAIR_INDICES"
+fi
+if [ -n "$OSE_PATH_INTEGRATION_PAIR_INDICES" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --ose_path_integration_pair_indices $OSE_PATH_INTEGRATION_PAIR_INDICES"
+    EXTRA_ARGS="$EXTRA_ARGS --ose_path_integration_t_values $OSE_PATH_INTEGRATION_T_VALUES"
 fi
 
 python FSOI/fsoi_inference.py \

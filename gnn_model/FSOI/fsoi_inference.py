@@ -281,6 +281,7 @@ def _run_ose_check(
     matched_control_reproducibility_error: float = None,
     ose_denial_mode: str = "background_replacement",
     ose_channels: dict = None,
+    ose_path_integration_t_values: list = None,
 ):
     """Compute OSE impact and append to results['ose_records'].""" 
     from fsoi_ose import (
@@ -321,6 +322,7 @@ def _run_ose_check(
                 control_reproducibility_error=matched_control_reproducibility_error,
                 denial_mode=ose_denial_mode,
                 denied_channels=ose_channels,
+                path_integration_t_values=ose_path_integration_t_values,
             )
         else:
             rec = _ose_pair(
@@ -362,6 +364,11 @@ def _run_ose_check(
                       f"matched_fsoi={rec['matched_fsoi']:+.4e}  "
                       f"closure={rec['matched_closure_ratio']:.3f}  "
                       f"sign_agree={rec['matched_sign_agree']}")
+            if rec.get('path_integration_enabled'):
+                print(f"[OSE Path]      path_fsoi={rec['path_integrated_fsoi']:+.4e}  "
+                      f"path_closure={rec['path_closure_ratio']:.3f}  "
+                      f"rule={rec['path_integration_rule']}  "
+                      f"error_reduction={rec['path_relative_error_reduction']:.3f}")
     except Exception as ose_err:
         print(f"[OSE] ERROR on pair {pair_idx}: {ose_err}")
         raise
@@ -391,6 +398,7 @@ def compute_fsoi_for_pair(
     matched_control_reproducibility_error: float = None,
     ose_denial_mode: str = "background_replacement",
     ose_channels: dict = None,
+    ose_path_integration_t_values: list = None,
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -1023,6 +1031,7 @@ def compute_fsoi_for_pair(
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
                     ose_denial_mode=ose_denial_mode,
                     ose_channels=ose_channels,
+                    ose_path_integration_t_values=ose_path_integration_t_values,
                 )
 
         else:
@@ -1249,6 +1258,7 @@ def compute_fsoi_for_pair(
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
                     ose_denial_mode=ose_denial_mode,
                     ose_channels=ose_channels,
+                    ose_path_integration_t_values=ose_path_integration_t_values,
                 )
 
         # Memory control: only store full tensors if enabled (non-stratified path)
@@ -1409,6 +1419,28 @@ def main():
         ),
     )
     parser.add_argument(
+        "--ose_path_integration_pair_indices",
+        nargs="*",
+        type=int,
+        default=None,
+        help=(
+            "Optional matched-OSE diagnostic: compute multi-point path-integrated "
+            "FSOI only for these pair indices. If the flag is provided without "
+            "indices, pair 0 is used. Observation-space OSE only."
+        ),
+    )
+    parser.add_argument(
+        "--ose_path_integration_t_values",
+        nargs="+",
+        type=float,
+        default=[0.0, 0.25, 0.5, 0.75, 1.0],
+        help=(
+            "Interpolation points for --ose_path_integration_pair_indices. "
+            "Must start at 0 and end at 1. The default 0 0.25 0.5 0.75 1 "
+            "uses composite Simpson quadrature."
+        ),
+    )
+    parser.add_argument(
         "--verification_target",
         choices=["obs", "mesh"],
         default="obs",
@@ -1525,6 +1557,24 @@ def main():
         print(f"[OSE] Spatial field saving enabled for pairs: "
               f"{sorted(ose_spatial_pair_indices)}")
         print(f"[OSE] Spatial field output: {ose_spatial_output_dir}")
+
+    ose_path_integration_pair_indices = None
+    if args.ose_path_integration_pair_indices is not None:
+        if args.verification_target != "obs":
+            raise ValueError("OSE path integration is currently supported only for obs-space OSE")
+        ose_path_integration_pair_indices = (
+            set(args.ose_path_integration_pair_indices)
+            if args.ose_path_integration_pair_indices
+            else {0}
+        )
+        print(
+            "[OSE Path] Multi-point path integration enabled for pairs: "
+            f"{sorted(ose_path_integration_pair_indices)}"
+        )
+        print(
+            "[OSE Path] t values: "
+            + ",".join(f"{float(v):.6g}" for v in args.ose_path_integration_t_values)
+        )
 
     # Save configuration
     config_save_path = output_path / "logs" / "fsoi_config_used.yaml"
@@ -1880,6 +1930,12 @@ def main():
                 matched_control_reproducibility_error=matched_control_reproducibility_error,
                 ose_denial_mode=args.ose_denial_mode,
                 ose_channels=ose_channels,
+                ose_path_integration_t_values=(
+                    args.ose_path_integration_t_values
+                    if ose_path_integration_pair_indices is not None
+                    and pair_idx in ose_path_integration_pair_indices
+                    else None
+                ),
             )
 
             all_results.append(result)
