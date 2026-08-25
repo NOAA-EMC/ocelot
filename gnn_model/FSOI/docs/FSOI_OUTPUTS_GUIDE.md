@@ -211,8 +211,11 @@ These plots check whether the background (previous forecast) is behaving sensibl
 | `innovation_mean` | Average difference between obs and background (should be near 0 — no systematic bias) |
 | `innovation_std` | Spread of innovations |
 | `innovation_rmse` | Root-mean-square innovation |
-| `normalized_rmse` | RMSE divided by obs value range (0–1 scale; < 50% is healthy) |
-| `innovation_skewness` | Are innovations symmetric? Near 0 = symmetric distribution |
+| `normalized_rmse` | RMSE divided by obs value range; <5% is good, >20% flags a poor background |
+| `innovation_skewness` | Classical third-moment skewness; useful as an outlier/tail warning |
+| `innovation_median` | Robust signed median bias of `xa - xb` |
+| `innovation_iqr_scaled` | Robust spread, computed as IQR / 1.349 |
+| `innovation_bowley_skewness` | Robust quartile skewness; near 0 = symmetric, larger absolute values = asymmetric IQR |
 
 ### What the plots show
 
@@ -230,7 +233,10 @@ These plots check whether the background (previous forecast) is behaving sensibl
 
 ### `csv/fsoi_by_instrument.csv`
 
-One row per (instrument, pair). Aggregates all channels and observations for that instrument into a single impact number per time pair.
+Usually one row per (instrument, pair). Stratified runs can write one row per
+(instrument, pair, target variable, pressure/level). Sum rows when checking full
+closure against the scored metric; collapse/average target-variable rows only
+when you intentionally want comparable instrument ranking scales.
 
 | Column | Simple explanation |
 |---|---|

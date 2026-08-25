@@ -43,42 +43,50 @@ from plot_instrument_channel_heatmaps import (
 
 # ── Data source configuration ─────────────────────────────────────────────────
 
-def _radiosonde_csv_dir(season: str) -> Path:
-    """Resolve a radiosonde season csv dir, preferring the canonical
-    ``fsoi_outputs/seasonal_fixed`` location but falling back to the legacy
-    repo-root ``seasonal_fixed`` layout when that is where the data lives."""
-    primary = _GNN_MODEL / "FSOI" / "fsoi_outputs" / "seasonal_fixed" / f"radiosonde_{season}" / "csv"
-    legacy = _OCELOT / "seasonal_fixed" / f"radiosonde_{season}" / "csv"
-    return legacy if (legacy.is_dir() and not primary.is_dir()) else primary
+def _seasonal_csv_dir(target: str, season: str) -> Path:
+    """Resolve current corrected seasonal result CSV directories.
+
+    The default points to the sentinel-masked seasonal reruns used in the
+    manuscript. Override with FSOI_SEASONAL_ROOT when testing another output
+    tree on HPC.
+    """
+    import os
+
+    root = Path(os.environ.get(
+        "FSOI_SEASONAL_ROOT",
+        _GNN_MODEL / "FSOI" / "fsoi_outputs" / "seasonal_sentinel_fixed",
+    ))
+    return root / f"{target}_{season}" / "csv"
 
 
 TARGETS = {
     "radiosonde": {
         "label": "Radiosonde verification (T, T_d, u, v)",
         "csv_dirs": [
-            _radiosonde_csv_dir("jan2025"),
-            _radiosonde_csv_dir("apr2025"),
-            _radiosonde_csv_dir("oct2025"),
+            _seasonal_csv_dir("radiosonde", "jan2025"),
+            _seasonal_csv_dir("radiosonde", "apr2025"),
+            _seasonal_csv_dir("radiosonde", "jul2025"),
+            _seasonal_csv_dir("radiosonde", "oct2025"),
         ],
-        "seasons": ["Jan 2025", "Apr 2025", "Oct 2025"],
+        "seasons": ["Jan 2025", "Apr 2025", "Jul 2025", "Oct 2025"],
     },
     "aircraft": {
         "label": "Aircraft verification (T, q, u, v at flight levels)",
         "csv_dirs": [
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "aircraft_seasonal" / "aircraft_jan2025" / "csv",
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "aircraft_seasonal" / "aircraft_apr2025" / "csv",
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "aircraft_seasonal" / "aircraft_jul2025" / "csv",
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "aircraft_seasonal" / "aircraft_oct2025" / "csv",
+            _seasonal_csv_dir("aircraft", "jan2025"),
+            _seasonal_csv_dir("aircraft", "apr2025"),
+            _seasonal_csv_dir("aircraft", "jul2025"),
+            _seasonal_csv_dir("aircraft", "oct2025"),
         ],
         "seasons": ["Jan 2025", "Apr 2025", "Jul 2025", "Oct 2025"],
     },
     "surface_obs": {
         "label": "Surface obs verification (T, T_d, u, v, p_s)",
         "csv_dirs": [
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "surface_obs_seasonal" / "surface_obs_jan2025" / "csv",
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "surface_obs_seasonal" / "surface_obs_apr2025" / "csv",
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "surface_obs_seasonal" / "surface_obs_jul2025" / "csv",
-            _GNN_MODEL / "FSOI" / "fsoi_outputs" / "surface_obs_seasonal" / "surface_obs_oct2025" / "csv",
+            _seasonal_csv_dir("surface_obs", "jan2025"),
+            _seasonal_csv_dir("surface_obs", "apr2025"),
+            _seasonal_csv_dir("surface_obs", "jul2025"),
+            _seasonal_csv_dir("surface_obs", "oct2025"),
         ],
         "seasons": ["Jan 2025", "Apr 2025", "Jul 2025", "Oct 2025"],
     },
