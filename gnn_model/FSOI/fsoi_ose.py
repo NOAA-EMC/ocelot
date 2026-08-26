@@ -386,6 +386,47 @@ def _make_denied_channels(
     return torch.where(valid_selected, sentinel, control_tensor)
 
 
+def _sync_input_channel_mask_from_values(
+    batch,
+    observation_config: dict,
+    denied_instruments: List[str],
+    denied_channels: Optional[Dict[str, List[int]]],
+    denial_mode: str,
+) -> Tuple[bool, str]:
+    """Make input_channel_mask consistent with sentinel-masked OSE values."""
+    if denial_mode not in {"sample_mask", "full_mask"}:
+        return False, ""
+
+    from fsoi_utils import observation_valid_mask
+
+    parts = []
+    denied_channels = denied_channels or {}
+    for inst in sorted(denied_instruments):
+        node_type = f"{inst}_input"
+        if node_type not in batch.node_types:
+            continue
+        x = getattr(batch[node_type], "x", None)
+        if x is None or x.numel() == 0:
+            continue
+
+        start, end = _input_channel_bounds(observation_config, inst)
+        channel_values = x[:, start:end]
+        mask = observation_valid_mask(channel_values).detach().to(torch.bool)
+        batch[node_type].input_channel_mask = mask
+
+        selected = torch.ones_like(mask, dtype=torch.bool)
+        indices = denied_channels.get(inst)
+        if indices:
+            selected = torch.zeros_like(mask, dtype=torch.bool)
+            idx = torch.as_tensor(indices, device=mask.device, dtype=torch.long)
+            selected[:, idx] = True
+        n_selected_false = int((~mask & selected).sum().item())
+        n_total_false = int((~mask).sum().item())
+        parts.append(f"{inst}:selected_false={n_selected_false},total_false={n_total_false}")
+
+    return bool(parts), ";".join(parts)
+
+
 def _selected_channel_scope(denied_channels: Optional[Dict[str, List[int]]]) -> bool:
     return bool(denied_channels and any(v for v in denied_channels.values()))
 
@@ -791,6 +832,13 @@ def compute_ose_for_pair(
         prune_batch_targets_inplace(curr_batch_ose, target_instruments, forecast_lead_step)
     replace_batch_inputs(curr_batch_ose, denied_inputs, observation_config,
                          replace_indices=denied_replace_idx)
+    input_mask_synced, input_mask_counts = _sync_input_channel_mask_from_values(
+        curr_batch_ose,
+        observation_config,
+        present_denied,
+        denied_channels,
+        denial_mode,
+    )
     with torch.no_grad():
         ea_denied, denied_diag = _compute_error(
             curr_batch_ose,
@@ -848,6 +896,8 @@ def compute_ose_for_pair(
         'target_variables': _serialize_provenance_value(target_variables),
         'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
         'use_area_weights': bool(use_area_weights),
+        'ose_input_channel_mask_synced': input_mask_synced,
+        'ose_input_channel_mask_false_counts': input_mask_counts,
     }
 
 
@@ -1006,11 +1056,22 @@ def compute_matched_conditional_fsoi_for_pair(
     def _loss_and_grads(
         inputs: Dict[str, torch.Tensor],
         replace_idx: Dict[str, Optional[torch.Tensor]],
+        sync_denied_input_mask: bool = False,
     ):
         batch_for_error = curr_batch.clone()
         if target_instruments is not None:
             prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
         replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        input_mask_synced = False
+        input_mask_counts = ""
+        if sync_denied_input_mask:
+            input_mask_synced, input_mask_counts = _sync_input_channel_mask_from_values(
+                batch_for_error,
+                observation_config,
+                present_denied,
+                denied_channels,
+                denial_mode,
+            )
         loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
         grad_inputs = [inputs[inst] for inst in present_denied]
         grads = torch.autograd.grad(
@@ -1027,7 +1088,7 @@ def compute_matched_conditional_fsoi_for_pair(
             if not torch.isfinite(grad).all():
                 raise RuntimeError(f"Non-finite matched FSOI gradient for {inst}")
             grad_map[inst] = grad
-        return loss, grad_map
+        return loss, grad_map, input_mask_synced, input_mask_counts
 
     def _loss_value_no_grad(
         inputs: Dict[str, torch.Tensor],
@@ -1044,9 +1105,13 @@ def compute_matched_conditional_fsoi_for_pair(
     control_inputs, control_replace_idx = _make_inputs(denied=False)
     denied_inputs, denied_replace_idx = _make_inputs(denied=True)
 
-    j_control, grad_control = _loss_and_grads(control_inputs, control_replace_idx)
+    j_control, grad_control, _, _ = _loss_and_grads(control_inputs, control_replace_idx)
     torch.cuda.empty_cache()
-    j_denied, grad_denied = _loss_and_grads(denied_inputs, denied_replace_idx)
+    j_denied, grad_denied, input_mask_synced, input_mask_counts = _loss_and_grads(
+        denied_inputs,
+        denied_replace_idx,
+        sync_denied_input_mask=True,
+    )
     torch.cuda.empty_cache()
 
     matched_by_instrument = {}
@@ -1135,7 +1200,7 @@ def compute_matched_conditional_fsoi_for_pair(
                 grad_map = grad_control
             else:
                 inputs_t = _make_path_inputs(t_value)
-                loss_t, grad_map = _loss_and_grads(inputs_t, control_replace_idx)
+                loss_t, grad_map, _, _ = _loss_and_grads(inputs_t, control_replace_idx)
                 loss_value = float(loss_t.detach().item())
                 torch.cuda.empty_cache()
 
@@ -1229,6 +1294,8 @@ def compute_matched_conditional_fsoi_for_pair(
         'target_variables': _serialize_provenance_value(target_variables),
         'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
         'use_area_weights': bool(use_area_weights),
+        'ose_input_channel_mask_synced': input_mask_synced,
+        'ose_input_channel_mask_false_counts': input_mask_counts,
         'matched_comparison_mode': _comparison_mode_for(
             denial_mode,
             _selected_channel_scope(denied_channels),
