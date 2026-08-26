@@ -15,16 +15,15 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData
 
-from logger import log
-
+from ocelot.configs.model_config import ModelConfig
+from ocelot.configs.observation_config import ObservationConfig
+from ocelot.logger import log
 from ocelot.model.coder.attn_bipartite import BipartiteGAT
 from ocelot.model.coder.interaction_net import InteractionNet
 from ocelot.model.processor.processor_factory import ProcessorFactory
-from ocelot.configs.model_config import ModelConfig
-from ocelot.configs.observation_config import ObservationConfig
-from ocelot.utils import make_mlp
-from ocelot.process_timeseries import _encode_target_time_features
 from ocelot.model.mesh.mesh_factory import MeshFactory
+from ocelot.model.mlp_block import make_mlp
+from ocelot.process_timeseries import _encode_target_time_features
 
 
 def _build_instrument_map(observation_config: ObservationConfig) -> dict[str, int]:
@@ -187,7 +186,7 @@ class Ocelot(nn.Module):
         # directly, with edge_dim=bipartite_edge_attr_dim (GraphCast-style features are 4-dim).
         if self.bipartite_edge_attr_dim <= 0:
             raise ValueError(
-                f"bipartite_edge_attr_dim must be > 0 (got: {self.bipartite_edge_attr_dim})"
+                f"bipartite_edge_attr_dim must be > 0 (gat: {self.bipartite_edge_attr_dim})"
             )
         print(f"\n{'='*70}")
         print(f"[GNN MODEL] Initializing with configuration:")

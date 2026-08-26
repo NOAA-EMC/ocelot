@@ -35,15 +35,16 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import lightning.pytorch as pl  # noqa: E402
+from torch_geometric.loader import DataLoader as PyGDataLoader  # noqa: E402
 
-from gnn_model import GNNLightning  # noqa: E402
-from gnn_datamodule import GNNDataModule, BinDataset  # noqa: E402
-from fsoi_dataset import (  # noqa: E402
+from ocelot.model.ocelot import Ocelot  # noqa: E402
+from ocelot.gnn_datamodule import GNNDataModule, BinDataset  # noqa: E402
+from ocelot.fsoi_dataset import (  # noqa: E402
     FSOIDataset,
     create_fsoi_bin_list,
     verify_sequential_consistency,
 )
-from fsoi_utils import (  # noqa: E402
+from ocelot.fsoi_utils import (  # noqa: E402
     get_fsoi_inputs,
     get_fsoi_metadata,
     replace_batch_inputs,
@@ -60,12 +61,11 @@ from fsoi_utils import (  # noqa: E402
     verify_gradients,
     validate_gradients,  # Hard check for ga/gb
 )
-from fsoi_model_extensions import (  # noqa: E402
+from ocelot.fsoi_model_extensions import (  # noqa: E402
     predict_at_targets,  # Use the CORRECT graph construction method
     freeze_model_for_fsoi,
 )
-from weight_utils import load_weights_from_yaml  # noqa: E402
-from torch_geometric.loader import DataLoader as PyGDataLoader  # noqa: E402
+from ocelot.weight_utils import load_weights_from_yaml  # noqa: E402
 
 
 def find_checkpoint(checkpoint_path):
@@ -857,7 +857,7 @@ def main():
 
     # Load trained model
     print(f"\nLoading model from checkpoint: {checkpoint_path}")
-    model = GNNLightning.load_from_checkpoint(checkpoint_path)
+    model = Ocelot.load_from_checkpoint(checkpoint_path)
     model.to(device)
 
     # Freeze model for FSOI

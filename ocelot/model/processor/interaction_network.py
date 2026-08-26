@@ -8,7 +8,8 @@ import torch.nn as nn
 from torch_geometric.data import HeteroData
 from torch_geometric.utils import scatter
 from typing import Dict, List, Tuple
-from utils import make_mlp
+
+from ocelot.model.mlp_block import make_mlp
 
 
 class InteractionNetwork(nn.Module):

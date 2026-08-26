@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 sys.path.append(
-    os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+    os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 )
 
 import yaml
@@ -96,7 +96,7 @@ def _build_window_plan(config: TrainingConfig) -> WindowPlan:
 
 
 def _resolve_checkpoint(config: TrainingConfig):
-    from ckpt_utils import find_latest_checkpoint
+    from ocelot.ckpt_utils import find_latest_checkpoint
 
     if config.resume_from_latest:
         checkpoint = find_latest_checkpoint(config.checkpoint_dir)
@@ -116,7 +116,7 @@ def _resolve_checkpoint(config: TrainingConfig):
 def _build_callbacks(config: TrainingConfig, windows: WindowPlan):
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
-    from callbacks import (
+    from ocelot.callbacks import (
         ResampleDataCallback,
         SequentialDataCallback,
         ValWindowCallback,
@@ -255,9 +255,9 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     import lightning.pytorch as pl
     import torch
 
-    from gnn_datamodule import GNNDataModule
-    from logger import LogLevel, log
-    from model.ocelot_factory import OcelotFactory
+    from ocelot.gnn_datamodule import GNNDataModule
+    from ocelot.logger import LogLevel, log
+    from ocelot.model.ocelot_factory import OcelotFactory
 
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)

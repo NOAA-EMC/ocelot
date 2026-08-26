@@ -9,11 +9,11 @@ from torch_geometric.data import HeteroData
 import numpy as np
 from matplotlib import pyplot as plt
 
-from ocelot.logger import log
-from ocelot.loss import weighted_mse_loss, weighted_huber_loss
-from ocelot.model.ocelot import Ocelot
 from ocelot.configs.training_config import TrainingConfig
 from ocelot.configs.observation_config import ObservationConfig
+from ocelot.logger import log
+from ocelot.model.ocelot import Ocelot
+from ocelot.training.loss import weighted_mse_loss, weighted_huber_loss
 
 
 class OcelotTrainingModule(pl.LightningModule):
@@ -462,9 +462,9 @@ class OcelotTrainingModule(pl.LightningModule):
 
         try:
             with torch.no_grad():
-                temp_mesh_pred_edges = self._get_mesh_pred_edges()
-                init_time_unix = self._extract_init_time_unix(self._last_val_batch)
-                mesh_predictions = self._decode_all_steps_to_mesh(
+                temp_mesh_pred_edges = self.model._get_mesh_pred_edges()
+                init_time_unix = self.model._extract_init_time_unix(self._last_val_batch)
+                mesh_predictions = self.model._decode_all_steps_to_mesh(
                     self._last_val_mesh_features,
                     temp_mesh_pred_edges,
                     init_time_unix

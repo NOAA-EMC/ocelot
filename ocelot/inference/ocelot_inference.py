@@ -101,9 +101,9 @@ class OcelotInferenceModule(pl.LightningModule):
                     if not mesh_features_per_step:
                         print("[PREDICT] No mesh features available for mesh predictions")
                     else:
-                        mesh_pred_edges = self._get_mesh_pred_edges()
-                        init_time_unix = self._extract_init_time_unix(batch)
-                        mesh_predictions = self._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges, init_time_unix)
+                        mesh_pred_edges = self.model._get_mesh_pred_edges()
+                        init_time_unix = self.model._extract_init_time_unix(batch)
+                        mesh_predictions = self.model._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges, init_time_unix)
                         if mesh_predictions:
                             mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
                             self._save_mesh_predictions(

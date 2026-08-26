@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 from torch_geometric.nn import GATv2Conv
+from torch_geometric.data import HeteroData
 
 
 class BipartiteGAT(nn.Module):
@@ -216,3 +217,104 @@ class BipartiteGAT(nn.Module):
             x_dst = torch.cat(out_chunks, dim=0)
 
         return x_dst
+
+    def edge_features(
+        self,
+        data: HeteroData,
+        edge_type,
+        edge_index: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
+        E = int(edge_index.size(1))
+
+        # Debug printing: show whether we used real edge_attr or fell back to zeros.
+        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
+        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
+            if not getattr(self, "verbose", False):
+                return
+            if not self._is_global_zero_safe():
+                return
+            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
+                self._edge_attr_debug_seen = set()
+            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
+            if key in self._edge_attr_debug_seen:
+                return
+            self._edge_attr_debug_seen.add(key)
+
+            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
+            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
+                try:
+                    t = edge_rep_tensor.detach()
+                    mean_v = t.mean().item()
+                    std_v = t.std(unbiased=False).item()
+                    min_v = t.min().item()
+                    max_v = t.max().item()
+                    msg += (
+                        f" edge_attr_shape={tuple(t.shape)} "
+                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
+                    )
+                except Exception:
+                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
+            print(msg)
+
+        if not self.use_bipartite_edge_attr:
+            _maybe_print("disabled")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        edge_rep = None
+        try:
+            if "edge_attr" in data[edge_type]:
+                edge_rep = data[edge_type].edge_attr
+        except Exception:
+            edge_rep = None
+
+        if edge_rep is None:
+            _maybe_print("missing")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if torch.is_tensor(edge_rep) and edge_rep.numel() == 0:
+            _maybe_print("empty")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if not torch.is_tensor(edge_rep):
+            _maybe_print("non_tensor")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        if edge_rep.size(0) != E:
+            _maybe_print(f"edge_count_mismatch(edge_attr={int(edge_rep.size(0))})")
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        edge_rep = edge_rep.to(device=device, dtype=dtype)
+        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.bipartite_edge_attr_dim)
+
+        if edge_rep.size(-1) != self.bipartite_edge_attr_dim:
+            _maybe_print(f"dim_mismatch(edge_attr={int(edge_rep.size(-1))})", edge_rep)
+            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+
+        _maybe_print("ok", edge_rep)
+        return edge_rep
+
+    def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
+        if edge_attr is None:
+            return edge_attr
+        if edge_attr.dim() == 1:
+            edge_attr = edge_attr.unsqueeze(-1)
+        if edge_attr.size(-1) == dim:
+            return edge_attr
+        if edge_attr.size(-1) < dim:
+            pad = dim - edge_attr.size(-1)
+            return torch.cat(
+                [
+                    edge_attr,
+                    torch.zeros(
+                        edge_attr.size(0),
+                        pad,
+                        device=edge_attr.device,
+                        dtype=edge_attr.dtype,
+                    ),
+                ],
+                dim=-1,
+            )
+        return edge_attr[:, :dim]

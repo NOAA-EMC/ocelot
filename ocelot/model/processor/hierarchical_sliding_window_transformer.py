@@ -13,10 +13,8 @@ from typing import List, Optional
 
 import torch
 import torch.nn as nn
-from torch_geometric.data import HeteroData
 
-from logger import log
-
+from ocelot.logger import log
 from ocelot.model.processor.processor_base import ProcessorBase
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 

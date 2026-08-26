@@ -6,9 +6,11 @@ Author: Azadeh Gholoubi
 # Third-party
 import torch
 import torch_geometric as pyg
+from torch_geometric.data import HeteroData
 from torch_sparse import SparseTensor
 from torch import nn
-import utils
+
+from ocelot.model.mlp_block import make_mlp
 
 
 class InteractionNet(pyg.nn.MessagePassing):
@@ -78,10 +80,10 @@ class InteractionNet(pyg.nn.MessagePassing):
         )
 
         if edge_chunk_sizes is None:
-            self.edge_mlp = utils.make_mlp(edge_mlp_recipe)
+            self.edge_mlp = make_mlp(edge_mlp_recipe)
         else:
             self.edge_mlp = SplitMLPs(
-                [utils.make_mlp(edge_mlp_recipe) for _ in edge_chunk_sizes],
+                [make_mlp(edge_mlp_recipe) for _ in edge_chunk_sizes],
                 edge_chunk_sizes,
             )
 
@@ -89,7 +91,7 @@ class InteractionNet(pyg.nn.MessagePassing):
             self.aggr_mlp = utils.make_mlp(aggr_mlp_recipe)
         else:
             self.aggr_mlp = SplitMLPs(
-                [utils.make_mlp(aggr_mlp_recipe) for _ in aggr_chunk_sizes],
+                [make_mlp(aggr_mlp_recipe) for _ in aggr_chunk_sizes],
                 aggr_chunk_sizes,
             )
 
@@ -171,6 +173,50 @@ class InteractionNet(pyg.nn.MessagePassing):
             messages, adj_t.storage.col(), dim_size=x[1].size(0)
         )
         return aggregated_messages, messages  # Return both for node and edge updates
+
+    def edge_features(
+        self,
+        data: HeteroData,
+        edge_type,
+        edge_index: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
+        E = int(edge_index.size(1))
+
+        # Debug printing: show whether we used real edge_attr or fell back to zeros.
+        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
+        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
+            if not getattr(self, "verbose", False):
+                return
+            if not self._is_global_zero_safe():
+                return
+            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
+                self._edge_attr_debug_seen = set()
+            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
+            if key in self._edge_attr_debug_seen:
+                return
+            self._edge_attr_debug_seen.add(key)
+
+            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
+            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
+                try:
+                    t = edge_rep_tensor.detach()
+                    mean_v = t.mean().item()
+                    std_v = t.std(unbiased=False).item()
+                    min_v = t.min().item()
+                    max_v = t.max().item()
+                    msg += (
+                        f" edge_attr_shape={tuple(t.shape)} "
+                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
+                    )
+                except Exception:
+                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
+            print(msg)
+
+        _maybe_print("disabled")
+        return torch.zeros((E, 4), device=device, dtype=dtype)
 
 
 class SplitMLPs(nn.Module):

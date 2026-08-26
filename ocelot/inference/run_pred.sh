@@ -44,7 +44,7 @@ EXPT="ocelot_v1_prediction_example"
 CKPT="checkpoints/$EXPT/ep181.ckpt"
 OUT_DIR="predictions/$EXPT"
 
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python inference/predict_gnn.py \
     --checkpoint $CKPT \
     --start_date 2025-02-28 \
     --end_date 2025-03-03 \

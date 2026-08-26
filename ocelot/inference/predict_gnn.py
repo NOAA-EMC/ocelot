@@ -15,7 +15,7 @@ import inspect
 from datetime import timedelta
 
 sys.path.append(
-    os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+    os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 )
 
 import lightning.pytorch as pl
