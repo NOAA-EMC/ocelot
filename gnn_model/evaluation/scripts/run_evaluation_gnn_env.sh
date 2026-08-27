@@ -1,7 +1,16 @@
 #!/bin/bash -l
 # Author: Azadeh Gholoubi
 #
-# Run OCELOT evaluation plots or GFS comparison plots in the configured GNN environment.
+# Thin launcher for OCELOT evaluation. All plotting configuration now lives in
+# evaluation/scripts/plotting.yaml -- this script only sets up the environment
+# and forwards arguments.
+#
+#   sbatch run_evaluation_gnn_env.sh
+#   sbatch run_evaluation_gnn_env.sh --instruments atms --max-files 4
+#   sbatch run_evaluation_gnn_env.sh --mode metrics
+#
+# Dry run on the login node (no sbatch needed):
+#   sh run_evaluation_gnn_env.sh --filedetection
 #
 #SBATCH --exclude=u22g09,u22g08,u22g10,u23g12
 #SBATCH -A da-cpu
@@ -12,236 +21,81 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=32G
 #SBATCH -t 08:00:00
-#SBATCH --output=gnn_eval_%j.out
-#SBATCH --error=gnn_eval_%j.err
+#SBATCH --output=slurm/gnn_eval_%j.out
+#SBATCH --error=slurm/gnn_eval_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 
+# `sh script.sh` runs this under dash, where `set -o pipefail` is an error --
+# and a failing `set` in a POSIX shell aborts the script silently. Re-exec
+# under bash so the invocation works either way.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
 
-#Script to run evaluations for multiple initialization times
-#Submit with: sbatch evaluation/scripts/run_evaluation_gnn_env.sh [START_DATE] [END_DATE]
-#Example: sbatch evaluation/scripts/run_evaluation_gnn_env.sh 2023010100 2023010912
-#Or use defaults: sbatch evaluation/scripts/run_evaluation_gnn_env.sh
+set -uo pipefail
 
-#set -e  # Exit on error
+# ---------------------------------------------------------------------------
+# Where this evaluation code lives. Set it, or export OCELOT_EVAL_DIR.
+#
+# Deriving it from $0 does not work under sbatch: Slurm runs a copy of this
+# script from /var/spool/slurmd/job<N>/slurm_script, so $0 points at the spool
+# directory rather than the repo. An explicit path is the only reliable option.
+# ---------------------------------------------------------------------------
+EVAL_DIR="${OCELOT_EVAL_DIR:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/window_hour_fix/ocelot/gnn_model/evaluation/scripts}"
+
+CONDA_SH="${OCELOT_CONDA_SH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh}"
+CONDA_ENV="${OCELOT_CONDA_ENV:-gnn-env}"
+
+EVAL_SCRIPT="${EVAL_DIR}/evaluations.py"
+CONFIG="${CONFIG:-${EVAL_DIR}/plotting.yaml}"
+
+# Legacy passthrough: MODE=gfs_compare dispatches to the standalone GFS
+# comparison script, which is not part of this refactor.
+MODE="${MODE:-standard}"
+GFS_COMPARE_SCRIPT="${EVAL_DIR}/plot_gfs_compare.py"
+
+fail() { echo "Error: $*" >&2; exit 1; }
+
+[ -d "${EVAL_DIR}" ]    || fail "EVAL_DIR does not exist: ${EVAL_DIR}
+       Edit EVAL_DIR at the top of this script, or export OCELOT_EVAL_DIR."
+[ -f "${EVAL_SCRIPT}" ] || fail "evaluations.py not found in ${EVAL_DIR}"
+[ -f "${CONFIG}" ]      || fail "config not found: ${CONFIG}"
+[ -f "${CONDA_SH}" ]    || fail "conda profile not found: ${CONDA_SH}"
+
+# Relative data_dir / plot_dir in the config resolve against the working
+# directory unless io.base_dir is set.
+cd "${SLURM_SUBMIT_DIR:-${EVAL_DIR}}" || fail "cannot cd to working directory"
+
+# shellcheck disable=SC1090
+source "${CONDA_SH}"
+conda activate "${CONDA_ENV}" || fail "could not activate conda env ${CONDA_ENV}"
+
+# evaluations.py imports only eval_plots, which sits beside it.
+export PYTHONPATH="${EVAL_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
 echo "================================================"
-echo "Starting batch evaluation on $(hostname)"
-echo "Node: $(hostname)"
-echo "Architecture: $(uname -m)"
+echo "OCELOT evaluation"
+echo "  host:    $(hostname)"
+echo "  arch:    $(uname -m)"
+echo "  started: $(date)"
+echo "  evaldir: ${EVAL_DIR}"
+echo "  workdir: $(pwd)"
+echo "  config:  ${CONFIG}"
+echo "  args:    $*"
 echo "================================================"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GNN_MODEL_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
-
-cd "${SLURM_SUBMIT_DIR:-${GNN_MODEL_DIR}}"
-
-# Load Conda environment
-source /scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh
-conda activate gnn-env
-
-# Add PYTHONPATH
-export PYTHONPATH="${GNN_MODEL_DIR}:${OCELOT_DIR}:${PYTHONPATH:-}"
-
-# ============================================
-# CONFIGURATION - Set all parameters here
-# ============================================
-
-# MODE:
-#   standard    -> runs evaluations.py (pred vs truth)
-#   gfs_compare -> runs plot_gfs_compare.py (pred/truth vs GFS from *_vs_gfs.csv)
-MODE=${MODE:-"standard"}
-
-# For MODE=gfs_compare
-# Valid: surface_obs | radiosonde | aircraft
-INSTRUMENT=${INSTRUMENT:-"surface_obs"}
-CHUNKSIZE=${CHUNKSIZE:-"200000"}
-VARS=${VARS:-"wind"}
-
-EVAL_SCRIPT="evaluation/scripts/evaluations.py"
-GFS_COMPARE_SCRIPT="evaluation/scripts/plot_gfs_compare.py"
-
-# --- Training Mode Parameters ---
-# Leave empty ("") for testing mode, or set for training mode:
-EPOCH_TO_PLOT=""
-BATCH_IDX_TO_PLOT=""
-
-# --- Data Directories ---
-# Training mode example:
-#   DATA_DIR="val_csv"                             # Training validation (obs location; set HAS_GROUND_TRUTH = true)
-#   DATA_DIR="val_mesh_csv"                        # Training validation (mesh; set HAS_GROUND_TRUTH = false)
-# Testing mode examples:
-#   DATA_DIR="predictions/pred_csv/obs-space/"     # observation-location outputs (with ground truth; set HAS_GROUND_TRUTH = true)
-#   DATA_DIR="predictions/pred_csv/mesh-grid/"     # mesh-grid outputs (forecast only; set HAS_GROUND_TRUTH = false)
-DATA_DIR="predictions/ocelot_v1_prediction_example/pred_csv/mesh-grid/"
-
-# Output directory for plots
-PLOT_DIR="evaluation/figures/ocelot_v1_prediction_example/pred_mesh"
-
-# --- Mode Configuration ---
-# Set HAS_GROUND_TRUTH=true for obs-space files, has ground truth
-# Set HAS_GROUND_TRUTH=false for mesh-grid files, no ground truth
-HAS_GROUND_TRUTH=false
-
-# --- Date Range for Batch Processing ---
-START_DATE=${1:-"2025030100"}
-END_DATE=${2:-"2025030112"}
-FHR_LIST=(6 12)
-# Examples:
-#   FHR_LIST=("")        # obs-space data (always empty)
-#   FHR_LIST=(3)         # mesh-grid data: Single forecast hour
-#   FHR_LIST=(3 6 9 12)  # mesh-grid data: All forecast hours
-
-# ============================================
-
-# Check required script exists
-if [ "$MODE" == "gfs_compare" ]; then
-    if [ ! -f "$GFS_COMPARE_SCRIPT" ]; then
-        echo "Error: $GFS_COMPARE_SCRIPT not found!"
-        exit 1
-    fi
+if [ "${MODE}" == "gfs_compare" ]; then
+    [ -f "${GFS_COMPARE_SCRIPT}" ] || fail "not found: ${GFS_COMPARE_SCRIPT}"
+    python -u "${GFS_COMPARE_SCRIPT}" "$@"
+    RC=$?
 else
-    if [ ! -f "$EVAL_SCRIPT" ]; then
-        echo "Error: $EVAL_SCRIPT not found!"
-        exit 1
-    fi
+    echo "  python:  $(command -v python)"
+    echo "  script:  ${EVAL_SCRIPT}"
+    python -u "${EVAL_SCRIPT}" --config "${CONFIG}" "$@"
+    RC=$?
 fi
-
-# Validate date format (YYYYMMDDHH)
-# Note: In [[ ]], the =~ operator needs a space before and after it,
-# but the regex itself should NOT have spaces in the middle of it.
-if [[ ! "$START_DATE" =~ ^[0-9]{10}$ ]] || [[ ! "$END_DATE" =~ ^[0-9]{10}$ ]]; then
-    echo "Error: Dates must be in format YYYYMMDDHH"
-    echo "Usage: $0 START_DATE END_DATE"
-    echo "Example: $0 2023010100 2023010912"
-    exit 1
-fi
-
-echo ""
-echo "Configuration:"
-echo "  Evaluation script: $EVAL_SCRIPT"
-echo "  Start date: $START_DATE"
-echo "  End date: $END_DATE"
-echo "  Forecast hours: ${FHR_LIST[@]}"
-echo "  Data directory: $DATA_DIR"
-echo "  Plot directory: $PLOT_DIR"
-echo "  Has ground truth?: $HAS_GROUND_TRUTH"
-echo "  Mode: $MODE"
-if [ "$MODE" == "gfs_compare" ]; then
-    echo "  Instrument: $INSTRUMENT"
-    echo "  Chunksize: $CHUNKSIZE"
-    echo "  Vars: $VARS"
-fi
-
-# Fixed: Added spaces inside [ ] brackets
-if [ -n "$EPOCH_TO_PLOT" ]; then
-    echo "  Epoch: $EPOCH_TO_PLOT"
-fi
-
-if [ -n "$BATCH_IDX_TO_PLOT" ]; then
-    echo "  Batch index: $BATCH_IDX_TO_PLOT"
-fi
-
-echo "  Python path: $PYTHONPATH"
-echo "================================================"
-echo ""
-
-# Convert YYYYMMDDHH to epoch seconds for comparison
-# Fixed: Removed spaces around = and inside the date/format flags
-START_TIME=$(date -d "${START_DATE:0:8} ${START_DATE:8:2}:00:00" +%s)
-END_TIME=$(date -d "${END_DATE:0:8} ${END_DATE:8:2}:00:00" +%s)
-
-# Initialize counters - Fixed: Removed spaces around =
-CURRENT_TIME=$START_TIME
-TOTAL_RUNS=0
-SUCCESS_RUNS=0
-FAILED_RUNS=0
-
-# Loop through dates with 12-hour increments
-# Fixed: Added spaces inside [ ] and removed space in -le
-while [ $CURRENT_TIME -le $END_TIME ]
-do
-    # Convert epoch back to YYYYMMDDHH format
-    # Fixed: Removed spaces around =, corrected date format strings
-    INIT_TIME=$(date -d "@$CURRENT_TIME" +%Y%m%d%H)
-    DISPLAY_DATE=$(date -d "@$CURRENT_TIME" +"%Y-%m-%d %H:%M")
-
-    echo "----------------------------------------"
-    echo "Processing init time: $DISPLAY_DATE ($INIT_TIME)"
-    echo "----------------------------------------"
-
-    # Loop through each forecast hour
-    for FHR in "${FHR_LIST[@]}"
-    do
-        TOTAL_RUNS=$((TOTAL_RUNS + 1))
-
-        echo ""
-        if [ -n "$FHR" ]; then
-            echo "  Running: init_time=$INIT_TIME, fhr=$FHR"
-        else
-            echo "  Running: init_time=$INIT_TIME (no fhr)"
-        fi
-
-        # Build Python command
-        if [ "$MODE" == "gfs_compare" ]; then
-            # Plots RMSE vs forecast hour from *_vs_gfs.csv
-            CMD="python $GFS_COMPARE_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR --instrument $INSTRUMENT --vars $VARS --chunksize $CHUNKSIZE"
-        else
-            # Standard evaluation plots (pred vs truth)
-            CMD="python $EVAL_SCRIPT --init_time $INIT_TIME --data_dir $DATA_DIR --plot_dir $PLOT_DIR"
-        fi
-
-        if [ -n "$FHR" ] && [ "$MODE" != "gfs_compare" ]; then
-            CMD="$CMD --fhr $FHR"
-        fi
-
-        # Fixed: Comparison for strings usually needs == and HAS_GROUND_TRUTH was set to "true" earlier
-        if [ "$HAS_GROUND_TRUTH" == "true" ] && [ "$MODE" != "gfs_compare" ]; then
-            CMD="$CMD --has_ground_truth"
-        fi
-
-        if [ -n "$EPOCH_TO_PLOT" ]; then
-            CMD="$CMD --epoch $EPOCH_TO_PLOT"
-        fi
-        
-        if [ -n "$BATCH_IDX_TO_PLOT" ]; then
-            CMD="$CMD --batch_idx $BATCH_IDX_TO_PLOT"
-        fi
-
-        # Run Python script
-        # Note: eval is used here to properly interpret the string as a command
-        if eval $CMD; then
-            SUCCESS_RUNS=$((SUCCESS_RUNS + 1))
-            if [ -n "$FHR" ]; then
-                echo "Success: init_time=$INIT_TIME, fhr=$FHR"
-            else
-                echo "Success: init_time=$INIT_TIME (no fhr)"
-            fi
-        else
-            FAILED_RUNS=$((FAILED_RUNS + 1))
-            if [ -n "$FHR" ]; then
-                echo "Failed: init_time=$INIT_TIME, fhr=$FHR (continuing...)"
-            else
-                echo "Failed: init_time=$INIT_TIME (no fhr) (continuing...)"
-            fi
-        fi
-    done
-
-    echo ""
-    # Increment by 12 hours (43200 seconds)
-    CURRENT_TIME=$((CURRENT_TIME + 43200))
-done
 
 echo "================================================"
-echo "Batch evaluation complete"
-echo "Total runs: $TOTAL_RUNS"
-echo "Successful: $SUCCESS_RUNS"
-echo "Failed: $FAILED_RUNS"
-echo "End time: $(date)"
+echo "Finished: $(date)  (exit ${RC})"
 echo "================================================"
-
-# Exit with error if any runs failed
-if [ $FAILED_RUNS -gt 0 ]; then
-    echo "WARNING: Some runs failed. Check output for details."
-    exit 1
-fi
+exit ${RC}
