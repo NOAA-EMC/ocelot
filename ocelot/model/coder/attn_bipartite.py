@@ -10,6 +10,8 @@ import torch.utils.checkpoint as checkpoint
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.data import HeteroData
 
+from ocelot.configs.model_config import GatCoderConfig
+
 
 class BipartiteGAT(nn.Module):
     """
@@ -17,65 +19,48 @@ class BipartiteGAT(nn.Module):
     Mirrors InteractionNet's interface: forward(send_rep, rec_rep, edge_rep, edge_index)
 
     Args:
-      send_dim: feature dim on source nodes (obs or mesh)
-      rec_dim:  feature dim on destination nodes (mesh or target)
-      hidden_dim: internal/out dim (kept constant across layers)
-      layers: number of stacked GAT layers
-      heads: attention heads per layer
-      dropout: dropout inside attention/FFN
-      edge_dim: dimension of per-edge attributes (optional); if given, used by GATv2
+      coder_config: instance of CoderConfig containing all necessary hyperparameters.
     """
-    def __init__(
-        self,
-        send_dim: int,
-        rec_dim: int,
-        hidden_dim: int,
-        layers: int = 2,
-        heads: int = 4,
-        dropout: float = 0.0,
-        edge_dim: Optional[int] = None,
-        dst_chunk_size: Optional[int] = None,
-        dst_chunk_threshold: int = 20_000,
-        use_activation_checkpointing: bool = True,
-    ):
+
+    def __init__(self, coder_config: GatCoderConfig):
         super().__init__()
         self.layers = nn.ModuleList()
         self.norms = nn.ModuleList()
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(coder_config.dropout)
 
         # For very large bipartite graphs (e.g., mesh -> satellite targets),
         # PyG's GATv2Conv builds per-edge attention tensors that can exceed GPU memory.
         # We mitigate this by chunking over destination nodes (dst) so peak edge
         # attention memory is bounded. Chunking preserves exact results as long as
         # all incoming edges for a dst node are processed together.
-        self.dst_chunk_size = None if dst_chunk_size is None else int(dst_chunk_size)
-        self.dst_chunk_threshold = int(dst_chunk_threshold)
-        self.use_activation_checkpointing = bool(use_activation_checkpointing)
+        self.dst_chunk_size = coder_config.dst_chunk_size
+        self.dst_chunk_threshold = coder_config.dst_chunk_threshold
+        self.use_activation_checkpointing = coder_config.use_activation_checkpointing
 
-        in_src = send_dim
-        in_dst = rec_dim
-        for li in range(layers):
+        in_src = coder_config.send_dim
+        in_dst = coder_config.rec_dim
+        for li in range(coder_config.layers):
             conv = GATv2Conv(
                 in_channels=(in_src, in_dst),   # bipartite (src,dst)
-                out_channels=hidden_dim,
-                heads=heads,
-                dropout=dropout,
+                out_channels=coder_config.hidden_dim,
+                heads=coder_config.heads,
+                dropout=coder_config.dropout,
                 concat=False,                   # shape = [N_dst, hidden_dim]
-                edge_dim=edge_dim,              # use edge_attr in attention if provided
+                edge_dim=coder_config.edge_dim,              # use edge_attr in attention if provided
                 share_weights=False,
                 add_self_loops=False,           # we are bipartite; no self loops
             )
             self.layers.append(conv)
-            self.norms.append(nn.LayerNorm(hidden_dim))
+            self.norms.append(nn.LayerNorm(coder_config.hidden_dim))
 
             # after first layer, both sides live in hidden_dim
-            in_src = hidden_dim
-            in_dst = hidden_dim
+            in_src = coder_config.hidden_dim
+            in_dst = coder_config.hidden_dim
 
         # if the very first dst dim != hidden_dim, build a projection for residual
         self.res_proj = (
-            nn.Linear(rec_dim, hidden_dim)
-            if rec_dim != hidden_dim else nn.Identity()
+            nn.Linear(coder_config.rec_dim, coder_config.hidden_dim)
+            if coder_config.rec_dim != coder_config.hidden_dim else nn.Identity()
         )
 
     @property

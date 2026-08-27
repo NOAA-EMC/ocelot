@@ -9,7 +9,7 @@ from torch_geometric.data import HeteroData
 from torch_geometric.utils import scatter
 from typing import Dict, List, Tuple
 
-from ocelot.model.mlp_block import make_mlp
+from ocelot.model import mlp_block
 
 
 class InteractionNetwork(nn.Module):
@@ -40,7 +40,7 @@ class InteractionNetwork(nn.Module):
             # Note: We assume edge features are handled by the caller for simplicity here,
             # focusing on node features influencing the message.
             input_dim = 2 * hidden_dim  # src_features + dst_features
-            self.edge_models[self._edge_key(edge_type)] = make_mlp(
+            self.edge_models[self._edge_key(edge_type)] = mlp_block.make(
                 [input_dim] + [hidden_dim, hidden_dim]
             )
 
@@ -49,7 +49,7 @@ class InteractionNetwork(nn.Module):
         for node_type in node_types:
             # Input to node MLP: node_features + aggregated_messages
             input_dim = 2 * hidden_dim
-            self.node_models[node_type] = make_mlp(
+            self.node_models[node_type] = mlp_block.make(
                 [input_dim] + [hidden_dim, hidden_dim]
             )
 

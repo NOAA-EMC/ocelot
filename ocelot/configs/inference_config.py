@@ -32,7 +32,6 @@ class InferenceConfig(ConfigBase):
     experiment_name = StrField()
     checkpoint = StrField()
     output_dir = Optional(StrField(), default='predictions')
-    verbose = Optional(BoolField(), default=False)
     eval_mode = Optional(BoolField(), default=False)
     data = InferenceDataConfig()
     resources = Optional(InferenceResourcesConfig(), default={})

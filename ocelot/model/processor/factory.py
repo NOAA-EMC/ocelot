@@ -13,12 +13,9 @@ processor_types = {
     "hierarchical_sliding_window": HierarchicalSlidingWindowTransformer
 }
 
-class ProcessorFactory:
-    @staticmethod
-    def build(mesh : Mesh, hidden_dim: int, processor_config: ProcessorConfig) -> ProcessorBase:
-        if processor_config.type not in processor_types:
-            raise ValueError(f"Unknown processor_type: {processor_config.type}")
-            
-        print (f"Created {processor_config.type}.")
-
-        return processor_types[processor_config.type](mesh, hidden_dim, processor_config)
+def make(mesh : Mesh, config: ProcessorConfig) -> ProcessorBase:
+    if config.type not in processor_types:
+        raise ValueError(f"Unknown processor_type: {config.type}")
+        
+    print (f"Created {config.type}.")
+    return processor_types[config.type](mesh, config)

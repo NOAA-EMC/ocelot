@@ -1,19 +1,23 @@
-hidden_dim: 192
+hidden_dim: &hidden_dim 192
 latent_step_hours: 3
 
 mesh:
   type: fixed  # fixed | hierarchical
-  splits: 6
+  resolution: 6
   levels: 4
 
 encoder:
-  type: gat # gat | interaction
+  type: gat  # gat | interaction
+  rec_dim: *hidden_dim
+  send_dim: *hidden_dim
+  hidden_dim: *hidden_dim
   layers: 2
   heads: 4
   dropout: 0.0
 
 processor:
   type: sliding_window  # sliding_window | interaction | hierarchical_interaction | hierarchical_sliding_window
+  hidden_dim: *hidden_dim
   depth: 4
   num_heads: 4
   window: 4
@@ -21,7 +25,10 @@ processor:
   spatial_mixing_steps: 1
 
 decoder:
-  type: gat
+  type: gat  # gat | interaction
+  rec_dim: *hidden_dim
+  send_dim: *hidden_dim
+  hidden_dim: *hidden_dim
   layers: 2
   heads: 4
   dropout: 0.0

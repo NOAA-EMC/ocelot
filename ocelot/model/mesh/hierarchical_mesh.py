@@ -2,13 +2,15 @@ import numpy as np
 import torch
 
 from ocelot.model.mesh.mesh import Mesh, GC_SPATIAL_FEATURES_KWARGS, DEFAULT_DTYPE
+
+from ocelot.configs.model_config import HierarchicalMeshConfig
 from ocelot.model.mesh.deepmind import icosahedral_mesh as gc_im
 from ocelot.model.mesh.deepmind import model_utils as gc_mu
 
 
 class HierarchicalMesh(Mesh):
-    def __init__(self, levels: int, resolution: int, plot: bool = False):
-        super().__init__(levels, resolution)
+    def __init__(self, mesh_config: HierarchicalMeshConfig):
+        super().__init__(mesh_config)
 
         self.mesh_up_ei_list = []
         self.mesh_down_ei_list = []

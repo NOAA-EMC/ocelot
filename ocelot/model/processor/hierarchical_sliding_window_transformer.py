@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 
 from ocelot.logger import log
+from ocelot.configs.model_config import HierarchicalSlidingWindowProcessorConfig
 from ocelot.model.processor.processor_base import ProcessorBase
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
@@ -176,82 +177,66 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
     - Spatial hierarchy: coarse to fine mesh levels
     - Temporal processing: transformer over time at each level
     """
-    def __init__(self,
-                 mesh: HierarchicalMesh,
-                 hidden_dim: int,
-                 num_levels: int = 4,
-                 window: int = 4,
-                 depth: int = 2,
-                 num_heads: int = 4,
-                 dropout: float = 0.0,
-                 use_causal_mask: bool = True,
-                 use_cross_scale: bool = True,
-                 spatial_mixing_steps: int = 1):
+    def __init__(self, mesh: HierarchicalMesh, processor_config: HierarchicalSlidingWindowProcessorConfig):
         """
         Args:
-            hidden_dim: Hidden dimension for all levels
-            num_levels: Number of mesh hierarchy levels
-            window: Temporal window size
-            depth: Number of transformer blocks per level
-            num_heads: Number of attention heads
-            dropout: Dropout rate
-            use_causal_mask: Whether to use causal masking (for autoregressive)
-            use_cross_scale: Whether to use cross-scale attention between levels
+            mesh: HierarchicalMesh instance representing the mesh hierarchy
+            processor_config: HierarchicalSlidingWindowProcessorConfig instance containing model hyperparameters
         """
         super().__init__(mesh)
         
-        self.hidden_dim = hidden_dim
-        self.num_levels = num_levels
-        self.window = window
-        self.use_causal_mask = use_causal_mask
-        self.use_cross_scale = use_cross_scale
-        self.spatial_mixing_steps = int(spatial_mixing_steps)
+        self.hidden_dim = processor_config.hidden_dim
+        self.num_levels = processor_config.num_levels
+        self.window = processor_config.window
+        self.use_causal_mask = processor_config.use_causal_mask
+        self.use_cross_scale = processor_config.use_cross_scale
+        self.spatial_mixing_steps = int(processor_config.spatial_mixing_steps)
 
         # Temporal transformers for each level (intra-level)
         self.level_transformers = nn.ModuleList()
-        for _ in range(num_levels):
+        for _ in range(processor_config.num_levels):
             blocks = nn.ModuleList([
-                TemporalBlock(hidden_dim, num_heads, dropout)
-                for _ in range(depth)
+                TemporalBlock(processor_config.hidden_dim, processor_config.num_heads, processor_config.dropout)
+                for _ in range(processor_config.depth)
             ])
             self.level_transformers.append(blocks)
 
         # Positional encodings for each level
         self.level_posenc = nn.ModuleList([
-            TemporalPositionalEncoding(hidden_dim, max_len=window)
-            for _ in range(num_levels)
+            TemporalPositionalEncoding(processor_config.hidden_dim, max_len=processor_config.window)
+            for _ in range(processor_config.num_levels)
         ])
 
         # Cross-scale attention (if enabled)
-        if use_cross_scale:
+        if processor_config.use_cross_scale:
             # Upward cross-attention (fine -> coarse)
             self.up_cross_attn = nn.ModuleList([
-                CrossScaleAttention(hidden_dim, num_heads, dropout)
-                for _ in range(num_levels - 1)
+                CrossScaleAttention(processor_config.hidden_dim, processor_config.num_heads, processor_config.dropout)
+                for _ in range(processor_config.num_levels - 1)
             ])
 
             # Downward cross-attention (coarse -> fine)
             self.down_cross_attn = nn.ModuleList([
-                CrossScaleAttention(hidden_dim, num_heads, dropout)
-                for _ in range(num_levels - 1)
+                CrossScaleAttention(processor_config.hidden_dim, processor_config.num_heads, processor_config.dropout)
+                for _ in range(processor_config.num_levels - 1)
             ])
 
         # Spatial pooling for upward information flow (fine -> coarse)
         # Use learnable aggregation
         self.up_pool = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
+                nn.Linear(processor_config.hidden_dim, processor_config.hidden_dim),
+                nn.LayerNorm(processor_config.hidden_dim),
                 nn.GELU()
             )
-            for _ in range(num_levels - 1)
+            for _ in range(processor_config.num_levels - 1)
         ])
 
         # Spatial unpooling for downward information flow (coarse -> fine)
         self.down_unpool = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
+                nn.Linear(processor_config.hidden_dim, processor_config.hidden_dim),
+                nn.LayerNorm(processor_config.hidden_dim),
                 nn.GELU()
             )
             for _ in range(num_levels - 1)
@@ -260,11 +245,11 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
         self.register_buffer("_dummy", torch.empty(0))
 
         # Cache for each level (stores temporal history)
-        self.caches: List[deque] = [deque(maxlen=window) for _ in range(num_levels)]
+        self.caches: List[deque] = [deque(maxlen=processor_config.window) for _ in range(processor_config.num_levels)]
 
         # Optional within-level spatial neighbor mixing after temporal+cross-scale attention.
         self.level_spatial_mix = nn.ModuleList(
-            [SpatialMixBlock(hidden_dim, dropout=dropout) for _ in range(num_levels)]
+            [SpatialMixBlock(processor_config.hidden_dim, dropout=processor_config.dropout) for _ in range(processor_config.num_levels)]
         )
 
     def reset(self):

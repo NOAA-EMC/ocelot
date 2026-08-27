@@ -25,7 +25,7 @@ class InteractionProcessor(FlatProcessorBase):
     loop and residual connections.
     """
 
-    def __init__(self, mesh: FixedMesh, hidden_dim: int, processor_config: ProcessorConfig):
+    def __init__(self, mesh: FixedMesh, processor_config: ProcessorConfig):
         super().__init__(mesh)
 
         if not isinstance(mesh, FixedMesh):
@@ -37,14 +37,18 @@ class InteractionProcessor(FlatProcessorBase):
         for _ in range(processor_config.num_message_passing_steps):
             # This is now the simple, original InteractionNetwork call
             self.layers.append(
-                InteractionNetwork(hidden_dim, processor_config.node_types, processor_config.edge_types)
+                InteractionNetwork(
+                    processor_config.hidden_dim, 
+                    processor_config.node_types, 
+                    processor_config.edge_types
+                )
             )
 
         self.norms = nn.ModuleList()
         for _ in range(processor_config.num_message_passing_steps):
             self.norms.append(
                 nn.ModuleDict(
-                    {node_type: nn.LayerNorm(hidden_dim) for node_type in processor_config.node_types}
+                    {node_type: nn.LayerNorm(processor_config.hidden_dim) for node_type in processor_config.node_types}
                 )
             )
 

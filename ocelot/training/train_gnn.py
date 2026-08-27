@@ -15,9 +15,12 @@ sys.path.append(
 
 import yaml
 
+from ocelot.training import make_module
 from ocelot.configs.model_config import ModelConfig
 from ocelot.configs.observation_config import ObservationConfig
 from ocelot.configs.training_config import TrainingConfig
+from ocelot.gnn_datamodule import GNNDataModule
+from ocelot.logger import LogLevel, log
 
 
 @dataclass(frozen=True)
@@ -255,10 +258,6 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     import lightning.pytorch as pl
     import torch
 
-    from ocelot.gnn_datamodule import GNNDataModule
-    from ocelot.logger import LogLevel, log
-    from ocelot.model.ocelot_factory import OcelotFactory
-
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)
     observation_config = ObservationConfig(training_config.observation_config_path)
@@ -276,7 +275,7 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     print(f"Validation period: {windows.val_start} -> {windows.val_end}")
 
     setup_start = time.time()
-    module = OcelotFactory.create_training_module(
+    module = make_module(
         model_config=model_config,
         training_config=training_config,
         observation_config=observation_config,

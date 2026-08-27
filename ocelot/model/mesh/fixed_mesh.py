@@ -1,12 +1,13 @@
 import numpy as np
 
+from ocelot.configs.model_config import FixedMeshConfig
 from ocelot.model.mesh.mesh import Mesh
 from ocelot.model.mesh.deepmind import icosahedral_mesh as gc_im
 
 
 class FixedMesh(Mesh):
-    def __init__(self, levels: int, splits: int, plot: bool = False):
-        super().__init__(levels, splits)
+    def __init__(self, mesh_config: FixedMeshConfig):
+        super().__init__(mesh_config)
         self._register_buffers()
 
     @property

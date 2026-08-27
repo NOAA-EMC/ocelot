@@ -10,7 +10,8 @@ from torch_geometric.data import HeteroData
 from torch_sparse import SparseTensor
 from torch import nn
 
-from ocelot.model.mlp_block import make_mlp
+from ocelot.configs.model_config import InteractionCoderConfig
+from ocelot.model import mlp_block
 
 
 class InteractionNet(pyg.nn.MessagePassing):
@@ -22,40 +23,16 @@ class InteractionNet(pyg.nn.MessagePassing):
     # pylint: disable=arguments-differ
     # Disable to override args/kwargs from superclass
 
-    def __init__(
-        self,
-        edge_index,
-        send_dim,
-        rec_dim,
-        update_edges=False,
-        hidden_layers=1,
-        hidden_dim=None,
-        edge_chunk_sizes=None,
-        aggr_chunk_sizes=None,
-        aggr="sum",
-    ):
+    def __init__(self, coder_config: InteractionCoderConfig):
         """
         Create a new InteractionNet
 
-        edge_index: (2,M), Edges in pyg format
-        input_dim: Dimensionality of input representations,
-            for both nodes and edges
-        update_edges: If new edge representations should be computed
-            and returned
-        hidden_layers: Number of hidden layers in MLPs
-        hidden_dim: Dimensionality of hidden layers, if None then same
-            as input_dim
-        edge_chunk_sizes: List of chunks sizes to split edge representation
-            into and use separate MLPs for (None = no chunking, same MLP)
-        aggr_chunk_sizes: List of chunks sizes to split aggregated node
-            representation into and use separate MLPs for
-            (None = no chunking, same MLP)
-        aggr: Message aggregation method (sum/mean)
+        coder_config: instance of InteractionCoderConfig containing all necessary hyperparameters.
         """
-        assert aggr in ("sum", "mean"), f"Unknown aggregation method: {aggr}"
-        super().__init__(aggr=aggr)
+        assert coder_config.aggr in ("sum", "mean"), f"Unknown aggregation method: {coder_config.aggr}"
+        super().__init__(aggr=coder_config.aggr)
 
-        if hidden_dim is None:
+        if coder_config.hidden_dim is None:
             # Default to receiver dim if not explicitly given
             hidden_dim = rec_dim
 
@@ -80,18 +57,18 @@ class InteractionNet(pyg.nn.MessagePassing):
         )
 
         if edge_chunk_sizes is None:
-            self.edge_mlp = make_mlp(edge_mlp_recipe)
+            self.edge_mlp = mlp_block.make(edge_mlp_recipe)
         else:
             self.edge_mlp = SplitMLPs(
-                [make_mlp(edge_mlp_recipe) for _ in edge_chunk_sizes],
+                [mlp_block.make(edge_mlp_recipe) for _ in edge_chunk_sizes],
                 edge_chunk_sizes,
             )
 
         if aggr_chunk_sizes is None:
-            self.aggr_mlp = utils.make_mlp(aggr_mlp_recipe)
+            self.aggr_mlp = mlp_block.make(aggr_mlp_recipe)
         else:
             self.aggr_mlp = SplitMLPs(
-                [make_mlp(aggr_mlp_recipe) for _ in aggr_chunk_sizes],
+                [mlp_block.make(aggr_mlp_recipe) for _ in aggr_chunk_sizes],
                 aggr_chunk_sizes,
             )
 

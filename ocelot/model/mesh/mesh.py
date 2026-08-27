@@ -5,6 +5,7 @@ from typing import Tuple
 import torch
 import torch_geometric as pyg
 
+from ocelot.configs.model_config import MeshConfig
 from ocelot.model.mesh.deepmind import icosahedral_mesh as gc_im
 from ocelot.model.mesh.deepmind import grid_mesh_connectivity as gc_gm
 from ocelot.model.mesh.deepmind import model_utils as gc_mu
@@ -123,11 +124,11 @@ def obs_mesh_conn(
         return (m2g_edge_index_torch, m2g_features_torch)
 
 class Mesh(torch.nn.Module):
-    def __init__(self, levels: int, resolution: int):
+    def __init__(self, mesh_config: MeshConfig):
         super().__init__()
 
-        self.num_levels = levels
-        self.resolution = resolution
+        self.num_levels = mesh_config.levels
+        self.resolution = mesh_config.resolution
     
         self.m2m_graphs: torch.tensor = None
         self.mesh_lat_lon_list: list = None
@@ -137,7 +138,7 @@ class Mesh(torch.nn.Module):
         self.mesh_features_torch: torch.tensor = None
         self.mesh_lat_lon_torch: torch.tensor = None
 
-        self._create_mesh(levels=levels, splits=resolution)
+        self._create_mesh(levels=mesh_config.levels, splits=mesh_config.resolution)
     
     @property
     def mesh_structure(self) -> dict:

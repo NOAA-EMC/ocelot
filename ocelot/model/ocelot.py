@@ -18,11 +18,10 @@ from torch_geometric.data import HeteroData
 from ocelot.configs.model_config import ModelConfig
 from ocelot.configs.observation_config import ObservationConfig
 from ocelot.logger import log
-from ocelot.model.coder.attn_bipartite import BipartiteGAT
-from ocelot.model.coder.interaction_net import InteractionNet
-from ocelot.model.processor.processor_factory import ProcessorFactory
-from ocelot.model.mesh.mesh_factory import MeshFactory
-from ocelot.model.mlp_block import make_mlp
+from ocelot.model import coder
+from ocelot.model import processor
+from ocelot.model import mesh
+from ocelot.model import mlp_block
 from ocelot.process_timeseries import _encode_target_time_features
 
 
@@ -199,7 +198,7 @@ class Ocelot(nn.Module):
         print(f"{'='*70}\n")
 
         self.mesh_resolution = mesh_resolution
-        self.mesh = MeshFactory.build(mesh_type, mesh_levels, mesh_resolution)
+        self.mesh = mesh.make(model_config.mesh)
 
         self.is_hierarchical = (mesh_type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
 
@@ -217,13 +216,13 @@ class Ocelot(nn.Module):
         # Get mesh feature dimension from the first mesh
         mesh_feature_dim = self.mesh.mesh_features_torch[0].shape[1]
 
-        self.mesh_embedder = make_mlp([mesh_feature_dim] + self.mlp_blueprint_end)
+        self.mesh_embedder = mlp_block.make([mesh_feature_dim] + self.mlp_blueprint_end)
 
         # Create scan-angle embedders once to avoid loop-order surprises
         # These embeddings are used ONLY for decoder initialization
         self.scan_angle_embed_dim = int(embeddings_config.scan_angle_dim)
-        self.scan_angle_embedder = make_mlp([1, self.scan_angle_embed_dim])
-        self.ascat_scan_angle_embedder = make_mlp([3, self.scan_angle_embed_dim])
+        self.scan_angle_embedder = mlp_block.make([1, self.scan_angle_embed_dim])
+        self.ascat_scan_angle_embedder = mlp_block.make([3, self.scan_angle_embed_dim])
 
         # Optional: project scan-angle embedding across the full hidden_dim so it can't be confined
         # to a small trailing slice of the receiver representation.d
@@ -248,7 +247,7 @@ class Ocelot(nn.Module):
         # Target valid-time + local solar time conditioning lives in the last 5 target_metadata columns.
         self.target_time_feature_dim = 5
         self.target_time_embed_dim = embeddings_config.target_time_dim
-        self.target_time_embedder = make_mlp([self.target_time_feature_dim, self.target_time_embed_dim])
+        self.target_time_embedder = mlp_block.make([self.target_time_feature_dim, self.target_time_embed_dim])
         self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.hidden_dim)
 
         node_types = ["mesh"]
@@ -270,77 +269,29 @@ class Ocelot(nn.Module):
                 edge_type_tuple_enc = (node_type_input, "to", "mesh")
                 enc_key = self.mesh.edge_key(edge_type_tuple_enc)
 
-                if encoder_config.type == "gat":
-                    self.observation_encoders[enc_key] = BipartiteGAT(
-                        send_dim=hidden_dim,
-                        rec_dim=hidden_dim,
-                        hidden_dim=hidden_dim,
-                        layers=encoder_config.layers,
-                        heads=encoder_config.heads,
-                        dropout=encoder_config.dropout,
-                        edge_dim=getattr(encoder_config, 'edge_dim', None),
-                        dst_chunk_size=getattr(encoder_config, 'dst_chunk_size', None),
-                        dst_chunk_threshold=encoder_config.dst_chunk_threshold,
-                        use_activation_checkpointing=encoder_config.use_activation_checkpointing,
-                    )
-                else:
-                    self.observation_encoders[enc_key] = InteractionNet(
-                        edge_index=None,
-                        send_dim=hidden_dim,
-                        rec_dim=hidden_dim,
-                        hidden_layers=encoder_config.hidden_layers,
-                        update_edges=encoder_config.update_edges,
-                        edge_chunk_sizes=getattr(encoder_config, 'edge_chunk_sizes', None),
-                        aggr_chunk_sizes=getattr(encoder_config, 'aggr_chunk_sizes', None),
-                        aggr=encoder_config.aggr,
-                    )
-                # Decoder GNN (mesh -> target)
+                self.observation_encoders[enc_key] = coder.make(model_config.encoder)
+
                 edge_type_tuple_dec = ("mesh", "to", node_type_target)
                 dec_key = self.mesh.edge_key(edge_type_tuple_dec)
 
-                if decoder_config.type == "gat":
-                    self.observation_decoders[dec_key] = BipartiteGAT(
-                        send_dim=hidden_dim,
-                        rec_dim=hidden_dim,
-                        hidden_dim=hidden_dim,
-                        layers=decoder_config.layers,
-                        heads=decoder_config.heads,
-                        dropout=decoder_config.dropout,
-                        edge_dim=getattr(decoder_config, 'edge_dim', None),
-                        dst_chunk_size=getattr(decoder_config, 'dst_chunk_size', None),
-                        dst_chunk_threshold=decoder_config.dst_chunk_threshold,
-                        use_activation_checkpointing=decoder_config.use_activation_checkpointing,
-                    )
-                else:
-                    self.observation_decoders[dec_key] = InteractionNet(
-                        edge_index=None,
-                        send_dim=hidden_dim,
-                        rec_dim=hidden_dim,
-                        hidden_layers=decoder_config.hidden_layers,
-                        update_edges=decoder_config.update_edges,
-                        edge_chunk_sizes=getattr(decoder_config, 'edge_chunk_sizes', None),
-                        aggr_chunk_sizes=getattr(decoder_config, 'aggr_chunk_sizes', None),
-                        aggr=decoder_config.aggr,
-                    )
+                self.observation_decoders[dec_key] = coder.make(model_config.decoder)
 
                 # Initial MLP to project raw features to hidden_dim
                 # Add pressure-level embedding dimensions for radiosonde and aircraft input
                 embedder_input_dim = input_dim
                 if inst_name in ["radiosonde", "aircraft"]:
                     embedder_input_dim += self.pressure_level_embed_dim
-                self.observation_embedders[node_type_input] = make_mlp([embedder_input_dim] + self.mlp_blueprint_end)
+                self.observation_embedders[node_type_input] = mlp_block.make([embedder_input_dim] + self.mlp_blueprint_end)
 
                 # Output mapper takes ONLY decoded features (hidden_dim)
                 # Geometry conditioning happens at decoder initialization, not in output mapper
                 input_dim_for_mapper = hidden_dim
 
                 output_map_layers = [input_dim_for_mapper] + [hidden_dim] * hidden_layers + [target_dim]
-                self.output_mappers[node_type_target] = make_mlp(output_map_layers, layer_norm=False)
+                self.output_mappers[node_type_target] = mlp_block.make(output_map_layers, layer_norm=False)
                 # Geometry dependence is enforced solely through decoder conditioning
 
-        self.processor = ProcessorFactory.build(self.mesh, 
-                                                hidden_dim=self.hidden_dim, 
-                                                processor_config=processor_config)
+        self.processor = processor.make(self.mesh, processor_config)
 
 
 

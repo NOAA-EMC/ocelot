@@ -12,7 +12,7 @@ from torch import nn
 DEFAULT_DTYPE = torch.float32
 
 
-def make_mlp(blueprint, layer_norm=True, output_activation=None):
+def make(blueprint, layer_norm=True, output_activation=None):
     """
     Create MLP from list blueprint, with
     input dimensionality: blueprint[0]
