@@ -43,7 +43,7 @@ class GatCoderConfig(CoderConfig):
     layers = Optional(IntField(), default=2)
     heads = Optional(IntField(), default=4)
     dropout = Optional(FloatField(), default=0.0)
-    edge_dim = Optional(IntField())
+    edge_dim = Optional(IntField(), default=4)
     dst_chunk_size = Optional(IntField())
     dst_chunk_threshold = Optional(IntField(), default=20_000)
     use_activation_checkpointing = Optional(BoolField(), default=True)

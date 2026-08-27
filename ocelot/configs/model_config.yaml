@@ -11,6 +11,7 @@ encoder:
   rec_dim: *hidden_dim
   send_dim: *hidden_dim
   hidden_dim: *hidden_dim
+  edge_dim: 4
   layers: 2
   heads: 4
   dropout: 0.0
@@ -29,6 +30,7 @@ decoder:
   rec_dim: *hidden_dim
   send_dim: *hidden_dim
   hidden_dim: *hidden_dim
+  edge_dim: 4
   layers: 2
   heads: 4
   dropout: 0.0

@@ -282,6 +282,8 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
         verbose=verbose,
     )
 
+    module.model.train()
+
     resume_path = _resolve_checkpoint(training_config)
     if resume_path and training_config.load_weights_only:
         print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
