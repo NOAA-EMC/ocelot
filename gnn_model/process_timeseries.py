@@ -298,8 +298,8 @@ def organize_bins_times(
     input_delta = pd.Timedelta(hours=input_window_hours)
     target_delta = pd.Timedelta(hours=target_window_hours)
 
-    t0 = int(start_date.timestamp())
-    # t0 = int((start_date - input_delta).timestamp())  # [MK] This fixes the first empty bin, will test separately next
+    # t0 = int(start_date.timestamp())
+    t0 = int((start_date - input_delta).timestamp())  # [MK] This fixes the first empty bin, will test separately next
     t1 = int(end_date.timestamp())
 
     data_summary = {}
@@ -307,7 +307,7 @@ def organize_bins_times(
     # searchsorted (O(log N)) vs boolean masks (O(N)). Requires time_ts monotonic —
     # true here since zar_time order matches obs-time order, but unenforced, and a
     # violation gives wrong slices silently. Set False for the always-correct masks.
-    SEARCHSORT=True  
+    SEARCHSORT = True
     for obs_type in observation_config.keys():
         for key in observation_config[obs_type].keys():
             z = z_dict[obs_type][key]
@@ -409,7 +409,7 @@ def organize_bins_times(
 
             # unique ordered windows + integer codes for each row's window
             uniq_win = pd.Index(win_valid).unique().sort_values()
-            # uniq_win = uniq_win[uniq_win >= start_date]  # [MK] This is for the first empty bin fix, will test separately next
+            uniq_win = uniq_win[uniq_win >= start_date]  # [MK] This is for the first empty bin fix, will test separately next
 
             if require_targets:
                 uniq_win = uniq_win[uniq_win + target_delta <= end_date]
