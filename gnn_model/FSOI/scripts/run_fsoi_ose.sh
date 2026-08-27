@@ -102,7 +102,11 @@ OSE_CHANNELS="${OSE_CHANNELS:-}"
 OSE_PATH_INTEGRATION_PAIR_INDICES="${OSE_PATH_INTEGRATION_PAIR_INDICES:-}"
 OSE_PATH_INTEGRATION_T_VALUES="${OSE_PATH_INTEGRATION_T_VALUES:-0 0.25 0.5 0.75 1}"
 OSE_PATH_INTEGRATION_PAIR_INDICES="${OSE_PATH_INTEGRATION_PAIR_INDICES//,/ }"
+OSE_PATH_INTEGRATION_PAIR_INDICES="${OSE_PATH_INTEGRATION_PAIR_INDICES//:/ }"
+OSE_PATH_INTEGRATION_PAIR_INDICES="${OSE_PATH_INTEGRATION_PAIR_INDICES//;/ }"
 OSE_PATH_INTEGRATION_T_VALUES="${OSE_PATH_INTEGRATION_T_VALUES//,/ }"
+OSE_PATH_INTEGRATION_T_VALUES="${OSE_PATH_INTEGRATION_T_VALUES//:/ }"
+OSE_PATH_INTEGRATION_T_VALUES="${OSE_PATH_INTEGRATION_T_VALUES//;/ }"
 
 # Parse denied instruments (default: atms)
 OSE_INSTRUMENTS="${OSE_INSTRUMENTS:-atms}"
@@ -203,6 +207,7 @@ if [ -n "$OSE_PATH_INTEGRATION_PAIR_INDICES" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --ose_path_integration_pair_indices $OSE_PATH_INTEGRATION_PAIR_INDICES"
     EXTRA_ARGS="$EXTRA_ARGS --ose_path_integration_t_values $OSE_PATH_INTEGRATION_T_VALUES"
 fi
+echo "[ARGS]    $EXTRA_ARGS"
 
 python FSOI/fsoi_inference.py \
     --checkpoint    "$CKPT" \
@@ -225,6 +230,17 @@ OSE_CSV="$OUTPUT_DIR/evaluation/ose_results.csv"
 if [ -f "$OSE_CSV" ]; then
     echo "OSE results (first 20 rows):"
     head -21 "$OSE_CSV"
+    if [ -n "$OSE_PATH_INTEGRATION_PAIR_INDICES" ]; then
+        if head -1 "$OSE_CSV" | grep -q "path_integrated_fsoi"; then
+            echo "[PATH] Path-integration columns found in $OSE_CSV"
+        else
+            echo "ERROR: Path integration was requested for pairs '$OSE_PATH_INTEGRATION_PAIR_INDICES',"
+            echo "       but $OSE_CSV does not contain path_integrated_fsoi."
+            echo "       Check that the submitted checkout includes the latest fsoi_inference.py"
+            echo "       and fsoi_ose.py, and avoid comma-separated values inside sbatch --export."
+            exit 2
+        fi
+    fi
 else
     echo "WARNING: $OSE_CSV not found — check log"
     grep -E "OSE|ose_impact|ea_denied|ea_control" \
