@@ -41,16 +41,16 @@ INSTRUMENT_NAMES = {
 
 # Channel names for satellites
 CHANNEL_NAMES = {
-    'amsua': {i: f'AMSU-A ch{i+1}' for i in range(15)},
-    'atms': {i: f'ATMS ch{i+1}' for i in range(22)},
-    'ssmis': {i: f'SSMIS ch{i+1}' for i in range(24)},
-    'seviri_asr': {i: f'SEVIRI ASR ch{4+i}' for i in range(8)},
-    'seviri_csr': {i: f'SEVIRI CSR ch{4+i}' for i in range(8)},
-    'avhrr': {i: f'AVHRR ch{i+1}' for i in range(5)},
-    'ascat': {0: 'ASCAT u-wind', 1: 'ASCAT v-wind'},
-    'radiosonde': {0: 'Radiosonde Temp', 1: 'Radiosonde Dewpt', 2: 'Radiosonde U', 3: 'Radiosonde V'},
-    'aircraft': {0: 'Aircraft Temp', 1: 'Aircraft Humid', 2: 'Aircraft U', 3: 'Aircraft V'},
-    'surface_obs': {0: 'Surface Temp', 1: 'Surface Dewpt', 2: 'Surface U', 3: 'Surface V', 4: 'Surface Pres'}
+    'amsua': {i + 1: f'AMSU-A ch{i + 1}' for i in range(15)},
+    'atms': {i + 1: f'ATMS ch{i + 1}' for i in range(22)},
+    'ssmis': {i + 1: f'SSMIS ch{i + 1}' for i in range(24)},
+    'seviri_asr': {i + 1: f'SEVIRI ASR ch{4 + i}' for i in range(8)},
+    'seviri_csr': {i + 1: f'SEVIRI CSR ch{4 + i}' for i in range(8)},
+    'avhrr': {i + 1: f'AVHRR ch{i + 1}' for i in range(5)},
+    'ascat': {1: 'ASCAT u-wind', 2: 'ASCAT v-wind'},
+    'radiosonde': {1: 'Radiosonde Temp', 2: 'Radiosonde Dewpt', 3: 'Radiosonde U', 4: 'Radiosonde V'},
+    'aircraft': {1: 'Aircraft Temp', 2: 'Aircraft Humid', 3: 'Aircraft U', 4: 'Aircraft V'},
+    'surface_obs': {1: 'Surface Temp', 2: 'Surface Dewpt', 3: 'Surface U', 4: 'Surface V', 5: 'Surface Pres'}
 }
 
 
@@ -343,16 +343,16 @@ def plot_satellite_channels_by_pressure(df, instruments):
             print(f"✗ No {inst} data with pressure info; skipping {inst} heatmap")
             continue
 
-        # Determine channel count from CHANNEL_NAMES fallback to max channel+1
+        # Determine human-facing channel IDs. FSOI CSV channels are 1-based.
         if inst in CHANNEL_NAMES:
             ch_map = CHANNEL_NAMES[inst]
-            n_ch = max(ch_map.keys()) + 1 if ch_map else inst_df['channel'].max() + 1
+            channels = sorted(ch_map.keys()) if ch_map else sorted(int(c) for c in inst_df['channel'].dropna().unique())
         else:
-            n_ch = int(inst_df['channel'].max()) + 1
-            ch_map = {i: f"{inst} ch{i+1}" for i in range(n_ch)}
+            channels = sorted(int(c) for c in inst_df['channel'].dropna().unique())
+            ch_map = {c: f"{inst} ch{c}" for c in channels}
 
-        col_keys = [(inst, ch) for ch in range(n_ch)]
-        col_labels = [ch_map.get(ch, f"{inst} ch{ch+1}") for ch in range(n_ch)]
+        col_keys = [(inst, ch) for ch in channels]
+        col_labels = [ch_map.get(ch, f"{inst} ch{ch}") for ch in channels]
 
         # Build pressure labels, falling back to a single "All-levels" bin when missing
         inst_df = inst_df.copy()

@@ -236,7 +236,7 @@ def test_fsoi_formula():
         # Compute FSOI
         delta_x = xa - xb
         g_sum = ga + gb
-        fsoi = delta_x * g_sum
+        fsoi = 0.5 * delta_x * g_sum
 
         print(f"✓ FSOI formula computed")
         print(f"  Innovation (δx) mean: {delta_x.mean().item():.6e}")
@@ -254,6 +254,9 @@ def test_fsoi_formula():
         fsoi_dict = compute_fsoi_per_observation(xa_dict, xb_dict, ga_dict, gb_dict)
 
         if 'test_inst' in fsoi_dict:
+            if not torch.allclose(fsoi_dict['test_inst'], fsoi):
+                print("✗ FSOI dict computation does not match 0.5 * δx * (ga+gb)")
+                return False, None
             print("✓ FSOI computation with dict format works")
             return True, None
         else:

@@ -11,7 +11,7 @@ This implementation provides **FSOI** (Forecast Sensitivity to Observations Impa
 FSOI quantifies how much each observation impacts forecast error through the formula:
 
 ```
-FSOI(k) = δx(k) ⊙ (ga(k) + gb(k))
+FSOI(k) = 0.5 * δx(k) ⊙ (ga(k) + gb(k))
 ```
 
 Where:
@@ -94,6 +94,18 @@ python FSOI/fsoi_inference.py \
     --device cuda:0
 ```
 
+Recommended radiosonde all-variable monthly evaluation example:
+
+```bash
+python FSOI/fsoi_inference.py \
+  --checkpoint /scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt \
+  --config FSOI/configs/fsoi_config_radiosonde_all.yaml \
+  --data_path /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7 \
+  --start_date 2025-06-01 \
+  --end_date 2025-07-01 \
+  --output_dir FSOI/fsoi_outputs/radiosonde_allvars_impact_20250601_20250701
+```
+
 #### Batch Mode (SLURM)
 
 1. Edit `FSOI/scripts/run_fsoi.sh` to set:
@@ -131,7 +143,8 @@ Columns:
 - `n_observations`: Number of observations
 - `n_channels`: Number of channels
 - `mean_impact`: Average FSOI per observation
-- `sum_impact`: Total FSOI (larger magnitude = more impact)
+- `sum_impact`: Total FSOI over processed observations
+- `sum_impact_scaled`: Estimated full total when decoder subsampling was used
 - `positive_frac`: Fraction of observations with positive FSOI
 - `pair_idx`: Time window pair index
 - `prev_bin`, `curr_bin`: Time window identifiers
@@ -168,7 +181,7 @@ For each time window pair (k-1, k):
    - Forward pass with xb
    - Compute forecast error eb
    - Backpropagate: gb = ∇_xb(eb)
-6. **Compute FSOI**: FSOI = (xa - xb) * (ga + gb)
+6. **Compute FSOI**: FSOI = 0.5 * (xa - xb) * (ga + gb)
 7. **Aggregate**: By instrument, channel, region, time
 
 ### Background Prediction Strategy

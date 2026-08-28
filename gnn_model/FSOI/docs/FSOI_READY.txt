@@ -1,19 +1,19 @@
 ╔════════════════════════════════════════════════════════════════════════════╗
-║                     ✅ FSOI TESTS PASSED - READY TO RUN                     ║
+║                      FSOI TESTS PASSED - READY TO RUN                     ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 
 Author: Azadeh Gholoubi
 
-📊 TEST RESULTS (6/6 PASSED)
+TEST RESULTS (6/6 PASSED)
 ──────────────────────────────────────────────────────────────────────────────
   ✓ Config Loading          - FSOI & observation configs OK
   ✓ Model Loading           - Checkpoint loaded, model frozen
   ✓ Dataset Creation        - Sequential structure verified
   ✓ Gradient Computation    - Autograd working correctly
-  ✓ FSOI Formula            - δx ⊙ (ga + gb) computed
+  ✓ FSOI Formula            - 0.5 * δx ⊙ (ga + gb) computed
   ✓ Gradient Requirements   - Input tensors have requires_grad=True
 
-🎯 YOUR EXPERIMENT SETUP
+YOUR EXPERIMENT SETUP
 ──────────────────────────────────────────────────────────────────────────────
   Research Question:
     "How do ALL observation types impact radiosonde temperature forecasts?"
@@ -27,7 +27,7 @@ Author: Azadeh Gholoubi
     ├─ Lead time:   +12 hours (step 0)
     └─ Validation:  Finite-difference enabled (first run)
 
-🚀 COMMANDS TO RUN
+COMMANDS TO RUN
 ──────────────────────────────────────────────────────────────────────────────
 
 1. QUICK TEST (2 days, interactive):
@@ -49,7 +49,7 @@ Author: Azadeh Gholoubi
    $ squeue -u $USER
    $ tail -f logs/fsoi_radiosonde_temp_*.out
 
-📁 OUTPUT LOCATION
+UTPUT LOCATION
 ──────────────────────────────────────────────────────────────────────────────
   FSOI/fsoi_outputs/radiosonde_temp_impact/
 
@@ -59,13 +59,13 @@ Author: Azadeh Gholoubi
     fsoi_by_time.csv        → Daily time series
     figures/                → Plots and visualizations
 
-🔬 INTERPRETATION
+INTERPRETATION
 ──────────────────────────────────────────────────────────────────────────────
   Negative FSOI  →  BENEFICIAL (reduces forecast error)
   Positive FSOI  →  DETRIMENTAL (increases forecast error)
   Zero FSOI      →  NEUTRAL (no impact)
 
-📚 DOCUMENTATION
+DOCUMENTATION
 ──────────────────────────────────────────────────────────────────────────────
   FSOI_SETUP_COMPLETE.md        → Complete guide
   FSOI_RADIOSONDE_TEMP_GUIDE.md → Quick reference
@@ -73,6 +73,6 @@ Author: Azadeh Gholoubi
   FSOI_FIXES.md                 → Technical details
 
 ══════════════════════════════════════════════════════════════════════════════
-All systems GO! Your FSOI implementation is ready. 🚀
+All systems GO! Your FSOI implementation is ready. 
 Start with the quick test, then submit the batch job when ready.
 ══════════════════════════════════════════════════════════════════════════════
