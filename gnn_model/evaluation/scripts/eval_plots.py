@@ -2,14 +2,13 @@
 """eval_plots.py
 
 Figure functions for OCELOT evaluation, plus the data-preparation helpers they
-share (feature discovery, QC masking, lead selection, colour limits).
+share: feature discovery, QC masking, lead selection and colour limits.
 
-Originally authored by Azadeh Gholoubi as part of evaluations.py; restructured
-so that the single-lead and horizon-aggregate variants of every figure are one
-function rather than two near-identical copies.
+Each figure family handles both single-lead sub-windows and aggregated horizons
+through one function; the lead selection is an argument.
 
-Nothing in this module touches the filesystem to *find* inputs -- callers hand
-it an already-loaded DataFrame via a PlotCtx. See evaluations.py.
+This module never searches the filesystem for inputs. Callers hand it an
+already-loaded DataFrame via a PlotCtx. See evaluations.py.
 """
 
 from __future__ import annotations
@@ -39,13 +38,12 @@ except Exception:  # pragma: no cover
 
 
 # =============================================================================
-# Constants carried over from the original module
+# Constants
 # =============================================================================
 
-# NOTE: the per-feature tuning tables (auto_absolute, tiny_threshold,
-# calm_wind_threshold, qc_ranges) used to live here as module constants with no
-# way to reach them from the config. They are now in plotting.yaml under
-# `features:` and are read through PlotCtx.
+# The per-feature tuning tables (auto_absolute, tiny_threshold,
+# calm_wind_threshold, qc_ranges) live in plotting.yaml under `features:` and
+# are read through PlotCtx.
 
 PRESSURE_COL_CANDIDATES = [
     "pressure_hPa", "pressure_hpa", "pressureMeanSeaLevel", "airPressure", "pressure",
@@ -58,8 +56,7 @@ STANDARD_PRESSURE_LEVELS = [
 ]
 
 # Instruments disagree on spelling: radiosonde writes wind_u/wind_v, aircraft
-# writes windU/windV. features.auto_absolute carries both, which is why the old
-# hardcoded snake_case lookup in _plot_wind silently skipped aircraft.
+# writes windU/windV.
 WIND_COMPONENT_ALIASES = (("wind_u", "wind_v"), ("windU", "windV"))
 
 
@@ -129,9 +126,20 @@ def smape(p, t, eps: float = 1e-6):
     return 200.0 * np.abs(p - t) / (np.abs(p) + np.abs(t) + eps)
 
 
+def signed_arc_deg(a, b):
+    """Signed shortest angular difference a - b, in degrees, in [-180, 180).
+
+    Wraps across north: 1 deg against 359 deg is +2, not -358. Exactly
+    opposite directions land on -180, so a cyclic colormap is required for
+    a map of this quantity.
+    """
+    return ((np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+             + 180.0) % 360.0) - 180.0
+
+
 def shortest_arc_deg(a, b):
     """Absolute shortest angular difference in degrees, in [0, 180]."""
-    return np.abs(((a - b + 180.0) % 360.0) - 180.0)
+    return np.abs(signed_arc_deg(a, b))
 
 
 def first_existing(df: pd.DataFrame, candidates: Sequence[str]) -> str | None:
@@ -297,10 +305,9 @@ def infer_step_hours(df: pd.DataFrame) -> int | None:
 def select_leads(df: pd.DataFrame, leads: int | Sequence[int] | None) -> pd.DataFrame:
     """Row-filter to one lead or a set of leads.
 
-    Unlike the original _filter_df_by_lead_hours_set, an empty intersection is
-    NOT silently replaced by "all leads present". That fallback mislabelled AR
-    files, because an AR2 file asked for leads 3/6/9/12 would quietly return
-    its 27/30/33/36 rows tagged as a 0-12h horizon.
+    An empty intersection returns no rows. It is never widened to "all leads
+    present": an AR2 file holds leads 27/30/33/36, so a request for 3/6/9/12
+    must come back empty rather than returning AR2 rows under a 0-12h label.
     """
     if leads is None or "lead_hours_nominal" not in df.columns:
         return df
@@ -350,8 +357,8 @@ def window_tags(ctx: PlotCtx, sel, kind: str, step_hours: int | None,
                 filtered: bool = False) -> tuple[str, str]:
     """Build (filename_tag, title_tag) for a sub-window or horizon selection.
 
-    Reproduces the tag strings emitted by the original code so that existing
-    figure filenames are preserved.
+    A sub-window is a single nominal lead L covering (L - step, L]. A horizon
+    is a contiguous block of leads, labelled by the span it covers.
     """
     fn = ctx.base_filename_tag
     tt = ctx.base_title_tag
@@ -537,12 +544,11 @@ def _add_land(ax) -> None:
 
 
 def make_axes_triple(title: str, figsize=(20, 5), suptitle_y=1.02):
-    """Three PlateCarree panels in a row, sized to match the diff figure.
+    """Three PlateCarree panels in a row.
 
-    The old (20, 6) canvas left a wide band under the title: GeoAxes hold a
-    fixed 2:1 aspect, so three of them across 20in are only ~3.3in tall and get
-    centred vertically, stranding the extra height as whitespace. Matching the
-    diff figure's height and pinning the suptitle just above the axes closes it.
+    GeoAxes hold a fixed 2:1 aspect, so three across 20in are about 3.3in tall.
+    The figure height and suptitle position are set to sit just above them; a
+    taller canvas would centre the axes row and leave a band of whitespace.
     """
     fig, axes = plt.subplots(
         1, 3, figsize=figsize,
@@ -576,10 +582,9 @@ def save_level_skill(ctx: PlotCtx, sub: pd.DataFrame, feature: str, fn_tag: str,
                      level_col: str | None, label_col: str | None) -> None:
     """Write the pressure-level skill table once per instrument/feature/window.
 
-    Both plot_error_map and plot_profiles used to build this table from the
-    same frame with the same defaults, producing byte-identical files. In the
-    original they shared a filename and silently overwrote each other; now the
-    first family to run writes it and the second is a no-op.
+    plot_error_map and plot_profiles both need this table and would build it
+    identically from the same frame. Whichever runs first writes it; the other
+    is a no-op.
     """
     if level_col is None:
         return
@@ -625,13 +630,10 @@ def _record_metric(ctx: PlotCtx, feature: str, kind: str, sel, t, p,
 def plot_diff(ctx: PlotCtx) -> None:
     """Three-panel prediction / truth / signed-difference maps.
 
-    Replaces plot_ocelot_target_diff and plot_ocelot_target_diff_12h_horizon.
-
-    For radiosonde and aircraft this stratifies by pressure level, exactly as
-    plot_error_map does. A single mixed-level diff map is meaningless for a
-    profile instrument: 1000 hPa through 10 hPa obs share the same station
-    lat/lon, so points overplot in row order and the RMSE/bias badge is a
-    vertical average over the whole column.
+    Radiosonde and aircraft are stratified by pressure level. Their obs share
+    station coordinates across the column, so a mixed-level map would overplot
+    1000 hPa through 10 hPa at the same points and average the RMSE and bias
+    over the whole profile.
     """
     require_plotting()
     units = ctx.spec.units
@@ -822,7 +824,8 @@ def sorted_level_labels(series: pd.Series) -> list[str]:
 def plot_error_map(ctx: PlotCtx) -> None:
     """Truth / prediction / error maps, optionally stratified by pressure level.
 
-    Replaces plot_instrument_maps for both the single-lead and horizon cases.
+    The third panel shows the instrument's error_metric: absolute, percent or
+    sMAPE. `auto` resolves per feature against features.auto_absolute.
     """
     require_plotting()
     ps = int(ctx.opt("render.point_size"))
@@ -952,6 +955,66 @@ def plot_error_map(ctx: PlotCtx) -> None:
                        min_points=min_pts if do_levels else 1)
 
 
+def _wind_diff_panels(ctx: PlotCtx, lon, lat, t, p, name: str, units: str,
+                      fn_tag: str, tag_suffix: str, tt_tag: str, tag_dir: str,
+                      *, diff, cmap: str, limits) -> None:
+    """Prediction / truth / signed-difference maps for a derived wind quantity.
+
+    `limits` caps the magnitude of the difference colour range; None leaves it
+    uncapped. Within the cap the range is resolved from the data as for every
+    other diff panel.
+    """
+    ps = int(ctx.opt("render.point_size"))
+    cmap_v = ctx.opt("render.cmap_value")
+
+    vmin, vmax = value_limits(ctx, name, t, p)
+    dmin, dmax = error_limits(ctx, name, diff)
+    if limits is not None:
+        # Robust limits keep contrast for typical errors; the cap stops the
+        # range exceeding what the quantity can physically reach.
+        cap = float(limits)
+        dmin, dmax = max(dmin, -cap), min(dmax, cap)
+    norm = TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)
+
+    fig, axes = plt.subplots(
+        1, 3, figsize=(20, 5),
+        subplot_kw={"projection": ccrs.PlateCarree()}, sharey=True,
+    )
+    for ax, ttl in zip(axes, ["OCELOT", "Target", "Difference"]):
+        ax.set_title(ttl, fontsize=14)
+    fig.suptitle(f"{ctx.instrument} - {name}{tt_tag}{tag_suffix}",
+                 fontsize=16, y=1.02)
+
+    sc0 = axes[0].scatter(lon, lat, c=p, s=ps, cmap=cmap_v, vmin=vmin,
+                          vmax=vmax, transform=ccrs.PlateCarree())
+    fig.colorbar(sc0, ax=axes[0], orientation="vertical",
+                 pad=0.02).set_label(f"Value ({units})")
+    sc1 = axes[1].scatter(lon, lat, c=t, s=ps, cmap=cmap_v, vmin=vmin,
+                          vmax=vmax, transform=ccrs.PlateCarree())
+    fig.colorbar(sc1, ax=axes[1], orientation="vertical",
+                 pad=0.02).set_label(f"Value ({units})")
+    sc2 = axes[2].scatter(lon, lat, c=diff, s=ps, cmap=cmap, norm=norm,
+                          transform=ccrs.PlateCarree())
+    fig.colorbar(sc2, ax=axes[2], orientation="vertical",
+                 pad=0.02).set_label(f"Pred - True ({units})")
+
+    rmse = float(np.sqrt(np.nanmean(diff ** 2)))
+    stats_kw = dict(
+        transform=axes[2].transAxes, va="top", zorder=10,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                  alpha=0.8, linewidth=0),
+    )
+    axes[2].text(0.02, 0.98, f"RMSE = {rmse:.2f} {units}", ha="left", **stats_kw)
+    axes[2].text(0.98, 0.98, f"Bias = {float(np.nanmean(diff)):+.2f}",
+                 ha="right", **stats_kw)
+
+    _finish_geo(axes)
+    plt.tight_layout()
+    _save(tag_dir,
+          f"{ctx.instrument}_OCELOT_Target_Diff_{name}{fn_tag}{tag_suffix}.png",
+          ctx)
+
+
 def _plot_wind(ctx: PlotCtx, sub: pd.DataFrame, fn_tag: str, tt_tag: str,
                lvl_labels: pd.Series | None, min_points: int = 1) -> None:
     cols = wind_columns(sub)
@@ -971,9 +1034,8 @@ def _plot_wind(ctx: PlotCtx, sub: pd.DataFrame, fn_tag: str, tt_tag: str,
 
     def render(tag_dir: str, tag_suffix: str, mask: np.ndarray) -> None:
         m = ok & mask
-        # Without this the wind panels ignored min_points_per_level and would
-        # draw a global map from a handful of obs, while the scalar panels at
-        # the same lead and level were correctly suppressed.
+        # Same sample-count floor the scalar panels use, so a level with only
+        # a handful of obs is skipped rather than drawn as a sparse map.
         if not np.any(m) or int(m.sum()) < int(min_points):
             return
         tu_i, tv_i, pu_i, pv_i = tu[m], tv[m], pu[m], pv[m]
@@ -1006,6 +1068,12 @@ def _plot_wind(ctx: PlotCtx, sub: pd.DataFrame, fn_tag: str, tt_tag: str,
         plt.tight_layout()
         _save(tag_dir, f"{ctx.instrument}_map_wind_speed{fn_tag}{tag_suffix}.png", ctx)
 
+        _wind_diff_panels(
+            ctx, lon, lat, ts, pspd, "wind_speed", "m/s",
+            fn_tag, tag_suffix, tt_tag, tag_dir,
+            diff=pspd - ts, cmap=ctx.opt("render.cmap_diff"), limits=None,
+        )
+
         keep = ts >= calm
         if int(keep.sum()) < int(min_points):
             return
@@ -1034,6 +1102,15 @@ def _plot_wind(ctx: PlotCtx, sub: pd.DataFrame, fn_tag: str, tt_tag: str,
         plt.tight_layout()
         _save(tag_dir, f"{ctx.instrument}_map_wind_direction{fn_tag}{tag_suffix}.png", ctx)
 
+        # Cyclic colormap: -180 and +180 are the same rotation, so points at
+        # the ends of the range share a colour instead of reading as opposites.
+        _wind_diff_panels(
+            ctx, lon_d, lat_d, td, pd_, "wind_direction", "deg",
+            fn_tag, tag_suffix, tt_tag, tag_dir,
+            diff=signed_arc_deg(pd_, td),
+            cmap=ctx.opt("render.cmap_diff_circular"), limits=180.0,
+        )
+
     if ctx.instrument in ("radiosonde", "aircraft"):
         if lvl_labels is not None:
             for lvl in sorted_level_labels(lvl_labels):
@@ -1048,7 +1125,7 @@ def _plot_wind(ctx: PlotCtx, sub: pd.DataFrame, fn_tag: str, tt_tag: str,
 # =============================================================================
 
 def plot_pred_only(ctx: PlotCtx) -> None:
-    """Single-panel prediction maps. Replaces plot_mesh_maps."""
+    """Single-panel prediction maps, for files with no ground truth."""
     require_plotting()
     ps = int(ctx.opt("render.point_size"))
     cmap_v = ctx.opt("render.cmap_value")
@@ -1200,9 +1277,9 @@ def metrics_by_pressure_bins(df, feat, pcol="pressure_hPa",
 def wrap_title(title: str, width: int = 52, max_lines: int = 3) -> str:
     """Wrap a title to a few short lines.
 
-    Profile panels are only 7 inches wide, and figures are saved with
-    bbox_inches="tight", so a long single-line title stretches the whole canvas
-    to fit it. Explicit newlines in the input are preserved as breaks.
+    Profile panels are 7 inches wide and saved with bbox_inches="tight", so a
+    long single-line title would stretch the canvas to fit it. Explicit
+    newlines in the input are preserved as breaks.
     """
     import textwrap
 
@@ -1243,7 +1320,6 @@ def _profile_panel(x, p_hpa, labels, *, xlabel, title, out_name, ctx,
 def plot_profiles(ctx: PlotCtx) -> None:
     """Vertical profiles by categorical pressure level.
 
-    Replaces plot_radiosonde_profiles_by_pressure_level and its _horizon twin.
     """
     require_plotting()
     min_samples = int(getattr(ctx.spec, "profile_min_samples", None)
@@ -1274,9 +1350,6 @@ def plot_profiles(ctx: PlotCtx) -> None:
             if level_df is None or level_df.empty:
                 continue
 
-            # NOTE: the original wrote this file with a hard-coded "radiosonde_"
-            # prefix even for aircraft, so aircraft tables overwrote radiosonde
-            # ones. Now keyed by the actual instrument, and written once.
             save_level_skill(ctx, sub, feat, fn_tag, level_col, label_col)
 
             p_hpa = level_df["pressure_hPa"].to_numpy()
@@ -1335,8 +1408,6 @@ def plot_profiles(ctx: PlotCtx) -> None:
                 vr = lf["variance_ratio"].to_numpy()
                 finite = vr[np.isfinite(vr)]
                 xlim = (0, max(120, float(np.max(finite)) * 105)) if finite.size else (0, 120)
-                # NOTE: the original named this file with the epoch only, so
-                # every lead overwrote the previous one. Now uses the full tag.
                 _profile_panel(
                     vr * 100, p_hpa, labels,
                     xlabel="Prediction Variance / True Variance (%)",
@@ -1358,7 +1429,7 @@ def plot_ar_growth(metrics: pd.DataFrame, fig_dir: str, cfg: dict) -> None:
     """RMSE and bias against lead hour, one line per AR step.
 
     Built from the metrics rows accumulated during plotting, so it costs no
-    extra file reads. This is the diagnostic the old code had no equivalent of.
+    extra file reads.
     """
     require_plotting()
     if metrics is None or metrics.empty:

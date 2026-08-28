@@ -11,14 +11,15 @@ io:
   # Prefix applied to any relative data_dir / plot_dir below. Absolute paths in
   # those keys are used as-is and ignore base_dir. null falls back to the
   # directory the run was launched from.
-  # [recommended] base_dir: /PATH/TO/ocelot/gnn_model
+  # [Recommended] base_dir: /PATH/TO/ocelot/gnn_model
   base_dir: null
 
-  # Root to search, relative to <base_dir>. May be a single directory or a list.
+  # Root to search, relative to base_dir. May be a single directory or a list.
   # Directories named obs-space-ar<N> anywhere under this root have their AR
   # step parsed automatically from the directory name.
-  data_dir: val_csv/test1
-  plot_dir: evaluation/figures/test1/val_obs
+  data_dir: val_csv/EXPT
+
+  plot_dir: evaluation/figures/EXPT/val_obs
 
   # auto  -> detect per file by looking for true_* columns in the header
   # true  -> force comparison plots
@@ -155,8 +156,7 @@ figures:
 # -----------------------------------------------------------------------------
 # Per-feature tuning tables
 #
-# These were previously hardcoded at the top of evaluations.py with no way to
-# reach them. Keys are feature names as they appear in the pred_/true_ columns.
+# Keys are feature names as they appear in the pred_/true_ columns.
 # -----------------------------------------------------------------------------
 features:
   # Features that resolve to absolute error when an instrument's error_metric
@@ -207,7 +207,7 @@ features:
 # -----------------------------------------------------------------------------
 windows:
   # Per-lead maps: one figure per nominal lead, window (L - step, L]
-  subwindows: true
+  subwindows: false
   # auto = every lead present. Otherwise a list naming the END of each window,
   # since a window is (L - step, L]: [3, 9] gives 0-3h and 6-9h.
   subwindow_leads: auto
@@ -226,14 +226,14 @@ windows:
 # Colour limits
 # -----------------------------------------------------------------------------
 limits:
-  # auto   -> min/max over truth and prediction (previous behaviour)
+  # auto   -> plain min/max over truth and prediction
   # robust -> percentile-based, ignores single outliers
   # fixed  -> use the explicit entries below, falling back to robust
   mode: robust
   robust_percentile: 99
 
-  # Reuse one set of limits across every AR step of a run so that AR0 and AR3
-  # maps are visually comparable. Costs one extra header pass over the files.
+  # Use one set of limits across every AR step of a run, so AR0 and AR3 maps
+  # are comparable by eye. Costs one extra pass over the selected files.
   share_across_ar_steps: true
 
   # Explicit overrides. Resolution order:
@@ -258,6 +258,9 @@ render:
   point_size: 7
   cmap_value: turbo
   cmap_diff: bwr
+  # Cyclic colormap for the signed wind-direction difference, where -180 and
+  # +180 are the same rotation and must share a colour.
+  cmap_diff_circular: twilight_shifted
   cmap_error: jet
   min_points_per_level: 200
   profile_min_samples: 500

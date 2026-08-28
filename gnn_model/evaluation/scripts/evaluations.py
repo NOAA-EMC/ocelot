@@ -3,14 +3,14 @@
 
 Entry point for OCELOT evaluation plotting and metrics.
 
-Originally authored by Azadeh Gholoubi. Restructured so that:
+All configuration lives in plotting.yaml. This module:
 
-  * configuration lives in plotting.yaml rather than in the sbatch script
-  * the instrument table is a registry, not a 500-line if-chain
-  * every CSV is discovered once and read once, then all requested figures
-    are rendered from the in-memory frame
-  * ground truth is detected from the file rather than declared by the caller
-  * AR rollout steps (obs-space-ar<N>) are first-class selectors
+  * discovers CSVs under io.data_dir, parsing instrument, init time, epoch,
+    batch, forecast hour and AR rollout step from the path and filename
+  * filters them by the select block, detects whether each has ground truth,
+    and reads each file once
+  * dispatches the requested figure families in eval_plots from the in-memory
+    frame, then writes metrics.csv and the AR error-growth plots
 
 Usage
 -----
@@ -46,10 +46,7 @@ DEFAULT_CONFIG = os.path.join(SCRIPT_DIR, "plotting.yaml")
 
 @dataclass(frozen=True)
 class InstrumentSpec:
-    """Per-instrument plotting behaviour.
-
-    Adding an instrument is one entry here instead of six call sites.
-    """
+    """Per-instrument plotting behaviour, built from instruments.registry."""
     n_channels: int
     units: str | None = None
     error_metric: str = "percent"          # auto | absolute | percent | smape
@@ -59,8 +56,8 @@ class InstrumentSpec:
     channels: tuple = ()                   # filled in from config at runtime
 
 
-# Populated from plotting.yaml by build_registry(). Empty until a config is
-# loaded -- there is no hardcoded copy of the instrument table in this file.
+# Populated from instruments.registry in plotting.yaml by build_registry().
+# Empty until a config is loaded.
 REGISTRY: dict[str, InstrumentSpec] = {}
 
 _SPEC_FIELDS = {
@@ -127,8 +124,8 @@ def build_registry(cfg: dict) -> dict[str, InstrumentSpec]:
 # Config loading
 # =============================================================================
 
-# Required keys, as dotted paths. This is a schema -- key names and expected
-# shapes only. It holds no values: plotting.yaml is the single source for those.
+# Required config keys, as dotted paths with their expected shape. Key names
+# only; plotting.yaml holds the values.
 # shapes only. It holds no values: plotting.yaml is the single source for those.
 SCHEMA: tuple[tuple[str, str], ...] = (
     ("io.base_dir",                    "path or null"),
@@ -173,6 +170,7 @@ SCHEMA: tuple[tuple[str, str], ...] = (
     ("render.point_size",              "number"),
     ("render.cmap_value",              "colormap name"),
     ("render.cmap_diff",               "colormap name"),
+    ("render.cmap_diff_circular",      "cyclic colormap name"),
     ("render.cmap_error",              "colormap name"),
     ("render.min_points_per_level",    "int"),
     ("render.profile_min_samples",     "int"),
@@ -194,10 +192,10 @@ def dotted_get(cfg: dict, path: str):
 
 
 def validate_config(cfg: dict, source: str) -> dict:
-    """Fail loudly on a missing key rather than silently substituting a value.
+    """Check every key in SCHEMA is present, and report all that are not.
 
-    A silent fallback is how a plot quietly changes without anyone noticing,
-    so an incomplete config is an error, not a warning.
+    An incomplete config is an error rather than a warning: substituting a
+    default would change a plot without saying so.
     """
     missing = []
     for path, shape in SCHEMA:
@@ -233,11 +231,12 @@ def load_config(path: str | None) -> dict:
             "pyyaml is required to read plotting.yaml. "
             "conda install -n gnn-env pyyaml"
         ) from e
+
     class _StrictLoader(yaml.SafeLoader):
         """SafeLoader that rejects duplicate keys.
 
-        Stock YAML silently keeps the last of a repeated key, so a copy-paste
-        slip leaves two blocks in the file and only one of them in effect.
+        YAML keeps the last of a repeated key without complaint, which leaves
+        two blocks in the file and only one of them in effect.
         """
 
     def _no_dupes(loader, node, deep=False):
@@ -248,7 +247,7 @@ def load_config(path: str | None) -> dict:
                 raise ValueError(
                     f"{path}: duplicate key '{k}' at line "
                     f"{k_node.start_mark.line + 1} (first seen earlier). "
-                    f"YAML would silently keep only the last one."
+                    f"YAML keeps only the last occurrence."
                 )
             mapping[k] = loader.construct_object(v_node, deep=deep)
         return mapping
@@ -276,8 +275,8 @@ def _under_base(path: str, base: str | None) -> str:
 def resolve_paths(cfg: dict) -> dict:
     """Expand io.base_dir into data_dir / plot_dir.
 
-    Called once after CLI overrides so everything downstream sees absolute
-    paths and no other function has to know base_dir exists.
+    Called once after CLI overrides, so everything downstream sees absolute
+    paths and no other function needs to know base_dir exists.
     """
     io = cfg["io"]
     base = io.get("base_dir")
@@ -366,10 +365,9 @@ def _ar_dir_regexes(cfg: dict | None):
 def _normalize_instrument(raw: str) -> tuple[str | None, str | None]:
     """Map a filename stem onto a registry key, tolerating suffixes.
 
-    Prediction CSVs are written with variant suffixes such as
-    'aircraft_target' or 'surface_obs_target'. Match the longest registry key
-    that the stem starts with and keep the remainder as a variant label so
-    variants do not overwrite each other's figures.
+    Filenames carry variant suffixes such as 'aircraft_target'. Match the
+    longest registry key the stem starts with and keep the remainder as a
+    variant label, so variants do not overwrite each other's figures.
     """
     if raw in REGISTRY:
         return raw, None
@@ -424,64 +422,6 @@ def _ar_step_from_path(path: str, regexes=None) -> int | None:
     return None
 
 
-@dataclass(frozen=True)
-class FileRecord:
-    path: str
-    instrument: str
-    rel_dir: str = ""          # source subdirectory, relative to its data_dir root
-    variant: str | None = None
-    init_time: str | None = None
-    epoch: int | None = None
-    batch: int | None = None
-    fhr: int | None = None
-    ar_step: int | None = None
-    has_truth: bool | None = None
-
-    @property
-    def basename(self) -> str:
-        return os.path.basename(self.path)
-
-
-def _parse_filename(path: str) -> dict | None:
-    base = os.path.basename(path)
-    m = FNAME_RE.match(base) or MESH_RE.match(base)
-    if not m:
-        return None
-    g = m.groupdict()
-    return {
-        "instrument": g.get("inst"),
-        "init_time": g.get("init"),
-        "epoch": int(g["epoch"]) if g.get("epoch") else None,
-        "batch": int(g["batch"]) if g.get("batch") else None,
-        "fhr": int(g["fhr"]) if g.get("fhr") else None,
-    }
-
-
-def _ar_step_from_path(path: str, regexes=None) -> int | None:
-    """Parse an AR rollout step from any directory component of the path."""
-    regexes = regexes if regexes is not None else _ar_dir_regexes(None)
-    for part in os.path.normpath(path).split(os.sep):
-        for rx in regexes:
-            m = rx.fullmatch(part)
-            if m:
-                return int(m.group(1))
-    return None
-
-
-def _ar_step_from_fhr(fhr: int | None, window_hours) -> int | None:
-    """Infer the AR step from a forecast hour when no AR directory exists.
-
-    val_mesh_csv writes a flat tree where the rollout is encoded only in the
-    filename: with a 12h window, f003-f012 is AR0, f015-f024 is AR1, and so on.
-    """
-    if fhr is None or not window_hours:
-        return None
-    w = int(window_hours)
-    if w <= 0 or int(fhr) <= 0:
-        return None
-    return (int(fhr) - 1) // w
-
-
 def _detect_truth(path: str) -> bool:
     """Header-only probe for any true_* column."""
     try:
@@ -529,7 +469,7 @@ def scan(cfg: dict, unmatched: list | None = None) -> list[FileRecord]:
             ar_step=ar, **parsed
         ))
 
-    # Sort numerically. Sorting by path string puts epoch11 before epoch12
+    # Numeric sort: a path-string sort orders epoch11, epoch120, epoch12,
     # because "11" < "120" < "12" lexicographically.
     def _key(r: FileRecord):
         big = 10 ** 9
@@ -565,9 +505,8 @@ def _as_selector(spec, name: str) -> tuple[str, Any]:
         {list: [12, 120]}    -> same as the bare list
         "latest"             -> handled separately, epochs only
 
-    A bare two-element list used to be read as a range. It is now a list, so
-    that `epochs: [12, 120]` ported from a shell array EPOCHS=(12 120) means
-    those two epochs and not the 109 in between.
+    A bare list is always a list, so `epochs: [12, 120]` selects those two
+    epochs and not the 109 in between. Ranges must say `range:`.
     """
     if spec is None or (isinstance(spec, str) and spec.lower() in ("auto", "all", "")):
         return "any", None
@@ -630,7 +569,7 @@ def _keep_latest_epoch(records: list[FileRecord]) -> list[FileRecord]:
     """Keep only the highest epoch within each otherwise-identical group.
 
     Mesh dumps write one file per epoch, so a single init/fhr can have several
-    hundred. `epochs: latest` collapses those to the newest checkpoint.
+    hundred; `epochs: latest` collapses those to the newest checkpoint.
     """
     best: dict[tuple, FileRecord] = {}
     passthrough: list[FileRecord] = []
@@ -853,11 +792,11 @@ def figure_plan(rec: FileRecord, spec: InstrumentSpec, cfg: dict) -> list[str]:
 def output_dir_for(rec: FileRecord, cfg: dict) -> str:
     """Where this file's figures go: the source subdirectory, mirrored.
 
-    Not optional. obs-space, obs-space-ar0 ... obs-space-ar5, mesh-grid and
-    mesh-grid-ar0 ... all hold the same instrument/init/epoch/batch
-    combinations, so a flat output directory would have them overwrite each
-    other with no warning. Files sitting directly in data_dir fall back to
-    ar<N> when an AR step was detected, and to plot_dir otherwise.
+    Sibling input directories such as obs-space, obs-space-ar0..arN, mesh-grid
+    and mesh-grid-ar0..arN hold the same instrument/init/epoch/batch
+    combinations, so their figures must stay in separate output directories.
+    Files sitting directly in data_dir go to ar<N> when an AR step was
+    detected, and to plot_dir otherwise.
     """
     base = os.path.abspath(cfg["io"]["plot_dir"])
     if rec.rel_dir:
@@ -892,8 +831,8 @@ def base_tags_for(rec: FileRecord) -> tuple[str, str]:
 def prescan_limits(records: list[FileRecord], cfg: dict) -> dict:
     """Compute one set of colour limits per (instrument, feature) up front.
 
-    Without this, AR0 and AR3 maps each rescale to their own data and cannot be
-    compared by eye. Reads only the columns it needs.
+    Sharing one scale across AR steps is what makes them comparable by eye;
+    scales computed per figure would each normalise to their own data.
     """
     import eval_plots as ep
 
@@ -1033,9 +972,9 @@ def compute_metrics(records: list[FileRecord], out_path: str,
                     groupby_keys: Sequence[str], min_count: int) -> None:
     """Aggregate RMSE / MAE / bias by summing sufficient statistics.
 
-    Summing n, sum|e|, sum e^2 and sum e before dividing keeps the aggregate
-    honest across files and batches, rather than averaging per-file averages.
-    Also picks up persist_* columns as a persistence baseline.
+    Summing n, sum|e|, sum e^2 and sum e across files before dividing gives a
+    true pooled statistic rather than an average of per-file averages.
+    persist_* columns are picked up as a persistence baseline.
     """
     rows_out = []
     for rec in records:
@@ -1185,9 +1124,9 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def main(argv=None) -> int:
-    # Line-buffer stdout. Under some launchers (sbatch, `sh script.sh`) a
-    # block-buffered pipe can swallow everything if the process is reaped
-    # before the buffer flushes.
+    # Line-buffer stdout: under sbatch and other non-tty launchers a
+    # block-buffered pipe can swallow output if the process is reaped before
+    # the buffer flushes.
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:

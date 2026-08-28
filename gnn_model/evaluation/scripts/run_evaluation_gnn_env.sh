@@ -1,9 +1,7 @@
 #!/bin/bash -l
-# Author: Azadeh Gholoubi
 #
-# Thin launcher for OCELOT evaluation. All plotting configuration now lives in
-# evaluation/scripts/plotting.yaml -- this script only sets up the environment
-# and forwards arguments.
+# Launcher for OCELOT evaluation. Sets up the environment and forwards all
+# arguments to evaluations.py. Plotting configuration lives in plotting.yaml.
 #
 #   sbatch run_evaluation_gnn_env.sh
 #   sbatch run_evaluation_gnn_env.sh --instruments atms --max-files 4
@@ -41,7 +39,7 @@ set -uo pipefail
 # script from /var/spool/slurmd/job<N>/slurm_script, so $0 points at the spool
 # directory rather than the repo. An explicit path is the only reliable option.
 # ---------------------------------------------------------------------------
-EVAL_DIR="${OCELOT_EVAL_DIR:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/window_hour_fix/ocelot/gnn_model/evaluation/scripts}"
+EVAL_DIR="${OCELOT_EVAL_DIR:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/window_hour_fix/ocelot/gnn_model/evaluation/refactored_scripts}"
 
 CONDA_SH="${OCELOT_CONDA_SH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${OCELOT_CONDA_ENV:-gnn-env}"
@@ -49,8 +47,7 @@ CONDA_ENV="${OCELOT_CONDA_ENV:-gnn-env}"
 EVAL_SCRIPT="${EVAL_DIR}/evaluations.py"
 CONFIG="${CONFIG:-${EVAL_DIR}/plotting.yaml}"
 
-# Legacy passthrough: MODE=gfs_compare dispatches to the standalone GFS
-# comparison script, which is not part of this refactor.
+# MODE=gfs_compare dispatches to the standalone GFS comparison script.
 MODE="${MODE:-standard}"
 GFS_COMPARE_SCRIPT="${EVAL_DIR}/plot_gfs_compare.py"
 
