@@ -111,6 +111,8 @@ class GNNLightning(pl.LightningModule):
         detect_anomaly=False,
         max_rollout_steps=1,
         rollout_schedule="step",
+        input_window_hours: int = 12,
+        target_window_hours: int = 12,
         latent_step_hours=3,
         feature_stats=None,
         processor_type: str = "interaction",  # "interaction" | "sliding_transformer"
@@ -2125,7 +2127,7 @@ class GNNLightning(pl.LightningModule):
             return init_ts
         elif input_ts is not None:
             try:
-                window_h = self.hparams.get('data_window_hours', None)
+                window_h = self.hparams.get('input_window_hours', None)
                 if window_h is not None and isinstance(window_h, (int, float)):
                     return float(input_ts) + float(window_h) * 3600.0
                 else:

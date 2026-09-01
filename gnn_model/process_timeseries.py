@@ -244,8 +244,9 @@ def organize_bins_times(
     end_date,
     observation_config,
     pipeline_cfg=None,
-    window_size="12h",
-    latent_step_hours=12,
+    input_window_hours=12,
+    target_window_hours=12,
+    latent_step_hours=3,
     require_targets=True,    # PREDICTION MODE: False for inference (no targets needed)
     verbose=False,
 ):
@@ -262,11 +263,6 @@ def organize_bins_times(
     start_date = _to_utc(start_date)
     end_date = _to_utc(end_date)
 
-    # normalize window unit (avoid pandas 'H' deprecation)
-    window_size = window_size.lower()
-    if not window_size.endswith("h"):
-        raise ValueError("window_size must end with 'h' (e.g., '6h', '12h').")
-
     # subsampling config
     subs_cfg = (pipeline_cfg or {}).get("subsample", {}) or {}
     seed_base = int(subs_cfg.get("seed", 12345))
@@ -277,18 +273,41 @@ def organize_bins_times(
         "conventional": {"stride": 20, "mode": "random"},
     }
 
+    # input and target window setup
+    target_window_hours = int(target_window_hours)
+    input_window_hours = int(input_window_hours)
+    if target_window_hours <= 0 or input_window_hours <= 0:
+        raise ValueError("target_window_hours and input_window_hours must both be positive.")
+
+    if target_window_hours % latent_step_hours != 0:
+        raise ValueError(
+            f"target_window_hours ({target_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
+        )
+
+    init_window_freq = f"{input_window_hours}h"  # replacement of window_size(e.g.,"12h"), which sets stride between forecast init times
+
     # latent rollout setup
-    target_hours = int(window_size[:-1])
-    num_latent_steps = target_hours // latent_step_hours
+    num_latent_steps = target_window_hours // latent_step_hours
     sub_window_freq = f"{latent_step_hours}h"
     if verbose:
+        print(f"Input window: {input_window_hours}h.")
+        print(f"Target window: {target_window_hours}h.")
         print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
-    t0 = int(start_date.timestamp())
+    # Builing pandas input and target delta separately
+    input_delta = pd.Timedelta(hours=input_window_hours)
+    target_delta = pd.Timedelta(hours=target_window_hours)
+
+    # t0 = int(start_date.timestamp())
+    t0 = int((start_date - input_delta).timestamp())  # [MK] This fixes the first empty bin, will test separately next
     t1 = int(end_date.timestamp())
 
     data_summary = {}
 
+    # searchsorted (O(log N)) vs boolean masks (O(N)). Requires time_ts monotonic —
+    # true here since zar_time order matches obs-time order, but unenforced, and a
+    # violation gives wrong slices silently. Set False for the always-correct masks.
+    SEARCHSORT = True
     for obs_type in observation_config.keys():
         for key in observation_config[obs_type].keys():
             z = z_dict[obs_type][key]
@@ -379,7 +398,7 @@ def organize_bins_times(
                 time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
 
             # --- Build window labels without a big DataFrame ---
-            win = time_ts.floor(window_size)  # tz-aware
+            win = time_ts.floor(init_window_freq)
 
             if win.isna().any():
                 continue
@@ -390,12 +409,13 @@ def organize_bins_times(
 
             # unique ordered windows + integer codes for each row's window
             uniq_win = pd.Index(win_valid).unique().sort_values()
-            codes = pd.Categorical(win_valid, categories=uniq_win, ordered=True).codes
+            uniq_win = uniq_win[uniq_win >= start_date]  # [MK] This is for the first empty bin fix, will test separately next
 
             if require_targets:
-                n_bins = len(uniq_win) - 1
-            else:
-                n_bins = len(uniq_win)  # PREDICTION MODE: include last window
+                uniq_win = uniq_win[uniq_win + target_delta <= end_date]
+
+            n_bins = len(uniq_win)
+
             if n_bins <= 0:
                 if verbose:
                     print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
@@ -411,24 +431,36 @@ def organize_bins_times(
 
             # --- Build bins; reproducible per-bin subsampling ---
             for bi in range(n_bins):  # exclude last window as target-only
-                t_in = uniq_win[bi]
+                t_target_start = uniq_win[bi]
+                t_input_start = t_target_start - input_delta
 
-                m_in = codes == bi
-                input_indices = idx_all[m_in]
+                if SEARCHSORT:
+                    lo_in = int(time_ts.searchsorted(t_input_start, side="left"))
+                    hi_in = int(time_ts.searchsorted(t_target_start, side="left"))
+                    input_indices = idx_all[lo_in:hi_in]
+                else:  # boolean masks
+                    input_mask = (time_ts >= t_input_start) & (time_ts < t_target_start)
+                    input_indices = idx_all[input_mask]
 
                 # Subsample input once
-                seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
+                seed_in = _stable_seed(seed_base, t_input_start, obs_type, key, is_target=False)
                 input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
 
                 # PREDICTION MODE:
                 if require_targets:
                     # LATENT ROLLOUT: Split target window into sub-windows
-                    t_target_start = uniq_win[bi + 1]
+                    t_target_end = t_target_start + target_delta
 
                     # Get all indices in the main target window
-                    m_target_full = codes == (bi + 1)
-                    idx_target_full = idx_all[m_target_full]
-                    ts_target_full = time_ts[m_target_full]
+                    if SEARCHSORT:
+                        lo_tg = int(time_ts.searchsorted(t_target_start, side="left"))
+                        hi_tg = int(time_ts.searchsorted(t_target_end, side="left"))
+                        idx_target_full = idx_all[lo_tg:hi_tg]
+                        ts_target_full = time_ts[lo_tg:hi_tg]
+                    else:
+                        target_mask_full = (time_ts >= t_target_start) & (time_ts < t_target_end)
+                        idx_target_full = idx_all[target_mask_full]
+                        ts_target_full = time_ts[target_mask_full]
 
                     # Generate the start/end times for each sub-window
                     target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
@@ -470,14 +502,10 @@ def organize_bins_times(
                 # We therefore name bins by the *forecast init* (start of the target window).
                 # This makes bin keys consistent across instruments even when some instruments
                 # have missing windows.
-                if require_targets:
-                    init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
-                else:
-                    # In inference mode there is no target window; use input window start.
-                    init_key = pd.to_datetime(t_in, utc=True).strftime('%Y%m%d%H')
+                init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
                 bin_name = f"bin{init_key}"
                 data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                    "input_time": t_in,
+                    "input_time": t_input_start,
                     "input_time_index": input_indices,
                     "target_times": list(target_sub_window_times[:-1]) if require_targets else [],  # List of timestamps
                     "target_time_indices": target_indices_list,          # List of index arrays

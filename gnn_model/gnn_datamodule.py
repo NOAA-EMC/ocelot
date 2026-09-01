@@ -182,8 +182,9 @@ class GNNDataModule(pl.LightningDataModule):
         batch_size=1,
         num_neighbors=3,
         feature_stats=None,
-        latent_step_hours=12,       # latent rollout support
-        window_size="12h",          # binning window
+        input_window_hours=12,      # binning input window
+        target_window_hours=12,     # binning target window
+        latent_step_hours=3,        # sub-target-window size for latent-space rollout
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         cache_val_windows: bool = False,
         val_cache_max_entries: int = 16,
@@ -285,8 +286,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Ensure latent_step_hours has a valid value
         if self.hparams.latent_step_hours is None:
-            window_hours = int(self.hparams.window_size.replace('h', ''))
-            self.hparams.latent_step_hours = window_hours
+            self.hparams.latent_step_hours = int(self.hparams.target_window_hours)
 
     def _ddp_info(self) -> tuple[bool, int]:
         is_ddp = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
@@ -304,7 +304,8 @@ class GNNDataModule(pl.LightningDataModule):
             "kind": kind,
             "start": str(pd.to_datetime(start_dt)),
             "end": str(pd.to_datetime(end_dt)),
-            "window_size": str(getattr(self.hparams, "window_size", "")),
+            "input_window_hours": int(getattr(self.hparams, "input_window_hours", 0) or 0),
+            "target_window_hours": int(getattr(self.hparams, "target_window_hours", 0) or 0),
             "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
             "require_targets": bool(require_targets),
             "observation_config": getattr(self.hparams, "observation_config", None),
@@ -327,7 +328,8 @@ class GNNDataModule(pl.LightningDataModule):
                 end_dt,
                 self.hparams.observation_config,
                 pipeline_cfg=self.hparams.pipeline,
-                window_size=self.hparams.window_size,
+                input_window_hours=self.hparams.input_window_hours,
+                target_window_hours=self.hparams.target_window_hours,
                 latent_step_hours=self.hparams.latent_step_hours,
                 require_targets=require_targets,
                 verbose=False,
@@ -531,13 +533,16 @@ class GNNDataModule(pl.LightningDataModule):
         data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
         data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
 
-        window_hours = int(self.hparams.window_size.replace('h', ''))
+        target_window_hours = int(self.hparams.target_window_hours)
 
-        # Sanity check: ensure window_hours is divisible by latent_step_hours
-        if window_hours % self.hparams.latent_step_hours != 0:
-            raise ValueError(f"window_size ({window_hours}h) must be divisible by latent_step_hours ({self.hparams.latent_step_hours}h)")
+        # Sanity check: ensure target_window_hours is divisible by latent_step_hours
+        if target_window_hours % self.hparams.latent_step_hours != 0:
+            raise ValueError(
+                f"target_window_hours ({target_window_hours}h) must be divisible by "
+                f"latent_step_hours ({self.hparams.latent_step_hours}h)"
+            )
 
-        num_latent_steps = window_hours // self.hparams.latent_step_hours
+        num_latent_steps = target_window_hours // self.hparams.latent_step_hours
 
         # 3) Observation data and mesh connections
         # ALL instruments get the same node structure based on detected batch mode
