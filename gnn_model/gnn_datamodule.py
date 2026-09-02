@@ -352,7 +352,7 @@ class GNNDataModule(pl.LightningDataModule):
                 window_size=self.hparams.window_size,
                 latent_step_hours=self.hparams.latent_step_hours,
                 require_targets=require_targets,
-                verbose=False,
+                verbose=verbose,
             )
             # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
             # Fall back to lexicographic ordering if parsing fails.
