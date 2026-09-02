@@ -90,7 +90,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "[CONFIG] $CONFIG_FILE"
 echo "[OUTPUT] $OUTPUT_DIR"
-echo "[TESTS]  scalar float32 FD + directional (Rademacher) + float64 FD"
+echo "[TESTS]  Enabled validation tests are controlled by the YAML config"
 echo ""
 
 python FSOI/fsoi_inference.py \
@@ -124,7 +124,7 @@ elif 'pearson_r' in df.columns:
 " 2>/dev/null || cat "$csv" | head -5
         echo ""
     else
-        echo "WARNING: $csv not found"
+        echo "Optional output not generated: $csv"
     fi
 done
 echo "=================================================="
