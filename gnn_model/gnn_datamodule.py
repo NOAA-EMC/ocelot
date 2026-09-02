@@ -784,6 +784,14 @@ class GNNDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
+        if not self.train_bin_names:
+            raise RuntimeError(
+                f"No training bins found in window {self.hparams.train_start} .. {self.hparams.train_end} "
+                f"across configured instruments {list(self.hparams.observation_config.keys())}. "
+                "This means the configured zarr store(s) have no observation timestamps in the "
+                "training window -- check --train_start_date/--train_end_date against the actual "
+                "time coverage of --data_path."
+            )
         ds = BinDataset(
             self.train_bin_names,
             self.train_data_summary,
@@ -810,7 +818,13 @@ class GNNDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         if not self.val_bin_names:
-            return None
+            raise RuntimeError(
+                f"No validation bins found in window {self.hparams.val_start} .. {self.hparams.val_end} "
+                f"across configured instruments {list(self.hparams.observation_config.keys())}. "
+                "This means the configured zarr store(s) have no observation timestamps in the "
+                "validation window -- check --val_start_date/--val_end_date against the actual "
+                "time coverage of --data_path, or that --cfg_path selects instruments present in that store."
+            )
         ds = BinDataset(
             self.val_bin_names,
             self.val_data_summary,

@@ -308,11 +308,18 @@ def organize_bins_times(
                 right = _zarr_bisect_left(time_arr, t1)  # exclusive upper bound
 
                 if right <= left:
+                    # The sortedness heuristic (_sampled_non_decreasing) only samples a
+                    # few points and can be fooled by data that isn't actually globally
+                    # time-sorted (e.g. some regional zarr extractions). Trusting an empty
+                    # bisection result in that case would silently drop real observations,
+                    # so fall back to the exact chunked scan below to confirm before
+                    # giving up on this instrument.
                     if verbose:
-                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
-                    continue
-
-                if obs_type == "satellite":
+                        print(
+                            f"[fast-path] bisection found no rows for {obs_type}.{key} in "
+                            f"{start_date} → {end_date}; falling back to chunked scan to confirm"
+                        )
+                elif obs_type == "satellite":
                     conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
                     sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
                     sats = z[sat_id_field][left:right]
