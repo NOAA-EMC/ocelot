@@ -2707,6 +2707,11 @@ class GNNLightning(pl.LightningModule):
                 if inst_name not in mesh_pred_edges:
                     continue
 
+                decoder_key = f"mesh__to__{inst_name}_target"
+                if decoder_key not in self.observation_decoders:
+                    self.debug(f"[MESH PRED] Warning: No decoder found for {decoder_key}; skipping {inst_name}")
+                    continue
+
                 predictions[inst_name] = []
 
                 # Decode each step
@@ -2980,6 +2985,20 @@ class GNNLightning(pl.LightningModule):
         # TenYearTrain-style schedule: warmup + cosine decay (robust to noisy validation)
         if self.lr_schedule == "cosine_warmup":
             max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 328
+
+            if max_epochs < 2:
+                # Splitting into a warmup phase and a decay phase each needs >=1 epoch;
+                # with max_epochs < 2 there's no valid split (both LinearLR and
+                # CosineAnnealingLR divide by their phase length internally, so either
+                # phase being 0 epochs raises ZeroDivisionError). Fall back to a constant
+                # LR for this degenerate case instead of crashing.
+                if self.trainer.is_global_zero:
+                    print(
+                        f"[LR Schedule] max_epochs={max_epochs} is too short for cosine_warmup "
+                        f"(needs >=2 epochs); using constant lr={self.lr} instead."
+                    )
+                return optimizer
+
             warmup_epochs = max(1, int(self.warmup_pct * max_epochs))
             warmup_epochs = min(warmup_epochs, max(1, max_epochs - 1))
 
