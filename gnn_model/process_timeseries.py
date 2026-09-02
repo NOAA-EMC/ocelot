@@ -193,20 +193,32 @@ def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str, default_
     return max(1, stride), mode
 
 
-def _sampled_non_decreasing(time_arr, n_checks: int = 16) -> bool:
-    """Heuristic check that `time_arr` is non-decreasing.
+def _is_fully_sorted(time_arr, chunk_size: int) -> bool:
+    """Exact non-decreasing check, read chunk-by-chunk to bound peak memory.
 
-    Only samples a small number of points to avoid scanning the full array.
-    This is a safety guard before using binary search on Zarr-backed arrays.
+    Binary search over `time_arr` is only valid if it's genuinely globally
+    time-sorted. A cheap sampled heuristic used to gate this instead, but
+    some zarr extractions (e.g. regional BUFR subsets) are NOT time-sorted
+    while still passing a sparse sample check -- that silently made the
+    fast path binary-search into the wrong slice of the array and return
+    too few (sometimes zero) matches. Reading the full time column once is
+    strictly cheaper than the chunked-scan fallback it guards (which also
+    reads per-instrument id fields), so there's no good reason to guess here.
     """
     try:
         n = len(time_arr)
         if n <= 1:
             return True
-        n_checks = max(4, int(n_checks))
-        idxs = np.unique(np.linspace(0, n - 1, num=n_checks, dtype=np.int64))
-        vals = np.asarray([time_arr[int(i)] for i in idxs], dtype=np.int64)
-        return bool(np.all(vals[1:] >= vals[:-1]))
+        prev_last = None
+        for i0 in range(0, n, chunk_size):
+            i1 = min(i0 + chunk_size, n)
+            vals = np.asarray(time_arr[i0:i1])
+            if not np.all(vals[1:] >= vals[:-1]):
+                return False
+            if prev_last is not None and vals[0] < prev_last:
+                return False
+            prev_last = vals[-1]
+        return True
     except Exception:
         return False
 
@@ -302,18 +314,16 @@ def organize_bins_times(
             # This avoids scanning the entire time array for multi-year runs.
             idx_all = None
             fast_bounds = None  # (left,right) for contiguous slices
-            try_fast = _sampled_non_decreasing(time_arr)
+            try_fast = _is_fully_sorted(time_arr, chunk)
             if try_fast:
                 left = _zarr_bisect_left(time_arr, t0)
                 right = _zarr_bisect_left(time_arr, t1)  # exclusive upper bound
 
                 if right <= left:
-                    # The sortedness heuristic (_sampled_non_decreasing) only samples a
-                    # few points and can be fooled by data that isn't actually globally
-                    # time-sorted (e.g. some regional zarr extractions). Trusting an empty
-                    # bisection result in that case would silently drop real observations,
-                    # so fall back to the exact chunked scan below to confirm before
-                    # giving up on this instrument.
+                    # try_fast confirmed the array is sorted, so this genuinely means no
+                    # rows fall in [t0, t1). Still routed through the chunked-scan fallback
+                    # below (a no-op re-confirmation) rather than a bare `continue`, so this
+                    # stays correct if try_fast's guarantee is ever loosened again.
                     if verbose:
                         print(
                             f"[fast-path] bisection found no rows for {obs_type}.{key} in "
