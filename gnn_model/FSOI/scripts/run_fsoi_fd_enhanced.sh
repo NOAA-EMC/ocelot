@@ -78,8 +78,8 @@ if [ ! -f "$CHECKPOINT" ]; then
 fi
 echo "[CKPT] $CHECKPOINT"
 
-CONFIG_FILE="FSOI/configs/fsoi_config_fd_enhanced.yaml"
-OUTPUT_DIR="FSOI/fsoi_outputs/fd_check_enhanced"
+CONFIG_FILE="${CONFIG_FILE:-FSOI/configs/fsoi_config_fd_enhanced.yaml}"
+OUTPUT_DIR="${FSOI_OUTPUT_DIR:-${OUTPUT_DIR:-FSOI/fsoi_outputs/fd_check_enhanced}}"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 
 mkdir -p "$OUTPUT_DIR"

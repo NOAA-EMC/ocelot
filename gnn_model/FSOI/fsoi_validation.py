@@ -566,7 +566,9 @@ def finite_difference_check_float64(
 
         freeze_model_for_fsoi(model)
         device = next(model.parameters()).device
-        batch64 = batch.to(device)
+        # Work on a cloned batch so float64 validation cannot leave the caller's
+        # HeteroData object in double precision after an exception or CUDA OOM.
+        batch64 = batch.clone().to(device)
 
         # Cast all floating-point tensors in the batch to float64.
         # HeteroData stores tensors inside per-node-type sub-objects, so we
@@ -700,6 +702,8 @@ def finite_difference_check_float64(
     finally:
         if model_was_float32:
             model.float()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def validate_fsoi_gradients_all(

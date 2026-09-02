@@ -1752,32 +1752,41 @@ def main():
     # cover at least 3 distinct dates with ~5 samples each (15 total), spread
     # across early, middle, and late in the FSOI window.
     n_pairs = len(fsoi_loader)
+
+    def _validation_pair_set(config_key):
+        pairs_cfg = fsoi_config['validation'].get(config_key, None)
+        if pairs_cfg is not None:
+            return set(int(p) for p in pairs_cfg)
+        pts = [0, max(0, n_pairs // 3), max(0, 2 * n_pairs // 3)]
+        return set(pts)
+
     fd_enabled = fsoi_config['validation'].get('finite_difference_check', False)
     if fd_enabled:
-        fd_pairs_cfg = fsoi_config['validation'].get('fd_check_pairs', None)
-        if fd_pairs_cfg is not None:
-            fd_pair_set = set(int(p) for p in fd_pairs_cfg)
-        else:
-            # Auto: three equally-spaced pairs (early / middle / late)
-            pts = [0, max(0, n_pairs // 3), max(0, 2 * n_pairs // 3)]
-            fd_pair_set = set(pts)
+        fd_pair_set = _validation_pair_set('fd_check_pairs')
         print(f"[FD] Will run gradient validation on pair indices: "
               f"{sorted(fd_pair_set)} (total dates: {len(fd_pair_set)})")
     else:
         fd_pair_set = set()
 
-    # Directional-derivative test (Rademacher, float32) — for high-N satellites
     directional_enabled = fsoi_config['validation'].get('directional_derivative_check', False)
-    directional_pair_set = fd_pair_set if directional_enabled else set()
+    directional_pair_set = set()
     if directional_enabled:
-        print("[FD] Directional-derivative check enabled (Rademacher, float32) — "
-              "runs on same pair indices as scalar FD")
+        directional_pair_set = (
+            fd_pair_set if fd_pair_set
+            else _validation_pair_set('directional_check_pairs')
+        )
+        print("[FD] Directional-derivative check enabled (Rademacher, float32) "
+              f"on pair indices: {sorted(directional_pair_set)}")
 
-    # Float64 per-obs FD test — for high-N satellites
     float64_enabled = fsoi_config['validation'].get('float64_fd_check', False)
-    float64_pair_set = fd_pair_set if float64_enabled else set()
+    float64_pair_set = set()
     if float64_enabled:
-        print("[FD] Float64 FD check enabled — runs on same pair indices as scalar FD")
+        float64_pair_set = (
+            fd_pair_set if fd_pair_set
+            else _validation_pair_set('float64_check_pairs')
+        )
+        print("[FD] Float64 FD check enabled "
+              f"on pair indices: {sorted(float64_pair_set)}")
 
     run_diagnostics = bool(args.diagnostics)
     if run_diagnostics:

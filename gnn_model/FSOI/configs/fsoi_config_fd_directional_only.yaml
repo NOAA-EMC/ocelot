@@ -1,0 +1,95 @@
+# FSOI configuration for regenerating Figure 2a directional-gradient validation.
+#
+# This keeps the same July 2025 radiosonde-target setup as
+# fsoi_config_fd_enhanced.yaml, but disables the scalar and float64 finite-
+# difference tiers.  Figure 2a only requires fd_directional_validation.csv, and
+# skipping float64 avoids unnecessary memory pressure on the full OCELOT graph.
+
+forecast:
+  lead_steps: [0]
+  target_instruments: ["radiosonde"]
+  target_variables: "all"
+  target_pressure_levels: "all"
+  use_instrument_weights: false
+  use_channel_weights: false
+  use_area_weights: true
+  loss_reduction: "mean"
+  impact_factor: 0.5
+  stratify_by_pressure: true
+  stratify_by_variable: true
+
+data:
+  start_date: "2025-07-01"
+  end_date: "2025-07-03"
+  batch_size: 1
+  num_workers: 1
+  output_dir: "FSOI/fsoi_outputs/fd_check_directional_only"
+  save_per_obs_impacts: false
+  feature_masks: {}
+  store_full_tensors: false
+
+memory:
+  max_decoder_nodes:
+    avhrr: 30000
+    atms: 50000
+    amsua: 30000
+    ssmis: 30000
+    seviri_asr: 30000
+    seviri_csr: 30000
+
+model:
+  checkpoint_path: "checkpoints/"
+
+aggregation:
+  by_instrument: true
+  by_channel: true
+  by_time: true
+  by_region: false
+  by_pressure_level: true
+  regions:
+    tropics:
+      lat_range: [-30, 30]
+    mid_latitudes_nh:
+      lat_range: [30, 60]
+    mid_latitudes_sh:
+      lat_range: [-60, -30]
+    polar_nh:
+      lat_range: [60, 90]
+    polar_sh:
+      lat_range: [-90, -60]
+
+validation:
+  check_reproducibility: false
+  check_gradients: false
+  check_alignment: true
+  require_instruments: null
+  require_satellite: false
+  min_pairs_warning: 3
+  verbose: true
+
+  finite_difference_check: false
+  fd_num_samples: 0
+  fd_epsilon: 0.01
+
+  directional_derivative_check: true
+  directional_n_trials: 5
+  directional_epsilon: 0.01
+
+  float64_fd_check: false
+  float64_num_samples: 0
+  float64_epsilon: 0.0001
+
+output:
+  save_csv: true
+  save_zarr: false
+  save_netcdf: false
+
+plots:
+  save_scatter_samples: false
+
+experiment:
+  name: "fd_directional_validation_only"
+  description: |
+    Directional finite-difference validation for Figure 2a.
+    Uses Rademacher perturbations in float32 and writes
+    evaluation/fd_directional_validation.csv.
