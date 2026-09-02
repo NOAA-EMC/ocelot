@@ -74,6 +74,10 @@ validation:
   directional_derivative_check: true
   directional_n_trials: 5
   directional_epsilon: 0.01
+  # Validate satellite AND conventional instruments (Fig 2a comparability).
+  directional_instruments: ["atms", "avhrr", "ssmis", "ascat", "amsua",
+                            "seviri_asr", "seviri_csr",
+                            "aircraft", "radiosonde", "surface_obs"]
 
   float64_fd_check: false
   float64_num_samples: 0
@@ -92,4 +96,5 @@ experiment:
   description: |
     Directional finite-difference validation for Figure 2a.
     Uses Rademacher perturbations in float32 and writes
-    evaluation/fd_directional_validation.csv.
+    evaluation/fd_directional_validation.csv for satellite and
+    conventional (aircraft, radiosonde, surface_obs) instruments.
