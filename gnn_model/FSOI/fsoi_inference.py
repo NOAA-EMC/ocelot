@@ -794,20 +794,28 @@ def compute_fsoi_for_pair(
             except Exception as fd_err:
                 print(f"[WARNING] FD sample collection failed for pair {pair_idx}: {fd_err}")
 
-        # Optional: directional-derivative check (Rademacher, float32) for satellite instruments
+        # Optional: directional-derivative check (Rademacher, float32).
+        # Applied to satellite and conventional instruments; the check reports
+        # INSUF_SIGNAL when the expected |Δe| stays below float32 resolution.
         if run_directional_check:
             print("\n[VALIDATION] Running directional-derivative check "
                   f"(Rademacher, float32, pair {pair_idx})...")
             try:
                 from fsoi_validation import directional_derivative_check
                 from fsoi_utils import get_fsoi_inputs as _get_inputs
-                _HIGH_N = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua', 'seviri_asr', 'seviri_csr'}
+                # Default covers all high-volume satellites plus conventional obs.
+                # Override with validation.directional_instruments in the config.
+                _DIR_DEFAULT = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua',
+                                'seviri_asr', 'seviri_csr',
+                                'aircraft', 'radiosonde', 'surface_obs'}
+                _dir_insts = set(fsoi_config['validation'].get(
+                    'directional_instruments', _DIR_DEFAULT))
                 n_trials = fsoi_config['validation'].get('directional_n_trials', 5)
                 eps_dir = fsoi_config['validation'].get('directional_epsilon',
                                                         fsoi_config['validation'].get('fd_epsilon', 1e-2))
                 _xa_dir = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
                 for inst in sorted(_xa_dir.keys()):
-                    if inst not in _HIGH_N:
+                    if inst not in _dir_insts:
                         continue
                     dr = directional_derivative_check(
                         model, curr_batch, inst,
