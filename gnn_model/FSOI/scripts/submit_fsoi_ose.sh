@@ -22,7 +22,7 @@ cd "$GNN_MODEL_DIR"
 echo "[SUBMIT] Working directory: $(pwd)"
 
 # ── Parse arguments ────────────────────────────────────────────────────────
-CKPT="/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt"
+CKPT="/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 OSE_INSTRUMENTS="atms"
 OSE_DENIAL_MODE="${OSE_DENIAL_MODE:-background_replacement}"

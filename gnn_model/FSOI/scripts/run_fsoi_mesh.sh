@@ -86,7 +86,7 @@ END="${FSOI_END_DATE:-$CONFIG_END}"
 DATE_TAG="${START//-/}_${END//-/}"
 OUTPUT="${FSOI_OUTPUT_DIR:-FSOI/fsoi_outputs/mesh_radiosonde_${PRESSURE_HPA}hPa_${DATE_TAG}}"
 
-CKPT="${CHECKPOINT_PATH_CLI:-${CHECKPOINT_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}}"
+CKPT="${CHECKPOINT_PATH_CLI:-${CHECKPOINT_PATH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}}"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 GFS_ROOT="${GFS_ROOT:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25}"
 

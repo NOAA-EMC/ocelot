@@ -88,7 +88,7 @@ cd "$GNN_DIR"
 echo "[PATH] Working dir: $(pwd)"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-CKPT="${CHECKPOINT_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}"
+CKPT="${CHECKPOINT_PATH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 CONFIG_FILE="${CONFIG_FILE:-FSOI/configs/fsoi_config_radiosonde_all.yaml}"
 FSOI_VERIFICATION_TARGET="${FSOI_VERIFICATION_TARGET:-obs}"
