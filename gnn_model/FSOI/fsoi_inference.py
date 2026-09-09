@@ -46,6 +46,7 @@ from fsoi_dataset import (  # noqa: E402
 )
 from fsoi_utils import (  # noqa: E402
     get_fsoi_inputs,
+    get_fsoi_input_masks,
     get_fsoi_metadata,
     replace_batch_inputs,
     zero_feature_columns,
@@ -636,6 +637,13 @@ def compute_fsoi_for_pair(
                 print(f"[ALIGN] Subsampled xa[{inst_name}] → {xa[inst_name].shape[0]} obs "
                       f"(matched to xb subsample)")
 
+        valid_masks = get_fsoi_input_masks(
+            curr_batch,
+            observation_config,
+            replace_indices=subsample_indices,
+            device=device,
+        )
+
         # Build obs_coords: per-instrument (lat, lon) numpy arrays already aligned
         # with the (possibly subsampled) xa tensors, for use in scatter samples.
         obs_coords: dict = {}
@@ -908,6 +916,7 @@ def compute_fsoi_for_pair(
                     target_pressure_levels=target_pressure_levels,
                     loss_reduction=loss_reduction,
                     impact_factor=impact_factor,
+                    valid_masks=valid_masks,
                 )
 
                 per_level_results = []
@@ -969,7 +978,8 @@ def compute_fsoi_for_pair(
                             max_points=scatter_max_points,
                             seed=pair_idx * 1000 + int(lead_step),
                             obs_coords=obs_coords,
-                            xa=xa,  # enables exact sentinel mask (xa==-9.0) instead of range heuristic
+                            xa=xa,  # conventional fallback; valid_masks is preferred
+                            valid_masks=valid_masks,
                         )
                         if not scatter_df.empty:
                             scatter_df['pair_idx'] = pair_idx
@@ -996,6 +1006,7 @@ def compute_fsoi_for_pair(
                     target_pressure_levels=target_pressure_levels,
                     loss_reduction=loss_reduction,
                     impact_factor=impact_factor,
+                    valid_masks=valid_masks,
                 )
 
             if not per_level_results:
@@ -1180,7 +1191,13 @@ def compute_fsoi_for_pair(
 
             # xa and xb are shape-aligned after the ALIGNMENT block above
             fsoi_values, innovations, gradient_sums = compute_fsoi_per_observation(
-                xa, xb, ga, gb, return_components=True, impact_factor=impact_factor
+                xa,
+                xb,
+                ga,
+                gb,
+                return_components=True,
+                impact_factor=impact_factor,
+                valid_masks=valid_masks,
             )
 
             if save_scatter_samples and scatter_max_points > 0:
@@ -1190,7 +1207,8 @@ def compute_fsoi_for_pair(
                     max_points=scatter_max_points,
                     seed=pair_idx * 1000 + int(lead_step),
                     obs_coords=obs_coords,
-                    xa=xa,  # enables exact sentinel mask (xa==-9.0) instead of range heuristic
+                    xa=xa,  # conventional fallback; valid_masks is preferred
+                    valid_masks=valid_masks,
                 )
                 if not scatter_df.empty:
                     scatter_df['pair_idx'] = pair_idx
@@ -1409,9 +1427,9 @@ def main():
             "How to construct the OSE denied endpoint. "
             "background_replacement replaces denied xa values with xb on the "
             "matched sampled rows. sample_mask masks the matched sampled rows "
-            "to the missing-observation sentinel. full_mask masks every current "
-            "batch row for the denied instrument and is closest to a whole-system "
-            "input denial."
+            "to the training-consistent missing-input value. full_mask masks "
+            "every current batch row for the denied instrument while retaining "
+            "rows, metadata, and graph connectivity."
         ),
     )
     parser.add_argument(
@@ -1730,6 +1748,7 @@ def main():
         create_graph_fn=create_graph_fn,
         observation_config=observation_config,
         feature_stats=feature_stats,
+        include_persistence_inputs=True,
         tag="FSOI",
     )
 

@@ -18,11 +18,13 @@ import pandas as pd
 from collections import defaultdict
 
 
-# process_timeseries.py clips valid normalized observations to [-6, 6] and
-# fills missing channels with exactly -9.0.  Sentinel detection should therefore
-# be done in observation space (xa), not innovation space (xa - xb).
+# process_timeseries.py clips valid conventional observations to [-6, 6] and
+# fills missing conventional channels with exactly -9.0. Satellite inputs use
+# normalized zero imputation for missing channels, so use input_channel_mask
+# when available for satellite validity rather than relying on this sentinel.
 SENTINEL_OBS = -9.0
 SENTINEL_OBS_ATOL = 1e-3
+SATELLITE_MISSING_OBS = 0.0
 
 # Backward-compatible innovation-space fallback used only when xa is unavailable
 # for post-hoc scatter sampling. Since innovation = -9.0 - xb at missing
@@ -34,7 +36,7 @@ SENTINEL_INNOVATION_HI = -7.0
 
 
 def observation_valid_mask(x_obs: torch.Tensor) -> torch.Tensor:
-    """Return True where an observation-channel tensor is not the -9 sentinel."""
+    """Return True where a conventional observation tensor is not the -9 sentinel."""
     sentinel = torch.as_tensor(SENTINEL_OBS, dtype=x_obs.dtype, device=x_obs.device)
     return torch.isfinite(x_obs) & ~torch.isclose(
         x_obs,
@@ -49,10 +51,15 @@ def _masked_fsoi_components(
     xb_tensor: torch.Tensor,
     g_sum: torch.Tensor,
     impact_factor: float,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute FSOI components while excluding missing sentinel channels."""
+    """Compute FSOI components while excluding missing input channels."""
     dx_raw = xa_tensor - xb_tensor
-    valid = observation_valid_mask(xa_tensor)
+    if valid_mask is None:
+        valid = observation_valid_mask(xa_tensor)
+    else:
+        valid = valid_mask.to(device=xa_tensor.device, dtype=torch.bool)
+        valid = valid & torch.isfinite(xa_tensor) & torch.isfinite(xb_tensor)
     if dx_raw.shape != g_sum.shape or dx_raw.shape != valid.shape:
         raise RuntimeError(
             "FSOI component shape mismatch: "
@@ -291,26 +298,21 @@ def sample_innovation_vs_fsoi(
     seed: int = 0,
     obs_coords: Optional[Dict[str, Tuple]] = None,
     xa: Optional[Dict[str, torch.Tensor]] = None,
+    valid_masks: Optional[Dict[str, torch.Tensor]] = None,
 ) -> pd.DataFrame:
     """Return a lightweight random sample of (innovation, fsoi) pairs.
 
     This is used for innovation-vs-FSOI scatter plots without storing full tensors.
     Sample is taken across all instruments/channels available.
 
-    Sentinel masking strategy
+    Missing-channel masking strategy
     -------------------------
-    Missing observation channels are filled with exactly ``SENTINEL_OBS = -9.0``
-    in normalised space by ``process_timeseries.py``.  The corresponding
-    innovation is ``xa - xb = -9.0 - xb``, which spreads over a range
-    because the background prediction ``xb`` varies.
-    Masking on the innovation therefore requires an ad-hoc range and still
-    leaks at the tails.
-
-    When ``xa`` (the analysis input tensor) is supplied the mask is computed
-    on the source directly: ``xa != -9.0``.  This is exact and preferred.
-    When ``xa`` is not supplied the function falls back to the range mask on
-    the innovation for backward compatibility with callers that do not have
-    ``xa`` available (e.g. post-hoc re-plotting from a saved CSV).
+    Missing satellite channels are zero-imputed during preprocessing, while
+    missing conventional channels use the -9.0 sentinel. Therefore the stored
+    ``input_channel_mask`` passed through ``valid_masks`` is the preferred
+    source of truth. When it is not available, ``xa`` provides the sentinel
+    fallback for conventional observations and saved CSV re-plotting can still
+    use the older innovation-range fallback.
 
     Args:
         fsoi_values: Per-instrument FSOI tensors [N_obs, C].
@@ -322,8 +324,9 @@ def sample_innovation_vs_fsoi(
             (i.e., subsampling already applied). When provided, 'lat' and 'lon'
             columns are added to the output so scatter samples can be gridded.
         xa: Optional dict of raw analysis input tensors [N_obs, C] from which
-            sentinel positions can be determined exactly.  Pass this whenever
-            ``xa`` is available at the call site.
+            sentinel positions can be determined for conventional inputs.
+        valid_masks: Optional dict of per-instrument boolean validity masks
+            [N_obs, C], aligned with ``fsoi_values`` and ``innovations``.
     """
     if max_points is None or max_points <= 0:
         return pd.DataFrame()
@@ -346,8 +349,16 @@ def sample_innovation_vs_fsoi(
         f_np = f.detach().cpu().reshape(-1).numpy()
         inn_np = innovations[inst].detach().cpu().reshape(-1).numpy()
 
-        if xa is not None and inst in xa and xa[inst] is not None:
-            # Preferred: mask on the source tensor where sentinel was injected.
+        if valid_masks is not None and inst in valid_masks and valid_masks[inst] is not None:
+            mask_np = valid_masks[inst].detach().cpu().reshape(-1).numpy().astype(bool)
+            if mask_np.shape != f_np.shape:
+                raise RuntimeError(
+                    f"{inst}: valid mask size {mask_np.shape} does not match "
+                    f"scatter tensor size {f_np.shape}"
+                )
+            valid_mask = np.isfinite(f_np) & np.isfinite(inn_np) & mask_np
+        elif xa is not None and inst in xa and xa[inst] is not None:
+            # Conventional fallback: mask on source tensor where sentinel exists.
             xa_np = xa[inst].detach().cpu().reshape(-1).numpy()
             valid_mask = (
                 np.isfinite(f_np)
@@ -430,6 +441,7 @@ def compute_per_level_fsoi_by_variable(
     target_pressure_levels: Optional[List[float]] = None,
     loss_reduction: str = 'sum',
     impact_factor: float = 0.5,
+    valid_masks: Optional[Dict[str, torch.Tensor]] = None,
 ) -> List[Dict]:
     """Compute per-(pressure level, target variable) FSOI and return aggregates.
 
@@ -630,6 +642,9 @@ def compute_per_level_fsoi_by_variable(
                     continue
                 xa_cpu = xa[inst].detach().cpu()
                 xb_cpu = xb[inst].detach().cpu()
+                valid_mask = None
+                if valid_masks is not None and inst in valid_masks:
+                    valid_mask = valid_masks[inst].detach().cpu()
                 dx = xa_cpu - xb_cpu
                 gs = ga[inst] + gb[inst]
                 if dx.shape != gs.shape:
@@ -639,6 +654,7 @@ def compute_per_level_fsoi_by_variable(
                     xb_cpu,
                     gs,
                     impact_factor,
+                    valid_mask,
                 )
                 fsoi_values[inst] = fsoi_i
                 innovations[inst] = innov_i
@@ -1065,6 +1081,69 @@ def get_fsoi_inputs(
         print("[WARNING] No FSOI inputs extracted from batch!")
 
     return fsoi_inputs
+
+
+def get_fsoi_input_masks(
+    batch,
+    observation_config: dict,
+    replace_indices: Optional[Dict[str, torch.Tensor]] = None,
+    device: Optional[torch.device] = None,
+) -> Dict[str, torch.Tensor]:
+    """
+    Extract observation-channel validity masks aligned with FSOI input tensors.
+
+    Satellite inputs use normalized zero imputation for missing channels during
+    preprocessing, so their validity must come from ``input_channel_mask`` when
+    available. Conventional inputs also carry this mask when persistence inputs
+    are requested, with a sentinel-based fallback for older batches.
+    """
+    masks: Dict[str, torch.Tensor] = {}
+
+    for obs_type, instruments in observation_config.items():
+        obs_type_key = str(obs_type).lower()
+        for inst_name, cfg in instruments.items():
+            node_type_input = f"{inst_name}_input"
+            if node_type_input not in batch.node_types:
+                continue
+
+            node_data = batch[node_type_input]
+            x_input = getattr(node_data, "x", None)
+            if x_input is None or x_input.numel() == 0:
+                continue
+
+            n_channels = len(cfg.get("features", []))
+            if n_channels == 0:
+                continue
+            n_meta = len(cfg.get("metadata", []))
+            bt_start = 7 + n_meta
+            x_channels = x_input[:, bt_start:bt_start + n_channels]
+
+            stored_mask = getattr(node_data, "input_channel_mask", None)
+            if (
+                stored_mask is not None
+                and stored_mask.numel() > 0
+                and tuple(stored_mask.shape) == tuple(x_channels.shape)
+            ):
+                mask = stored_mask.detach().clone().to(dtype=torch.bool)
+            elif obs_type_key == "satellite":
+                print(
+                    f"[FSOI Mask WARNING] {inst_name}: input_channel_mask missing; "
+                    "using finite-value fallback for zero-imputed satellite inputs"
+                )
+                mask = torch.isfinite(x_channels).detach().to(torch.bool)
+            else:
+                mask = observation_valid_mask(x_channels).detach().to(torch.bool)
+
+            idx = (replace_indices or {}).get(inst_name)
+            if idx is not None:
+                idx = idx.to(device=mask.device, dtype=torch.long)
+                mask = mask[idx]
+
+            if device is not None:
+                mask = mask.to(device=device)
+            masks[inst_name] = mask
+
+    return masks
 
 
 def get_fsoi_metadata(
@@ -1614,6 +1693,7 @@ def compute_fsoi_per_observation(
     gb: Dict[str, torch.Tensor],
     return_components: bool = False,
     impact_factor: float = 0.5,
+    valid_masks: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Compute per-observation FSOI using the trapezoidal formula:
@@ -1624,8 +1704,9 @@ def compute_fsoi_per_observation(
 
     FSOI = 0.5 * (xa - xb) * (ga + gb)
 
-    Missing observation channels have xa == SENTINEL_OBS (-9.0). They are
-    assigned zero FSOI and excluded from diagnostic means/counts.
+    Missing observation channels are assigned zero FSOI and excluded from
+    diagnostic means/counts. Pass ``valid_masks`` from ``input_channel_mask``
+    when available; this is required for zero-imputed satellite inputs.
 
     where:
     - delta_x = xa - xb (innovation)
@@ -1673,11 +1754,16 @@ def compute_fsoi_per_observation(
         # Compute innovation (δx) and adjoint sum
         g_sum = ga[inst_name] + gb[inst_name]
 
+        valid_mask = None
+        if valid_masks is not None:
+            valid_mask = valid_masks.get(inst_name)
+
         fsoi, innovation_diag, gsum_diag, valid_obs = _masked_fsoi_components(
             xa[inst_name],
             xb[inst_name],
             g_sum,
             impact_factor,
+            valid_mask,
         )
 
         fsoi_values[inst_name] = fsoi
@@ -1692,7 +1778,7 @@ def compute_fsoi_per_observation(
         missing_count = int((~valid_obs).sum().item())
 
         print(f"[FSOI] {inst_name}: sum={impact_sum:.6e}, mean={impact_mean:.6e}, "
-              f"positive={positive_frac*100:.1f}%, missing_sentinel={missing_count}")
+              f"positive={positive_frac*100:.1f}%, missing_masked={missing_count}")
 
     if return_components:
         return fsoi_values, innovations, gradient_sums
@@ -1715,6 +1801,7 @@ def compute_per_level_fsoi(
     target_pressure_levels: Optional[List[float]] = None,
     loss_reduction: str = 'sum',
     impact_factor: float = 0.5,
+    valid_masks: Optional[Dict[str, torch.Tensor]] = None,
 ) -> List[Dict]:
     """
     Compute FSOI with a separate loss per radiosonde pressure level.
@@ -1932,6 +2019,9 @@ def compute_per_level_fsoi(
             # No second subsampling needed here.
             xa_cpu = xa[inst].detach().cpu()
             xb_cpu = xb[inst].detach().cpu()
+            valid_mask = None
+            if valid_masks is not None and inst in valid_masks:
+                valid_mask = valid_masks[inst].detach().cpu()
             dx = xa_cpu - xb_cpu
             gs = ga_inst + gb_inst   # both are already on CPU (stored via .detach().cpu())
 
@@ -1945,6 +2035,7 @@ def compute_per_level_fsoi(
                 xb_cpu,
                 gs,
                 impact_factor,
+                valid_mask,
             )
             fsoi_p[inst] = fsoi_i
             innov_p[inst] = innov_i
