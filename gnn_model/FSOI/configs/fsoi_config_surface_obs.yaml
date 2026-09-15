@@ -7,8 +7,7 @@
 # Scientific notes:
 # - Surface obs have no vertical pressure structure, so stratify_by_pressure is
 #   disabled. A single global error metric is computed over all surface targets.
-# - Area weighting is enabled: surface obs are dense in the tropics and NH,
-#   so cosine-latitude weights prevent geographic density from biasing totals.
+# - Equal-area cell means balance sampled geographic coverage.
 # - Finite-difference check is enabled (10 samples) to verify gradient accuracy
 #   against a tangent-linear approximation for this target type.
 # - Aircraft has no humidity channel in observation_config (features: T, U, V).
@@ -28,9 +27,9 @@ forecast:
   use_instrument_weights: false
   use_channel_weights: false
 
-  # Cosine-latitude area weighting: essential for global totals when obs are
-  # geographically uneven (dense NH mid-latitudes, sparse tropics/SH).
-  use_area_weights: true
+  verification_metric:
+    spatial_weighting: equal_area
+    group_balancing: variable_level
 
   # Normalized metric so date windows with different target counts are comparable.
   loss_reduction: "mean"

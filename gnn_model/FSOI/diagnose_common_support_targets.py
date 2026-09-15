@@ -45,6 +45,10 @@ from fsoi_inference import (  # noqa: E402
     _as_scalar_bin,
 )
 from fsoi_model_extensions import freeze_model_for_fsoi, predict_at_targets  # noqa: E402
+from fsoi_target_metric import (  # noqa: E402
+    begin_target_cycle, configure_observation_verification, metric_provenance,
+    save_target_plans, target_validity,
+)
 from fsoi_utils import (  # noqa: E402
     STANDARD_PRESSURE_LEVELS,
     compute_per_level_fsoi_by_variable,
@@ -164,10 +168,9 @@ def build_synthetic_common_target(
     for idx in requested_idx:
         keep |= pidx.long().eq(int(idx))
 
-    if hasattr(template, "target_channel_mask"):
-        mask = template.target_channel_mask.to(torch.bool)
-        for var in valid_vars:
-            keep &= mask[:, TARGET_CHANNELS[template_inst][var]]
+    mask = target_validity(template)
+    for var in valid_vars:
+        keep &= mask[:, TARGET_CHANNELS[template_inst][var]]
 
     n_available = int(keep.sum().item())
     if n_available == 0:
@@ -352,7 +355,9 @@ def main() -> None:
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(args.obs_config)
 
     forecast_cfg = fsoi_config.get("forecast", {})
-    use_area_weights = bool(forecast_cfg.get("use_area_weights", True))
+    metric_config = configure_observation_verification(forecast_cfg)
+    instrument_weights, channel_weights = {}, {}
+    use_area_weights = False
     loss_reduction = str(forecast_cfg.get("loss_reduction", "mean"))
     impact_factor = float(forecast_cfg.get("impact_factor", 0.5))
     lead_step = int((forecast_cfg.get("lead_steps") or [0])[0])
@@ -386,7 +391,7 @@ def main() -> None:
     (output_dir / "evaluation").mkdir(parents=True, exist_ok=True)
     (output_dir / "logs").mkdir(parents=True, exist_ok=True)
     with open(output_dir / "logs" / "common_support_config_used.yaml", "w") as f:
-        yaml.safe_dump(vars(args), f, sort_keys=True)
+        yaml.safe_dump(dict(vars(args), verification_metric=metric_config), f, sort_keys=True)
 
     wanted_pairs = set(_parse_csv_list(args.pair_indices, int))
     variables = _parse_csv_list(args.variables, str)
@@ -405,6 +410,7 @@ def main() -> None:
 
         prev_dev = prev_batch.to(device)
         curr_dev = curr_batch.to(device)
+        begin_target_cycle(model, metric_config)
 
         xa_all = get_fsoi_inputs(
             curr_dev,
@@ -504,6 +510,8 @@ def main() -> None:
                         "eb": result.get("eb_p"),
                         "loss_reduction": loss_reduction,
                         "use_area_weights": use_area_weights,
+                        "group_weight": result['group_weight'],
+                        **metric_provenance(model),
                         "synthetic_support_note": (
                             "same template target rows, lat/lon, time, pressure levels, "
                             "and verifying values for common variables"
@@ -511,6 +519,7 @@ def main() -> None:
                     }
                 )
 
+        save_target_plans(model, output_dir / 'evaluation' / 'target_metric', pair_idx, curr_bin)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 

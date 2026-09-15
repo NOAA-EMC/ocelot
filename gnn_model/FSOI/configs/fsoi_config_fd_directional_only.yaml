@@ -12,7 +12,9 @@ forecast:
   target_pressure_levels: "all"
   use_instrument_weights: false
   use_channel_weights: false
-  use_area_weights: true
+  verification_metric:
+    spatial_weighting: equal_area
+    group_balancing: variable_level
   loss_reduction: "mean"
   impact_factor: 0.5
   stratify_by_pressure: true

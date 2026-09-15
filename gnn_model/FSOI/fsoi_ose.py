@@ -74,6 +74,7 @@ from typing import Dict, List, Optional, Tuple
 import sys
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_target_metric import metric_provenance
 
 ABSOLUTE_SIGNAL_FLOOR = 1e-12
 REPRO_SIGNAL_MULTIPLIER = 10.0
@@ -1035,6 +1036,7 @@ def compute_ose_for_pair(
         'mesh_pressure_level_idx': mesh_pressure_level_idx if use_mesh_ose else '',
         'ose_spatial_npz': spatial_npz,
         'loss_reduction': str(loss_reduction),
+        **metric_provenance(model),
         'target_instruments': _serialize_provenance_value(target_instruments),
         'target_variables': _serialize_provenance_value(target_variables),
         'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
@@ -1449,6 +1451,7 @@ def compute_matched_conditional_fsoi_for_pair(
         'mesh_pressure_level_idx': '',
         'ose_spatial_npz': '',
         'loss_reduction': str(loss_reduction),
+        **metric_provenance(model),
         'target_instruments': _serialize_provenance_value(target_instruments),
         'target_variables': _serialize_provenance_value(target_variables),
         'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),

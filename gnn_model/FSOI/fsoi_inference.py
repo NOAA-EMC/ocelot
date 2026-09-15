@@ -19,6 +19,8 @@ Author: Azadeh Gholoubi
 """
 
 import argparse
+import csv
+import json
 import glob
 import os
 import sys
@@ -69,6 +71,10 @@ from fsoi_model_extensions import (  # noqa: E402
     freeze_model_for_fsoi,
 )
 from weight_utils import load_weights_from_yaml  # noqa: E402
+from fsoi_target_metric import (  # noqa: E402
+    SparseTargetError, begin_target_cycle, get_target_plan, metric_provenance, save_target_plans,
+    configure_observation_verification,
+)
 from torch_geometric.loader import DataLoader as PyGDataLoader  # noqa: E402
 
 
@@ -400,6 +406,7 @@ def compute_fsoi_for_pair(
     ose_denial_mode: str = "background_replacement",
     ose_channels: dict = None,
     ose_path_integration_t_values: list = None,
+    verification_target: str = 'obs',
 ):
     """
     Compute FSOI for a single (prev, curr) batch pair.
@@ -430,6 +437,16 @@ def compute_fsoi_for_pair(
     if model.training:
         print("[MODEL] WARNING: model was in training mode; switching to eval() for FSOI")
     model.eval()
+
+    metric_config = (configure_observation_verification(fsoi_config['forecast'])
+                     if verification_target == 'obs' else {})
+    model.fsoi_verification_target = verification_target
+    if metric_config:
+        begin_target_cycle(model, metric_config)
+    else:
+        model._fsoi_target_plans = {}
+        if gfs_reference is None:
+            raise ValueError("Mesh verification requires a mesh reference; no observation-space fallback")
 
     if verbose:
         print(f"\n{'=' * 80}")
@@ -474,9 +491,16 @@ def compute_fsoi_for_pair(
     if target_pressure_levels == 'all':
         target_pressure_levels = None
 
-    use_area_weights = fsoi_config['forecast'].get('use_area_weights', True)
-    loss_reduction = fsoi_config['forecast'].get('loss_reduction', 'sum')
+    use_area_weights = fsoi_config['forecast'].get('use_area_weights', verification_target == 'mesh')
+    loss_reduction = fsoi_config['forecast'].get('loss_reduction', 'mean')
     impact_factor = float(fsoi_config['forecast'].get('impact_factor', 0.5))
+    if metric_config:
+        if target_instruments is None or len(target_instruments) != 1:
+            raise ValueError("Balanced verification requires exactly one target instrument")
+        if use_area_weights:
+            raise ValueError("Set use_area_weights=false; verification_metric selects spatial weights")
+        if loss_reduction not in {'mean', 'mse', 'normalized', 'average', 'avg'}:
+            raise ValueError("Balanced verification requires a normalized-mean reduction")
     print(f"[FSOI Config] loss_reduction={loss_reduction}, impact_factor={impact_factor}")
 
     # Optional: save innovation-vs-FSOI scatter sample for plotting
@@ -500,6 +524,22 @@ def compute_fsoi_for_pair(
 
     # Process each forecast lead step
     for lead_step in forecast_lead_steps:
+        model.fsoi_verification_loss_kwargs = dict(
+            forecast_lead_step=lead_step, instrument_weights=instrument_weights,
+            channel_weights=channel_weights, use_area_weights=use_area_weights,
+            target_instruments=target_instruments, target_variables=target_variables,
+            target_pressure_levels=target_pressure_levels, loss_reduction=loss_reduction,
+        ) if metric_config else None
+        if metric_config:
+            target_inst = target_instruments[0]
+            target_nt = f"{target_inst}_target_step{lead_step}"
+            if target_nt not in curr_batch.node_types:
+                raise SparseTargetError(f"Missing verification node {target_nt}")
+            plan = get_target_plan(model, curr_batch[target_nt], target_inst, target_nt,
+                                   target_variables, target_pressure_levels)
+            if metric_config.get('audit_only', False):
+                continue
+            plan.require_eligible()
         if verbose:
             print(f"\n--- Processing Lead Step {lead_step} ---\n")
 
@@ -826,6 +866,8 @@ def compute_fsoi_for_pair(
                         results['fd_records'].append(rec)
             except Exception as fd_err:
                 print(f"[WARNING] FD sample collection failed for pair {pair_idx}: {fd_err}")
+                if metric_config:
+                    raise
 
         # Optional: directional-derivative check (Rademacher, float32).
         # Applied to satellite and conventional instruments; the check reports
@@ -871,10 +913,15 @@ def compute_fsoi_for_pair(
                                 'l1_norm': dr['l1_norm'],
                                 'n_ulp': dr['n_ulp'],
                                 'status': dr['status'],
+                                'epsilon': eps_dir,
+                                'seed': pair_idx * 31 + 7,
+                                **metric_provenance(model),
                             }
                             results['directional_records'].append(row)
             except Exception as dir_err:
                 print(f"[WARNING] Directional derivative check failed for pair {pair_idx}: {dir_err}")
+                if metric_config:
+                    raise
 
         # Optional: float64 per-obs FD check for satellite instruments
         if run_float64_check:
@@ -906,6 +953,8 @@ def compute_fsoi_for_pair(
                             results['float64_records'].append(rec)
             except Exception as f64_err:
                 print(f"[WARNING] Float64 FD check failed for pair {pair_idx}: {f64_err}")
+                if metric_config:
+                    raise
 
         # Whether to compute a separate loss per radiosonde pressure level
         # (enables pressure_hpa column for ALL instruments including satellites)
@@ -946,7 +995,14 @@ def compute_fsoi_for_pair(
 
                 per_level_results = []
                 scatter_saved = False
+                combined_fsoi, combined_gsum = {}, {}
                 for mr in raw_results:
+                    for inst, value in mr['fsoi_values'].items():
+                        alpha = mr['group_weight']
+                        weighted = alpha * value
+                        gs = alpha * mr['gradient_sums'][inst]
+                        combined_fsoi[inst] = combined_fsoi.get(inst, 0.0) + weighted
+                        combined_gsum[inst] = combined_gsum.get(inst, 0.0) + gs
                     # Broadcast metric target pressure for all instruments.
                     # Surface targets have no pressure level (p_idx is None), so
                     # skip the broadcast: satellites then aggregate per-channel
@@ -968,6 +1024,8 @@ def compute_fsoi_for_pair(
                     df_ch['target_channel'] = mr.get('target_channel')
                     df_ch['p_idx'] = mr.get('p_idx')
                     df_ch['p_hpa'] = mr.get('p_hpa')
+                    df_ch['group_weight'] = mr['group_weight']
+                    df_ch['target_metric_id'] = mr['target_metric_id']
 
                     df_inst = aggregate_fsoi_by_instrument(
                         mr['fsoi_values'],
@@ -980,6 +1038,8 @@ def compute_fsoi_for_pair(
                     df_inst['target_channel'] = mr.get('target_channel')
                     df_inst['p_idx'] = mr.get('p_idx')
                     df_inst['p_hpa'] = mr.get('p_hpa')
+                    df_inst['group_weight'] = mr['group_weight']
+                    df_inst['target_metric_id'] = mr['target_metric_id']
 
                     per_level_results.append(
                         {
@@ -987,6 +1047,8 @@ def compute_fsoi_for_pair(
                             'p_hpa': mr['p_hpa'],
                             'target_variable': mr.get('target_variable'),
                             'target_channel': mr.get('target_channel'),
+                            'group_weight': mr['group_weight'],
+                            'target_metric_id': mr['target_metric_id'],
                             'ea_p': mr.get('ea_p', 0.0),
                             'eb_p': mr.get('eb_p', 0.0),
                             'fsoi_channel_aggregates': df_ch,
@@ -1035,13 +1097,14 @@ def compute_fsoi_for_pair(
                 )
 
             if not per_level_results:
-                print("[WARNING] No per-level FSOI results; skipping pair")
-                continue
+                raise RuntimeError("No FSOI results for eligible target groups")
 
-            ea_total = sum(lr['ea_p'] for lr in per_level_results)
-            eb_total = sum(lr['eb_p'] for lr in per_level_results)
-            print(f"  Total ea (sum over levels): {ea_total:.6e}")
-            print(f"  Total eb (sum over levels): {eb_total:.6e}")
+            if not np.isclose(sum(lr['group_weight'] for lr in per_level_results), 1.0):
+                raise RuntimeError("Incomplete target-group attribution: group weights do not sum to one")
+            ea_total = sum(lr['group_weight'] * lr['ea_p'] for lr in per_level_results)
+            eb_total = sum(lr['group_weight'] * lr['eb_p'] for lr in per_level_results)
+            print(f"  Combined ea: {ea_total:.6e}")
+            print(f"  Combined eb: {eb_total:.6e}")
 
             results['fsoi_by_step'][lead_step] = {
                 'ea': ea_total,
@@ -1052,6 +1115,22 @@ def compute_fsoi_for_pair(
                 'metadata': metadata,
                 'sampling_info': sampling_info,
             }
+            if stratify_by_variable and metric_config:
+                common = dict(innovations=raw_results[0].get('innovations'),
+                              gradient_sums=combined_gsum, sampling_info=sampling_info)
+                results['fsoi_by_step'][lead_step]['combined_instrument_aggregates'] = aggregate_fsoi_by_instrument(
+                    combined_fsoi, model.instrument_name_to_id, **common)
+                results['fsoi_by_step'][lead_step]['combined_channel_aggregates'] = aggregate_fsoi_by_channel(
+                    combined_fsoi, model.instrument_name_to_id, metadata=metadata, **common)
+            if metric_config and run_repro_check:
+                repeat_batch = curr_batch.clone()
+                replace_batch_inputs(repeat_batch, xa, observation_config, replace_indices=subsample_indices)
+                with torch.no_grad():
+                    repeated = compute_forecast_error(model, repeat_batch, **model.fsoi_verification_loss_kwargs)
+                difference = abs(repeated.item() - ea_total)
+                results['repro_ea_diff'] = difference
+                results['repro_status'] = 'MEASURED'
+                results['fsoi_by_step'][lead_step]['control_repeat_abs_difference'] = difference
 
             # ── OSE cross-check (stratified path) ────────────────────────
             if ose_instruments:
@@ -1071,7 +1150,7 @@ def compute_fsoi_for_pair(
                         and (ose_spatial_pair_indices is None or pair_idx in ose_spatial_pair_indices)
                         else None
                     ),
-                    run_matched_repro_check=(pair_idx == 0),
+                    run_matched_repro_check=(matched_control_reproducibility_error is None),
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
                     ose_denial_mode=ose_denial_mode,
                     ose_channels=ose_channels,
@@ -1305,7 +1384,7 @@ def compute_fsoi_for_pair(
                         and (ose_spatial_pair_indices is None or pair_idx in ose_spatial_pair_indices)
                         else None
                     ),
-                    run_matched_repro_check=(pair_idx == 0),
+                    run_matched_repro_check=(matched_control_reproducibility_error is None),
                     matched_control_reproducibility_error=matched_control_reproducibility_error,
                     ose_denial_mode=ose_denial_mode,
                     ose_channels=ose_channels,
@@ -1371,6 +1450,7 @@ def compute_fsoi_for_pair(
 
         print(f"\n✓ FSOI computation complete for lead step {lead_step}")
 
+    results['target_metric_provenance'] = metric_provenance(model)
     return results
 
 
@@ -1567,6 +1647,8 @@ def main():
     # Load configurations
     print("Loading configurations...")
     fsoi_config = load_fsoi_config(args.config)
+    if args.verification_target == 'obs':
+        configure_observation_verification(fsoi_config['forecast'])
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = \
         load_weights_from_yaml(args.obs_config)
 
@@ -1574,12 +1656,12 @@ def main():
     # These flags were defined in all YAML configs but were never read — weights
     # were always applied regardless.  This is now fixed.
     _fc = fsoi_config.get('forecast', {})
-    if not _fc.get('use_instrument_weights', True):
+    if not _fc.get('use_instrument_weights', False):
         instrument_weights = {}
         print("[WEIGHTS] use_instrument_weights=false: uniform instrument weights")
     else:
         print(f"[WEIGHTS] use_instrument_weights=true: {len(instrument_weights)} instrument weights loaded")
-    if not _fc.get('use_channel_weights', True):
+    if not _fc.get('use_channel_weights', False):
         channel_weights = {}
         print("[WEIGHTS] use_channel_weights=false: uniform channel weights")
     else:
@@ -1596,6 +1678,12 @@ def main():
     # Setup output directory
     output_path = setup_output_directory(fsoi_config['data']['output_dir'])
     print(f"Output directory: {output_path}")
+    metric_config = fsoi_config.get('forecast', {}).get('verification_metric', {})
+    if metric_config:
+        if (output_path / 'evaluation' / 'target_metric').exists():
+            raise FileExistsError("Target-metric output already exists; use a new run directory")
+        with (output_path / 'target_metric_config.json').open('w', encoding='utf-8') as f:
+            json.dump(metric_config, f, indent=2, sort_keys=True)
 
     ose_spatial_output_dir = None
     ose_spatial_pair_indices = None
@@ -1850,6 +1938,8 @@ def main():
 
     # ── Mesh-space verification setup ─────────────────────────────────────────
     use_mesh_verification = (args.verification_target == "mesh")
+    if metric_config and use_mesh_verification:
+        raise ValueError("Balanced observation-space target metrics cannot be applied to mesh verification")
     mesh_pred_edges_cache = None
     mesh_lats = mesh_lons = None
 
@@ -1934,6 +2024,10 @@ def main():
     matched_control_reproducibility_error = None
 
     for pair_idx, (prev_batch, curr_batch) in enumerate(tqdm(fsoi_loader, desc="Computing FSOI")):
+        pair_status, pair_reason = 'failed', ''
+        # Also clear before errors occurring outside compute_fsoi_for_pair.
+        if metric_config:
+            begin_target_cycle(model, metric_config)
         try:
             # ── Load GFS reference for mesh-space verification ───────────────
             gfs_reference_pair = None
@@ -1963,8 +2057,7 @@ def main():
                     gfs_reference_pair = {args.mesh_instrument: gfs_tensor}
                 except Exception as gfs_err:
                     print(f"[MESH FSOI] GFS load failed for pair {pair_idx}: {gfs_err}")
-                    print("  Falling back to obs-space verification for this pair")
-                    gfs_reference_pair = None
+                    raise SparseTargetError("Missing mesh reference; cycle excluded") from gfs_err
 
             # Compute FSOI for this pair
             result = compute_fsoi_for_pair(
@@ -1981,9 +2074,10 @@ def main():
                 run_directional_check=(pair_idx in directional_pair_set),
                 run_float64_check=(pair_idx in float64_pair_set),
                 run_diagnostics=run_diagnostics,
-                run_repro_check=(repro_enabled and pair_idx == 0),
+                run_repro_check=(repro_enabled and not any('repro_ea_diff' in r for r in all_results)),
                 ose_instruments=ose_instruments,
                 gfs_reference=gfs_reference_pair,
+                verification_target=args.verification_target,
                 mesh_instrument=args.mesh_instrument if use_mesh_verification else "radiosonde",
                 mesh_pressure_level_idx=args.mesh_pressure_level_idx if use_mesh_verification else 4,
                 ose_spatial_output_dir=ose_spatial_output_dir,
@@ -2000,6 +2094,7 @@ def main():
             )
 
             all_results.append(result)
+            pair_status = 'coverage_audit' if metric_config.get('audit_only', False) else 'completed'
 
             if isinstance(result, dict) and result.get('scatter_samples'):
                 scatter_frames.extend(result['scatter_samples'])
@@ -2030,7 +2125,14 @@ def main():
                             )
                             break
 
+        except SparseTargetError as e:
+            pair_status, pair_reason = 'excluded_target_coverage', str(e)
+            print(f"[TARGET COVERAGE] Pair {pair_idx} excluded: {e}")
+            if metric_config.get('sparse_policy', 'exclude_cycle') == 'error':
+                raise
+            continue
         except Exception as e:
+            pair_reason = str(e)
             print(f"\n[ERROR] Failed to compute FSOI for pair {pair_idx}: {e}")
             import traceback
             traceback.print_exc()
@@ -2038,9 +2140,31 @@ def main():
             # does not cascade into subsequent pairs.
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if metric_config:
+                raise
             continue
+        finally:
+            if metric_config:
+                eval_path = output_path / 'evaluation'
+                eval_path.mkdir(exist_ok=True)
+                save_target_plans(model, eval_path / 'target_metric', pair_idx,
+                                  _as_scalar_bin(curr_batch.bin_name))
+                inventory = eval_path / 'target_metric_cycles.csv'
+                record = dict(pair_idx=pair_idx, cycle=_as_scalar_bin(curr_batch.bin_name),
+                              status=pair_status, reason=pair_reason)
+                header = not inventory.exists()
+                with inventory.open('a', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, record.keys())
+                    if header:
+                        writer.writeheader()
+                    writer.writerow(record)
 
     print(f"\n✓ FSOI computation complete for {len(all_results)} pairs")
+    if metric_config.get('audit_only', False):
+        print(f"Target coverage audit written to {output_path / 'evaluation' / 'target_metric'}")
+        return
+    if metric_config and not any(r.get('fsoi_by_step') for r in all_results):
+        raise SparseTargetError("No eligible cycles; inspect target_metric coverage records before resubmission")
 
     # Aggregate results
     print("\n" + "=" * 80)
@@ -2050,9 +2174,22 @@ def main():
     # Aggregate across all pairs and steps
     aggregated_by_channel = []
     aggregated_by_instrument = []
+    combined_by_instrument, combined_by_channel = [], []
 
     for result in all_results:
         for lead_step, step_data in result['fsoi_by_step'].items():
+            for field, destination in [('combined_instrument_aggregates', combined_by_instrument),
+                                       ('combined_channel_aggregates', combined_by_channel)]:
+                if field in step_data:
+                    frame = step_data[field].copy()
+                    for col in ('pair_idx', 'prev_bin', 'curr_bin'):
+                        frame[col] = result[col]
+                    frame['lead_step'], frame['ea'], frame['eb'] = lead_step, step_data['ea'], step_data['eb']
+                    frame['metric_aggregation'] = 'fixed_variable_level_weighted_mean'
+                    frame['control_repeat_abs_difference'] = step_data.get('control_repeat_abs_difference', np.nan)
+                    for col, value in result.get('target_metric_provenance', {}).items():
+                        frame[col] = value
+                    destination.append(frame)
 
             if step_data.get('pressure_stratified'):
                 # ── Pressure-stratified path ──────────────────────────────
@@ -2100,6 +2237,9 @@ def main():
                     df_ch['eb_p'] = metric_eb
                     df_ch['ea_total'] = step_data['ea']
                     df_ch['eb_total'] = step_data['eb']
+                    df_ch['group_weight'] = level_data['group_weight']
+                    for column, value in result.get('target_metric_provenance', {}).items():
+                        df_ch[column] = value
                     aggregated_by_channel.append(df_ch)
 
                 if variable_stratified:
@@ -2120,6 +2260,8 @@ def main():
                         df_inst['eb_p'] = metric_eb
                         df_inst['ea_total'] = step_data['ea']
                         df_inst['eb_total'] = step_data['eb']
+                        for column, value in result.get('target_metric_provenance', {}).items():
+                            df_inst[column] = value
                         aggregated_by_instrument.append(df_inst)
                 else:
                     # For instrument-level: sum FSOI across all pressure levels.
@@ -2129,11 +2271,12 @@ def main():
                     for level_data in step_data['per_level']:
                         for inst, v in level_data['fsoi_values'].items():
                             if inst not in combined_fsoi:
-                                combined_fsoi[inst] = v.clone()
+                                combined_fsoi[inst] = v.clone() * level_data['group_weight']
                                 combined_innov[inst] = level_data['innovations'].get(inst)
-                                combined_gsum[inst] = level_data['gradient_sums'].get(inst)
+                                combined_gsum[inst] = level_data['gradient_sums'][inst] * level_data['group_weight']
                             else:
-                                combined_fsoi[inst] = combined_fsoi[inst] + v
+                                combined_fsoi[inst] = combined_fsoi[inst] + v * level_data['group_weight']
+                                combined_gsum[inst] += level_data['gradient_sums'][inst] * level_data['group_weight']
 
                     df_inst = aggregate_fsoi_by_instrument(
                         combined_fsoi,
@@ -2206,6 +2349,16 @@ def main():
 
     if fsoi_config['output'].get('save_csv', True):
         csv_dir = output_path / "csv"
+        combined_summary = None
+        for label, frames in [('instrument', combined_by_instrument), ('channel', combined_by_channel)]:
+            if frames:
+                combined = pd.concat(frames, ignore_index=True)
+                combined.to_csv(csv_dir / f'fsoi_combined_by_{label}.csv', index=False)
+                if label == 'instrument':
+                    combined_summary = combined
+        if combined_summary is not None:
+            from fsoi_target_metric import combined_closure
+            combined_closure(combined_summary).to_csv(csv_dir / 'fsoi_combined_closure.csv', index=False)
 
         # Per-channel results
         if not df_all_channel.empty:
@@ -2251,7 +2404,8 @@ def main():
                 if col in df_all_instrument.columns:
                     summary_aggs[col] = agg
 
-            summary = df_all_instrument.groupby('instrument').agg(summary_aggs).reset_index()
+            summary_source = combined_summary if combined_summary is not None else df_all_instrument
+            summary = summary_source.groupby('instrument').agg(summary_aggs).reset_index()
             # Flatten multi-index columns for CSV friendliness
             summary.columns = [
                 '_'.join([c for c in col if c]).strip('_') if isinstance(col, tuple) else col
