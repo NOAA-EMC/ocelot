@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Submit existing target runners with inclusion-weighted source aggregation.
 # From gnn_model: bash FSOI/scripts/submit_fsoi_sampling_final.sh smoke|seasonal [--dry-run]
+#
+# Requires frozen run configs FSOI/configs/generated/<target>_target_run.yaml, produced by
+#   summarize_target_coverage.py --freeze-output  ->  make_target_metric_config.py --mode run --frozen-spec
+# The base configs score all 16 levels, and one unsupported group excludes every cycle.
 set -euo pipefail
 
 mode="${1:-}"
@@ -17,7 +21,9 @@ cd "$GNN_MODEL_DIR"
 CHECKPOINT_PATH="${CHECKPOINT_PATH:-${CKPT:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}}"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 OUT_ROOT="${OUT_ROOT:-$GNN_MODEL_DIR/FSOI/fsoi_outputs/seasonal_inclusion_weighted_final}"
-WALLTIME="${WALLTIME:-06:00:00}"
+CONFIG_DIR="${CONFIG_DIR:-FSOI/configs/generated}"
+# Results are written only at the end of a run, so a timeout loses the whole month.
+WALLTIME="${WALLTIME:-12:00:00}"
 if [[ "$mode" == smoke ]]; then OUT_ROOT="$OUT_ROOT/smoke"; fi
 
 if ! $dry_run; then
@@ -33,8 +39,23 @@ ends=(2025-01-31 2025-04-30 2025-07-31 2025-10-31)
 if [[ "$mode" == smoke ]]; then
     months=(jul2025)
     starts=(2025-07-01T00:00:00)
-    ends=(2025-07-01T12:00:00)
+    ends=(2025-07-02T00:00:00)
 fi
+
+# Every target must have a frozen (non-audit) run configuration before any job is submitted.
+for target in "${targets[@]}"; do
+    config="$CONFIG_DIR/${target}_target_run.yaml"
+    [[ -f "$config" ]] || { echo "Missing frozen run config: $config" >&2; exit 1; }
+    python - "$config" "$target" <<'EOF'
+import sys, yaml
+path, target = sys.argv[1:]
+config = yaml.safe_load(open(path, encoding='utf-8'))
+forecast = config['forecast']
+assert forecast.get('target_instruments') == [target], f"{path}: target is not {target}"
+assert not forecast['verification_metric'].get('audit_only'), f"{path}: audit config, not a run config"
+assert config.get('target_metric_freeze'), f"{path}: not generated from a frozen coverage spec"
+EOF
+done
 
 if [[ "$mode" == seasonal ]] && ! $dry_run; then
     python FSOI/audit_sampling_rank_sensitivity.py \
@@ -62,9 +83,9 @@ for target in "${targets[@]}"; do
         aircraft) name=aircraft ;;
         surface_obs) name=surface_obs ;;
     esac
-    config="FSOI/configs/fsoi_config_${name}.yaml"
+    config="$CONFIG_DIR/${target}_target_run.yaml"
     runner="FSOI/scripts/run_fsoi_${name}.sh"
-    [[ -f "$config" && -f "$runner" ]] || { echo "Missing config or runner for $target" >&2; exit 1; }
+    [[ -f "$runner" ]] || { echo "Missing runner for $target" >&2; exit 1; }
     for i in "${!months[@]}"; do
         month="${months[$i]}"
         destination="$OUT_ROOT/${target}_${month}"
@@ -89,5 +110,6 @@ printf '\nAfter all jobs finish, validate and compare the saved scalings:\n'
 printf 'python FSOI/audit_sampling_rank_sensitivity.py --require-ht --expected-runs %s --root %q\n' \
     "$((${#targets[@]} * ${#months[@]}))" "$OUT_ROOT"
 if [[ "$mode" == smoke ]]; then
-    echo "Check that all three smoke runs produced finite HT totals and sampling_design/*.npz before submitting seasonal."
+    echo "Before seasonal: check finite HT totals, sampling_design/*.npz, seconds per pair,"
+    echo "and conventional innovation RMS in evaluation/innovation_diagnostics.csv."
 fi

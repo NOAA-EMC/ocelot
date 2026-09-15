@@ -33,6 +33,42 @@ def _stratified_spatial_subsample(
     return (indices, info) if return_sampling_info else indices
 
 
+def pseudo_target_conditioning(curr_input, inst_name: str, idx: torch.Tensor = None) -> dict:
+    """Decoder conditioning carried by real target nodes: pressure level and valid time.
+
+    Without it the radiosonde/aircraft decoder starts from zeros (no level) and the
+    target-time bias is skipped for every instrument, a decoding path the model never
+    saw in training. target_metadata is [lat_rad, lon_rad, time features]; the model
+    reads only the trailing time-feature columns.
+    """
+    from process_timeseries import _encode_target_time_features
+
+    def rows(value):
+        return value if idx is None else value[idx.to(value.device)]
+
+    n_rows = curr_input.lat.numel()
+    lat, lon = rows(curr_input.lat).reshape(-1), rows(curr_input.lon).reshape(-1)
+    conditioning = {}
+    if inst_name in ('radiosonde', 'aircraft'):
+        level = getattr(curr_input, 'pressure_level', None)
+        if level is None or level.numel() != n_rows:
+            raise ValueError(f"{inst_name}_input needs row-aligned pressure_level for a level-conditioned xb")
+        conditioning['pressure_level'] = rows(level).reshape(-1).long().clone()
+    times = getattr(curr_input, 'input_times', None)
+    if times is None or times.numel() != n_rows:
+        raise ValueError(f"{inst_name}_input needs row-aligned input_times for a time-conditioned xb")
+    time_features = _encode_target_time_features(
+        rows(times).reshape(-1).detach().cpu().numpy().astype(np.int64),
+        lon.detach().cpu().double().numpy(),
+    )
+    conditioning['target_metadata'] = torch.cat([
+        torch.deg2rad(lat.detach().float()).view(-1, 1).cpu(),
+        torch.deg2rad(lon.detach().float()).view(-1, 1).cpu(),
+        torch.from_numpy(time_features).float(),
+    ], dim=1)
+    return conditioning
+
+
 def predict_at_targets(
     model,
     prev_batch: HeteroData,
@@ -223,6 +259,10 @@ def predict_at_targets(
             if hasattr(curr_input, 'lon'):
                 lon_src = curr_input.lon if idx is None else curr_input.lon[idx]
                 forecast_batch[pseudo_target_type].lon = lon_src.clone()
+
+            # Match the conditioning of real target nodes (pressure level, valid time).
+            for attr, value in pseudo_target_conditioning(curr_input, inst_name, idx).items():
+                forecast_batch[pseudo_target_type][attr] = value
 
             # For decoder .x: extract metadata from INPUT .x
             # Decoder needs scan angles (for satellites) or can use minimal dummy

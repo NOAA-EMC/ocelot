@@ -1,6 +1,11 @@
-"""Generate explicit, standalone configurations for target-coverage audits and runs."""
+"""Generate explicit, standalone configurations for target-coverage audits and runs.
+
+Run configurations are generated from the frozen coverage specification written by
+summarize_target_coverage.py --freeze-output, so every season uses the same groups.
+"""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,7 +15,8 @@ from fsoi_target_metric import PRESSURES, pressure_indices
 
 
 def make_config(base, *, mode='audit', n_sin_lat=18, n_lon=36,
-                min_cell=2, min_cells=3, min_targets=10, levels=None, levels_by_variable=None):
+                min_cell=2, min_cells=3, min_targets=10, levels=None, levels_by_variable=None,
+                variables=None, provenance=None):
     config = json.loads(json.dumps(base))
     forecast = config['forecast']
     targets = forecast.get('target_instruments')
@@ -22,6 +28,13 @@ def make_config(base, *, mode='audit', n_sin_lat=18, n_lon=36,
     pressure_indices(selected_levels)
     for value in (levels_by_variable or {}).values():
         pressure_indices(value)
+    if variables is not None:
+        variables = list(variables)
+        if not variables or len(set(variables)) != len(variables):
+            raise ValueError("Target variables must be a nonempty list of unique names")
+        if set(levels_by_variable or {}) - set(variables):
+            raise ValueError("levels_by_variable names variables outside target_variables")
+        forecast['target_variables'] = variables
     if mode not in {'audit', 'run'}:
         raise ValueError("Invalid metric mode")
     if any(int(x) != x or x < 1 for x in (n_sin_lat, n_lon, min_cell, min_cells, min_targets)):
@@ -41,8 +54,23 @@ def make_config(base, *, mode='audit', n_sin_lat=18, n_lon=36,
         validation = config.setdefault('validation', {})
         for flag in ('finite_difference_check', 'directional_derivative_check', 'float64_fd_check'):
             validation[flag] = False
+    if provenance:
+        config['target_metric_freeze'] = dict(provenance)
     config.setdefault('output', {})['save_csv'] = True
     return config
+
+
+def load_frozen_spec(path, target):
+    """Return the frozen groups for one target and a provenance record."""
+    raw = Path(path).read_bytes()
+    spec = json.loads(raw).get(target)
+    if not spec:
+        raise ValueError(f"{path} contains no frozen specification for {target}")
+    provenance = dict(spec_file=str(path), spec_sha256=hashlib.sha256(raw).hexdigest(),
+                      min_eligible_fraction=spec['min_eligible_fraction'],
+                      audit_runs=spec['audit_runs'],
+                      expected_cycle_retention=spec['expected_cycle_retention'])
+    return spec, provenance
 
 
 def main():
@@ -50,6 +78,10 @@ def main():
     parser.add_argument('--target', choices=['radiosonde', 'aircraft', 'surface_obs'], required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--mode', choices=['audit', 'run'], default='audit')
+    parser.add_argument('--frozen-spec', type=Path,
+                        help='JSON from summarize_target_coverage.py --freeze-output (required for --mode run)')
+    parser.add_argument('--allow-unfrozen', action='store_true',
+                        help='Permit a run config without a frozen spec (development only)')
     parser.add_argument('--n-sin-lat', type=int, default=18)
     parser.add_argument('--n-lon', type=int, default=36)
     parser.add_argument('--min-observations-per-cell', type=int, default=2)
@@ -62,19 +94,34 @@ def main():
     base_file = Path(__file__).parent / 'configs' / f'fsoi_config_{name}.yaml'
     with base_file.open(encoding='utf-8') as f:
         base = yaml.safe_load(f)
-    mapping = None
-    if args.levels_by_variable:
+    grid = dict(n_sin_lat=args.n_sin_lat, n_lon=args.n_lon,
+                min_cell=args.min_observations_per_cell, min_cells=args.min_cells_per_group,
+                min_targets=args.min_observations_per_group)
+    levels, mapping, variables, provenance = args.levels_hpa, None, None, None
+    if args.frozen_spec:
+        if args.levels_hpa or args.levels_by_variable:
+            parser.error("--frozen-spec already fixes the levels; do not pass --levels-hpa/--levels-by-variable")
+        spec, provenance = load_frozen_spec(args.frozen_spec, args.target)
+        s = spec['metric_settings']  # Score with exactly the thresholds that were audited.
+        grid = dict(n_sin_lat=s['n_sin_lat'], n_lon=s['n_lon'],
+                    min_cell=s['min_observations_per_cell'], min_cells=s['min_cells_per_group'],
+                    min_targets=s['min_observations_per_group'])
+        mapping, variables = spec['levels_by_variable'] or None, spec['target_variables']
+        if mapping:
+            used = {float(p) for values in mapping.values() for p in values}
+            levels = [p for p in PRESSURES.tolist() if p in used]
+    elif args.mode == 'run' and not args.allow_unfrozen:
+        parser.error("--mode run requires --frozen-spec; freeze the groups from the coverage audit first")
+    elif args.levels_by_variable:
         with args.levels_by_variable.open(encoding='utf-8') as f:
             mapping = json.load(f)
-    config = make_config(base, mode=args.mode,
-                         n_sin_lat=args.n_sin_lat, n_lon=args.n_lon,
-                         min_cell=args.min_observations_per_cell, min_cells=args.min_cells_per_group,
-                         min_targets=args.min_observations_per_group,
-                         levels=args.levels_hpa, levels_by_variable=mapping)
+    config = make_config(base, mode=args.mode, levels=levels, levels_by_variable=mapping,
+                         variables=variables, provenance=provenance, **grid)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as f:
         yaml.safe_dump(config, f, sort_keys=False)
-    print(f"Wrote {args.output}; mode={args.mode}. Coverage thresholds are pilot settings, not validated cutoffs.")
+    frozen = f"frozen from {args.frozen_spec}" if args.frozen_spec else "not frozen"
+    print(f"Wrote {args.output}; mode={args.mode}; {frozen}.")
 
 
 if __name__ == '__main__':
