@@ -16,6 +16,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
 from collections import defaultdict
+from fsoi_sampling import population_summary
 
 
 # process_timeseries.py clips valid conventional observations to [-6, 6] and
@@ -255,6 +256,8 @@ def _sampling_record(
         'sampled_n_observations': sampled_n_info,
         'sample_scale': scale,
         'is_subsampled': bool(info.get('is_subsampled', scale != 1.0)),
+        'sampling_design': info.get('sampling_design', 'census' if raw_n == sampled_n_info else 'unrecorded'),
+        'sampling_seed': info.get('sampling_seed', np.nan),
     }
 
 
@@ -2254,13 +2257,14 @@ def aggregate_fsoi_by_channel(
     EPS = 1e-12
     records = []
 
-    def _attach_sampling(record, inst, sampled_count):
+    def _attach_sampling(record, inst, sampled_count, impacts, valid, row_mask=None, channel=None):
         sample = _sampling_record(sampling_info, inst, sampled_count)
-        scale = sample['sample_scale']
         record.update(sample)
-        record['sum_impact_scaled'] = record['sum_impact'] * scale
+        design = dict(sample)
+        design.update((sampling_info or {}).get(inst, {}))
+        record.update(population_summary(impacts, valid, design, row_mask, channel))
         if 'total_count' in record:
-            record['total_count_scaled'] = record['total_count'] * scale
+            record['total_count_scaled'] = record['estimated_valid_values_ht']
         return record
 
     def _attach_stats(record, inst, ch, mask=None):
@@ -2378,6 +2382,10 @@ def aggregate_fsoi_by_channel(
                     dtype=torch.bool,
                 )
 
+        impact_array = fsoi_tensor.detach().cpu().double().numpy()
+        valid_array = (valid_by_channel.detach().cpu().numpy() if valid_by_channel is not None
+                       else np.ones(impact_array.shape, dtype=bool))
+
         # If we have pressure levels, stratify by them
         if pressure_levels is not None:
             # Group by pressure level and channel
@@ -2400,9 +2408,6 @@ def aggregate_fsoi_by_channel(
                     )
                     raw_count = int(mask.sum().item())
                     mask = mask & channel_valid
-                    if not mask.any():
-                        continue
-
                     # Filter impacts for this pressure level
                     level_impacts = ch_impacts[mask]
 
@@ -2432,7 +2437,10 @@ def aggregate_fsoi_by_channel(
                         'positive_frac': (level_impacts > 0).float().mean().item(),
                     }
 
-                    record = _attach_sampling(record, inst_name, mask.sum().item())
+                    record = _attach_sampling(
+                        record, inst_name, N, impact_array, valid_array,
+                        pressure_mask.detach().cpu().numpy(), ch,
+                    )
                     records.append(_attach_stats(record, inst_name, ch, mask))
         else:
             # No pressure stratification - aggregate over all observations
@@ -2443,9 +2451,6 @@ def aggregate_fsoi_by_channel(
                     channel_valid = torch.ones(N, dtype=torch.bool, device=fsoi_tensor.device)
                 ch_impacts = fsoi_tensor[:, ch][channel_valid]
                 valid_count = int(channel_valid.sum().item())
-                if valid_count == 0:
-                    continue
-
                 record = {
                     'instrument': inst_name,
                     'instrument_id': inst_id,
@@ -2460,7 +2465,7 @@ def aggregate_fsoi_by_channel(
                     'positive_frac': (ch_impacts > 0).float().mean().item(),
                 }
 
-                record = _attach_sampling(record, inst_name, valid_count)
+                record = _attach_sampling(record, inst_name, N, impact_array, valid_array, channel=ch)
                 records.append(_attach_stats(record, inst_name, ch, channel_valid))
 
     return pd.DataFrame(records)
@@ -2493,7 +2498,8 @@ def collapse_target_variable_rows(
         "n_observations", "raw_n_observations", "sampled_n_observations",
         "n_channels", "instrument_id", "sample_scale", "is_subsampled",
         "n_valid_values", "n_total_values", "total_count", "raw_total_count",
-        "total_count_scaled",
+        "total_count_scaled", "estimated_valid_values_ht", "population_valid_values",
+        "sampling_seed",
     }
     agg: Dict[str, str] = {}
     for col in df.columns:
@@ -2572,6 +2578,13 @@ def aggregate_fsoi_by_instrument(
             'sum_impact_scaled': total_impact * sample['sample_scale'],
             'positive_frac': positive_frac,
         }
+        design = dict(sample)
+        design.update((sampling_info or {}).get(inst_name, {}))
+        record.update(population_summary(
+            fsoi_tensor.detach().cpu().double().numpy(), value_mask.detach().cpu().numpy(), design,
+        ))
+        record['sampling_design'] = sample['sampling_design']
+        record['sampling_seed'] = sample['sampling_seed']
 
         if innov is not None and g_sum is not None:
             stat_mask = (

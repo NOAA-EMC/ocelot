@@ -589,7 +589,7 @@ def compute_fsoi_for_pair(
         #   - Encoder: prev_batch INPUT obs → mesh
         #   - Decoder: mesh → curr_batch INPUT locations (pseudo-targets)
         #   - Result: xb predictions at same locations as xa
-        xb_raw, subsample_indices = predict_at_targets(
+        xb_raw, subsample_indices, sampling_designs = predict_at_targets(
             model,
             prev_batch,
             curr_batch,  # Pass curr_batch for INPUT locations and metadata
@@ -597,11 +597,15 @@ def compute_fsoi_for_pair(
             forecast_step=lead_step,
             keep_instruments=keep_x_instruments,  # Only predict for instruments in xa
             max_decoder_nodes=max_decoder_nodes,  # Cap heavy decoder instruments
+            return_sampling_info=True,
         )
 
         # Track raw vs sampled row counts so aggregate CSVs can include
         # scaled total-impact columns for instruments capped by max_decoder_nodes.
         sampling_info = {}
+        full_valid_masks = get_fsoi_input_masks(
+            curr_batch, observation_config, device=device,
+        )
         for inst_name, tensor in xa.items():
             raw_n = int(tensor.shape[0])
             idx = subsample_indices.get(inst_name)
@@ -613,6 +617,27 @@ def compute_fsoi_for_pair(
                 'sample_scale': sample_scale,
                 'is_subsampled': idx is not None,
             }
+            sampling_info[inst_name].update(sampling_designs.get(inst_name, {}))
+            if inst_name in observation_config.get('satellite', {}):
+                stored_mask = getattr(curr_batch[f'{inst_name}_input'], 'input_channel_mask', None)
+                if stored_mask is None or tuple(stored_mask.shape) != tuple(tensor.shape):
+                    raise RuntimeError(
+                        f'{inst_name}: population summaries require an aligned input_channel_mask; '
+                        'zero-imputed satellite missingness cannot be inferred from values'
+                    )
+            full_valid = full_valid_masks[inst_name] & torch.isfinite(tensor)
+            valid_counts = full_valid.sum(dim=0).detach().cpu().numpy()
+            sampling_info[inst_name]['population_valid_counts_by_channel'] = valid_counts
+            if inst_name in sampling_designs:
+                design_dir = Path(fsoi_config['data']['output_dir']) / 'evaluation' / 'sampling_design'
+                design_dir.mkdir(parents=True, exist_ok=True)
+                selected_valid = full_valid if idx is None else full_valid[idx.to(full_valid.device)]
+                np.savez_compressed(
+                    design_dir / f'pair{pair_idx:04d}_lead{lead_step}_{inst_name}.npz',
+                    **sampling_designs[inst_name],
+                    population_valid_counts_by_channel=valid_counts,
+                    sampled_input_channel_mask=selected_valid.detach().cpu().numpy(),
+                )
             if idx is not None:
                 print(
                     f"[SAMPLING] {inst_name}: raw={raw_n}, sampled={sampled_n}, "
