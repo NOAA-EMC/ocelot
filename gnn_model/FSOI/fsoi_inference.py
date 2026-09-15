@@ -58,6 +58,7 @@ from fsoi_utils import (  # noqa: E402
     compute_per_level_fsoi,
     compute_per_level_fsoi_by_variable,
     aggregate_fsoi_by_channel,
+    aggregate_fsoi_by_channel_latitude,
     aggregate_fsoi_by_instrument,
     sample_innovation_vs_fsoi,
     verify_alignment,
@@ -2173,6 +2174,7 @@ def main():
 
     # Aggregate across all pairs and steps
     aggregated_by_channel = []
+    aggregated_by_channel_latitude = []
     aggregated_by_instrument = []
     combined_by_instrument, combined_by_channel = [], []
 
@@ -2202,15 +2204,14 @@ def main():
                 for level_data in step_data['per_level']:
                     metric_ea = level_data.get('ea_p', step_data['ea'])
                     metric_eb = level_data.get('eb_p', step_data['eb'])
+                    # Broadcast this target level for instruments without native
+                    # pressure metadata, including the geographic diagnostic.
+                    meta_p = dict(base_metadata)
+                    meta_p['_target_pressure_level'] = torch.tensor([level_data['p_idx']])
+                    meta_p['_target_pressure_hpa'] = torch.tensor([level_data['p_hpa']])
                     if 'fsoi_channel_aggregates' in level_data:
                         df_ch = level_data['fsoi_channel_aggregates'].copy()
                     else:
-                        # Build single-level metadata: broadcast this one p_idx/hPa
-                        # to all instruments via the _target_pressure_level fallback.
-                        meta_p = dict(base_metadata)
-                        meta_p['_target_pressure_level'] = torch.tensor([level_data['p_idx']])
-                        meta_p['_target_pressure_hpa'] = torch.tensor([level_data['p_hpa']])
-
                         df_ch = aggregate_fsoi_by_channel(
                             level_data['fsoi_values'],
                             model.instrument_name_to_id,
@@ -2241,6 +2242,28 @@ def main():
                     for column, value in result.get('target_metric_provenance', {}).items():
                         df_ch[column] = value
                     aggregated_by_channel.append(df_ch)
+
+                    df_geo = aggregate_fsoi_by_channel_latitude(
+                        level_data['fsoi_values'],
+                        metadata=meta_p,
+                        innovations=level_data.get('innovations'),
+                        sampling_info=step_data.get('sampling_info'),
+                    )
+                    if not df_geo.empty:
+                        df_geo['target_variable'] = level_data.get('target_variable')
+                        df_geo['target_channel'] = level_data.get('target_channel')
+                        df_geo['p_idx'] = level_data.get('p_idx')
+                        df_geo['p_hpa'] = level_data.get('p_hpa')
+                        df_geo['pair_idx'] = result['pair_idx']
+                        df_geo['prev_bin'] = result['prev_bin']
+                        df_geo['curr_bin'] = result['curr_bin']
+                        df_geo['lead_step'] = lead_step
+                        df_geo['ea'] = metric_ea
+                        df_geo['eb'] = metric_eb
+                        df_geo['group_weight'] = level_data['group_weight']
+                        for column, value in result.get('target_metric_provenance', {}).items():
+                            df_geo[column] = value
+                        aggregated_by_channel_latitude.append(df_geo)
 
                 if variable_stratified:
                     # Instrument aggregates already represent a specific (p, variable) metric.
@@ -2316,6 +2339,21 @@ def main():
                 df_channel['eb'] = step_data['eb']
                 aggregated_by_channel.append(df_channel)
 
+                df_geo = aggregate_fsoi_by_channel_latitude(
+                    fsoi_values,
+                    metadata=metadata,
+                    innovations=innovations,
+                    sampling_info=step_data.get('sampling_info'),
+                )
+                if not df_geo.empty:
+                    df_geo['pair_idx'] = result['pair_idx']
+                    df_geo['prev_bin'] = result['prev_bin']
+                    df_geo['curr_bin'] = result['curr_bin']
+                    df_geo['lead_step'] = lead_step
+                    df_geo['ea'] = step_data['ea']
+                    df_geo['eb'] = step_data['eb']
+                    aggregated_by_channel_latitude.append(df_geo)
+
                 df_inst = aggregate_fsoi_by_instrument(
                     fsoi_values,
                     model.instrument_name_to_id,
@@ -2367,6 +2405,13 @@ def main():
             print(f"  Channel-level FSOI: {channel_csv}")
         else:
             print("  [SKIPPED] Channel-level FSOI: No data to save")
+
+        if aggregated_by_channel_latitude:
+            geographic_channel_csv = csv_dir / "fsoi_by_channel_latitude.csv"
+            pd.concat(aggregated_by_channel_latitude, ignore_index=True).to_csv(
+                geographic_channel_csv, index=False
+            )
+            print(f"  Geographic channel diagnostics: {geographic_channel_csv}")
 
         # Per-instrument results
         if not df_all_instrument.empty:

@@ -2140,6 +2140,70 @@ def aggregate_fsoi_by_channel(
     return pd.DataFrame(records)
 
 
+def aggregate_fsoi_by_channel_latitude(
+    fsoi_values: Dict[str, torch.Tensor],
+    metadata: Optional[Dict[str, Dict[str, torch.Tensor]]] = None,
+    innovations: Optional[Dict[str, torch.Tensor]] = None,
+    sampling_info: Optional[Dict[str, dict]] = None,
+    latitude_edges: Tuple[float, ...] = (-90.0, -60.0, -30.0, 0.0, 30.0, 60.0, 90.0),
+) -> pd.DataFrame:
+    """Aggregate channel impacts by fixed latitude bands.
+
+    This is a diagnostic view of the same impacts, not a replacement for the
+    primary global aggregate. Raw and HT-weighted totals remain separate.
+    Rows without valid coordinates are excluded from the geographic table.
+    """
+    edges = np.asarray(latitude_edges, dtype=float)
+    if edges.ndim != 1 or len(edges) < 2 or not np.all(np.diff(edges) > 0):
+        raise ValueError("latitude_edges must be strictly increasing")
+    labels = [f"{edges[i]:g}_to_{edges[i + 1]:g}" for i in range(len(edges) - 1)]
+    records = []
+    for inst_name, impacts in fsoi_values.items():
+        if metadata is None or inst_name not in metadata:
+            continue
+        lat = metadata[inst_name].get("lat")
+        if lat is None:
+            continue
+        lat = lat.detach().cpu().numpy() if torch.is_tensor(lat) else np.asarray(lat)
+        if lat.ndim != 1 or lat.size != impacts.shape[0]:
+            continue
+        valid = np.isfinite(lat) & (lat >= edges[0]) & (lat <= edges[-1])
+        band_idx = np.searchsorted(edges, lat, side="right") - 1
+        band_idx = np.clip(band_idx, 0, len(labels) - 1)
+        channel_valid = None
+        if innovations is not None and inst_name in innovations:
+            channel_valid = torch.isfinite(innovations[inst_name]).detach().cpu().numpy()
+        design = (sampling_info or {}).get(inst_name, {})
+        pi = np.asarray(design.get("inclusion_probability", np.ones(impacts.shape[0])), dtype=float)
+        if pi.shape != (impacts.shape[0],):
+            pi = np.ones(impacts.shape[0], dtype=float)
+        values = impacts.detach().cpu().numpy()
+        for ch in range(values.shape[1]):
+            eligible = valid.copy()
+            if channel_valid is not None and channel_valid.shape == values.shape:
+                eligible &= channel_valid[:, ch]
+            for band, label in enumerate(labels):
+                mask = eligible & (band_idx == band)
+                if not mask.any():
+                    continue
+                band_values = values[mask, ch]
+                band_pi = pi[mask]
+                records.append({
+                    "instrument": inst_name,
+                    "channel": ch + 1,
+                    "latitude_band": label,
+                    "latitude_min": edges[band],
+                    "latitude_max": edges[band + 1],
+                    "mean_impact": float(np.mean(band_values)),
+                    "sum_impact": float(np.sum(band_values, dtype=np.float64)),
+                    "sum_impact_ht": float(np.sum(band_values / band_pi, dtype=np.float64)),
+                    "count": int(mask.sum()),
+                    "positive_frac": float(np.mean(band_values > 0)),
+                    "sampling_design": design.get("sampling_design", "unknown"),
+                })
+    return pd.DataFrame(records)
+
+
 def collapse_target_variable_rows(
     df: pd.DataFrame,
     keys: Tuple[str, ...] = ("pair_idx", "instrument"),
