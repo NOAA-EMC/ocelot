@@ -24,6 +24,10 @@ def read_cycle_scalings(path, target, month, require_ht=False, chunksize=100000)
     if (columns & HT_COLS and not has_ht) or (require_ht and not has_ht):
         raise ValueError(f"{path}: complete HT columns are required; found {columns & HT_COLS}")
     usecols = BASE_COLS + (sorted(HT_COLS) if has_ht else [])
+    # Variable-stratified runs write one row per target group; average them with the
+    # frozen group weights of J (equal weights reduce to the plain mean).
+    if "group_weight" in columns:
+        usecols.append("group_weight")
     metrics = ["uniform_total", "raw_total", "valid_value_mean"]
     if has_ht:
         metrics.insert(0, "ht_total")
@@ -50,9 +54,14 @@ def read_cycle_scalings(path, target, month, require_ht=False, chunksize=100000)
             df["target"], df["month"] = target, month
             df["raw_total"] = df.sum_impact
             df["valid_value_mean"] = df.sum_impact / df.total_count.replace(0, np.nan)
-            grouped = df.groupby(KEYS)[metrics]
-            totals.append(grouped.sum())
-            counts.append(grouped.count())
+            weight = df.group_weight.astype(float) if "group_weight" in df else pd.Series(1.0, index=df.index)
+            if not (np.isfinite(weight) & (weight > 0)).all():
+                raise ValueError(f"{path}: group weights must be finite and positive")
+            weighted = df[metrics].mul(weight, axis=0)
+            support = df[metrics].notna().mul(weight, axis=0)
+            weighted[KEYS], support[KEYS] = df[KEYS], df[KEYS]
+            totals.append(weighted.groupby(KEYS)[metrics].sum())
+            counts.append(support.groupby(KEYS)[metrics].sum())
             df["valid_fraction"] = df.total_count / df.raw_total_count.replace(0, np.nan)
             missing.append(df[["instrument", "channel", "pair_idx", "total_count",
                                "raw_total_count", "valid_fraction"]].drop_duplicates())

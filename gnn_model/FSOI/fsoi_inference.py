@@ -1121,8 +1121,11 @@ def compute_fsoi_for_pair(
                               gradient_sums=combined_gsum, sampling_info=sampling_info)
                 results['fsoi_by_step'][lead_step]['combined_instrument_aggregates'] = aggregate_fsoi_by_instrument(
                     combined_fsoi, model.instrument_name_to_id, **common)
+                # The combined J spans all target levels; do not broadcast one source network's
+                # input pressures onto other instruments (possible when row counts coincide).
+                source_metadata = {k: v for k, v in metadata.items() if not k.startswith('_target_')}
                 results['fsoi_by_step'][lead_step]['combined_channel_aggregates'] = aggregate_fsoi_by_channel(
-                    combined_fsoi, model.instrument_name_to_id, metadata=metadata, **common)
+                    combined_fsoi, model.instrument_name_to_id, metadata=source_metadata, **common)
             if metric_config and run_repro_check:
                 repeat_batch = curr_batch.clone()
                 replace_batch_inputs(repeat_batch, xa, observation_config, replace_indices=subsample_indices)

@@ -16,6 +16,8 @@ Usage:
     python FSOI/analyze_cross_target_channels.py --output FSOI/fsoi_outputs/cross_target_analysis
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
@@ -125,10 +127,25 @@ def load_and_average(csv_dirs: list, seasons: list) -> pd.DataFrame:
     group_cols = [c for c in
         ["instrument", "channel", "target_variable", "p_idx", "p_hpa",
          "pressure_hpa", "pressure_level_idx"]
-        if c in combined.columns]
+        if c in combined.columns and not combined[c].isna().all()]
 
-    agg = (combined
-           .groupby(group_cols, dropna=False)[impact_col]
+    try:
+        grouped = combined.groupby(group_cols, dropna=False)[impact_col]
+    except TypeError:
+        # Older pandas versions do not support dropna=False.  Emulate it so
+        # surface-target satellite rows with blank pressure coordinates are not
+        # silently dropped from the manuscript heatmaps.
+        grouped_source = combined.copy()
+        for col in group_cols:
+            if not grouped_source[col].isna().any():
+                continue
+            if pd.api.types.is_numeric_dtype(grouped_source[col]):
+                grouped_source[col] = grouped_source[col].fillna(0.0)
+            else:
+                grouped_source[col] = grouped_source[col].fillna("__missing__")
+        grouped = grouped_source.groupby(group_cols)[impact_col]
+
+    agg = (grouped
            .mean()
            .reset_index()
            .rename(columns={impact_col: "mean_impact"}))
