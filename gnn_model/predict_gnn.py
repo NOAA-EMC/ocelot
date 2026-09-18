@@ -183,11 +183,19 @@ def main():
     model.prediction_output_dir = args.output_dir
 
     # Get model hyperparameters
-    latent_step_hours = model.hparams.get('latent_step_hours', 3)
-    data_window_hours = model.hparams.get('data_window_hours', 12)
+    latent_step_hours = int(model.hparams.get('latent_step_hours', 3))
+    input_window_hours = int(model.hparams.get('input_window_hours', 12))
+    target_window_hours = int(model.hparams.get('target_window_hours', 12))
+
+    if 'target_window_hours' not in model.hparams:
+        print(
+            f"[WARN] Pre-decoupling checkpoint — no target_window_hours hparam. "
+            f"Defaulting to {target_window_hours}h; verify this matches how the model was trained."
+        )
 
     print(f"\nSetting up data module:")
-    print(f"  Window size: {data_window_hours}h")
+    print(f"  Input window: {input_window_hours}h")
+    print(f"  Target window: {target_window_hours}h")
     print(f"  Latent step hours: {latent_step_hours}h")
 
     # Create data module
@@ -201,7 +209,8 @@ def main():
         num_neighbors=3,
         feature_stats=feature_stats,
         pipeline=pipeline_cfg,
-        window_size=f"{data_window_hours}h",
+        input_window_hours=input_window_hours,
+        target_window_hours=target_window_hours,
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=1.0,
         train_start=args.start_date,

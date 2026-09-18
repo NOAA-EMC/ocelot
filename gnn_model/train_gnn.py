@@ -221,8 +221,10 @@ def main():
     parser.add_argument("--decoder_dropout", type=float, default=0.1)
 
     # Windowing / latent rollout
-    parser.add_argument("--data_window_hours", type=int, default=12)
+    parser.add_argument("--input_window_hours", type=int, default=12)
+    parser.add_argument("--target_window_hours", type=int, default=12)
     parser.add_argument("--latent_step_hours", type=int, default=3)
+    parser.add_argument("--processor_window", type=int, default=None)   # DEFAULT:None = target_window_hours//latent_step_hours
     parser.add_argument(
         "--spatial_mixing_steps",
         type=int,
@@ -419,15 +421,20 @@ def main():
     max_rollout_steps = 1
     rollout_schedule = "fixed"
 
-    data_window_hours = int(args.data_window_hours)
+    input_window_hours = int(args.input_window_hours)
+    target_window_hours = int(args.target_window_hours)
     latent_step_hours = int(args.latent_step_hours)
 
-    if data_window_hours % latent_step_hours != 0:
+    if target_window_hours % latent_step_hours != 0:
         raise ValueError(
-            f"data_window_hours ({data_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
+            f"target_window_hours ({target_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
         )
 
-    processor_window = int(data_window_hours // latent_step_hours)
+    # default processor_window = rollout depth
+    if args.processor_window is not None:
+        processor_window = int(args.processor_window)
+    else:
+        processor_window = int(target_window_hours // latent_step_hours)
 
     start_time = time.time()
 
@@ -471,6 +478,8 @@ def main():
         verbose=bool(args.verbose),
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
+        input_window_hours=int(input_window_hours),
+        target_window_hours=int(target_window_hours),
         latent_step_hours=int(latent_step_hours),
         feature_stats=feature_stats,
         processor_type="sliding_transformer",
@@ -523,7 +532,8 @@ def main():
         feature_stats=feature_stats,
         verbose=bool(args.verbose),
         pipeline=pipeline_cfg,
-        window_size=f"{data_window_hours}h",
+        input_window_hours=input_window_hours,
+        target_window_hours=target_window_hours,
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=float(args.train_val_split_ratio) if args.train_val_split_ratio is not None else 0.9,
         cache_val_windows=bool(args.cache_val_windows),
