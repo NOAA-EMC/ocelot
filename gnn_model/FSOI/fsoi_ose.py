@@ -4,12 +4,26 @@ FSOI OSE (Observing System Experiment) module.
 Scientific purpose
 ------------------
 FSOI is derived from a tangent-linear approximation of the forecast-error change.
-An OSE directly measures the same change without any approximation:
+An OSE directly measures the same change without any approximation. For matched
+validation, define the OSE change with the FSOI-compatible sign convention:
 
-    OSE_X  =  ea( xa with X replaced by xb )  -  ea( xa full )
-    FSOI_X ≈  sum_k  0.5 * (xa_k - xb_k) * (ga_k + gb_k)
+    J_control      = J(xa full)
+    J_denied       = J(xa with X denied)
+    delta_J_actual = J_control - J_denied
+    FSOI_X         ~= sum_k 0.5 * (x_control,k - x_denied,k) * (gc_k + gd_k)
 
-In the linear limit:  OSE_X ≈ FSOI_X
+Positive delta_J_actual means the control error was larger, so instrument X was
+detrimental for this verification target. In the linear limit:
+
+    FSOI_X ~= delta_J_actual
+
+The legacy OSE column keeps the opposite sign:
+
+    ose_impact = J_denied - J_control = -delta_J_actual
+
+Therefore FSOI and legacy ose_impact should have opposite signs under these
+definitions. Compare FSOI directly with delta_J_actual or with the derived
+ose_fsoi_convention column, not with raw ose_impact.
 
 Disagreement between them reveals where the GNN's nonlinearities break the
 tangent-linear assumption used by FSOI.  A Pearson correlation r > 0.90 and a
@@ -17,17 +31,48 @@ slope close to 1 on the scatter plot indicate FSOI rankings are reliable.
 
 Design
 ------
-We reuse the already-computed xa and xb from the FSOI pipeline so that the OSE
-adds only ONE extra no-grad forward pass per (pair, denied instrument) beyond the
-FSOI cost.  No retraining or additional background computation is needed.
+We reuse the already-computed xa and xb from the FSOI pipeline. The matched
+obs-space validation uses two gradient-enabled endpoint passes, one at xa and
+one at the denied endpoint. Those same two losses provide both FSOI and the
+realized OSE error change. No retraining or additional background computation is
+needed.
 
-The "denied" perturbation is:
-    xa_ose[inst] = xb[inst]   for inst in denied_instruments
-    xa_ose[k]    = xa[k]      for k not in denied_instruments
+The default "denied" perturbation is background replacement:
+    xa_ose[inst][valid]   = xb[inst][valid]   for denied instruments
+    xa_ose[inst][missing] = xa[inst][missing] for sentinel-filled cells
+    xa_ose[k]             = xa[k]             for other instruments
+
+For input-ablation tests, the denied endpoint can instead mask observation
+channels to the training-consistent missing-input representation. For satellite
+inputs this is normalized zero imputation; for conventional inputs this is the
+-9.0 sentinel. ``sample_mask`` masks the same sampled rows used in the matched
+FSOI calculation. ``full_mask`` masks every row for the denied instrument in the
+batch while retaining rows, metadata, and graph links. This tests sensitivity to
+value absence under the trained graph structure, not the operational effect of
+deleting an observing system and its edges.
+
+Two caveats govern the mask modes. The model never reads ``input_channel_mask``,
+so missingness reaches it only through the value written into ``x``; for
+satellites that value is normalized zero, i.e. the climatological mean, so a
+masked satellite channel is a mean-valued observation rather than an absent one.
+And preprocessing keeps an input row only when at least one channel is valid, so
+masking every channel of an instrument produces rows that never occur in
+training. ``ose_all_missing_row_fraction`` reports how many denied rows end up in
+that state, per instrument; a nonzero value means the denied endpoint is partly
+out of distribution.
+
+``drop_nodes`` avoids both caveats. It reduces the denied instrument's input node
+store to zero rows and empties its encoder edges, which is exactly how the data
+module represents a cycle in which the instrument reported nothing, so the
+forward pass follows a path seen in training. Because the denied endpoint then
+has no input tensor to differentiate, matched FSOI and the endpoint path are
+undefined for this mode: it yields ``delta_j_actual`` only, and is a structural
+denial rather than an FSOI validation.
 
 This is the OCELOT-appropriate single-cycle OSE.  In a cycling NWP context the
-background would also degrade over time; here we measure the single-cycle impact,
-which is the same quantity FSOI estimates.
+background would also degrade over time; here we measure the single-cycle impact.
+The background-replacement mode matches the standard innovation FSOI path, while
+mask-denial modes measure sensitivity to removing the input signal.
 
 Usage
 -----
@@ -37,10 +82,797 @@ Can also be run stand-alone via compute_ose_for_pair() if xa/xb are available.
 
 from __future__ import annotations
 
+import re
 import torch
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import sys
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_target_metric import metric_provenance
+
+ABSOLUTE_SIGNAL_FLOOR = 1e-12
+REPRO_SIGNAL_MULTIPLIER = 10.0
+NORMALIZED_MEAN_LOSS_REDUCTIONS = {
+    "mean",
+    "mse",
+    "normalized",
+    "average",
+    "avg",
+}
+OSE_DENIAL_MODES = {
+    "background_replacement",
+    "sample_mask",
+    "full_mask",
+    "drop_nodes",
+}
+DENIAL_MODE_DESCRIPTIONS = {
+    "background_replacement": "valid xa values are replaced by xb on the matched sampled rows",
+    "sample_mask": "valid sampled rows are masked to the training-consistent missing-input value",
+    "full_mask": "all rows for the denied instrument are masked to the training-consistent missing-input value",
+    "drop_nodes": "input node store emptied and encoder edges cleared, as for an instrument absent from the cycle",
+}
+
+# Matched OSE/FSOI validation uses:
+#   delta_j_actual = J_control - J_denied
+#   matched_fsoi   = 0.5 * dx^T * (grad J_control + grad J_denied)
+# with positive values meaning the denied instrument was detrimental.
+# The legacy ose_impact column keeps the opposite sign for backward
+# compatibility: ose_impact = J_denied - J_control.
+
+
+def _signal_threshold_from_repro(
+    observed_control_reproducibility_error: Optional[float] = None,
+) -> Tuple[float, float, str]:
+    """Return a numerical signal threshold and its reproducibility basis."""
+    repro_error = float("nan")
+    threshold = ABSOLUTE_SIGNAL_FLOOR
+    basis = "absolute_floor_no_reproducibility_error_available"
+
+    if observed_control_reproducibility_error is not None:
+        try:
+            candidate = abs(float(observed_control_reproducibility_error))
+        except (TypeError, ValueError):
+            candidate = float("nan")
+        if np.isfinite(candidate):
+            repro_error = candidate
+            threshold = max(ABSOLUTE_SIGNAL_FLOOR, REPRO_SIGNAL_MULTIPLIER * candidate)
+            basis = "max(1e-12, 10*control_reproducibility_error)"
+
+    return threshold, repro_error, basis
+
+
+def _observed_repro_error_from_frame(df: pd.DataFrame) -> Optional[float]:
+    """Extract the largest finite observed control reproducibility error."""
+    priority_cols = ("matched_control_reproducibility_error",)
+    for col in priority_cols:
+        if col not in df.columns:
+            continue
+        values = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        finite = values[np.isfinite(values)]
+        if not finite.empty:
+            return float(finite.abs().max())
+
+    candidates = []
+    for col in (
+        "observed_control_reproducibility_error",
+        "control_reproducibility_error",
+        "repro_ea_diff",
+        "ea_repro_diff",
+        "reproducibility_ea_diff",
+    ):
+        if col not in df.columns:
+            continue
+        values = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        finite = values[np.isfinite(values)]
+        if not finite.empty:
+            candidates.append(float(finite.abs().max()))
+    return max(candidates) if candidates else None
+
+
+def _serialize_provenance_value(value) -> str:
+    """Serialize simple config provenance fields for CSV output."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
+def _normalize_denial_mode(denial_mode: Optional[str]) -> str:
+    """Validate and normalize the OSE denied-endpoint construction."""
+    mode = str(denial_mode or "background_replacement").strip().lower().replace("-", "_")
+    aliases = {
+        "background": "background_replacement",
+        "replace": "background_replacement",
+        "replacement": "background_replacement",
+        "increment_denial": "background_replacement",
+        "mask": "sample_mask",
+        "masked": "sample_mask",
+        "true_denial": "full_mask",
+        "full": "full_mask",
+        "drop": "drop_nodes",
+        "remove_nodes": "drop_nodes",
+        "structural_denial": "drop_nodes",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in OSE_DENIAL_MODES:
+        raise ValueError(
+            f"Unknown OSE denial mode {denial_mode!r}. "
+            f"Expected one of {sorted(OSE_DENIAL_MODES)}."
+        )
+    return mode
+
+
+def _input_channel_bounds(observation_config: dict, inst_name: str) -> Tuple[int, int]:
+    """Return start/end column indices for observation channels in input .x."""
+    for instruments in observation_config.values():
+        if inst_name not in instruments:
+            continue
+        cfg = instruments[inst_name] or {}
+        n_channels = len(cfg.get("features", []))
+        if n_channels <= 0:
+            raise ValueError(f"{inst_name}: no configured observation features")
+        n_meta = len(cfg.get("metadata", []))
+        start = 7 + n_meta
+        return start, start + n_channels
+    raise KeyError(f"{inst_name} not found in observation_config")
+
+
+def _instrument_config_entry(observation_config: dict, inst_name: str) -> Tuple[str, dict]:
+    """Return (observation group, instrument config) for one instrument."""
+    for obs_type, instruments in observation_config.items():
+        if inst_name in instruments:
+            return str(obs_type).lower(), instruments[inst_name] or {}
+    raise KeyError(f"{inst_name} not found in observation_config")
+
+
+def _mask_fill_value_for_instrument(observation_config: dict, inst_name: str) -> Tuple[float, str]:
+    """Return the training-time missing-value representation for source inputs."""
+    obs_type, cfg = _instrument_config_entry(observation_config, inst_name)
+    if "mask_fill_value" in cfg:
+        return float(cfg["mask_fill_value"]), "config:mask_fill_value"
+    if "missing_input_fill_value" in cfg:
+        return float(cfg["missing_input_fill_value"]), "config:missing_input_fill_value"
+    if obs_type == "satellite":
+        from fsoi_utils import SATELLITE_MISSING_OBS
+        return float(SATELLITE_MISSING_OBS), "normalized_zero_satellite_training_imputation"
+    from fsoi_utils import SENTINEL_OBS
+    return float(SENTINEL_OBS), "sentinel_minus9_conventional_training_imputation"
+
+
+def _mask_fill_columns(
+    observation_config: dict,
+    present_denied: List[str],
+    denial_mode: str,
+) -> Dict[str, str]:
+    """Serialize missing-value conventions used by mask-denial modes."""
+    if denial_mode not in {"sample_mask", "full_mask"}:
+        return {
+            "ose_mask_fill_values": "",
+            "ose_mask_fill_conventions": "",
+        }
+
+    values = []
+    conventions = []
+    for inst in sorted(present_denied):
+        value, convention = _mask_fill_value_for_instrument(observation_config, inst)
+        values.append(f"{inst}:{value:.8g}")
+        conventions.append(f"{inst}:{convention}")
+    return {
+        "ose_mask_fill_values": ";".join(values),
+        "ose_mask_fill_conventions": ";".join(conventions),
+    }
+
+
+def _instrument_features(observation_config: dict, inst_name: str) -> List[str]:
+    """Return configured observation-channel feature names for one instrument."""
+    for instruments in observation_config.values():
+        if inst_name in instruments:
+            return list((instruments[inst_name] or {}).get("features", []))
+    raise KeyError(f"{inst_name} not found in observation_config")
+
+
+def _channel_number_from_name(name: str) -> Optional[int]:
+    """Extract a user-facing channel number from a feature name, if present."""
+    match = re.search(r"(\d+)$", str(name))
+    return int(match.group(1)) if match else None
+
+
+def _resolve_channel_index(
+    inst_name: str,
+    token: str,
+    observation_config: dict,
+) -> int:
+    """Resolve a channel token to a zero-based column index.
+
+    Plain integers are interpreted as user-facing channel numbers, so
+    ``21`` maps to ``bt_ch_21`` for SSMIS and therefore column index 20.
+    Use ``idx:20`` only when a zero-based column index is intended.
+    """
+    features = _instrument_features(observation_config, inst_name)
+    if not features:
+        raise ValueError(f"{inst_name}: no configured channels")
+
+    raw = str(token).strip()
+    if not raw:
+        raise ValueError(f"{inst_name}: empty OSE channel token")
+    lowered = raw.lower()
+    by_name = {str(name).lower(): i for i, name in enumerate(features)}
+    if lowered in by_name:
+        return by_name[lowered]
+
+    if lowered.startswith(("idx:", "index:")):
+        idx = int(lowered.split(":", 1)[1])
+        if 0 <= idx < len(features):
+            return idx
+        raise ValueError(
+            f"{inst_name}: zero-based channel index {idx} outside "
+            f"0..{len(features) - 1}"
+        )
+
+    match = re.search(r"(\d+)$", lowered)
+    if not match:
+        raise ValueError(
+            f"{inst_name}: cannot resolve OSE channel {token!r}; use a "
+            "configured feature name, a 1-based channel number, or idx:<zero-based-index>"
+        )
+    channel_number = int(match.group(1))
+    for i, feature in enumerate(features):
+        if _channel_number_from_name(feature) == channel_number:
+            return i
+
+    if 1 <= channel_number <= len(features):
+        return channel_number - 1
+    raise ValueError(
+        f"{inst_name}: channel number {channel_number} not found in configured "
+        f"features {features}"
+    )
+
+
+def parse_denied_channel_specs(
+    specs: Optional[List[str]],
+    observation_config: dict,
+    denied_instruments: Optional[List[str]] = None,
+) -> Dict[str, List[int]]:
+    """Parse OSE channel selectors into zero-based channel-index lists.
+
+    Accepted examples:
+      - ["ssmis:21"]
+      - ["ssmis:21,22"]
+      - ["ssmis:bt_ch_21"]
+      - ["21"] when exactly one denied instrument is supplied
+    """
+    if not specs:
+        return {}
+
+    denied = list(denied_instruments or [])
+    parsed: Dict[str, List[int]] = {}
+    for spec_group in specs:
+        for spec in str(spec_group).replace(";", " ").split():
+            if not spec.strip():
+                continue
+            if ":" in spec:
+                inst_name, channel_part = spec.split(":", 1)
+            elif "=" in spec:
+                inst_name, channel_part = spec.split("=", 1)
+            else:
+                if len(denied) != 1:
+                    raise ValueError(
+                        "OSE channel specs without an instrument prefix require "
+                        "exactly one --ose_instruments value"
+                    )
+                inst_name, channel_part = denied[0], spec
+
+            inst_name = inst_name.strip().lower()
+            channel_tokens = [tok.strip() for tok in channel_part.split(",") if tok.strip()]
+            if not channel_tokens:
+                raise ValueError(f"{inst_name}: empty OSE channel list in {spec!r}")
+
+            if len(channel_tokens) == 1 and channel_tokens[0].lower() in {"all", "*"}:
+                indices = list(range(len(_instrument_features(observation_config, inst_name))))
+            else:
+                indices = [
+                    _resolve_channel_index(inst_name, tok, observation_config)
+                    for tok in channel_tokens
+                ]
+            parsed.setdefault(inst_name, []).extend(indices)
+
+    return {
+        inst: sorted(set(indices))
+        for inst, indices in parsed.items()
+        if indices
+    }
+
+
+def format_denied_channel_specs(
+    denied_channels: Optional[Dict[str, List[int]]],
+    observation_config: dict,
+) -> str:
+    """Human-readable description of selected OSE channels."""
+    if not denied_channels:
+        return ""
+    parts = []
+    for inst in sorted(denied_channels):
+        features = _instrument_features(observation_config, inst)
+        labels = []
+        for idx in denied_channels[inst]:
+            if idx < 0 or idx >= len(features):
+                raise ValueError(f"{inst}: channel index {idx} outside configured features")
+            labels.append(f"{idx + 1}:{features[idx]}")
+        parts.append(f"{inst}[" + ",".join(labels) + "]")
+    return ";".join(parts)
+
+
+def _batch_input_channels(curr_batch, observation_config: dict, inst_name: str, device) -> torch.Tensor:
+    """Extract full current input observation-channel tensor for one instrument."""
+    node_type = f"{inst_name}_input"
+    if node_type not in curr_batch.node_types:
+        raise KeyError(f"{node_type} not present in batch")
+    x_orig = getattr(curr_batch[node_type], "x", None)
+    if x_orig is None or x_orig.numel() == 0:
+        raise ValueError(f"{node_type}.x is missing or empty")
+    start, end = _input_channel_bounds(observation_config, inst_name)
+    if end > x_orig.shape[1]:
+        raise ValueError(
+            f"{inst_name}: configured channel slice {start}:{end} exceeds "
+            f"input width {x_orig.shape[1]}"
+        )
+    return x_orig[:, start:end].detach().clone().to(device)
+
+
+def _batch_input_channel_mask(
+    curr_batch,
+    observation_config: dict,
+    inst_name: str,
+    device,
+    row_indices: Optional[torch.Tensor] = None,
+) -> Optional[torch.Tensor]:
+    """Return source input channel validity mask, aligned with extracted channels."""
+    node_type = f"{inst_name}_input"
+    if node_type not in curr_batch.node_types:
+        return None
+    node_data = curr_batch[node_type]
+    if not hasattr(node_data, "input_channel_mask"):
+        return None
+
+    mask = node_data.input_channel_mask
+    if mask is None or mask.numel() == 0:
+        return None
+
+    expected_channels = len(_instrument_features(observation_config, inst_name))
+    if mask.dim() != 2 or mask.shape[1] != expected_channels:
+        raise ValueError(
+            f"{inst_name}: input_channel_mask shape {tuple(mask.shape)} does not "
+            f"match expected channel width {expected_channels}"
+        )
+
+    mask = mask.detach().to(device=device, dtype=torch.bool)
+    if row_indices is not None:
+        row_indices = row_indices.to(device=device, dtype=torch.long)
+        mask = mask[row_indices]
+    return mask
+
+
+def _all_missing_row_fraction(
+    valid_mask: Optional[torch.Tensor],
+    channel_indices: Optional[List[int]] = None,
+) -> float:
+    """Fraction of rows a mask denial leaves with no valid channel.
+
+    Preprocessing keeps an input row only when at least one channel is valid, so a
+    nonzero fraction marks rows the model never saw in training.
+    """
+    if valid_mask is None or valid_mask.numel() == 0:
+        return float("nan")
+    valid = valid_mask.to(torch.bool)
+    selected = torch.ones_like(valid)
+    if channel_indices:
+        selected = torch.zeros_like(valid)
+        idx = torch.as_tensor(channel_indices, device=valid.device, dtype=torch.long)
+        selected[:, idx] = True
+    had_data = valid.any(dim=1)
+    n_rows = int(had_data.sum().item())
+    if n_rows == 0:
+        return float("nan")
+    remaining = (valid & ~selected).any(dim=1)
+    return float(int((had_data & ~remaining).sum().item()) / n_rows)
+
+
+def _empty_instrument_inputs(batch, inst_name: str) -> Tuple[bool, int]:
+    """Reduce one instrument's input store to zero rows and clear its encoder edges.
+
+    This reproduces the data module's representation of a cycle in which the
+    instrument reported nothing, so the forward pass follows a trained code path
+    instead of meeting rows whose channels are all missing.
+    """
+    node_type = f"{inst_name}_input"
+    if node_type not in batch.node_types:
+        return False, 0
+    store = batch[node_type]
+    x = getattr(store, "x", None)
+    n_rows = int(x.shape[0]) if x is not None else 0
+    if n_rows == 0:
+        return False, 0
+    for key in list(store.keys()):
+        value = store[key]
+        if torch.is_tensor(value) and value.dim() >= 1 and value.shape[0] == n_rows:
+            store[key] = value.new_empty((0,) + tuple(value.shape[1:]))
+    if hasattr(store, "num_nodes"):
+        store.num_nodes = 0
+    for edge_type in list(batch.edge_types):
+        if edge_type[0] != node_type:
+            continue
+        edge_store = batch[edge_type]
+        edge_index = getattr(edge_store, "edge_index", None)
+        if edge_index is not None:
+            edge_store.edge_index = edge_index.new_empty((2, 0))
+        edge_attr = getattr(edge_store, "edge_attr", None)
+        if edge_attr is not None:
+            edge_store.edge_attr = edge_attr.new_empty((0,) + tuple(edge_attr.shape[1:]))
+    return True, n_rows
+
+
+def absent_denied_instruments(curr_batch, denied_instruments) -> List[str]:
+    """Denied instruments that contribute no rows at all in this cycle.
+
+    An instrument that reported nothing has no impact to measure: there is no
+    control tensor to build, so _batch_input_channels raises before any denial
+    is applied. Callers check this first and record the cycle explicitly, rather
+    than losing it to an exception partway through a month-long run.
+    """
+    absent = []
+    for inst in denied_instruments:
+        node_type = f"{inst}_input"
+        if node_type not in curr_batch.node_types:
+            absent.append(inst)
+            continue
+        x = getattr(curr_batch[node_type], "x", None)
+        if x is None or x.numel() == 0:
+            absent.append(inst)
+    return absent
+
+
+def _max_finite(values) -> float:
+    finite = [float(v) for v in values if np.isfinite(v)]
+    return max(finite) if finite else float("nan")
+
+
+def _make_denied_channels(
+    control_tensor: torch.Tensor,
+    background_tensor: Optional[torch.Tensor],
+    denial_mode: str,
+    observation_config: dict,
+    inst_name: str,
+    channel_indices: Optional[List[int]] = None,
+    valid_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Construct denied endpoint channels for one instrument."""
+    selected = torch.ones_like(control_tensor, dtype=torch.bool)
+    if channel_indices is not None:
+        if not channel_indices:
+            raise ValueError("channel_indices was provided but empty")
+        selected = torch.zeros_like(control_tensor, dtype=torch.bool)
+        idx = torch.as_tensor(channel_indices, device=control_tensor.device, dtype=torch.long)
+        if int(idx.min().item()) < 0 or int(idx.max().item()) >= control_tensor.shape[1]:
+            raise ValueError(
+                f"channel index outside tensor width {control_tensor.shape[1]}: "
+                f"{channel_indices}"
+            )
+        selected[:, idx] = True
+
+    if valid_mask is not None:
+        if valid_mask.shape != control_tensor.shape:
+            raise ValueError(
+                f"{inst_name}: valid_mask shape {tuple(valid_mask.shape)} does not "
+                f"match channel tensor shape {tuple(control_tensor.shape)}"
+            )
+        valid_base = valid_mask.to(device=control_tensor.device, dtype=torch.bool)
+    else:
+        obs_type, _ = _instrument_config_entry(observation_config, inst_name)
+        if obs_type == "satellite":
+            # Satellite training uses normalized zero imputation for missing
+            # values, so zeros cannot be interpreted as missing without the
+            # stored input_channel_mask. Treat finite values as valid.
+            valid_base = torch.isfinite(control_tensor)
+        else:
+            from fsoi_utils import observation_valid_mask
+            valid_base = observation_valid_mask(control_tensor)
+
+    valid_selected = valid_base & selected
+    if denial_mode == "background_replacement":
+        if background_tensor is None:
+            raise ValueError("background_replacement requires xb for the denied instrument")
+        return torch.where(valid_selected, background_tensor, control_tensor)
+
+    fill_value, _ = _mask_fill_value_for_instrument(observation_config, inst_name)
+    missing_value = torch.full_like(control_tensor, fill_value)
+    return torch.where(valid_selected, missing_value, control_tensor)
+
+
+def _sync_input_channel_mask_from_values(
+    batch,
+    observation_config: dict,
+    denied_instruments: List[str],
+    denied_channels: Optional[Dict[str, List[int]]],
+    denial_mode: str,
+    replace_indices: Optional[Dict[str, Optional[torch.Tensor]]] = None,
+) -> Tuple[bool, str]:
+    """Make input_channel_mask explicitly consistent with mask-denial OSE values."""
+    if denial_mode not in {"sample_mask", "full_mask"}:
+        return False, ""
+
+    from fsoi_utils import observation_valid_mask
+
+    parts = []
+    denied_channels = denied_channels or {}
+    for inst in sorted(denied_instruments):
+        node_type = f"{inst}_input"
+        if node_type not in batch.node_types:
+            continue
+        x = getattr(batch[node_type], "x", None)
+        if x is None or x.numel() == 0:
+            continue
+
+        start, end = _input_channel_bounds(observation_config, inst)
+        channel_values = x[:, start:end]
+        existing_mask = getattr(batch[node_type], "input_channel_mask", None)
+        if (
+            existing_mask is not None
+            and existing_mask.numel() > 0
+            and tuple(existing_mask.shape) == tuple(channel_values.shape)
+        ):
+            mask = existing_mask.detach().clone().to(device=channel_values.device, dtype=torch.bool)
+        else:
+            obs_type, _ = _instrument_config_entry(observation_config, inst)
+            if obs_type == "satellite":
+                mask = torch.isfinite(channel_values).detach().to(torch.bool)
+            else:
+                mask = observation_valid_mask(channel_values).detach().to(torch.bool)
+
+        selected = torch.ones_like(mask, dtype=torch.bool)
+        indices = denied_channels.get(inst)
+        if indices:
+            selected = torch.zeros_like(mask, dtype=torch.bool)
+            idx = torch.as_tensor(indices, device=mask.device, dtype=torch.long)
+            selected[:, idx] = True
+
+        if denial_mode == "sample_mask" and replace_indices and inst in replace_indices:
+            row_idx = replace_indices[inst]
+            if row_idx is not None:
+                row_selected = torch.zeros(mask.shape[0], device=mask.device, dtype=torch.bool)
+                row_selected[row_idx.to(device=mask.device, dtype=torch.long)] = True
+                selected = selected & row_selected.view(-1, 1)
+
+        originally_true = mask.clone()
+        mask = torch.where(selected, torch.zeros_like(mask), mask)
+        batch[node_type].input_channel_mask = mask
+
+        n_newly_masked = int((originally_true & selected).sum().item())
+        n_selected_false = int((~mask & selected).sum().item())
+        n_total_false = int((~mask).sum().item())
+        parts.append(
+            f"{inst}:newly_masked={n_newly_masked},"
+            f"selected_false={n_selected_false},total_false={n_total_false}"
+        )
+
+    return bool(parts), ";".join(parts)
+
+
+def _selected_channel_scope(denied_channels: Optional[Dict[str, List[int]]]) -> bool:
+    return bool(denied_channels and any(v for v in denied_channels.values()))
+
+
+def _comparison_mode_for(denial_mode: str, channel_scope: bool) -> str:
+    if channel_scope:
+        return {
+            "background_replacement": "conditional_endpoint_channel_background_same_sample_same_J",
+            "sample_mask": "conditional_endpoint_channel_sample_mask_same_J",
+            "full_mask": "conditional_endpoint_channel_full_mask_same_J",
+        }[denial_mode]
+    return {
+        "background_replacement": "conditional_endpoint_same_sample_same_J",
+        "sample_mask": "conditional_endpoint_sample_mask_same_J",
+        "full_mask": "conditional_endpoint_full_mask_same_J",
+        "drop_nodes": "structural_denial_removed_nodes_same_J_no_matched_fsoi",
+    }[denial_mode]
+
+
+def _denied_channel_columns(
+    denied_channels: Optional[Dict[str, List[int]]],
+    observation_config: dict,
+    present_denied: List[str],
+) -> Dict[str, str]:
+    """Serialize selected channel metadata for CSV records."""
+    if not _selected_channel_scope(denied_channels):
+        return {
+            "ose_intervention_scope": "instrument",
+            "denied_channel_indices": "",
+            "denied_channel_numbers": "",
+            "denied_channel_names": "",
+        }
+
+    idx_parts = []
+    num_parts = []
+    name_parts = []
+    for inst in sorted(present_denied):
+        indices = (denied_channels or {}).get(inst)
+        if not indices:
+            continue
+        features = _instrument_features(observation_config, inst)
+        names = [features[i] for i in indices]
+        numbers = [
+            str(_channel_number_from_name(name) or (idx + 1))
+            for idx, name in zip(indices, names)
+        ]
+        idx_parts.append(f"{inst}:" + ",".join(str(i) for i in indices))
+        num_parts.append(f"{inst}:" + ",".join(numbers))
+        name_parts.append(f"{inst}:" + ",".join(names))
+
+    return {
+        "ose_intervention_scope": "channel",
+        "denied_channel_indices": ";".join(idx_parts),
+        "denied_channel_numbers": ";".join(num_parts),
+        "denied_channel_names": ";".join(name_parts),
+    }
+
+
+def _finite_signal(a: float, b: float, signal_threshold: float) -> bool:
+    """Return True only when both values are finite and above the noise floor."""
+    if not np.isfinite(a) or not np.isfinite(b):
+        return False
+    return abs(a) > signal_threshold and abs(b) > signal_threshold
+
+
+def _finite_sign_agree(
+    a: float,
+    b: float,
+    signal_threshold: float = ABSOLUTE_SIGNAL_FLOOR,
+) -> bool:
+    """Compare signs only when both values have useful signal."""
+    if not _finite_signal(a, b, signal_threshold):
+        return False
+    return np.sign(a) == np.sign(b)
+
+
+def _format_float_series(values) -> str:
+    """CSV-friendly full-precision float series."""
+    return ",".join(f"{float(v):.17g}" for v in values)
+
+
+def _normalize_path_t_values(t_values: Optional[List[float]]) -> Optional[List[float]]:
+    """Validate interpolation points for path-integrated FSOI diagnostics."""
+    if not t_values:
+        return None
+    values = [float(v) for v in t_values]
+    if len(values) < 2:
+        raise ValueError("Path integration requires at least two t values")
+    if not np.isclose(values[0], 0.0) or not np.isclose(values[-1], 1.0):
+        raise ValueError("Path integration t values must start at 0 and end at 1")
+    diffs = np.diff(values)
+    if not np.all(diffs > 0):
+        raise ValueError("Path integration t values must be strictly increasing")
+    if np.any(np.asarray(values) < -1e-12) or np.any(np.asarray(values) > 1.0 + 1e-12):
+        raise ValueError("Path integration t values must lie within [0, 1]")
+    return values
+
+
+def _integrate_directional_path(
+    t_values: List[float],
+    directional_derivatives: List[float],
+) -> Tuple[float, str]:
+    """Integrate grad J(x(t))^T dx over t."""
+    t = np.asarray(t_values, dtype=float)
+    s = np.asarray(directional_derivatives, dtype=float)
+    if t.shape != s.shape or t.size < 2:
+        raise ValueError("Path t values and derivatives must have the same length >= 2")
+
+    diffs = np.diff(t)
+    equal_spacing = bool(np.allclose(diffs, diffs[0], rtol=1e-8, atol=1e-12))
+    if equal_spacing and (len(t) % 2 == 1):
+        weights = np.ones(len(t), dtype=float)
+        weights[1:-1:2] = 4.0
+        weights[2:-1:2] = 2.0
+        return float((diffs[0] / 3.0) * np.sum(weights * s)), "composite_simpson"
+
+    # General fallback for nonuniform or even-count diagnostics.
+    return float(np.sum(0.5 * (s[:-1] + s[1:]) * diffs)), "trapezoid"
+
+
+def _mesh_channel_names(mesh_instrument: str, n_channels: int) -> np.ndarray:
+    """Human-readable channel labels for saved mesh OSE fields."""
+    try:
+        from fsoi_utils import _default_target_channel_names
+        mapping = _default_target_channel_names(mesh_instrument, n_channels)
+    except Exception:
+        mapping = {i: f"channel_{i + 1}" for i in range(n_channels)}
+    return np.asarray([mapping.get(i, f"channel_{i + 1}") for i in range(n_channels)])
+
+
+def _save_ose_spatial_fields(
+    output_dir,
+    control_diag: dict,
+    denied_diag: dict,
+    pair_idx: int,
+    prev_bin: str,
+    curr_bin: str,
+    lead_step: int,
+    denied_instruments: List[str],
+    mesh_instrument: str,
+    mesh_pressure_level_idx: Optional[int],
+    ea_control: float,
+    ea_denied: float,
+    ose_impact: float,
+) -> str:
+    """Save per-node mesh OSE error-difference fields for physical case studies."""
+    control_sq = np.asarray(control_diag.get("sq_error"), dtype=np.float32)
+    denied_sq = np.asarray(denied_diag.get("sq_error"), dtype=np.float32)
+    if control_sq.shape != denied_sq.shape or control_sq.size == 0:
+        raise ValueError(
+            f"Control/denied spatial error shape mismatch: "
+            f"{control_sq.shape} vs {denied_sq.shape}"
+        )
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    pressure_hpa = np.nan
+    pressure_tag = "plevNA"
+    if mesh_pressure_level_idx is not None:
+        pressure_tag = f"pidx{int(mesh_pressure_level_idx):02d}"
+        try:
+            from fsoi_utils import STANDARD_PRESSURE_LEVELS
+            pressure_hpa = float(STANDARD_PRESSURE_LEVELS[int(mesh_pressure_level_idx)])
+            pressure_tag = f"{int(pressure_hpa)}hPa"
+        except Exception:
+            pass
+
+    denied_tag = "_".join(sorted(denied_instruments)) or "unknown"
+    safe_denied = "".join(c if c.isalnum() or c in "_-" else "_" for c in denied_tag)
+    out_file = out_dir / (
+        f"ose_spatial_pair{pair_idx:04d}_{safe_denied}_"
+        f"{mesh_instrument}_{pressure_tag}.npz"
+    )
+
+    valid_mask = control_diag.get("valid_mask")
+    if valid_mask is None:
+        valid_mask = np.isfinite(control_sq) & np.isfinite(denied_sq)
+    lat = control_diag.get("lat")
+    lon = control_diag.get("lon")
+
+    np.savez_compressed(
+        out_file,
+        lat=np.asarray(lat, dtype=np.float32) if lat is not None else np.asarray([]),
+        lon=np.asarray(lon, dtype=np.float32) if lon is not None else np.asarray([]),
+        control_sq_error=control_sq,
+        denied_sq_error=denied_sq,
+        error_diff=(control_sq - denied_sq).astype(np.float32),
+        valid_mask=np.asarray(valid_mask, dtype=bool),
+        area_weight=np.asarray(control_diag.get("area_weight"), dtype=np.float32)
+                    if control_diag.get("area_weight") is not None else np.asarray([]),
+        channel_names=_mesh_channel_names(mesh_instrument, control_sq.shape[1]),
+        pair_idx=np.asarray(pair_idx),
+        prev_bin=np.asarray(prev_bin),
+        curr_bin=np.asarray(curr_bin),
+        lead_step=np.asarray(lead_step),
+        denied_instruments=np.asarray(",".join(sorted(denied_instruments))),
+        mesh_instrument=np.asarray(mesh_instrument),
+        mesh_pressure_level_idx=np.asarray(
+            -1 if mesh_pressure_level_idx is None else int(mesh_pressure_level_idx)
+        ),
+        mesh_pressure_hpa=np.asarray(pressure_hpa, dtype=np.float32),
+        ea_control=np.asarray(ea_control, dtype=np.float64),
+        ea_denied=np.asarray(ea_denied, dtype=np.float64),
+        ose_impact=np.asarray(ose_impact, dtype=np.float64),
+        error_diff_convention=np.asarray(
+            "full/control squared error minus denied squared error; positive means denial improves locally"
+        ),
+    )
+    print(f"[OSE] Saved spatial error-difference fields: {out_file}")
+    return str(out_file)
 
 
 def compute_ose_for_pair(
@@ -63,6 +895,13 @@ def compute_ose_for_pair(
     pair_idx: int,
     curr_bin: str,
     prev_bin: str,
+    gfs_reference: Optional[torch.Tensor] = None,
+    mesh_instrument: str = "radiosonde",
+    mesh_pressure_level_idx: Optional[int] = None,
+    init_time_unix: Optional[int] = None,
+    spatial_output_dir: Optional[str] = None,
+    denial_mode: str = "background_replacement",
+    denied_channels: Optional[Dict[str, List[int]]] = None,
 ) -> dict:
     """Compute single-cycle OSE impact for one time pair.
 
@@ -74,24 +913,58 @@ def compute_ose_for_pair(
         here with the same single compute_forecast_error call used for ea_denied,
         guaranteeing consistent scale regardless of whether the caller used a
         stratified (sum-of-strata) or unstratified error.
-    denied_instruments : list of instrument names to withhold (replace xa with xb).
+    denied_instruments : list of instrument names to withhold.
+    denial_mode : how to construct the denied endpoint:
+        background_replacement, sample_mask, or full_mask.
+    denied_channels : optional per-instrument zero-based channel indices. When
+        supplied, only those channels are denied.
 
     Returns
     -------
     dict with per-(pair, instrument) OSE impact and comparison metadata.
     """
-    from fsoi_utils import replace_batch_inputs, compute_forecast_error
+    from fsoi_utils import (
+        replace_batch_inputs,
+        compute_forecast_error,
+        compute_forecast_error_on_mesh,
+    )
     from fsoi_utils import prune_batch_targets_inplace
 
-    device = next(model.parameters()).device
+    if model.training:
+        print("[OSE] WARNING: model was in training mode; switching to eval()")
+    model.eval()
 
-    # Check which denied instruments are actually present in xa
-    present_denied = [i for i in denied_instruments if i in xa and i in xb]
-    missing_denied = [i for i in denied_instruments if i not in xa or i not in xb]
+    device = next(model.parameters()).device
+    denial_mode = _normalize_denial_mode(denial_mode)
+    denied_channels = denied_channels or {}
+    if denial_mode == "drop_nodes":
+        raise NotImplementedError(
+            "drop_nodes is implemented for the matched observation-space path only; "
+            "mesh verification would need its own control endpoint"
+        )
+
+    # Check which denied instruments are available for the requested endpoint.
+    present_denied = []
+    missing_denied = []
+    for inst in denied_instruments:
+        if denial_mode == "full_mask":
+            if f"{inst}_input" in curr_batch.node_types:
+                present_denied.append(inst)
+            else:
+                missing_denied.append(inst)
+        elif denial_mode == "sample_mask":
+            if inst in xa:
+                present_denied.append(inst)
+            else:
+                missing_denied.append(inst)
+        elif inst in xa and inst in xb:
+            present_denied.append(inst)
+        else:
+            missing_denied.append(inst)
     if missing_denied:
-        print(f"[OSE] WARNING: {missing_denied} not in xa/xb — skipping those in denial")
+        print(f"[OSE] WARNING: {missing_denied} unavailable for denial mode {denial_mode} - skipping")
     if not present_denied:
-        print(f"[OSE] No denied instruments present in xa — skipping pair {pair_idx}")
+        print(f"[OSE] No denied instruments present - skipping pair {pair_idx}")
         return {}
 
     shared_kwargs = dict(
@@ -104,20 +977,100 @@ def compute_ose_for_pair(
         target_pressure_levels=target_pressure_levels,
         loss_reduction=loss_reduction,
     )
+    use_mesh_ose = gfs_reference is not None and init_time_unix is not None
+    save_spatial = bool(spatial_output_dir) and use_mesh_ose
+
+    def _compute_error(batch_for_error, return_spatial: bool = False):
+        if use_mesh_ose:
+            out = compute_forecast_error_on_mesh(
+                model=model,
+                batch=batch_for_error,
+                gfs_reference=gfs_reference,
+                mesh_instrument=mesh_instrument,
+                forecast_lead_step=forecast_lead_step,
+                init_time_unix=init_time_unix,
+                use_area_weights=use_area_weights,
+                loss_reduction=loss_reduction,
+                return_diagnostics=return_spatial,
+                enable_gradients=False,
+            )
+            if return_spatial:
+                loss, diag = out
+                return float(loss.item()), diag
+            return float(out.item()), None
+
+        return float(compute_forecast_error(
+            model, batch_for_error, **shared_kwargs).item()), None
 
     # ── Control run: ea with full xa (recomputed for scale consistency) ──────
     # The caller may pass an ea_control derived from a stratified sum (e.g. sum
     # of 64 per-level mean losses), which is a different scale than the single
     # compute_forecast_error call used for ea_denied.  Always recompute here so
     # both numbers come from identical aggregation.
+    def _make_ose_inputs(denied: bool) -> Tuple[Dict[str, torch.Tensor], Dict[str, Optional[torch.Tensor]]]:
+        inputs = {}
+        replace_idx = dict(subsample_indices or {})
+
+        for inst, tensor in xa.items():
+            if inst in present_denied and denial_mode == "full_mask":
+                control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+                replace_idx[inst] = None
+            else:
+                control_tensor = tensor.detach().clone().to(device)
+
+            if denied and inst in present_denied:
+                background_tensor = xb[inst].detach().clone().to(device) if inst in xb else None
+                row_indices = replace_idx.get(inst) if replace_idx and inst in replace_idx else None
+                valid_mask = _batch_input_channel_mask(
+                    curr_batch,
+                    observation_config,
+                    inst,
+                    device,
+                    row_indices,
+                )
+                inputs[inst] = _make_denied_channels(
+                    control_tensor,
+                    background_tensor,
+                    denial_mode,
+                    observation_config,
+                    inst,
+                    denied_channels.get(inst),
+                    valid_mask,
+                )
+            else:
+                inputs[inst] = control_tensor
+
+        for inst in present_denied:
+            if inst in inputs:
+                continue
+            control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+            replace_idx[inst] = None
+            inputs[inst] = (
+                _make_denied_channels(
+                    control_tensor,
+                    None,
+                    denial_mode,
+                    observation_config,
+                    inst,
+                    denied_channels.get(inst),
+                    _batch_input_channel_mask(curr_batch, observation_config, inst, device),
+                )
+                if denied else control_tensor
+            )
+
+        return inputs, replace_idx
+
+    control_inputs, control_replace_idx = _make_ose_inputs(denied=False)
     curr_batch_ctrl = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(curr_batch_ctrl, target_instruments, forecast_lead_step)
-    replace_batch_inputs(curr_batch_ctrl, xa, observation_config,
-                         replace_indices=subsample_indices)
+    replace_batch_inputs(curr_batch_ctrl, control_inputs, observation_config,
+                         replace_indices=control_replace_idx)
     with torch.no_grad():
-        ea_control_fresh = float(compute_forecast_error(
-            model, curr_batch_ctrl, **shared_kwargs).item())
+        ea_control_fresh, control_diag = _compute_error(
+            curr_batch_ctrl,
+            return_spatial=save_spatial,
+        )
     torch.cuda.empty_cache()
 
     if abs(ea_control) > 1e-12:
@@ -128,21 +1081,25 @@ def compute_ose_for_pair(
                   f"Using recomputed value (caller used stratified aggregation).")
 
     # ── Denied run: ea with xa[denied] replaced by xb[denied] ───────────────
-    xa_ose = {}
-    for inst, tensor in xa.items():
-        if inst in present_denied and inst in xb:
-            xa_ose[inst] = xb[inst].detach().clone()
-        else:
-            xa_ose[inst] = tensor.detach().clone()
-
+    denied_inputs, denied_replace_idx = _make_ose_inputs(denied=True)
     curr_batch_ose = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(curr_batch_ose, target_instruments, forecast_lead_step)
-    replace_batch_inputs(curr_batch_ose, xa_ose, observation_config,
-                         replace_indices=subsample_indices)
+    replace_batch_inputs(curr_batch_ose, denied_inputs, observation_config,
+                         replace_indices=denied_replace_idx)
+    input_mask_synced, input_mask_counts = _sync_input_channel_mask_from_values(
+        curr_batch_ose,
+        observation_config,
+        present_denied,
+        denied_channels,
+        denial_mode,
+        denied_replace_idx,
+    )
     with torch.no_grad():
-        ea_denied = float(compute_forecast_error(
-            model, curr_batch_ose, **shared_kwargs).item())
+        ea_denied, denied_diag = _compute_error(
+            curr_batch_ose,
+            return_spatial=save_spatial,
+        )
     torch.cuda.empty_cache()
 
     # OSE impact: negative means denied instrument was detrimental (its removal
@@ -151,17 +1108,565 @@ def compute_ose_for_pair(
     # after negation — see compare_ose_vs_fsoi).
     ose_impact = ea_denied - ea_control_fresh
 
+    spatial_npz = ""
+    if save_spatial and control_diag and denied_diag:
+        try:
+            spatial_npz = _save_ose_spatial_fields(
+                output_dir=spatial_output_dir,
+                control_diag=control_diag,
+                denied_diag=denied_diag,
+                pair_idx=pair_idx,
+                prev_bin=prev_bin,
+                curr_bin=curr_bin,
+                lead_step=forecast_lead_step,
+                denied_instruments=present_denied,
+                mesh_instrument=mesh_instrument,
+                mesh_pressure_level_idx=mesh_pressure_level_idx,
+                ea_control=ea_control_fresh,
+                ea_denied=ea_denied,
+                ose_impact=ose_impact,
+            )
+        except Exception as save_err:
+            print(f"[OSE] WARNING: spatial field save failed for pair {pair_idx}: {save_err}")
+
     return {
         'pair_idx': pair_idx,
         'prev_bin': prev_bin,
         'curr_bin': curr_bin,
         'lead_step': forecast_lead_step,
         'denied_instruments': ','.join(sorted(present_denied)),
+        **_denied_channel_columns(denied_channels, observation_config, present_denied),
+        'ose_denial_mode': denial_mode,
+        'ose_denial_description': DENIAL_MODE_DESCRIPTIONS[denial_mode],
+        **_mask_fill_columns(observation_config, present_denied, denial_mode),
         'ea_control': ea_control_fresh,
         'ea_denied': ea_denied,
         'ose_impact': ose_impact,
         'ose_sign': 'helpful' if ose_impact > 0 else 'detrimental',
         'ose_relative_impact': ose_impact / (abs(ea_control_fresh) + 1e-12),
+        'verification_target': 'mesh' if use_mesh_ose else 'obs',
+        'mesh_instrument': mesh_instrument if use_mesh_ose else '',
+        'mesh_pressure_level_idx': mesh_pressure_level_idx if use_mesh_ose else '',
+        'ose_spatial_npz': spatial_npz,
+        'loss_reduction': str(loss_reduction),
+        **metric_provenance(model),
+        'target_instruments': _serialize_provenance_value(target_instruments),
+        'target_variables': _serialize_provenance_value(target_variables),
+        'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
+        'use_area_weights': bool(use_area_weights),
+        'ose_input_channel_mask_synced': input_mask_synced,
+        'ose_input_channel_mask_false_counts': input_mask_counts,
+    }
+
+
+def compute_matched_conditional_fsoi_for_pair(
+    model,
+    curr_batch,
+    xa: Dict[str, torch.Tensor],
+    xb: Dict[str, torch.Tensor],
+    denied_instruments: List[str],
+    observation_config: dict,
+    subsample_indices: Dict[str, Optional[torch.Tensor]],
+    target_instruments: Optional[List[str]],
+    target_variables: Optional[List[str]],
+    target_pressure_levels: Optional[List[float]],
+    instrument_weights: dict,
+    channel_weights: dict,
+    use_area_weights: bool,
+    loss_reduction: str,
+    forecast_lead_step: int,
+    pair_idx: int,
+    curr_bin: str,
+    prev_bin: str,
+    impact_factor: float = 0.5,
+    run_control_repro_check: bool = False,
+    control_reproducibility_error: Optional[float] = None,
+    denial_mode: str = "background_replacement",
+    denied_channels: Optional[Dict[str, List[int]]] = None,
+    path_integration_t_values: Optional[List[float]] = None,
+) -> dict:
+    """Compute apples-to-apples conditional FSOI for an OSE denial.
+
+    This validation uses one combined forecast-error metric J, not the
+    per-variable/per-pressure stratified losses used for channel diagnostics.
+    For background_replacement and sample_mask it compares the same sampled
+    denied rows on both sides:
+
+        x_control = xa
+        x_denied  = xa with denied-instrument cells replaced by xb or masked
+
+    For full_mask, all current-batch rows for the denied instrument are masked
+    to the training-consistent missing-input value. This is a stronger input
+    ablation, but the path is xa to missing input rather than the physical
+    xa-xb innovation path. Previously missing channels contribute zero because
+    they are unchanged.
+
+        I_matched = 0.5 * (x_control - x_denied)^T
+                    [grad J(x_control) + grad J(x_denied)]
+
+        delta_j_actual = J(x_control) - J(x_denied)
+
+    Positive values mean the denied instrument was detrimental, because the
+    control error is larger than the denied error. No population scaling is
+    applied to either side.
+
+    Optional path integration evaluates grad J(x(t))^T dx at user-selected
+    interpolation points along x(t) = x_denied + t * (x_control - x_denied).
+    With the default five equally spaced points, the path integral uses
+    composite Simpson quadrature. This diagnostic tests whether two-endpoint
+    closure error is caused by curvature/nonlinearity along the endpoint path.
+    """
+    from fsoi_utils import (
+        replace_batch_inputs,
+        compute_forecast_error,
+        prune_batch_targets_inplace,
+    )
+
+    if model.training:
+        print("[OSE Matched] WARNING: model was in training mode; switching to eval()")
+    model.eval()
+
+    device = next(model.parameters()).device
+    denial_mode = _normalize_denial_mode(denial_mode)
+    denied_channels = denied_channels or {}
+    present_denied = []
+    missing_denied = []
+    for inst in denied_instruments:
+        if denial_mode in {"full_mask", "drop_nodes"}:
+            if f"{inst}_input" in curr_batch.node_types:
+                present_denied.append(inst)
+            else:
+                missing_denied.append(inst)
+        elif denial_mode == "sample_mask":
+            if inst in xa:
+                present_denied.append(inst)
+            else:
+                missing_denied.append(inst)
+        elif inst in xa and inst in xb:
+            present_denied.append(inst)
+        else:
+            missing_denied.append(inst)
+    if missing_denied:
+        print(
+            f"[OSE Matched] WARNING: {missing_denied} unavailable for "
+            f"denial mode {denial_mode} - skipping"
+        )
+    if not present_denied:
+        print(f"[OSE Matched] No denied instruments present for pair {pair_idx}")
+        return {}
+    structural = denial_mode == "drop_nodes"
+    if structural:
+        if _selected_channel_scope(denied_channels):
+            raise ValueError("drop_nodes removes whole instruments; use full_mask for channel denial")
+        if path_integration_t_values:
+            raise ValueError("drop_nodes has no endpoint path; path integration is undefined")
+    all_missing_fraction = {inst: (1.0 if structural else float("nan")) for inst in present_denied}
+    if not np.isclose(impact_factor, 0.5):
+        raise ValueError("Matched endpoint FSOI requires impact_factor=0.5")
+    loss_reduction_key = str(loss_reduction).strip().lower()
+    if loss_reduction_key not in NORMALIZED_MEAN_LOSS_REDUCTIONS:
+        raise ValueError("Matched observation-space OSE validation requires a normalized-mean J")
+
+    shared_kwargs = dict(
+        forecast_lead_step=forecast_lead_step,
+        instrument_weights=instrument_weights,
+        channel_weights=channel_weights,
+        use_area_weights=use_area_weights,
+        target_instruments=target_instruments,
+        target_variables=target_variables,
+        target_pressure_levels=target_pressure_levels,
+        loss_reduction=loss_reduction,
+    )
+
+    def _make_inputs(denied: bool) -> Tuple[Dict[str, torch.Tensor], Dict[str, Optional[torch.Tensor]]]:
+        inputs = {}
+        replace_idx = dict(subsample_indices or {})
+        for inst, tensor in xa.items():
+            if inst in present_denied:
+                if denial_mode in {"full_mask", "drop_nodes"}:
+                    control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+                    replace_idx[inst] = None
+                else:
+                    control_tensor = tensor.detach().clone().to(device)
+                if denied and structural:
+                    continue  # the node store is emptied instead of edited
+                if denied:
+                    background_tensor = xb[inst].detach().clone().to(device) if inst in xb else None
+                    row_indices = replace_idx.get(inst) if replace_idx and inst in replace_idx else None
+                    valid_mask = _batch_input_channel_mask(
+                        curr_batch,
+                        observation_config,
+                        inst,
+                        device,
+                        row_indices,
+                    )
+                    all_missing_fraction[inst] = (
+                        _all_missing_row_fraction(valid_mask, denied_channels.get(inst))
+                        if denial_mode in {"sample_mask", "full_mask"} else 0.0
+                    )
+                    src = _make_denied_channels(
+                        control_tensor,
+                        background_tensor,
+                        denial_mode,
+                        observation_config,
+                        inst,
+                        denied_channels.get(inst),
+                        valid_mask,
+                    )
+                else:
+                    src = control_tensor
+                inputs[inst] = src.requires_grad_(True)
+            else:
+                inputs[inst] = tensor.detach().clone().to(device)
+        for inst in present_denied:
+            if inst in inputs or (denied and structural):
+                continue
+            control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+            replace_idx[inst] = None
+            src = (
+                _make_denied_channels(
+                    control_tensor,
+                    None,
+                    denial_mode,
+                    observation_config,
+                    inst,
+                    denied_channels.get(inst),
+                    _batch_input_channel_mask(curr_batch, observation_config, inst, device),
+                )
+                if denied else control_tensor
+            )
+            inputs[inst] = src.requires_grad_(True)
+        return inputs, replace_idx
+
+    def _loss_and_grads(
+        inputs: Dict[str, torch.Tensor],
+        replace_idx: Dict[str, Optional[torch.Tensor]],
+        sync_denied_input_mask: bool = False,
+        grad_instruments: Optional[List[str]] = None,
+    ):
+        batch_for_error = curr_batch.clone()
+        if target_instruments is not None:
+            prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
+        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        input_mask_synced = False
+        input_mask_counts = ""
+        if sync_denied_input_mask:
+            input_mask_synced, input_mask_counts = _sync_input_channel_mask_from_values(
+                batch_for_error,
+                observation_config,
+                present_denied,
+                denied_channels,
+                denial_mode,
+                replace_idx,
+            )
+        loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
+        differentiate = present_denied if grad_instruments is None else list(grad_instruments)
+        if not differentiate:
+            return loss, {}, input_mask_synced, input_mask_counts
+        grad_inputs = [inputs[inst] for inst in differentiate]
+        grads = torch.autograd.grad(
+            outputs=loss,
+            inputs=grad_inputs,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=False,
+        )
+        grad_map = {}
+        for inst, grad in zip(differentiate, grads):
+            if grad is None:
+                raise RuntimeError(f"Missing matched FSOI gradient for {inst}")
+            if not torch.isfinite(grad).all():
+                raise RuntimeError(f"Non-finite matched FSOI gradient for {inst}")
+            grad_map[inst] = grad
+        return loss, grad_map, input_mask_synced, input_mask_counts
+
+    def _loss_value_no_grad(
+        inputs: Dict[str, torch.Tensor],
+        replace_idx: Dict[str, Optional[torch.Tensor]],
+    ) -> float:
+        batch_for_error = curr_batch.clone()
+        if target_instruments is not None:
+            prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
+        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        with torch.no_grad():
+            loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
+        return float(loss.detach().item())
+
+    def _loss_value_dropped(
+        inputs: Dict[str, torch.Tensor],
+        replace_idx: Dict[str, Optional[torch.Tensor]],
+    ) -> Tuple[float, str]:
+        """Evaluate J with the denied instruments removed from the input graph."""
+        batch_for_error = curr_batch.clone()
+        if target_instruments is not None:
+            prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
+        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        removed = []
+        for inst in sorted(present_denied):
+            dropped, n_rows = _empty_instrument_inputs(batch_for_error, inst)
+            removed.append(f"{inst}:{n_rows if dropped else 0}")
+        with torch.no_grad():
+            loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
+        return float(loss.detach().item()), ";".join(removed)
+
+    control_inputs, control_replace_idx = _make_inputs(denied=False)
+    denied_inputs, denied_replace_idx = _make_inputs(denied=True)
+
+    j_control, grad_control, _, _ = _loss_and_grads(
+        control_inputs,
+        control_replace_idx,
+        grad_instruments=[] if structural else None,
+    )
+    j_control_value = float(j_control.detach().item())
+    torch.cuda.empty_cache()
+    if structural:
+        # No denied-endpoint input exists to differentiate; only the realized change is defined.
+        j_denied_value, dropped_rows = _loss_value_dropped(denied_inputs, denied_replace_idx)
+        grad_denied, input_mask_synced, input_mask_counts = {}, False, ""
+    else:
+        dropped_rows = ""
+        j_denied, grad_denied, input_mask_synced, input_mask_counts = _loss_and_grads(
+            denied_inputs,
+            denied_replace_idx,
+            sync_denied_input_mask=True,
+        )
+        j_denied_value = float(j_denied.detach().item())
+    torch.cuda.empty_cache()
+
+    matched_by_instrument = {}
+    dx_by_instrument = {}
+    sampled_rows = {}
+    raw_rows = {}
+    sample_scales = {}
+
+    for inst in present_denied:
+        node_type = f"{inst}_input"
+        if structural:
+            rows = 0
+            if node_type in curr_batch.node_types and getattr(curr_batch[node_type], "x", None) is not None:
+                rows = int(curr_batch[node_type].x.shape[0])
+            sampled_rows[inst] = rows
+            raw_rows[inst] = rows
+            sample_scales[inst] = 1.0
+            continue
+
+        g_c = grad_control.get(inst)
+        g_d = grad_denied.get(inst)
+        if g_c is None or g_d is None:
+            raise RuntimeError(f"Missing matched FSOI gradient for {inst}")
+
+        dx = control_inputs[inst].detach() - denied_inputs[inst].detach()
+        if dx.shape != g_c.shape or dx.shape != g_d.shape:
+            raise RuntimeError(
+                f"[OSE Matched] WARNING: Shape mismatch for {inst}: "
+                f"dx={tuple(dx.shape)}, g_control={tuple(g_c.shape)}, "
+                f"g_denied={tuple(g_d.shape)}"
+            )
+
+        matched_by_instrument[inst] = float((0.5 * dx * (g_c + g_d)).sum().item())
+        dx_by_instrument[inst] = dx
+        sampled_rows[inst] = int(dx.shape[0])
+
+        raw_n = sampled_rows[inst]
+        if node_type in curr_batch.node_types and getattr(curr_batch[node_type], "x", None) is not None:
+            raw_n = int(curr_batch[node_type].x.shape[0])
+        raw_rows[inst] = raw_n
+        sample_scales[inst] = float(raw_n / sampled_rows[inst]) if sampled_rows[inst] > 0 else 1.0
+
+    matched_fsoi = float(sum(matched_by_instrument.values())) if matched_by_instrument else float("nan")
+    delta_j_actual = float(j_control_value - j_denied_value)
+    ose_impact = float(j_denied_value - j_control_value)
+    j_control_repeat_value = float("nan")
+    matched_control_repro_error = float("nan")
+    matched_control_repro_source = "none"
+    if control_reproducibility_error is not None:
+        try:
+            candidate_repro_error = abs(float(control_reproducibility_error))
+        except (TypeError, ValueError):
+            candidate_repro_error = float("nan")
+        if np.isfinite(candidate_repro_error):
+            matched_control_repro_error = candidate_repro_error
+            matched_control_repro_source = "representative_pair"
+    if run_control_repro_check:
+        j_control_repeat_value = _loss_value_no_grad(control_inputs, control_replace_idx)
+        matched_control_repro_error = abs(j_control_repeat_value - j_control_value)
+        matched_control_repro_source = "this_pair_repeat"
+    signal_threshold, repro_error, threshold_basis = _signal_threshold_from_repro(
+        matched_control_repro_error if np.isfinite(matched_control_repro_error) else None
+    )
+    signal_valid = _finite_signal(matched_fsoi, delta_j_actual, signal_threshold)
+    closure_ratio = (
+        matched_fsoi / delta_j_actual
+        if signal_valid else float("nan")
+    )
+
+    path_cols = {}
+    path_t_values = _normalize_path_t_values(path_integration_t_values)
+    if path_t_values is not None:
+        path_losses = []
+        path_directional = []
+        path_directional_by_inst = {inst: [] for inst in present_denied}
+
+        def _make_path_inputs(t_value: float) -> Dict[str, torch.Tensor]:
+            inputs_t = {}
+            for inst, tensor in control_inputs.items():
+                if inst in present_denied:
+                    src = denied_inputs[inst].detach() + float(t_value) * dx_by_instrument[inst]
+                    inputs_t[inst] = src.detach().clone().requires_grad_(True)
+                else:
+                    inputs_t[inst] = tensor.detach().clone().to(device)
+            return inputs_t
+
+        for t_value in path_t_values:
+            if np.isclose(t_value, 0.0):
+                loss_value = j_denied_value
+                grad_map = grad_denied
+            elif np.isclose(t_value, 1.0):
+                loss_value = j_control_value
+                grad_map = grad_control
+            else:
+                inputs_t = _make_path_inputs(t_value)
+                loss_t, grad_map, _, _ = _loss_and_grads(inputs_t, control_replace_idx)
+                loss_value = float(loss_t.detach().item())
+                torch.cuda.empty_cache()
+
+            directional_total = 0.0
+            for inst in present_denied:
+                term = float((grad_map[inst] * dx_by_instrument[inst]).sum().item())
+                path_directional_by_inst[inst].append(term)
+                directional_total += term
+            path_losses.append(loss_value)
+            path_directional.append(directional_total)
+
+        path_integrated_fsoi, path_rule = _integrate_directional_path(
+            path_t_values,
+            path_directional,
+        )
+        path_signal_valid = _finite_signal(
+            path_integrated_fsoi,
+            delta_j_actual,
+            signal_threshold,
+        )
+        path_closure_ratio = (
+            path_integrated_fsoi / delta_j_actual
+            if path_signal_valid else float("nan")
+        )
+        matched_abs_error = (
+            abs(matched_fsoi - delta_j_actual)
+            if np.isfinite(matched_fsoi) and np.isfinite(delta_j_actual)
+            else float("nan")
+        )
+        path_abs_error = (
+            abs(path_integrated_fsoi - delta_j_actual)
+            if np.isfinite(path_integrated_fsoi) and np.isfinite(delta_j_actual)
+            else float("nan")
+        )
+        path_abs_error_improvement = (
+            matched_abs_error - path_abs_error
+            if np.isfinite(matched_abs_error) and np.isfinite(path_abs_error)
+            else float("nan")
+        )
+        path_relative_error_reduction = (
+            path_abs_error_improvement / matched_abs_error
+            if np.isfinite(path_abs_error_improvement) and matched_abs_error > signal_threshold
+            else float("nan")
+        )
+        path_cols = {
+            'path_integration_enabled': True,
+            'path_integration_t_values': _format_float_series(path_t_values),
+            'path_integration_rule': path_rule,
+            'path_j_values': _format_float_series(path_losses),
+            'path_directional_derivatives': _format_float_series(path_directional),
+            'path_directional_derivatives_by_instrument': ';'.join(
+                f"{inst}:{_format_float_series(path_directional_by_inst[inst])}"
+                for inst in sorted(path_directional_by_inst)
+            ),
+            'path_integrated_fsoi': path_integrated_fsoi,
+            'path_closure_ratio': path_closure_ratio,
+            'path_signal_valid': path_signal_valid,
+            'path_sign_agree': _finite_sign_agree(
+                path_integrated_fsoi,
+                delta_j_actual,
+                signal_threshold,
+            ),
+            'path_abs_error': path_abs_error,
+            'matched_abs_error': matched_abs_error,
+            'path_abs_error_improvement': path_abs_error_improvement,
+            'path_relative_error_reduction': path_relative_error_reduction,
+            'path_minus_matched_fsoi': path_integrated_fsoi - matched_fsoi,
+            'path_minus_delta_j_actual': path_integrated_fsoi - delta_j_actual,
+        }
+
+    return {
+        'pair_idx': pair_idx,
+        'prev_bin': prev_bin,
+        'curr_bin': curr_bin,
+        'lead_step': forecast_lead_step,
+        'denied_instruments': ','.join(sorted(present_denied)),
+        **_denied_channel_columns(denied_channels, observation_config, present_denied),
+        'ose_denial_mode': denial_mode,
+        'ose_denial_description': DENIAL_MODE_DESCRIPTIONS[denial_mode],
+        **_mask_fill_columns(observation_config, present_denied, denial_mode),
+        'ea_control': j_control_value,
+        'ea_denied': j_denied_value,
+        'ose_impact': ose_impact,
+        'ose_sign': 'helpful' if ose_impact > 0 else 'detrimental',
+        'ose_relative_impact': ose_impact / (abs(j_control_value) + 1e-12),
+        'verification_target': 'obs',
+        'mesh_instrument': '',
+        'mesh_pressure_level_idx': '',
+        'ose_spatial_npz': '',
+        'loss_reduction': str(loss_reduction),
+        **metric_provenance(model),
+        'target_instruments': _serialize_provenance_value(target_instruments),
+        'target_variables': _serialize_provenance_value(target_variables),
+        'target_pressure_levels': _serialize_provenance_value(target_pressure_levels),
+        'use_area_weights': bool(use_area_weights),
+        'ose_input_channel_mask_synced': input_mask_synced,
+        'ose_input_channel_mask_false_counts': input_mask_counts,
+        'ose_all_missing_row_fraction': ';'.join(
+            f"{inst}:{all_missing_fraction[inst]:.6g}" for inst in sorted(all_missing_fraction)
+        ),
+        'ose_max_all_missing_row_fraction': _max_finite(all_missing_fraction.values()),
+        'ose_dropped_rows': dropped_rows,
+        'matched_comparison_mode': _comparison_mode_for(
+            denial_mode,
+            _selected_channel_scope(denied_channels),
+        ),
+        'matched_sign_convention': 'positive=detrimental; delta_j_actual=J_control-J_denied',
+        'matched_fsoi': matched_fsoi,
+        'matched_fsoi_by_instrument': ';'.join(
+            f"{inst}:{matched_by_instrument[inst]:.17g}"
+            for inst in sorted(matched_by_instrument)
+        ),
+        'delta_j_actual': delta_j_actual,
+        'j_control': j_control_value,
+        'j_denied': j_denied_value,
+        'matched_control_repeated': bool(run_control_repro_check),
+        'matched_control_repeat': j_control_repeat_value,
+        'matched_control_reproducibility_error': matched_control_repro_error,
+        'matched_control_reproducibility_source': matched_control_repro_source,
+        'matched_closure_ratio': closure_ratio,
+        'matched_signal_threshold': signal_threshold,
+        'matched_signal_threshold_basis': threshold_basis,
+        'matched_observed_control_reproducibility_error': repro_error,
+        'matched_signal_valid': signal_valid,
+        'matched_sign_agree': _finite_sign_agree(
+            matched_fsoi,
+            delta_j_actual,
+            signal_threshold,
+        ),
+        'matched_population_scaled': False,
+        'matched_sampled_rows': ';'.join(
+            f"{inst}:{sampled_rows[inst]}" for inst in sorted(sampled_rows)
+        ),
+        'matched_raw_rows': ';'.join(
+            f"{inst}:{raw_rows[inst]}" for inst in sorted(raw_rows)
+        ),
+        'matched_sample_scale': ';'.join(
+            f"{inst}:{sample_scales[inst]:.8g}" for inst in sorted(sample_scales)
+        ),
+        **path_cols,
     }
 
 
@@ -169,70 +1674,106 @@ def compare_ose_vs_fsoi(
     ose_csv: "Path",
     fsoi_inst_csv: "Path",
 ) -> pd.DataFrame:
-    """Merge OSE results with FSOI predictions per (pair, denied instrument).
+    """Merge OSE results with FSOI predictions per denied instrument.
 
-    For each (pair_idx, denied_instrument), matches:
-      OSE:   ose_impact  = ea_denied - ea_control
-      FSOI:  fsoi_predicted = sum_impact_scaled  (for that instrument and pair)
+    When matched endpoint columns are present in ``ose_results.csv``, this
+    function uses them directly:
 
-    Returns merged DataFrame with closure_ratio = fsoi_predicted / ose_impact.
-    A ratio close to 1.0 means FSOI accurately predicts the actual impact.
+      delta_j_actual = J_control - J_denied
+      fsoi_predicted = matched_fsoi
+
+    Both use the convention positive = detrimental and neither side is
+    population-scaled. Older outputs without matched endpoint columns now fail
+    instead of falling back to the legacy aggregate instrument CSV.
     """
     from pathlib import Path
 
     if not Path(ose_csv).is_file():
         print(f"[OSE Compare] {ose_csv} not found")
         return pd.DataFrame()
-    if not Path(fsoi_inst_csv).is_file():
-        print(f"[OSE Compare] {fsoi_inst_csv} not found")
-        return pd.DataFrame()
 
     ose = pd.read_csv(ose_csv)
-    fsoi = pd.read_csv(fsoi_inst_csv)
 
-    impact_col = 'sum_impact_scaled' if 'sum_impact_scaled' in fsoi.columns else 'sum_impact'
-
-    # Aggregate FSOI per (pair_idx, instrument) — sum across levels/variables
-    fsoi_agg = (
-        fsoi.groupby(['pair_idx', 'instrument'])[impact_col]
-        .sum()
-        .reset_index()
-        .rename(columns={impact_col: 'fsoi_predicted'})
+    matched_cols = {'matched_fsoi', 'delta_j_actual'}
+    missing = matched_cols.difference(ose.columns)
+    if missing:
+        raise ValueError(
+            "Final OSE/FSOI validation requires matched endpoint columns in "
+            f"{ose_csv}. Missing: {sorted(missing)}. Rerun OSE with the "
+            "matched conditional endpoint code; the legacy stratified/"
+            "population-scaled comparison is disabled."
+        )
+    signal_threshold, repro_error, threshold_basis = _signal_threshold_from_repro(
+        _observed_repro_error_from_frame(ose)
     )
+    if 'ose_denial_mode' in ose.columns:
+        structural_rows = ose['ose_denial_mode'].astype(str).eq('drop_nodes')
+        if structural_rows.any():
+            print(f"[OSE Compare] Excluding {int(structural_rows.sum())} drop_nodes rows: "
+                  "structural denial has no matched FSOI to compare")
+            ose = ose.loc[~structural_rows]
+        if ose.empty:
+            return pd.DataFrame()
+    if matched_cols.issubset(ose.columns) and ose['matched_fsoi'].notna().any():
+        ose = ose.copy()
+        ose['matched_fsoi'] = pd.to_numeric(ose['matched_fsoi'], errors='coerce')
+        ose['delta_j_actual'] = pd.to_numeric(ose['delta_j_actual'], errors='coerce')
+        rows = []
+        for _, row in ose.iterrows():
+            if not np.isfinite(row.get('matched_fsoi', np.nan)):
+                raise ValueError(f"Non-finite matched_fsoi in {ose_csv}, pair_idx={row.get('pair_idx')}")
+            if not np.isfinite(row.get('delta_j_actual', np.nan)):
+                raise ValueError(f"Non-finite delta_j_actual in {ose_csv}, pair_idx={row.get('pair_idx')}")
+            denied = str(row.get('denied_instruments', '')).strip()
+            instruments = [i.strip() for i in denied.split(',') if i.strip()]
+            denied_label = instruments[0] if len(instruments) == 1 else denied
+            rec = row.to_dict()
+            rec['denied_instrument'] = denied_label
+            rec['instrument'] = denied_label
+            rec['fsoi_predicted'] = row.get('matched_fsoi')
+            rec['ose_fsoi_convention'] = row.get('delta_j_actual')
+            rec['comparison_mode'] = row.get(
+                'matched_comparison_mode',
+                'conditional_endpoint_same_sample_same_J',
+            )
+            rows.append(rec)
 
-    # Explode multi-instrument denial rows in OSE
-    rows = []
-    for _, row in ose.iterrows():
-        for inst in str(row['denied_instruments']).split(','):
-            inst = inst.strip()
-            rows.append({**row.to_dict(), 'denied_instrument': inst})
-    ose_long = pd.DataFrame(rows)
+        merged = pd.DataFrame(rows)
+        if merged.empty:
+            return merged
+        merged['fsoi_predicted'] = pd.to_numeric(merged['fsoi_predicted'], errors='coerce')
+        merged['ose_fsoi_convention'] = pd.to_numeric(merged['ose_fsoi_convention'], errors='coerce')
+        signal_valid = (
+            merged['fsoi_predicted'].abs().gt(signal_threshold) &
+            merged['ose_fsoi_convention'].abs().gt(signal_threshold)
+        )
+        sign_agree = (
+            np.sign(merged['fsoi_predicted']) ==
+            np.sign(merged['ose_fsoi_convention'])
+        )
+        merged['signal_threshold'] = signal_threshold
+        merged['signal_threshold_basis'] = threshold_basis
+        merged['observed_control_reproducibility_error'] = repro_error
+        merged['signal_valid'] = signal_valid
+        merged['near_zero_excluded'] = ~signal_valid
+        merged['closure_ratio'] = np.where(
+            signal_valid,
+            merged['fsoi_predicted'] / merged['ose_fsoi_convention'],
+            np.nan,
+        )
+        merged['abs_magnitude_ratio'] = np.where(
+            signal_valid,
+            merged['fsoi_predicted'].abs() / merged['ose_fsoi_convention'].abs(),
+            np.nan,
+        )
+        merged['sign_agree'] = np.where(signal_valid, sign_agree, np.nan)
+        merged['n_total_cycles'] = len(merged)
+        merged['n_signal_valid_cycles'] = int(signal_valid.sum())
+        merged['n_near_zero_excluded_cycles'] = int((~signal_valid).sum())
+        return merged
 
-    if ose_long.empty or fsoi_agg.empty:
-        return pd.DataFrame()
-
-    merged = ose_long.merge(
-        fsoi_agg,
-        left_on=['pair_idx', 'denied_instrument'],
-        right_on=['pair_idx', 'instrument'],
-        how='left',
+    raise ValueError(
+        "Final OSE/FSOI validation requires finite matched_fsoi and "
+        "delta_j_actual values. The legacy stratified/population-scaled "
+        "comparison is disabled."
     )
-
-    # Sign conventions differ between FSOI and OSE:
-    #   FSOI > 0  → instrument is detrimental (increases forecast error)
-    #   ose_impact = ea_denied - ea_control
-    #     ose_impact < 0 → denying instrument helped → instrument was detrimental
-    #     ose_impact > 0 → denying instrument hurt  → instrument was beneficial
-    # So FSOI and ose_impact have OPPOSITE signs for the same physical conclusion.
-    # Negate ose_impact to put both in the "positive = detrimental" convention
-    # before computing sign agreement and closure ratio.
-    eps = 1e-12
-    ose_fsoi_convention = -merged['ose_impact']   # now positive = detrimental
-    merged['closure_ratio'] = np.where(
-        ose_fsoi_convention.abs() > eps,
-        merged['fsoi_predicted'] / ose_fsoi_convention,
-        np.nan,
-    )
-    merged['sign_agree'] = np.sign(merged['fsoi_predicted']) == np.sign(ose_fsoi_convention)
-
-    return merged

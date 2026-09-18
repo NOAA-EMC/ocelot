@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Checkpoint resolution ─────────────────────────────────────────────────────
-DEFAULT_CKPT="/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt"
+DEFAULT_CKPT="/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt"
 CHECKPOINT_PATH="${CHECKPOINT_PATH:-$DEFAULT_CKPT}"
 
 if [ ! -f "$CHECKPOINT_PATH" ] && [ ! -d "$CHECKPOINT_PATH" ]; then

@@ -12,6 +12,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+import sys
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
 # Standard pressure levels used in the model
 STANDARD_PRESSURE_LEVELS = np.array([
@@ -25,6 +30,7 @@ def load_fsoi_data(data_dir):
 
     by_channel = pd.read_csv(data_dir / 'csv' / 'fsoi_by_channel.csv')
     by_instrument = pd.read_csv(data_dir / 'csv' / 'fsoi_by_instrument.csv')
+    by_instrument = collapse_target_variable_rows(by_instrument)
 
     return by_channel, by_instrument
 
@@ -41,9 +47,8 @@ def map_channels_to_pressure(df, instrument='radiosonde'):
 
     For aircraft:
         Channel 1: temperature
-        Channel 2: humidity (specific humidity)
-        Channel 3: u_wind
-        Channel 4: v_wind
+        Channel 2: u_wind
+        Channel 3: v_wind
 
     NOTE: Current FSOI doesn't stratify by actual pressure levels,
     only by channel (variable type). This function prepares the data
@@ -61,9 +66,8 @@ def map_channels_to_pressure(df, instrument='radiosonde'):
     elif instrument == 'aircraft':
         channel_map = {
             1: 'temperature',
-            2: 'humidity',
-            3: 'u_wind',
-            4: 'v_wind'
+            2: 'u_wind',
+            3: 'v_wind'
         }
     else:
         return df

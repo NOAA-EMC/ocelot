@@ -70,7 +70,7 @@ cd "$GNN_DIR"
 echo "[PATH] Working dir: $(pwd)"
 
 # Checkpoint ------------------------------------------------------------
-CHECKPOINT="${CHECKPOINT_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}"
+CHECKPOINT="${CHECKPOINT_PATH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}"
 if [ ! -f "$CHECKPOINT" ]; then
     echo "ERROR: checkpoint not found: $CHECKPOINT"
     echo "Override with: CHECKPOINT_PATH=/path/to/model.ckpt sbatch $0"
@@ -78,8 +78,8 @@ if [ ! -f "$CHECKPOINT" ]; then
 fi
 echo "[CKPT] $CHECKPOINT"
 
-CONFIG_FILE="FSOI/configs/fsoi_config_fd_enhanced.yaml"
-OUTPUT_DIR="FSOI/fsoi_outputs/fd_check_enhanced"
+CONFIG_FILE="${CONFIG_FILE:-FSOI/configs/fsoi_config_fd_enhanced.yaml}"
+OUTPUT_DIR="${FSOI_OUTPUT_DIR:-${OUTPUT_DIR:-FSOI/fsoi_outputs/fd_check_enhanced}}"
 DATA_PATH="${DATA_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7}"
 
 mkdir -p "$OUTPUT_DIR"
@@ -90,7 +90,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "[CONFIG] $CONFIG_FILE"
 echo "[OUTPUT] $OUTPUT_DIR"
-echo "[TESTS]  scalar float32 FD + directional (Rademacher) + float64 FD"
+echo "[TESTS]  Enabled validation tests are controlled by the YAML config"
 echo ""
 
 python FSOI/fsoi_inference.py \
@@ -124,7 +124,7 @@ elif 'pearson_r' in df.columns:
 " 2>/dev/null || cat "$csv" | head -5
         echo ""
     else
-        echo "WARNING: $csv not found"
+        echo "Optional output not generated: $csv"
     fi
 done
 echo "=================================================="

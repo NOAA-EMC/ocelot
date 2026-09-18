@@ -16,6 +16,11 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import sys
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
 # Configuration
 FSOI_CSV = 'FSOI/fsoi_outputs/radiosonde_temp_impact/csv/fsoi_by_channel.csv'
@@ -49,8 +54,8 @@ CHANNEL_NAMES = {
     'avhrr': {i + 1: f'AVHRR ch{i + 1}' for i in range(5)},
     'ascat': {1: 'ASCAT u-wind', 2: 'ASCAT v-wind'},
     'radiosonde': {1: 'Radiosonde Temp', 2: 'Radiosonde Dewpt', 3: 'Radiosonde U', 4: 'Radiosonde V'},
-    'aircraft': {1: 'Aircraft Temp', 2: 'Aircraft Humid', 3: 'Aircraft U', 4: 'Aircraft V'},
-    'surface_obs': {1: 'Surface Temp', 2: 'Surface Dewpt', 3: 'Surface U', 4: 'Surface V', 5: 'Surface Pres'}
+    'aircraft': {1: 'Aircraft Temp', 2: 'Aircraft U', 3: 'Aircraft V'},
+    'surface_obs': {1: 'Surface Pres', 2: 'Surface Temp', 3: 'Surface Dewpt', 4: 'Surface U', 5: 'Surface V'}
 }
 
 
@@ -74,6 +79,12 @@ def load_and_prepare_data():
     print(f"Loading data from {FSOI_CSV}...")
     df = pd.read_csv(FSOI_CSV)
     print(f"Loaded {len(df)} records")
+
+    # Average over target_variable so channel/pressure cells stay on the
+    # single-metric scale (keeps channel and pressure axes intact).
+    df = collapse_target_variable_rows(
+        df, keys=("pair_idx", "instrument", "channel", "pressure_level_idx")
+    )
 
     # Ensure pressure_hpa exists (can be synthesized from pressure_level_idx)
     df = _ensure_pressure_column(df)

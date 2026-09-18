@@ -29,9 +29,8 @@ VARIABLE_NAMES = {
 
 AIRCRAFT_VARIABLE_NAMES = {
     1: 'temperature',
-    2: 'humidity',  # aircraft
-    3: 'u_wind',
-    4: 'v_wind',
+    2: 'u_wind',
+    3: 'v_wind',
 }
 
 
@@ -190,7 +189,7 @@ def plot_comparative_pressure_profiles(df, output_dir):
     # Focus on temperature for comparison
     rad_temp = rad_data[rad_data['variable'] == 'temperature'].groupby('pressure_hpa')['mean_impact'].mean()
     air_temp = air_data[air_data['variable'] == 'temperature'].groupby('pressure_hpa')['mean_impact'].mean()
-    air_humid = air_data[air_data['variable'] == 'humidity'].groupby('pressure_hpa')['mean_impact'].mean()
+    air_u_wind = air_data[air_data['variable'] == 'u_wind'].groupby('pressure_hpa')['mean_impact'].mean()
 
     # Create figure
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 8))
@@ -206,14 +205,14 @@ def plot_comparative_pressure_profiles(df, output_dir):
     ax1.legend(fontsize=11)
     ax1.grid(True, alpha=0.3)
 
-    # Plot 2: Humidity variables
-    rad_dewpoint = rad_data[rad_data['variable'] == 'dewpoint'].groupby('pressure_hpa')['mean_impact'].mean()
-    ax2.plot(rad_dewpoint, rad_dewpoint.index, marker='o', label='Radiosonde Dewpoint', linewidth=2, color='#2E86AB')
-    ax2.plot(air_humid, air_humid.index, marker='s', label='Aircraft Humidity', linewidth=2, color='#A23B72')
+    # Plot 2: U-wind comparison
+    rad_u_wind = rad_data[rad_data['variable'] == 'u_wind'].groupby('pressure_hpa')['mean_impact'].mean()
+    ax2.plot(rad_u_wind, rad_u_wind.index, marker='o', label='Radiosonde U-wind', linewidth=2, color='#2E86AB')
+    ax2.plot(air_u_wind, air_u_wind.index, marker='s', label='Aircraft U-wind', linewidth=2, color='#A23B72')
     ax2.axvline(x=0, color='black', linestyle='--', linewidth=0.8)
     ax2.set_xlabel('Mean Impact', fontsize=12)
     ax2.set_ylabel('Pressure (hPa)', fontsize=12)
-    ax2.set_title('Moisture Variables: Dewpoint vs Specific Humidity', fontsize=14, fontweight='bold')
+    ax2.set_title('U-wind: Radiosonde vs Aircraft', fontsize=14, fontweight='bold')
     ax2.invert_yaxis()
     ax2.legend(fontsize=11)
     ax2.grid(True, alpha=0.3)

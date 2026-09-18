@@ -149,7 +149,7 @@ def spacer():
 # ═══════════════════════════════════════════════════════════════════
 title_p = doc.add_paragraph()
 title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-run = title_p.add_run("FSOI: Forecast Sensitivity to\nObservation Impact")
+run = title_p.add_run("Forecast Sensitivity to Observations for an\nAI-Based Numerical Weather Prediction System")
 run.font.size = Pt(26)
 run.font.bold = True
 run.font.color.rgb = DARK_BLUE
@@ -157,7 +157,7 @@ run.font.color.rgb = DARK_BLUE
 spacer()
 sub_p = doc.add_paragraph()
 sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-run = sub_p.add_run("Implementation Guide — OCELOT GNN Weather Model")
+run = sub_p.add_run("FSOI Implementation Guide — OCELOT AI Weather Model")
 run.font.size = Pt(13)
 run.font.color.rgb = MID_BLUE
 run.font.italic = True
@@ -183,12 +183,14 @@ callout(
 )
 
 body(
-    "In classical Numerical Weather Prediction (NWP), and now in neural-network-based "
-    "forecasting like OCELOT, thousands of observations from radiosondes, aircraft, "
-    "satellites, and surface stations are assimilated each cycle. Not all observations "
-    "are equally useful — some improve the forecast, some degrade it. Running a separate "
-    "Observing System Experiment (OSE) for each instrument type is prohibitively expensive. "
-    "FSOI provides a single-pass, adjoint-based shortcut."
+    "In classical Numerical Weather Prediction (NWP), observations from radiosondes, aircraft, "
+    "satellites, and surface stations are assimilated via variational methods each cycle. "
+    "In OCELOT's AI-based approach, no explicit assimilation step is performed: the true "
+    "observations at analysis time serve directly as the analysis state (xa), while the "
+    "model's prior forecast from the previous window provides the background (xb). "
+    "Not all observations are equally useful — some reduce forecast error, some increase it. "
+    "Running a separate Observing System Experiment (OSE) for each instrument type is "
+    "prohibitively expensive. FSOI provides a single-pass, gradient-based shortcut."
 )
 
 spacer()
@@ -306,7 +308,7 @@ spacer()
 body(
     "FSOI = 0.5 × δx × (ga + gb) is the product of two independent quantities. "
     "FSOI is beneficial (negative) only when the innovation and the gradient point in OPPOSITE directions — "
-    "meaning the assimilation moved the observation in the direction the model needed."
+    "meaning the true observation deviates from the prior forecast in the direction that reduces forecast error."
 )
 spacer()
 
@@ -325,8 +327,8 @@ code_block([
     "  δx > 0  AND  (ga+gb) > 0  →  FSOI = (+)(+) = POSITIVE  ✗  DETRIMENTAL",
     "    Analysis pulled obs UP,   gradient says going UP   makes error WORSE",
     "  ─────────────────────────────────────────────────────────────────────────",
-    "  Rule: FSOI < 0 ⟺ assimilation moved the observation in the direction",
-    "        that the gradient says reduces forecast error.",
+    "  Rule: FSOI < 0 ⟺ the true obs deviates from the prior forecast (δx)",
+    "        in the direction the gradient says reduces forecast error.",
 ])
 
 body("Direction-agreement table:", bold=True)
@@ -420,8 +422,8 @@ code_block([
 callout(
     "Key takeaway: The gradient is NOT a quality score — it is a direction vector.\n"
     "A large negative gradient on an obs means the model is highly sensitive to it AND\n"
-    "increasing it would help. Whether the assimilation actually moved it in that direction\n"
-    "is what FSOI measures.",
+    "increasing it would help. Whether the true observation actually deviates from the\n"
+    "prior forecast in that direction is what FSOI measures.",
     bg=LIGHT_BLUE, text_color=DARK_BLUE
 )
 
@@ -432,12 +434,12 @@ spacer()
 # ═══════════════════════════════════════════════════════════════════
 heading("4  Simple Worked Example", 1)
 
-body("Imagine one radiosonde temperature observation being assimilated.", italic=True)
+body("Imagine one radiosonde temperature observation entering the system at analysis time.", italic=True)
 spacer()
 
 code_block([
-    "  Background prediction (model guess before obs):  xb  =  15.0°C",
-    "  Observed / analyzed value after assimilation:    xa  =  12.0°C",
+    "  Background (prior ML forecast for this window):   xb  =  15.0°C",
+    "  True observed value (analysis state):            xa  =  12.0°C",
     "  ─────────────────────────────────────────────────────────────────",
     "  Innovation:   δx  =  xa − xb  =  12.0 − 15.0  =  −3.0",
     "",
@@ -452,9 +454,9 @@ code_block([
 ])
 
 callout(
-    "Even though the obs pulled temperature toward truth (δx = −3), the gradients "
-    "say the forecast error went up. This means the assimilation overcorrected, or "
-    "the gradient was pointing in the wrong direction at that state.",
+    "Even though the true obs is 3°C below the prior forecast (δx = −3), the gradients "
+    "say the forecast error went up. This means the innovation pointed in the wrong "
+    "direction for this particular state — the background was closer to what the model needed.",
     bg=RGBColor(0xFF, 0xF0, 0xE0), text_color=ORANGE
 )
 
@@ -468,7 +470,7 @@ spacer()
 heading("4  Full Pipeline — Step-by-Step", 1)
 
 body(
-    "The pipeline processes pairs of consecutive 12-hour assimilation windows "
+    "The pipeline processes pairs of consecutive 12-hour forecast windows "
     "(prev_batch, curr_batch) in strict chronological order. For a month of data "
     "at 12-hour intervals that gives 60 pairs."
 )
@@ -831,6 +833,477 @@ callout(
     bg=RGBColor(0xFF, 0xF8, 0xE1), text_color=ORANGE
 )
 
+spacer()
+
+# ═══════════════════════════════════════════════════════════════════
+#  SECTION 7.1 — FOUR-SEASON COMPARISON
+# ═══════════════════════════════════════════════════════════════════
+heading("7.1  Four-Season Comparison (Jan / Apr / Jul / Oct 2025)", 2)
+
+body(
+    "FSOI runs were completed for four representative months spanning all seasons. "
+    "Scaled FSOI values (sum_impact_scaled) are shown below — negative = beneficial "
+    "(instrument reduced forecast error), positive = detrimental. "
+    "All four seasons used the same radiosonde-fixed evaluation configuration."
+)
+spacer()
+
+body("Sum Impact (Scaled) — Four Seasons", bold=True)
+spacer()
+
+tbl_seas = doc.add_table(rows=10, cols=6)
+tbl_seas.style = "Table Grid"
+tbl_seas.alignment = WD_TABLE_ALIGNMENT.CENTER
+for i, h in enumerate(["Instrument", "Jan 2025", "Apr 2025", "Jul 2025", "Oct 2025", "Consistent?"]):
+    set_cell_bg(tbl_seas.rows[0].cells[i], MID_BLUE)
+    run = tbl_seas.rows[0].cells[i].paragraphs[0].add_run(h)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
+
+seas_data = [
+    ("radiosonde",  "−1645", "−1546", "−1667", "−1755", "✓ Always helpful"),
+    ("aircraft",    "−137",  "−76",   "−84",   "−114",  "✓ Always helpful"),
+    ("ascat",       "−10.0", "−8.0",  "−7.2",  "−9.0",  "✓ Always helpful"),
+    ("avhrr",       "+1.5",  "−1.1",  "−6.8",  "−3.8",  "~ Mostly helpful"),
+    ("seviri_asr",  "−0.74", "−6.2",  "−4.2",  "−2.8",  "✓ Always helpful"),
+    ("surface_obs", "+31.3", "+89",   "+115",  "+94",   "✗ Always detrimental"),
+    ("ssmis",       "+52.3", "+24.7", "+16.6", "+12.4", "✗ Always detrimental"),
+    ("amsua",       "+3.1",  "+17.5", "+17.5", "+21.7", "✗ Always detrimental"),
+    ("atms",        "+5.4",  "−1.8",  "+27.7", "+7.6",  "~ Mostly detrimental"),
+]
+for r_idx, row_data in enumerate(seas_data, start=1):
+    inst, jan, apr, jul, oct, note = row_data
+    row = tbl_seas.rows[r_idx]
+    if note.startswith("✓"):
+        bg = RGBColor(0xE2, 0xEF, 0xDA)
+    elif note.startswith("✗"):
+        bg = RGBColor(0xFF, 0xEB, 0xEB)
+    else:
+        bg = RGBColor(0xFF, 0xF8, 0xE1)
+    for c in row.cells:
+        set_cell_bg(c, bg)
+    for c_idx, val in enumerate([inst, jan, apr, jul, oct, note]):
+        run = row.cells[c_idx].paragraphs[0].add_run(val)
+        run.font.size = Pt(10)
+        if c_idx == 0:
+            run.font.name = "Courier New"
+        if c_idx in (1, 2, 3, 4):
+            is_helpful = val.startswith("−")
+            run.font.color.rgb = GREEN if is_helpful else RED
+            run.font.bold = True
+
+doc.add_paragraph()
+
+body("Key seasonal findings:", bold=True)
+bullet(
+    "Radiosonde is the dominant beneficial instrument in all seasons. "
+    "October (−1755) has the highest impact, suggesting stronger upper-air "
+    "temperature gradients in autumn.",
+    bold_prefix="Radiosonde dominance: "
+)
+bullet(
+    "ATMS switches from slightly beneficial in April (−1.8) to strongly detrimental "
+    "in July (+27.7). Summer convective activity increases innovation variance, "
+    "making GNN ATMS analysis increments less reliable.",
+    bold_prefix="ATMS seasonal flip: "
+)
+bullet(
+    "SSMIS impact magnitude decreases from winter (Jan: +52.3) to summer (Jul: +16.6). "
+    "Winter polar orbit coverage differences and colder brightness temperatures are "
+    "a likely driver.",
+    bold_prefix="SSMIS winter peak: "
+)
+bullet(
+    "AVHRR transitions from slightly detrimental in January (+1.5) to strongly "
+    "beneficial in July (−6.8), suggesting infrared cloud-clear retrievals are "
+    "more valuable in summer when cloud fraction is lower.",
+    bold_prefix="AVHRR summer benefit: "
+)
+bullet(
+    "Surface observations are consistently the most detrimental non-radiosonde "
+    "instrument in absolute terms. Their 4.0σ innovation RMS indicates the GNN "
+    "surface analysis increments are poorly calibrated.",
+    bold_prefix="Surface obs anomaly: "
+)
+
+spacer()
+
+body("Positive Fraction (fraction of individual observations that are individually detrimental)", bold=True)
+spacer()
+
+tbl_pfrac = doc.add_table(rows=10, cols=5)
+tbl_pfrac.style = "Table Grid"
+tbl_pfrac.alignment = WD_TABLE_ALIGNMENT.CENTER
+for i, h in enumerate(["Instrument", "Jan 2025", "Apr 2025", "Jul 2025", "Oct 2025"]):
+    set_cell_bg(tbl_pfrac.rows[0].cells[i], MID_BLUE)
+    run = tbl_pfrac.rows[0].cells[i].paragraphs[0].add_run(h)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
+
+pfrac_data = [
+    ("radiosonde",  "0.456", "0.458", "0.462", "0.457"),
+    ("aircraft",    "0.470", "0.469", "0.473", "0.469"),
+    ("ascat",       "0.277", "0.265", "0.269", "0.266"),
+    ("avhrr",       "0.251", "0.231", "0.228", "0.245"),
+    ("seviri_asr",  "0.219", "0.214", "0.218", "0.201"),
+    ("surface_obs", "0.440", "0.444", "0.452", "0.443"),
+    ("ssmis",       "0.285", "0.275", "0.271", "0.268"),
+    ("amsua",       "0.279", "0.269", "0.271", "0.271"),
+    ("atms",        "0.281", "0.271", "0.273", "0.271"),
+]
+for r_idx, row_data in enumerate(pfrac_data, start=1):
+    inst, jan, apr, jul, oct = row_data
+    row = tbl_pfrac.rows[r_idx]
+    if r_idx % 2 == 0:
+        for c in row.cells:
+            set_cell_bg(c, LIGHT_BLUE)
+    for c_idx, val in enumerate([inst, jan, apr, jul, oct]):
+        run = row.cells[c_idx].paragraphs[0].add_run(val)
+        run.font.size = Pt(10)
+        if c_idx == 0:
+            run.font.name = "Courier New"
+
+doc.add_paragraph()
+callout(
+    "SEVIRI ASR has the lowest positive fraction (~0.21) — only 21% of its individual "
+    "observations are individually detrimental. This is the most consistently helpful "
+    "satellite instrument at the per-observation level.\n\n"
+    "Radiosonde and aircraft have the highest positive fractions (~0.46–0.47) — nearly "
+    "half of individual obs are detrimental. Yet the net aggregate is strongly beneficial "
+    "because the helpful ~54% of obs have larger individual magnitudes.",
+    bg=LIGHT_BLUE, text_color=DARK_BLUE
+)
+
+spacer()
+
+# ═══════════════════════════════════════════════════════════════════
+#  SECTION 7.2 — PER-CHANNEL AND PER-PRESSURE ANALYSIS
+# ═══════════════════════════════════════════════════════════════════
+heading("7.2  Per-Channel and Per-Pressure Analysis (July 2025)", 2)
+
+body(
+    "The instrument × channel × pressure heatmaps decompose each instrument's total FSOI "
+    "into contributions from individual source channels at each atmospheric pressure level. "
+    "Negative values (blue) are beneficial; positive values (red) are detrimental. "
+    "The most diagnostically relevant findings per instrument are summarized below."
+)
+spacer()
+
+body("ATMS (Advanced Technology Microwave Sounder — 22 channels)", bold=True)
+spacer()
+
+tbl_atms = doc.add_table(rows=7, cols=3)
+tbl_atms.style = "Table Grid"
+tbl_atms.alignment = WD_TABLE_ALIGNMENT.CENTER
+for i, h in enumerate(["Channel", "Mean Relative Contribution", "Interpretation"]):
+    set_cell_bg(tbl_atms.rows[0].cells[i], MID_BLUE)
+    run = tbl_atms.rows[0].cells[i].paragraphs[0].add_run(h)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
+
+atms_ch_data = [
+    ("Ch 17  (strat. O₂ ~3 hPa)",   "−3.0  (helpful)",     "Upper stratosphere sounding, clean signal"),
+    ("Ch 13  (upper trop.~100 hPa)", "−2.0  (helpful)",     "Upper troposphere temperature retrieval"),
+    ("Ch 3   (window / surface)",    "−1.7  (helpful)",     "Near-surface, low sounding ambiguity"),
+    ("Ch 22  (183 GHz window)",      "+4.5  (detrimental)", "Water vapor window, high innovation variance"),
+    ("Ch 10  (mid trop. ~250 hPa)",  "+3.9  (detrimental)", "Tropospheric sounding, increments unreliable"),
+    ("Ch 15  (strat. border)",       "+3.5  (detrimental)", "Strat-trop interface — noisy gradients"),
+]
+for r_idx, (ch, contrib, interp) in enumerate(atms_ch_data, start=1):
+    row = tbl_atms.rows[r_idx]
+    is_helpful = "helpful" in contrib
+    bg = RGBColor(0xE2, 0xEF, 0xDA) if is_helpful else RGBColor(0xFF, 0xEB, 0xEB)
+    for c in row.cells:
+        set_cell_bg(c, bg)
+    for c_idx, val in enumerate([ch, contrib, interp]):
+        run = row.cells[c_idx].paragraphs[0].add_run(val)
+        run.font.size = Pt(10)
+        if c_idx == 1:
+            run.font.bold = True
+            run.font.color.rgb = GREEN if is_helpful else RED
+
+doc.add_paragraph()
+
+body("AMSU-A (Advanced Microwave Sounding Unit-A — 15 channels)", bold=True)
+spacer()
+
+bullet(
+    "Ch 6 (~50 hPa lower stratosphere): mean contribution −9.2 — most beneficial AMSU-A channel. "
+    "Provides a clean stratospheric temperature signal with low innovation variance.",
+    bold_prefix="Most helpful (Ch 6): "
+)
+bullet(
+    "Ch 13 (−2.4) and Ch 12 (−2.0) — upper troposphere / lower stratosphere, also beneficial.",
+    bold_prefix="Also helpful: "
+)
+bullet(
+    "Ch 3 (+6.9): most detrimental AMSU-A channel — surface/window channel near 850 hPa "
+    "with high innovation variance.",
+    bold_prefix="Most detrimental (Ch 3): "
+)
+bullet(
+    "Ch 14 (+5.3) and Ch 10 (+2.9): mid-tropospheric sounding channels with "
+    "unreliable analysis increments.",
+    bold_prefix="Also detrimental: "
+)
+
+spacer()
+
+body("SSMIS (Special Sensor Microwave Imager/Sounder)", bold=True)
+spacer()
+
+callout(
+    "SSMIS Channel 21 is a major outlier across ALL target variables:\n"
+    "   Dewpoint:  +15.0  (strongly detrimental)\n"
+    "   Temperature:  +13.9  (strongly detrimental)\n"
+    "   U-wind:  +8.9  (detrimental)\n"
+    "   V-wind:  +7.0  (detrimental)\n\n"
+    "Ch 21 is a 91.655 GHz window/surface channel with large brightness temperature "
+    "variance over ocean and sea ice. Its analysis increments are strongly detrimental "
+    "across ALL target variables. This channel should be excluded or heavily downweighted "
+    "in future GNN training cycles.",
+    bg=RGBColor(0xFF, 0xEB, 0xEB), text_color=RED
+)
+
+spacer()
+
+body("ASCAT (Advanced Scatterometer)", bold=True)
+spacer()
+
+bullet(
+    "V-wind: mean contribution −12.4 — the most beneficial ASCAT signal. "
+    "North-south wind component retrievals from scatterometer backscatter are reliable.",
+    bold_prefix="V-wind (helpful): "
+)
+bullet(
+    "U-wind: +10.6 — detrimental. East-west wind retrievals appear less reliable, "
+    "possibly due to beam geometry and ambiguity removal artifacts.",
+    bold_prefix="U-wind (detrimental): "
+)
+bullet(
+    "Net ASCAT FSOI is slightly negative (−7 to −10 across seasons) because the "
+    "beneficial v-wind contribution slightly outweighs the detrimental u-wind contribution.",
+    bold_prefix="Net: "
+)
+
+spacer()
+
+body("AVHRR and SEVIRI ASR", bold=True)
+spacer()
+
+bullet(
+    "AVHRR Ch 1 (0.63 μm visible, cloud detection): mean relative contribution −18.0 — "
+    "the single most beneficial individual satellite channel in the evaluation. "
+    "Provides cloud-clearing information that significantly improves analysis quality.",
+    bold_prefix="AVHRR Ch 1: "
+)
+bullet(
+    "SEVIRI Ch 8 (8.7 μm mid-IR window): −11.4. Ch 4 (3.9 μm near-IR window): −6.4. "
+    "Short-to-mid infrared window channels provide reliable surface/cloud-top temperature.",
+    bold_prefix="SEVIRI helpful channels: "
+)
+bullet(
+    "SEVIRI Ch 10 (12.0 μm longwave window): +11.2. Ch 11 (13.4 μm CO₂): +8.4. "
+    "Longwave CO₂ absorption channels with higher atmospheric sensitivity show "
+    "degraded analysis increment quality.",
+    bold_prefix="SEVIRI detrimental channels: "
+)
+
+spacer()
+
+callout(
+    "Key implication for channel selection:\n"
+    "Per-channel analysis reveals that within a 'detrimental' instrument, some channels "
+    "are individually beneficial. ATMS Ch 17/13/3 are beneficial while Ch 22/10/15 "
+    "dominate the detrimental total. A channel-selective input strategy — "
+    "rather than full instrument denial — could preserve beneficial information "
+    "while eliminating the harmful channels that drive negative totals.",
+    bg=LIGHT_BLUE, text_color=DARK_BLUE
+)
+
+spacer()
+
+# ═══════════════════════════════════════════════════════════════════
+#  SECTION 7.3 — SEASONAL INNOVATION DIAGNOSTICS
+# ═══════════════════════════════════════════════════════════════════
+heading("7.3  Innovation Diagnostics Across Seasons", 2)
+
+body(
+    "Innovation RMS (in units of the feature standard deviation σ) measures how far "
+    "the GNN background prediction deviates from observed values. Larger values indicate "
+    "stronger nonlinearity and reduce the quantitative reliability of FSOI magnitudes."
+)
+spacer()
+
+tbl_inno_seas = doc.add_table(rows=10, cols=5)
+tbl_inno_seas.style = "Table Grid"
+tbl_inno_seas.alignment = WD_TABLE_ALIGNMENT.CENTER
+for i, h in enumerate(["Instrument", "Jan 2025", "Apr 2025", "Jul 2025", "Oct 2025"]):
+    set_cell_bg(tbl_inno_seas.rows[0].cells[i], MID_BLUE)
+    run = tbl_inno_seas.rows[0].cells[i].paragraphs[0].add_run(h)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
+
+inno_seas_data = [
+    ("radiosonde",  "3.052σ", "3.186σ", "3.205σ", "3.018σ"),
+    ("aircraft",    "1.470σ", "1.290σ", "1.259σ", "1.277σ"),
+    ("ascat",       "0.515σ", "0.514σ", "0.536σ", "0.524σ"),
+    ("avhrr",       "0.379σ", "0.421σ", "0.411σ", "0.440σ"),
+    ("seviri_asr",  "0.635σ", "0.687σ", "0.592σ", "0.629σ"),
+    ("surface_obs", "4.032σ", "3.992σ", "4.005σ", "3.912σ"),
+    ("ssmis",       "0.543σ", "0.397σ", "0.438σ", "0.386σ"),
+    ("amsua",       "0.366σ", "0.346σ", "0.417σ", "0.358σ"),
+    ("atms",        "0.263σ", "0.295σ", "0.320σ", "0.300σ"),
+]
+for r_idx, row_data in enumerate(inno_seas_data, start=1):
+    inst, jan, apr, jul, oct = row_data
+    row = tbl_inno_seas.rows[r_idx]
+    jan_val = float(jan.replace("σ", ""))
+    if jan_val > 2.0:
+        bg = RGBColor(0xFF, 0xD0, 0xD0)
+    elif jan_val > 1.0:
+        bg = RGBColor(0xFF, 0xF8, 0xE1)
+    else:
+        bg = RGBColor(0xE2, 0xEF, 0xDA)
+    for c in row.cells:
+        set_cell_bg(c, bg)
+    for c_idx, val in enumerate([inst, jan, apr, jul, oct]):
+        run = row.cells[c_idx].paragraphs[0].add_run(val)
+        run.font.size = Pt(10)
+        if c_idx == 0:
+            run.font.name = "Courier New"
+
+doc.add_paragraph()
+
+body("Innovation RMS interpretation guide:", bold=True)
+bullet("< 1.0σ (green): Well-behaved. FSOI magnitudes are quantitatively reliable.")
+bullet("1.0–2.0σ (yellow): Moderate nonlinearity. Signs reliable; magnitudes approximate.")
+bullet("> 2.0σ (red): Strong nonlinearity. Magnitudes are order-of-magnitude estimates only; signs remain trustworthy.")
+
+spacer()
+
+body("Key observations:", bold=True)
+bullet(
+    "All six satellite instruments (ATMS, AMSU-A, SSMIS, AVHRR, SEVIRI ASR, ASCAT) "
+    "fall in the 0.3–0.7σ range in every season. FSOI magnitudes for satellites "
+    "are quantitatively reliable across all four seasons.",
+    bold_prefix="Satellites (green): "
+)
+bullet(
+    "Aircraft innovations range 1.3–1.5σ — moderate nonlinearity, consistent across seasons. "
+    "Signs are reliable; magnitudes carry some uncertainty.",
+    bold_prefix="Aircraft (yellow): "
+)
+bullet(
+    "Radiosonde innovations are consistently 3.0–3.2σ across all four seasons. "
+    "The GNN background is systematically far from radiosonde measurements regardless of season. "
+    "Magnitudes should be treated as relative rankings only.",
+    bold_prefix="Radiosonde (red): "
+)
+bullet(
+    "Surface observations are the most extreme at 3.9–4.0σ in every season. "
+    "The GNN surface analysis is poorly calibrated — surface FSOI is directional only.",
+    bold_prefix="Surface obs (red): "
+)
+
+spacer()
+
+# ═══════════════════════════════════════════════════════════════════
+#  SECTION 7.4 — SEASONAL CLOSURE DIAGNOSTICS
+# ═══════════════════════════════════════════════════════════════════
+heading("7.4  Closure Diagnostics Across Seasons", 2)
+
+body(
+    "The closure test compares the total FSOI sum (linear approximation) against the "
+    "actual forecast error change ΔJ measured directly. A ratio of 1.0 would indicate "
+    "a perfect linear approximation. Results are shown for the global (all-instruments) "
+    "diagnostic from each seasonal run."
+)
+spacer()
+
+tbl_closure = doc.add_table(rows=5, cols=5)
+tbl_closure.style = "Table Grid"
+tbl_closure.alignment = WD_TABLE_ALIGNMENT.CENTER
+for i, h in enumerate(["Season", "Period", "Closure Ratio", "Sign Agreement", "Status"]):
+    set_cell_bg(tbl_closure.rows[0].cells[i], MID_BLUE)
+    run = tbl_closure.rows[0].cells[i].paragraphs[0].add_run(h)
+    run.bold = True
+    run.font.color.rgb = WHITE
+    run.font.size = Pt(10)
+
+closure_data = [
+    ("Winter  (Jan 2025)", "Jan 1–31", "1.779", "72.6%", "FAIL"),
+    ("Spring  (Apr 2025)", "Apr 1–30", "1.256", "65.4%", "FAIL — best"),
+    ("Summer (Jul 2025)",  "Jul 1–31", "1.524", "66.5%", "FAIL"),
+    ("Autumn  (Oct 2025)", "Oct 1–31", "1.811", "72.1%", "FAIL — worst"),
+]
+for r_idx, (season, period, ratio, sign, status) in enumerate(closure_data, start=1):
+    row = tbl_closure.rows[r_idx]
+    if "best" in status:
+        bg = RGBColor(0xFF, 0xF8, 0xE1)
+    elif "worst" in status:
+        bg = RGBColor(0xFF, 0xD0, 0xD0)
+    else:
+        bg = RGBColor(0xFF, 0xEB, 0xEB)
+    for c in row.cells:
+        set_cell_bg(c, bg)
+    for c_idx, val in enumerate([season, period, ratio, sign, status]):
+        run = row.cells[c_idx].paragraphs[0].add_run(val)
+        run.font.size = Pt(10)
+        if c_idx == 2:
+            run.font.bold = True
+            run.font.color.rgb = RED
+        if c_idx == 4:
+            run.font.bold = True
+            run.font.color.rgb = RED
+
+doc.add_paragraph()
+
+body("Why closure ratios differ by season:", bold=True)
+bullet(
+    "April (1.256) has the best closure — spring Northern Hemisphere has relatively "
+    "moderate atmospheric variability, reducing the nonlinear forecast error curvature "
+    "that the linear FSOI approximation cannot capture.",
+    bold_prefix="April (best): "
+)
+bullet(
+    "October (1.811) has the worst closure — autumn transitions feature rapid "
+    "baroclinic development (blocking onset, storm track shifts) that strongly "
+    "increases the nonlinearity of the forecast error function.",
+    bold_prefix="October (worst): "
+)
+bullet(
+    "All four seasons FAIL the closure test (ideal ratio = 1.0). This is expected: "
+    "the GNN is not a tangent-linear model and the linear approximation is never exact.",
+    bold_prefix="Universal FAIL: "
+)
+bullet(
+    "Sign agreement ranges 65–73% across seasons. Rankings are directionally reliable "
+    "even when magnitudes are not — the instrument ordering "
+    "(radiosonde >> aircraft >> ...) is consistent across all four seasons.",
+    bold_prefix="Sign agreement: "
+)
+
+spacer()
+
+callout(
+    "Closure test summary — four seasons:\n"
+    "  Best season:   April 2025  (ratio = 1.256, closest to ideal 1.0)\n"
+    "  Worst season:  October 2025  (ratio = 1.811, most nonlinear)\n"
+    "  Full range:    1.256 – 1.811  across all seasons\n\n"
+    "FSOI overpredicts the true forecast error change by 25–81% depending on season. "
+    "The SIGN of instrument rankings is reliable (65–73% agreement with actual ΔJ). "
+    "Magnitudes should be treated as relative rankings only — not used as "
+    "quantitative claims about the size of each instrument's impact.",
+    bg=RGBColor(0xFF, 0xF8, 0xE1), text_color=ORANGE
+)
+
+spacer()
+
 # ═══════════════════════════════════════════════════════════════════
 #  SECTION 8 — VALIDATION FRAMEWORK
 # ═══════════════════════════════════════════════════════════════════
@@ -1104,8 +1577,9 @@ callout(
 body("What is an OSE?", bold=True)
 spacer()
 body(
-    "An Observing System Experiment denies one instrument entirely from the assimilation "
-    "and re-runs the forecast. The change in forecast error compared to the full-obs run "
+    "An Observing System Experiment denies one instrument entirely — replacing its true "
+    "observations (xa) with the model background (xb) — and re-runs the forecast. "
+    "The change in forecast error compared to the full-obs run "
     "directly measures that instrument's real-world impact — no approximations involved."
 )
 spacer()
@@ -1116,7 +1590,7 @@ spacer()
 code_block([
     "  ┌───────────────────────────────────────────────────────────────┐",
     "  │  FULL RUN (baseline — used by both FSOI and OSE)             │",
-    "  │  All instruments assimilated → forecast → error J_full        │",
+    "  │  All true observations used → forecast → error J_full         │",
     "  └───────────────────────────────────────────────────────────────┘",
     "                    │                         │",
     "                    ▼ (FSOI path)             ▼ (OSE path)",
@@ -1150,7 +1624,7 @@ body(
 spacer()
 
 code_block([
-    "  Full run (all instruments assimilated):",
+    "  Full run (all true observations included):",
     "    J_full  =  1000.0   (forecast MSE, arbitrary units)",
     "",
     "  FSOI path (linear approximation, same full run):",
@@ -1159,7 +1633,7 @@ code_block([
     "    ΔJ_fsoi(ATMS) = +27.7  →  removing ATMS should IMPROVE forecast",
     "",
     "  OSE path (re-run without ATMS):",
-    "    xa[atms]  →  xb[atms]  (as if ATMS was never assimilated)",
+    "    xa[atms]  →  xb[atms]  (replace ATMS true obs with prior forecast)",
     "    Re-run forecast  →  J_denied = 972.0",
     "    ΔJ_ose(ATMS)  =  J_denied − J_full  =  972.0 − 1000.0  =  −28.0",
     "    Interpretation: removing ATMS made the forecast BETTER by 28.0 units  ✓",
