@@ -758,6 +758,12 @@ def compute_fsoi_for_pair(
         # NOTE: xb is treated as an independent variable for computing ∂e/∂xb
         # We are NOT differentiating through the previous-window model
         # This computes FSOI impact in current observation space
+        # background_endpoint: 'all_channels' (default, the seasonal runs) replaces every
+        # channel of a sampled row; 'valid_only' keeps entries flagged missing at their
+        # control values, so the endpoints differ exactly where FSOI is summed.
+        background_endpoint = fsoi_config['forecast'].get('background_endpoint', 'all_channels')
+        if background_endpoint not in {'all_channels', 'valid_only'}:
+            raise ValueError("forecast.background_endpoint must be all_channels or valid_only")
         xb = {}
         for inst_name, tensor in xb_raw.items():
             if inst_name in xa:  # Only keep instruments that are also in xa
@@ -765,6 +771,12 @@ def compute_fsoi_for_pair(
                 tmp = {inst_name: xb_tensor}
                 zero_feature_columns(tmp, observation_config, feature_mask_map)
                 xb_tensor = tmp[inst_name]  # pick up any new tensor zero_feature_columns may have returned
+                if background_endpoint == 'valid_only':
+                    if inst_name not in valid_masks or valid_masks[inst_name].shape != xb_tensor.shape:
+                        raise RuntimeError(f"{inst_name}: no aligned validity mask for valid_only background")
+                    control = xa[inst_name].detach().to(xb_tensor.device)
+                    xb_tensor = torch.where(valid_masks[inst_name].to(xb_tensor.device, torch.bool),
+                                            xb_tensor, control)
                 xb_tensor.requires_grad_(True)
                 xb[inst_name] = xb_tensor
 
@@ -1134,6 +1146,7 @@ def compute_fsoi_for_pair(
             results['fsoi_by_step'][lead_step] = {
                 'ea': ea_total,
                 'eb': eb_total,
+                'background_endpoint': background_endpoint,
                 'pressure_stratified': True,
                 'variable_stratified': bool(stratify_by_variable),
                 'per_level': per_level_results,
@@ -2218,6 +2231,7 @@ def main():
                         frame[col] = result[col]
                     frame['lead_step'], frame['ea'], frame['eb'] = lead_step, step_data['ea'], step_data['eb']
                     frame['metric_aggregation'] = 'fixed_variable_level_weighted_mean'
+                    frame['background_endpoint'] = step_data.get('background_endpoint', 'all_channels')
                     frame['control_repeat_abs_difference'] = step_data.get('control_repeat_abs_difference', np.nan)
                     for col, value in result.get('target_metric_provenance', {}).items():
                         frame[col] = value
