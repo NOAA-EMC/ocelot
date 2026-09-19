@@ -17,12 +17,14 @@ GNN_MODEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$GNN_MODEL_DIR"
 SEASONAL="FSOI/fsoi_outputs/seasonal_inclusion_weighted_final"
 CONFIGS="FSOI/configs/generated/endpoint_check"
-OUT="FSOI/fsoi_outputs/endpoint_check"
+OUT="FSOI/fsoi_outputs/endpoint_check_padded"
 mkdir -p "$CONFIGS" "$OUT/logs"
 
-# Four cycles in each of two seasons (curr_bin 10 12Z, 11 00Z, 11 12Z, 12 00Z).
-declare -A START=([jan]=2025-01-10 [jul]=2025-07-10)
-declare -A END=([jan]=2025-01-12 [jul]=2025-07-12)
+# Four test cycles per season (curr_bin 10 12Z to 12 00Z), padded by two cycles on
+# each side so neither the start-of-range background nor the end-of-range
+# verification window is truncated. compare_endpoint_check.py scores only these four.
+declare -A START=([jan]=2025-01-09 [jul]=2025-07-09)
+declare -A END=([jan]=2025-01-13 [jul]=2025-07-13)
 
 for target in aircraft radiosonde surface_obs; do
     for variant in all_channels valid_only; do

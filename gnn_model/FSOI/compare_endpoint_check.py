@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Compare combined closure under the two background-endpoint definitions.
 
-Reads FSOI/fsoi_outputs/endpoint_check/<target>_<month>_<variant>/csv/fsoi_combined_closure.csv,
-pairs cycles by curr_bin, and also checks the all_channels rerun against the
+Reads FSOI/fsoi_outputs/endpoint_check_padded/<target>_<month>_<variant>/csv/fsoi_combined_closure.csv,
+keeps the four test cycles (the padding cycles sit near the range edges), pairs
+cycles by curr_bin, and also checks the all_channels rerun against the
 seasonal run so that any code drift since the seasonal runs is visible.
 """
 from pathlib import Path
@@ -11,7 +12,9 @@ import numpy as np
 import pandas as pd
 
 FSOI = Path(__file__).resolve().parent
-ROOT = FSOI / "fsoi_outputs" / "endpoint_check"
+ROOT = FSOI / "fsoi_outputs" / "endpoint_check_padded"
+TEST_CYCLES = {m: [f"bin2025{mm}{d}" for d in ("1012", "1100", "1112", "1200")]
+               for m, mm in (("jan", "01"), ("jul", "07"))}
 SEASONAL = FSOI / "fsoi_outputs" / "seasonal_inclusion_weighted_final"
 COLS = ["curr_bin", "fsoi_raw_sampled", "delta_j_actual", "closure_ratio", "sign_agreement"]
 
@@ -29,6 +32,7 @@ for target in ("aircraft", "radiosonde", "surface_obs"):
             print(f"{target} {month}: not finished")
             continue
         old, new = closure(runs["all_channels"]), closure(runs["valid_only"])
+        old = old[old.curr_bin.isin(TEST_CYCLES[month])]
         seasonal = closure(SEASONAL / f"{target}_{month}2025" / "csv" / "fsoi_combined_closure.csv")
         m = (old.merge(new, on="curr_bin", suffixes=("_all", "_valid"))
                 .merge(seasonal, on="curr_bin").rename(columns={"closure_ratio": "closure_ratio_seasonal"}))
