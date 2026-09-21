@@ -11,14 +11,12 @@ from ocelot.configs.config_base import (
     Optional,
 )
 
-from .observation_config import ObservationConfig
-
-
 ## Mesh configurations ##
 
 class MeshConfig(ConfigBase):
     levels = IntField()
     resolution = IntField()
+    mesh_levels = Optional(IntField(), default=4)
 
 
 class FixedMeshConfig(MeshConfig):
@@ -43,7 +41,7 @@ class GatCoderConfig(CoderConfig):
     layers = Optional(IntField(), default=2)
     heads = Optional(IntField(), default=4)
     dropout = Optional(FloatField(), default=0.0)
-    edge_dim = Optional(IntField(), default=4)
+    edge_dim = Optional(IntField())
     dst_chunk_size = Optional(IntField())
     dst_chunk_threshold = Optional(IntField(), default=20_000)
     use_activation_checkpointing = Optional(BoolField(), default=True)

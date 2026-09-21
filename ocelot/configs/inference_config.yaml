@@ -1,5 +1,7 @@
 experiment_name: baseline_v1_inference
 checkpoint: checkpoints/baseline_v1/last.ckpt
+instrument_config_path: configs/instrument_config.yaml
+pipeline_config_path: configs/pipeline_config.yaml
 output_dir: predictions/baseline_v1
 
 data:

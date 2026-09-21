@@ -10,7 +10,6 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from ocelot.configs.training_config import TrainingConfig
-from ocelot.configs.observation_config import ObservationConfig
 from ocelot.logger import log
 from ocelot.model.ocelot import Ocelot
 from ocelot.training.loss import weighted_mse_loss, weighted_huber_loss
@@ -21,10 +20,16 @@ class OcelotTrainingModule(pl.LightningModule):
         super().__init__()
         self.model = model
         self.training_config = training_config
-        self.obs_config = ObservationConfig(self.training_config.observation_config_path)
         self._printed_first_train_batch = False
         self.save_hyperparameters()
 
+        self.instrument_weights = model.instrument_weights
+        self.channel_weights = model.channel_weights
+
+        # Boolean masks per instrument for valid channels (weights > 0)
+        self.channel_masks = {
+            inst_id: (weights > 0) for inst_id, weights in self.channel_weights.items()
+        }
 
     def forward(self, data: HeteroData):
         return self.model(data)
@@ -194,7 +199,10 @@ class OcelotTrainingModule(pl.LightningModule):
         log.info(f"VALIDATION STEP batch: {batch.bin_name}")
 
         # Build decoder names from config (all possible node_types with targets)
-        decoder_names = [f"{inst_name}_target" for obs_type, instruments in self.obs_config.observation_config.items() for inst_name in instruments]
+        decoder_names = [
+            f"{inst_name}_target"
+            for inst_name, _ in self.model.pipeline_config.enabled(self.model.instrument_catalog)
+        ]
 
         # Prepare metrics storage
         all_step_rmse = {name: [] for name in decoder_names}
@@ -443,7 +451,7 @@ class OcelotTrainingModule(pl.LightningModule):
             print(f"val_loss: {avg_loss.item():.6f}")
 
         # Save mesh features from first batch for epoch-end processing
-        if batch_idx == 0 and self.obs_config.mesh_config.enable_mesh_pred:
+        if batch_idx == 0 and self.model.enable_mesh_pred:
             self._last_val_mesh_features = mesh_features_per_step
             self._last_val_batch = batch
 
@@ -452,7 +460,7 @@ class OcelotTrainingModule(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Generate mesh predictions at END of validation epoch."""
-        if not self.obs_config.mesh_config.enable_mesh_pred or not self.trainer.is_global_zero:
+        if not self.model.enable_mesh_pred or not self.trainer.is_global_zero:
             return
 
         # Check if we saved mesh features during validation
@@ -635,7 +643,6 @@ class OcelotTrainingModule(pl.LightningModule):
             # "fixed"
             return self.training_config.data.max_rollout_steps
 
-
     def _compute_channel_loss(
         self,
         y_pred: torch.Tensor,
@@ -649,7 +656,7 @@ class OcelotTrainingModule(pl.LightningModule):
                 y_pred,
                 y_true,
                 instrument_ids=instrument_ids,
-                channel_weights=self.obs_config.channel_weights,
+                channel_weights=self.channel_weights,
                 rebalancing=True,
                 valid_mask=valid_mask,
             )
@@ -657,7 +664,7 @@ class OcelotTrainingModule(pl.LightningModule):
             y_pred,
             y_true,
             instrument_ids=instrument_ids,
-            channel_weights=self.obs_config.channel_weights,
+            channel_weights=self.channel_weights,
             delta=self.training_config.loss.huber_delta,
             rebalancing=True,
             valid_mask=valid_mask,

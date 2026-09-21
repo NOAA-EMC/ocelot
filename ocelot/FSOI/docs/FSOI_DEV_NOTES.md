@@ -17,7 +17,9 @@ python FSOI/test_fsoi.py --checkpoint /path/to/model.ckpt
 python FSOI/fsoi_inference.py \
   --checkpoint /path/to/model.ckpt \
   --config FSOI/configs/fsoi_config.yaml \
-  --obs_config configs/observation_config.yaml
+  --instrument_config configs/instrument_config.yaml \
+  --pipeline_config configs/pipeline_config.yaml \
+  --model_config configs/model_config.yaml
 
 python FSOI/visualize_fsoi.py \
   --input ./FSOI/fsoi_outputs/<run_name>/csv \

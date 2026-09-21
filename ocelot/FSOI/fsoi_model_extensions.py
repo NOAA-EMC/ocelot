@@ -17,7 +17,8 @@ def predict_at_targets(
     model,
     prev_batch: HeteroData,
     curr_batch_metadata: HeteroData,
-    observation_config: dict,
+    instrument_catalog,
+    pipeline_config,
     forecast_step: int = 0,
     keep_instruments: list = None,  # NEW: filter which instruments to predict
     max_decoder_nodes: dict = None,  # NEW: cap decoder nodes per instrument {inst: int}
@@ -46,7 +47,8 @@ def predict_at_targets(
         model: GNNLightning model
         prev_batch: Input batch from previous time window (k-1)
         curr_batch_metadata: Current batch (k) with INPUT nodes to predict at
-        observation_config: Configuration dict for instruments
+        instrument_catalog: Typed instrument catalog
+        pipeline_config: Typed pipeline configuration selecting instruments
         forecast_step: Which latent step to use for prediction
         keep_instruments: List of instruments to create predictions for (None = all)
                          Used to reduce memory by not creating heavy pseudo-targets
@@ -142,8 +144,9 @@ def predict_at_targets(
     # Large instruments (e.g. avhrr with 1.3M nodes) are subsampled to
     # max_decoder_nodes[inst] to cap decoder edge memory and avoid OOM.
 
-    for obs_type, instruments in observation_config.items():
-        for inst_name, inst_cfg in instruments.items():
+    enabled_instruments = list(pipeline_config.enabled(instrument_catalog))
+    for inst_name, instrument in enabled_instruments:
+        if True:
             # MEMORY OPTIMIZATION: Skip instruments not in keep_instruments
             if keep_instruments is not None and inst_name not in keep_instruments:
                 continue
@@ -194,14 +197,14 @@ def predict_at_targets(
             # Decoder needs scan angles (for satellites) or can use minimal dummy
             if hasattr(curr_input, 'x'):
                 x_input = curr_input.x if idx is None else curr_input.x[idx]
-                n_channels = len(inst_cfg.get('features', []))
+                n_channels = instrument.target_dim
 
                 if n_channels == 0:
                     print(f"[Background] WARNING: {inst_name} has no channels in config, skipping")
                     continue
 
                 # Get scan_angle_channels from config (satellites only)
-                scan_angle_channels = inst_cfg.get('scan_angle_channels', 0)
+                scan_angle_channels = instrument.scan_angle_channels
 
                 # Extract metadata portion (everything after channels)
                 if x_input.shape[1] > n_channels:
@@ -240,8 +243,8 @@ def predict_at_targets(
     # ===========================================================================
     # STEP 4: Build DECODER edges from mesh → curr INPUT locations
     # ===========================================================================
-    for obs_type, instruments in observation_config.items():
-        for inst_name, inst_cfg in instruments.items():
+    for enabled_index, (inst_name, instrument) in enumerate(enabled_instruments):
+        if True:
             # MEMORY OPTIMIZATION: Skip instruments not in keep_instruments
             if keep_instruments is not None and inst_name not in keep_instruments:
                 continue
@@ -267,8 +270,7 @@ def predict_at_targets(
                 curr_lon = forecast_batch[pseudo_target_type].lon.cpu().numpy()
 
                 # ALIGNMENT VERIFICATION: Print checksums for first instrument
-                if obs_type == list(observation_config.keys())[0] and \
-                   inst_name == list(observation_config[obs_type].keys())[0]:
+                if enabled_index == 0:
                     lat_mean = forecast_batch[pseudo_target_type].lat.float().mean().item()
                     lon_mean = forecast_batch[pseudo_target_type].lon.float().mean().item()
                     lat_first5 = forecast_batch[pseudo_target_type].lat[:min(5, len(curr_lat))].cpu().numpy()

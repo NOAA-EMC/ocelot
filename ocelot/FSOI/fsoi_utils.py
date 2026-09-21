@@ -22,7 +22,7 @@ def _default_target_channel_names(inst_name: str, n_channels: int) -> dict[int, 
     """Default channel→variable names for common conventional targets."""
     inst = (inst_name or '').lower()
     if inst == 'radiosonde':
-        # observation_config radiosonde features: [airTemperature, dewPointTemperature, wind_u, wind_v]
+        # Radiosonde features: [airTemperature, dewPointTemperature, wind_u, wind_v]
         base = {
             0: 'temperature',
             1: 'dewpoint_temperature',
@@ -118,7 +118,7 @@ def compute_per_level_fsoi_by_variable(
     curr_batch,
     xa: Dict[str, torch.Tensor],
     xb: Dict[str, torch.Tensor],
-    observation_config: dict,
+    instrument_catalog,
     forecast_lead_step: int,
     instrument_weights: Dict[int, float],
     channel_weights: Dict[int, torch.Tensor],
@@ -148,12 +148,12 @@ def compute_per_level_fsoi_by_variable(
     batch_xa = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(batch_xa, target_instruments, forecast_lead_step)
-    replace_batch_inputs(batch_xa, xa, observation_config, replace_indices=replace_indices)
+    replace_batch_inputs(batch_xa, xa, instrument_catalog, replace_indices=replace_indices)
 
     batch_xb = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(batch_xb, target_instruments, forecast_lead_step)
-    replace_batch_inputs(batch_xb, xb, observation_config, replace_indices=replace_indices)
+    replace_batch_inputs(batch_xb, xb, instrument_catalog, replace_indices=replace_indices)
 
     if target_nt not in batch_xa.node_types:
         raise ValueError(f"[PerLevelVar] Target node '{target_nt}' not found in batch")
@@ -476,7 +476,7 @@ def split_input_channels_and_meta(
 
     Args:
         x_input: Full input tensor [N, input_dim]
-        n_obs_channels: Number of observation channels (from observation_config)
+        n_obs_channels: Number of observation channels
 
     Returns:
         channels: [N, n_obs_channels] - observation values only
@@ -496,7 +496,7 @@ def split_input_channels_and_meta(
 
 def zero_feature_columns(
     inputs: Dict[str, torch.Tensor],
-    observation_config: dict,
+    instrument_catalog,
     mask_map: Dict[str, List[str]],
 ) -> None:
     """
@@ -504,7 +504,7 @@ def zero_feature_columns(
 
     Args:
         inputs: Dict of channel tensors [N, C]
-        observation_config: Full observation config (provides feature ordering)
+        instrument_catalog: Typed instrument catalog providing feature ordering
         mask_map: {instrument: [feature_name, ...]} to zero
     """
     for inst_name, feature_list in mask_map.items():
@@ -512,13 +512,9 @@ def zero_feature_columns(
             continue
 
         # Find feature ordering from config
-        cfg_features = None
-        for _, instruments in observation_config.items():
-            if inst_name in instruments:
-                cfg_features = instruments[inst_name].get('features', [])
-                break
-
-        if not cfg_features:
+        try:
+            cfg_features = instrument_catalog.get(inst_name).feature_names
+        except KeyError:
             continue
 
         tensor = inputs[inst_name]
@@ -558,7 +554,8 @@ def merge_channels_and_meta(
 
 def get_fsoi_inputs(
     batch,
-    observation_config: dict,
+    instrument_catalog,
+    pipeline_config,
     instrument_name_to_id: dict,
     match_targets: bool = True,
 ) -> Dict[str, torch.Tensor]:
@@ -574,7 +571,8 @@ def get_fsoi_inputs(
 
     Args:
         batch: HeteroData batch from dataloader
-        observation_config: Configuration dict with instrument specifications
+        instrument_catalog: Typed instrument catalog
+        pipeline_config: Typed pipeline configuration selecting instruments
         instrument_name_to_id: Mapping from instrument names to IDs (unused)
         match_targets: Ignored (kept for compatibility)
 
@@ -584,8 +582,7 @@ def get_fsoi_inputs(
     """
     fsoi_inputs = {}
 
-    for obs_type, instruments in observation_config.items():
-        for inst_name, cfg in instruments.items():
+    for inst_name, instrument in pipeline_config.enabled(instrument_catalog):
             node_type_input = f"{inst_name}_input"
 
             if node_type_input not in batch.node_types:
@@ -596,7 +593,7 @@ def get_fsoi_inputs(
                 continue
 
             # Get number of observation channels from config
-            n_channels = len(cfg.get('features', []))
+            n_channels = instrument.target_dim
             if n_channels == 0:
                 print(f"[WARNING] {inst_name}: No channels in config, skipping")
                 continue
@@ -624,7 +621,8 @@ def get_fsoi_inputs(
 
 def get_fsoi_metadata(
     batch,
-    observation_config: dict,
+    instrument_catalog,
+    pipeline_config,
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """
     Extract observation metadata (pressure levels, lat/lon, etc.) for FSOI attribution.
@@ -633,7 +631,8 @@ def get_fsoi_metadata(
 
     Args:
         batch: HeteroData batch from dataloader
-        observation_config: Configuration dict with instrument specifications
+        instrument_catalog: Typed instrument catalog
+        pipeline_config: Typed pipeline configuration selecting instruments
 
     Returns:
         Dict mapping instrument names to metadata dicts with keys:
@@ -648,8 +647,7 @@ def get_fsoi_metadata(
 
     fsoi_metadata = {}
 
-    for obs_type, instruments in observation_config.items():
-        for inst_name, cfg in instruments.items():
+    for inst_name, _ in pipeline_config.enabled(instrument_catalog):
             node_type_input = f"{inst_name}_input"
 
             if node_type_input not in batch.node_types:
@@ -711,7 +709,7 @@ def get_fsoi_metadata(
 def replace_batch_inputs(
     batch,
     new_inputs: Dict[str, torch.Tensor],
-    observation_config: dict,
+    instrument_catalog,
     replace_indices: Optional[Dict[str, torch.Tensor]] = None,
 ) -> None:
     """
@@ -726,12 +724,11 @@ def replace_batch_inputs(
         batch: HeteroData batch (modified in-place)
         new_inputs: Dict mapping instrument names to new CHANNEL tensors
                     Shape: [N_obs or len(idx), n_channels] - channels only
-        observation_config: Configuration dict to determine n_channels
+        instrument_catalog: Typed instrument catalog used to determine channel counts
         replace_indices: Optional per-instrument row indices for partial
                          replacement; None means full replacement.
     """
-    for obs_type, instruments in observation_config.items():
-        for inst_name, cfg in instruments.items():
+    for inst_name, instrument in instrument_catalog.items():
             node_type_input = f"{inst_name}_input"
 
             if node_type_input not in batch.node_types:
@@ -741,7 +738,7 @@ def replace_batch_inputs(
                 continue
 
             # Get config info
-            n_channels = len(cfg.get('features', []))
+            n_channels = instrument.target_dim
             if n_channels == 0:
                 continue
 
@@ -1222,7 +1219,7 @@ def compute_per_level_fsoi(
     curr_batch,
     xa: Dict[str, torch.Tensor],
     xb: Dict[str, torch.Tensor],
-    observation_config: dict,
+    instrument_catalog,
     forecast_lead_step: int,
     instrument_weights: Dict[int, float],
     channel_weights: Dict[int, torch.Tensor],
@@ -1265,13 +1262,13 @@ def compute_per_level_fsoi(
     batch_xa = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(batch_xa, target_instruments, forecast_lead_step)
-    replace_batch_inputs(batch_xa, xa, observation_config,
+    replace_batch_inputs(batch_xa, xa, instrument_catalog,
                          replace_indices=replace_indices)
 
     batch_xb = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(batch_xb, target_instruments, forecast_lead_step)
-    replace_batch_inputs(batch_xb, xb, observation_config,
+    replace_batch_inputs(batch_xb, xb, instrument_catalog,
                          replace_indices=replace_indices)
 
     # ── Extract unique pressure levels from target ────────────────────────

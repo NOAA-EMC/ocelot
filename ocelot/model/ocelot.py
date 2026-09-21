@@ -15,24 +15,15 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData
 
+from ocelot.configs.instrument_config import InstrumentCatalogConfig
 from ocelot.configs.model_config import ModelConfig
-from ocelot.configs.observation_config import ObservationConfig
+from ocelot.configs.pipeline_config import PipelineConfig
 from ocelot.logger import log
 from ocelot.model import coder
 from ocelot.model import processor
 from ocelot.model import mesh
 from ocelot.model import mlp_block
 from ocelot.process_timeseries import _encode_target_time_features
-
-
-def _build_instrument_map(observation_config: ObservationConfig) -> dict[str, int]:
-    obs = observation_config.observation_config
-
-    # QUESTION: Does the ordering of the instruments matter? Using dictionary order isn't going to work...
-    order = []
-    order += sorted(obs['satellite'].keys())
-    order += sorted(obs['conventional'].keys())
-    return {name: i for i, name in enumerate(order)}
 
 
 def _canonical_variable_name(feature_name: str) -> str:
@@ -86,7 +77,8 @@ class Ocelot(nn.Module):
     def __init__(
         self,
         model_config : ModelConfig,
-        observation_config: ObservationConfig,
+        instrument_catalog: InstrumentCatalogConfig,
+        pipeline_config: PipelineConfig,
         verbose=False,
     ):
         """
@@ -94,113 +86,78 @@ class Ocelot(nn.Module):
 
         Parameters:
         model_config (ModelConfig): Configuration object for the model architecture and hyperparameters.
-        observation_config (ObservationConfig): Configuration object for observation features.
+        instrument_catalog (InstrumentCatalogConfig): Available instrument definitions.
+        pipeline_config (PipelineConfig): Enabled instruments and runtime policies.
         verbose (bool, optional): If True, enables verbose logging (default: False).
         """
         super().__init__()
 
         self.verbose = verbose
 
-        hidden_dim = model_config.hidden_dim
-        mesh_arch_config = model_config.mesh
-        encoder_config = model_config.encoder
-        processor_config = model_config.processor
-        decoder_config = model_config.decoder
-        embeddings_config = model_config.embeddings
-
-        mesh_type = mesh_arch_config.type
-        mesh_levels = mesh_arch_config.levels
-        mesh_resolution = int(mesh_arch_config.splits if hasattr(mesh_arch_config, 'splits') else mesh_arch_config.resolution)
-
-        # Normalize to int so Lightning hparams merge is stable across module/datamodule.
-        self.observation_config = observation_config
-        self.feature_stats = self.observation_config.feature_stats
-        self.instrument_weights = self.observation_config.instrument_weights
-        self.channel_weights = self.observation_config.channel_weights
-        self.latent_step_hours = model_config.latent_step_hours
-        self.scan_angle_conditioning = embeddings_config.scan_angle_conditioning
-        self.pressure_level_conditioning = embeddings_config.pressure_level_conditioning
-
-        edge_dims = [
-            config.edge_dim
-            for config in (encoder_config, decoder_config)
-            if config.type == 'gat' and config.edge_dim is not None
-        ]
+        self.model_config = model_config
         
-        self.use_bipartite_edge_attr = bool(edge_dims)
-        self.bipartite_edge_attr_dim = int(edge_dims[0]) if edge_dims else 4
+        self.instrument_catalog = instrument_catalog
+        self.pipeline_config = pipeline_config
+        self.pipeline_config.validate_instruments(self.instrument_catalog)
+        self.embeddings_config = self.model_config.embeddings
 
         # Load mesh-grid variable config
-        self.obs_mesh_config = self.observation_config.mesh_config
-        self.enable_mesh_pred = self.obs_mesh_config.enable_mesh_pred
-        self.mesh_instruments = list(self.obs_mesh_config.variables.keys())
-        self.mesh_pressure_level_idx = self.obs_mesh_config.mesh_pressure_level_idx
+        self.mesh_prediction_config = self.pipeline_config.outputs.mesh_prediction
+        self.enable_mesh_pred = self.mesh_prediction_config.enabled
+        self.mesh_instruments = list(self.mesh_prediction_config.variables)
+        self.mesh_pressure_level_idx = self.mesh_prediction_config.pressure_level_index
         
         if self.verbose:
             print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
-            print(f"[DEBUG CONFIG] mesh_config: {self.obs_mesh_config}")
-            # print(f"[DEBUG CONFIG] variables in config: {self.obs_mesh_config.variables}")
+            print(f"[DEBUG CONFIG] mesh_prediction_config: {self.mesh_prediction_config}")
             print(f"[DEBUG CONFIG] Instruments for mesh prediction: {self.mesh_instruments}")
             print(f"[DEBUG CONFIG] mesh_pressure_level_index: {self.mesh_pressure_level_idx}")
 
         # Mirror process_timeseries._name2id()
-        self.instrument_name_to_id = _build_instrument_map(self.observation_config)
+        self.instrument_name_to_id = self.pipeline_config.instrument_name_to_id(self.instrument_catalog)
         self.instrument_id_to_name = {v: k for k, v in self.instrument_name_to_id.items()}
+        self.instrument_weights = self.pipeline_config.instrument_weights(self.instrument_catalog)
+        self.channel_weights = {
+            key: torch.tensor(value, dtype=torch.float32)
+            for key, value in self.pipeline_config.channel_weights(self.instrument_catalog).items()
+        }
 
         # Channel metadata used by FSOI variable filtering.
         # Format: {instrument_name: [ {"channel": int, "feature": str, "variable_name": str}, ... ]}
         self.instrument_channels: Dict[str, List[Dict]] = {}
-        for _, instruments in (self.observation_config.observation_config or {}).items():
-            for inst_name, cfg in (instruments or {}).items():
-                features = cfg.get("features", []) or []
-                ch_info = []
-                for ch_idx, feat in enumerate(features):
-                    canonical = _canonical_variable_name(str(feat))
-                    ch_info.append(
-                        {
-                            "channel": ch_idx,
-                            "feature": str(feat),
-                            "variable": str(feat),
-                            "variable_name": canonical,
-                        }
-                    )
-                self.instrument_channels[inst_name] = ch_info
+        for inst_name, instrument in self.pipeline_config.enabled(self.instrument_catalog):
+            features = instrument.feature_names
+            ch_info = []
+            for ch_idx, feat in enumerate(features):
+                canonical = _canonical_variable_name(str(feat))
+                ch_info.append(
+                    {
+                        "channel": ch_idx,
+                        "feature": str(feat),
+                        "variable": str(feat),
+                        "variable_name": canonical,
+                    }
+                )
+            self.instrument_channels[inst_name] = ch_info
 
-        # Normalize user-provided weights (accept names or ids)
-        self.instrument_weights = self._normalize_inst_weights(self.instrument_weights)
-        self.channel_weights = self._normalize_channel_weights(self.channel_weights)
-
-        # Boolean masks per instrument for valid channels (weights > 0)
-        self.channel_masks = {inst_id: (w > 0) for inst_id, w in self.channel_weights.items()}
+        self.mesh = mesh.make(self.model_config.mesh)
 
         if self.verbose:
             print("[MODEL] instrument map:", self.instrument_name_to_id)
             print("[MODEL] instrument_weights:", {self.instrument_id_to_name[k]: float(v) for k, v in self.instrument_weights.items()})
 
-        self.hidden_dim = hidden_dim
-        self.mesh_type = mesh_type
-        self.mesh_levels = mesh_levels
 
-        # bipartite GATs consume the computed spatial edge_attr
-        # directly, with edge_dim=bipartite_edge_attr_dim (GraphCast-style features are 4-dim).
-        if self.bipartite_edge_attr_dim <= 0:
-            raise ValueError(
-                f"bipartite_edge_attr_dim must be > 0 (gat: {self.bipartite_edge_attr_dim})"
-            )
         print(f"\n{'='*70}")
         print(f"[GNN MODEL] Initializing with configuration:")
-        print(f"  - Mesh type: {mesh_type}")
-        print(f"  - Mesh levels: {mesh_levels}")
-        print(f"  - Mesh resolution (splits): {mesh_resolution}")
-        print(f"  - Processor type: {processor_config.type}")
-        print(f"  - Encoder type: {encoder_config.type}")
-        print(f"  - Decoder type: {decoder_config.type}")
+        print(f"  - Mesh type: { self.model_config.mesh.type}")
+        print(f"  - Mesh levels: { self.model_config.mesh.mesh_levels }")
+        print(f"  - Mesh resolution (splits): { self.mesh.resolution }")
+        print(f"  - Processor type: {self.model_config.processor.type}")
+        print(f"  - Encoder type: {self.model_config.encoder.type}")
+        print(f"  - Decoder type: {self.model_config.decoder.type}")
         print(f"{'='*70}\n")
 
-        self.mesh_resolution = mesh_resolution
-        self.mesh = mesh.make(model_config.mesh)
-
-        self.is_hierarchical = (mesh_type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
+        self.is_hierarchical = (self.model_config.mesh.type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
 
         # # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
@@ -208,10 +165,10 @@ class Ocelot(nn.Module):
         self.observation_decoders = nn.ModuleDict()
         self.output_mappers = nn.ModuleDict()  # For final prediction MLPs
 
-        first_instrument_config = next(iter(next(iter(self.observation_config.observation_config.values())).values()))
-        hidden_layers = first_instrument_config.get("encoder_hidden_layers", 2)
+        first_instrument_config = next(self.pipeline_config.enabled(self.instrument_catalog))[1]
+        hidden_layers = first_instrument_config.model.encoder_hidden_layers
 
-        self.mlp_blueprint_end = [hidden_dim] * (hidden_layers + 1)
+        self.mlp_blueprint_end = [self.model_config.hidden_dim] * (hidden_layers + 1)
         
         # Get mesh feature dimension from the first mesh
         mesh_feature_dim = self.mesh.mesh_features_torch[0].shape[1]
@@ -220,80 +177,76 @@ class Ocelot(nn.Module):
 
         # Create scan-angle embedders once to avoid loop-order surprises
         # These embeddings are used ONLY for decoder initialization
-        self.scan_angle_embed_dim = int(embeddings_config.scan_angle_dim)
+        self.scan_angle_embed_dim = self.embeddings_config.scan_angle_dim
         self.scan_angle_embedder = mlp_block.make([1, self.scan_angle_embed_dim])
         self.ascat_scan_angle_embedder = mlp_block.make([3, self.scan_angle_embed_dim])
 
         # Optional: project scan-angle embedding across the full hidden_dim so it can't be confined
         # to a small trailing slice of the receiver representation.d
-        if self.scan_angle_conditioning == "project":
-            self.scan_angle_projector = nn.Linear(self.scan_angle_embed_dim, self.hidden_dim)
+        if self.embeddings_config.scan_angle_conditioning == "project":
+            self.scan_angle_projector = nn.Linear(self.scan_angle_embed_dim, self.model_config.hidden_dim)
         else:
             self.scan_angle_projector = None
 
         # Create pressure-level embedding for radiosonde and aircraft (16 standard levels)
-        self.pressure_level_embed_dim = int(embeddings_config.pressure_level_dim)
+        self.pressure_level_embed_dim = self.embeddings_config.pressure_level_dim
         self.pressure_level_embedder = nn.Embedding(
-            num_embeddings=int(embeddings_config.num_pressure_levels),
+            num_embeddings=int(self.embeddings_config.num_pressure_levels),
             embedding_dim=self.pressure_level_embed_dim
         )
 
         # Optional: project pressure-level embedding across the full hidden_dim.
-        if self.pressure_level_conditioning == "project":
-            self.pressure_level_projector = nn.Linear(self.pressure_level_embed_dim, self.hidden_dim)
+        if self.embeddings_config.pressure_level_conditioning == "project":
+            self.pressure_level_projector = nn.Linear(self.pressure_level_embed_dim, self.model_config.hidden_dim)
         else:
             self.pressure_level_projector = None
 
         # Target valid-time + local solar time conditioning lives in the last 5 target_metadata columns.
         self.target_time_feature_dim = 5
-        self.target_time_embed_dim = embeddings_config.target_time_dim
+        self.target_time_embed_dim = self.embeddings_config.target_time_dim
         self.target_time_embedder = mlp_block.make([self.target_time_feature_dim, self.target_time_embed_dim])
-        self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.hidden_dim)
+        self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.model_config.hidden_dim)
 
         node_types = ["mesh"]
         edge_types = [("mesh", "to", "mesh")]
 
+        for inst_name, instrument in self.pipeline_config.enabled(self.instrument_catalog):
+            node_type_input = f"{inst_name}_input"
+            node_type_target = f"{inst_name}_target"
 
-        for obs_type, instruments in self.observation_config.observation_config.items():
-            for inst_name, cfg in instruments.items():
-                node_type_input = f"{inst_name}_input"
-                node_type_target = f"{inst_name}_target"
+            node_types.extend([node_type_input, node_type_target])
+            edge_types.extend([(node_type_input, "to", "mesh"), ("mesh", "to", node_type_target)])
 
-                node_types.extend([node_type_input, node_type_target])
-                edge_types.extend([(node_type_input, "to", "mesh"), ("mesh", "to", node_type_target)])
+            input_dim = instrument.input_dim
+            target_dim = instrument.target_dim
 
-                input_dim = cfg.get("input_dim")
-                target_dim = cfg.get("target_dim")
+            # Encoder GNN (obs -> mesh)
+            edge_type_tuple_enc = (node_type_input, "to", "mesh")
+            enc_key = self.mesh.edge_key(edge_type_tuple_enc)
 
-                # Encoder GNN (obs -> mesh)
-                edge_type_tuple_enc = (node_type_input, "to", "mesh")
-                enc_key = self.mesh.edge_key(edge_type_tuple_enc)
+            self.observation_encoders[enc_key] = coder.make(self.model_config.encoder)
 
-                self.observation_encoders[enc_key] = coder.make(model_config.encoder)
+            edge_type_tuple_dec = ("mesh", "to", node_type_target)
+            dec_key = self.mesh.edge_key(edge_type_tuple_dec)
 
-                edge_type_tuple_dec = ("mesh", "to", node_type_target)
-                dec_key = self.mesh.edge_key(edge_type_tuple_dec)
+            self.observation_decoders[dec_key] = coder.make(self.model_config.decoder)
 
-                self.observation_decoders[dec_key] = coder.make(model_config.decoder)
+            # Initial MLP to project raw features to hidden_dim
+            # Add pressure-level embedding dimensions for radiosonde and aircraft input
+            embedder_input_dim = input_dim
+            if inst_name in ["radiosonde", "aircraft"]:
+                embedder_input_dim += self.pressure_level_embed_dim
+            self.observation_embedders[node_type_input] = mlp_block.make([embedder_input_dim] + self.mlp_blueprint_end)
 
-                # Initial MLP to project raw features to hidden_dim
-                # Add pressure-level embedding dimensions for radiosonde and aircraft input
-                embedder_input_dim = input_dim
-                if inst_name in ["radiosonde", "aircraft"]:
-                    embedder_input_dim += self.pressure_level_embed_dim
-                self.observation_embedders[node_type_input] = mlp_block.make([embedder_input_dim] + self.mlp_blueprint_end)
+            # Output mapper takes ONLY decoded features (hidden_dim)
+            # Geometry conditioning happens at decoder initialization, not in output mapper
+            input_dim_for_mapper = self.model_config.hidden_dim
 
-                # Output mapper takes ONLY decoded features (hidden_dim)
-                # Geometry conditioning happens at decoder initialization, not in output mapper
-                input_dim_for_mapper = hidden_dim
+            output_map_layers = [input_dim_for_mapper] + [self.model_config.hidden_dim] * hidden_layers + [target_dim]
+            self.output_mappers[node_type_target] = mlp_block.make(output_map_layers, layer_norm=False)
+            # Geometry dependence is enforced solely through decoder conditioning
 
-                output_map_layers = [input_dim_for_mapper] + [hidden_dim] * hidden_layers + [target_dim]
-                self.output_mappers[node_type_target] = mlp_block.make(output_map_layers, layer_norm=False)
-                # Geometry dependence is enforced solely through decoder conditioning
-
-        self.processor = processor.make(self.mesh, processor_config)
-
-
+        self.processor = processor.make(self.mesh, self.model_config.processor)
 
     def _safe_trainer(self):
         try:
@@ -334,84 +287,6 @@ class Ocelot(nn.Module):
             )
         return edge_attr[:, :dim]
 
-    def _edge_features(
-        self,
-        data: HeteroData,
-        edge_type,
-        edge_index: torch.Tensor,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
-        E = int(edge_index.size(1))
-
-        # Debug printing: show whether we used real edge_attr or fell back to zeros.
-        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
-        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
-            if not getattr(self, "verbose", False):
-                return
-            if not self._is_global_zero_safe():
-                return
-            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
-                self._edge_attr_debug_seen = set()
-            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
-            if key in self._edge_attr_debug_seen:
-                return
-            self._edge_attr_debug_seen.add(key)
-
-            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
-            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
-                try:
-                    t = edge_rep_tensor.detach()
-                    mean_v = t.mean().item()
-                    std_v = t.std(unbiased=False).item()
-                    min_v = t.min().item()
-                    max_v = t.max().item()
-                    msg += (
-                        f" edge_attr_shape={tuple(t.shape)} "
-                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
-                    )
-                except Exception:
-                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
-            print(msg)
-
-        if not self.use_bipartite_edge_attr:
-            _maybe_print("disabled")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
-
-        edge_rep = None
-        try:
-            if "edge_attr" in data[edge_type]:
-                edge_rep = data[edge_type].edge_attr
-        except Exception:
-            edge_rep = None
-
-        if edge_rep is None:
-            _maybe_print("missing")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
-
-        if torch.is_tensor(edge_rep) and edge_rep.numel() == 0:
-            _maybe_print("empty")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
-
-        if not torch.is_tensor(edge_rep):
-            _maybe_print("non_tensor")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
-
-        if edge_rep.size(0) != E:
-            _maybe_print(f"edge_count_mismatch(edge_attr={int(edge_rep.size(0))})")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
-
-        edge_rep = edge_rep.to(device=device, dtype=dtype)
-        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.bipartite_edge_attr_dim)
-
-        if edge_rep.size(-1) != self.bipartite_edge_attr_dim:
-            _maybe_print(f"dim_mismatch(edge_attr={int(edge_rep.size(-1))})", edge_rep)
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
-
-        _maybe_print("ok", edge_rep)
-        return edge_rep
-
     def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
         """
         Load pre-computed mesh prediction edges from file.
@@ -440,7 +315,7 @@ class Ocelot(nn.Module):
                 "Mesh prediction edges file not found.\n"
                 f"  Requested: {edges_file}\n"
                 f"  Tried:     {edges_path}\n"
-                "Please run: python precompute_mesh_edges.py --config configs/mesh_config.yaml"
+                "Please run: python precompute_mesh_edges.py"
             )
 
         # Load pre-computed data
@@ -523,53 +398,6 @@ class Ocelot(nn.Module):
             return False
         return inst_name in self.mesh_instruments
 
-    def _normalize_inst_weights(self, weights_in):
-        out = {}
-        if not weights_in:
-            return out
-        for k, v in weights_in.items():
-            if isinstance(k, str):
-                if k in self.instrument_name_to_id:
-                    out[self.instrument_name_to_id[k]] = float(v)
-            else:
-                out[int(k)] = float(v)
-        return out
-
-    def _normalize_channel_weights(self, ch_in):
-        """
-        Accepts {name_or_id: sequence/tensor} and returns {id: torch.tensor}
-        sized to that instrument's target_dim (slice/pad with 1.0 as needed).
-        """
-        out = {}
-        if not ch_in:
-            return out
-        for k, v in ch_in.items():
-            # resolve id and name
-            if isinstance(k, str):
-                if k not in self.instrument_name_to_id:
-                    continue
-                inst_name, inst_id = k, self.instrument_name_to_id[k]
-            else:
-                inst_id = int(k)
-                inst_name = getattr(self, "instrument_id_to_name", {}).get(inst_id, None)
-
-            # find expected target_dim from config
-            target_dim = None
-            for group, instruments in self.observation_config.observation_config.items():
-                if inst_name in instruments:
-                    target_dim = instruments[inst_name]["target_dim"]
-                    break
-            if target_dim is None:
-                continue
-
-            w = torch.as_tensor(v, dtype=torch.float32)
-            if w.numel() > target_dim:
-                w = w[:target_dim]
-            elif w.numel() < target_dim:
-                w = torch.cat([w, torch.ones(target_dim - w.numel(), dtype=torch.float32)], dim=0)
-            out[inst_id] = w
-        return out
-
     def _feature_names_for_node(self, node_type: str):
         """Return ordered feature names for this target node."""
         # Latent mode: target_step0, target_step1, etc
@@ -577,10 +405,10 @@ class Ocelot(nn.Module):
             inst_name = node_type.split("_target_step")[0]
         else:
             inst_name = node_type.replace("_target", "")
-        for obs_type, instruments in self.observation_config.observation_config.items():
-            if inst_name in instruments:
-                return instruments[inst_name].get("features", None)
-        return None
+        try:
+            return self.instrument_catalog.get(inst_name).feature_names
+        except KeyError:
+            return None
 
 
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
@@ -589,8 +417,7 @@ class Ocelot(nn.Module):
 
         - If `mean` and `std` are provided, they are used directly.
         - Otherwise we look up the instrument from `node_type` (expects "<instrument>_target"),
-        get the feature order from `self.observation_config`, and pull means/stds
-        from `self.feature_stats[instrument][feature] = [mean, std]`.
+        get the feature order and normalization from `self.instrument_catalog`.
 
         Args:
             tensor:  (..., C) torch.Tensor — standardized values
@@ -613,30 +440,12 @@ class Ocelot(nn.Module):
             raise ValueError(f"node_type must look like '<instrument>_target', got: {node_type!r}")
         inst_name = node_type.rsplit("_", 1)[0]  # drop trailing _target/_input/etc.
 
-        # Find instrument block and feature order from the config
-        feats = None
-        found_in_obs_type = None
-        for obs_type, instruments in self.observation_config.observation_config.items():
-            if inst_name in instruments:
-                feats = instruments[inst_name].get("features")
-                found_in_obs_type = obs_type
-                break
-        if not feats:
-            raise ValueError(f"Features for instrument '{inst_name}' not found in observation_config.")
-
-        # Pull stats for this instrument
-        if not hasattr(self, "feature_stats") or self.feature_stats is None:
-            raise ValueError("self.feature_stats is not set; cannot unnormalize without stats.")
-
-        if inst_name not in self.feature_stats:
-            # Some configs store stats under category keys; try a second chance lookup
-            cand = self.observation.feature_stats.get(found_in_obs_type, {})
-            if inst_name in cand:
-                stats_block = cand[inst_name]
-            else:
-                raise KeyError(f"feature_stats has no entry for instrument '{inst_name}'.")
-        else:
-            stats_block = self.feature_stats[inst_name]
+        try:
+            instrument = self.instrument_catalog.get(inst_name)
+        except KeyError as exc:
+            raise ValueError(f"Unknown instrument '{inst_name}'.") from exc
+        feats = instrument.feature_names
+        stats_block = instrument.feature_stats
 
         # Build mean/std vectors following the feature order exactly
         try:
@@ -724,7 +533,7 @@ class Ocelot(nn.Module):
                 encoder = self.observation_encoders[self.mesh.edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
-                edge_features = self._edge_features(
+                edge_features = encoder.edge_features(
                     data=data,
                     edge_type=edge_type,
                     edge_index=edge_index,
@@ -760,7 +569,7 @@ class Ocelot(nn.Module):
                         num_nodes = data[node_type].num_nodes
                         # Use device from existing encoded features to avoid checkpoint loading issues
                         reference_device = encoded_mesh_features.device
-                        encoded_features[node_type] = torch.zeros(num_nodes, self.hidden_dim, device=reference_device)
+                        encoded_features[node_type] = torch.zeros(num_nodes, self.model_config.hidden_dim, device=reference_device)
 
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
@@ -901,7 +710,7 @@ class Ocelot(nn.Module):
                         target_features_initial = self.scan_angle_projector(sa_emb)
                     else:
                         # Backward-compatible behavior: scan info only in the last dims.
-                        padding_dim = self.hidden_dim - self.scan_angle_embed_dim
+                        padding_dim = self.model_config.hidden_dim - self.scan_angle_embed_dim
                         target_features_initial = torch.cat([
                             torch.zeros(N, padding_dim, device=reference_device),
                             sa_emb
@@ -912,20 +721,20 @@ class Ocelot(nn.Module):
                     if self.pressure_level_projector is not None:
                         target_features_initial = self.pressure_level_projector(pressure_emb)
                     else:
-                        padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                        padding_dim = self.model_config.hidden_dim - self.pressure_level_embed_dim
                         target_features_initial = torch.cat([
                             torch.zeros(N, padding_dim, device=reference_device),
                             pressure_emb
                         ], dim=-1)  # [N, hidden_dim] with pressure info in last 8 dims
                 else:
                     # Conventional obs without viewing geometry: use zeros
-                    target_features_initial = torch.zeros(N, self.hidden_dim, device=reference_device)
+                    target_features_initial = torch.zeros(N, self.model_config.hidden_dim, device=reference_device)
 
                 # Add target-time conditioning as an additive bias over the full hidden_dim.
                 if time_emb is not None:
                     target_features_initial = target_features_initial + self.target_time_projector(time_emb)
 
-                edge_attr = self._edge_features(
+                edge_attr = decoder.edge_features(
                     data=data,
                     edge_type=step_edge_type,
                     edge_index=step_edge_index,
@@ -1193,7 +1002,7 @@ class Ocelot(nn.Module):
             if self.pressure_level_projector is not None:
                 rec_rep = self.pressure_level_projector(pressure_emb)
             else:
-                padding_dim = self.hidden_dim - self.pressure_level_embed_dim
+                padding_dim = self.model_config.hidden_dim - self.pressure_level_embed_dim
                 rec_rep = torch.cat([
                     torch.zeros(N, padding_dim, device=device),
                     pressure_emb
@@ -1204,7 +1013,7 @@ class Ocelot(nn.Module):
                   f"({[1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10][self.mesh_pressure_level_idx]} hPa)")
         else:
             # Satellites, surface obs etc.: no pressure conditioning (same as training)
-            rec_rep = torch.zeros(N, self.hidden_dim, device=device)
+            rec_rep = torch.zeros(N, self.model_config.hidden_dim, device=device)
             print(f"[MESH PRED] Decoding {inst_name} with zero initialization (no pressure conditioning)")
 
         # --- Target-time conditioning (mirrors regular decoder) ---

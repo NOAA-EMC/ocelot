@@ -189,7 +189,9 @@ for month in 01 02 03; do
   python FSOI/fsoi_inference.py \
     --checkpoint /path/to/your/model.ckpt \
     --config FSOI/configs/fsoi_config.yaml \
-    --obs_config configs/observation_config.yaml \
+    --instrument_config configs/instrument_config.yaml \
+    --pipeline_config configs/pipeline_config.yaml \
+    --model_config configs/model_config.yaml \
     --start_date 2024-${month}-01 \
     --end_date 2024-${month}-31 \
     --output_dir FSOI/fsoi_outputs/2024_${month}

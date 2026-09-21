@@ -68,7 +68,8 @@ def finite_difference_check(
     # Get original inputs
     xa_original = get_fsoi_inputs(
         batch,
-        model.observation_config,
+        model.instrument_catalog,
+        model.pipeline_config,
         model.instrument_name_to_id,
     )
 
@@ -262,7 +263,8 @@ def validate_fsoi_gradients(
     # Get inputs from current batch
     xa = get_fsoi_inputs(
         curr_batch,
-        model.observation_config,
+        model.instrument_catalog,
+        model.pipeline_config,
         model.instrument_name_to_id,
     )
 

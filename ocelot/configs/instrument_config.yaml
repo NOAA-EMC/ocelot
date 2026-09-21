@@ -1,0 +1,680 @@
+instruments:
+  # Satellite instruments
+  atms:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [224, 225]
+    scan_angle_channels: 1  # Number of scan angle dimensions
+    metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    features:
+      - name: bt_channel_1
+        weight: 1.0
+        units: K
+        normalization: {mean: 211.00, std: 40.60}
+      - name: bt_channel_2
+        weight: 1.0
+        units: K
+        normalization: {mean: 201.65, std: 42.08}
+      - name: bt_channel_3
+        weight: 1.0
+        units: K
+        normalization: {mean: 239.09, std: 22.24}
+      - name: bt_channel_4
+        weight: 1.0
+        units: K
+        normalization: {mean: 248.58, std: 17.55}
+      - name: bt_channel_5
+        weight: 1.0
+        units: K
+        normalization: {mean: 252.58, std: 14.32}
+      - name: bt_channel_6
+        weight: 1.0
+        units: K
+        normalization: {mean: 245.75, std: 11.47}
+      - name: bt_channel_7
+        weight: 1.0
+        units: K
+        normalization: {mean: 231.98, std: 8.21}
+      - name: bt_channel_8
+        weight: 1.0
+        units: K
+        normalization: {mean: 222.52, std: 6.76}
+      - name: bt_channel_9
+        weight: 1.0
+        units: K
+        normalization: {mean: 216.10, std: 7.30}
+      - name: bt_channel_10
+        weight: 1.0
+        units: K
+        normalization: {mean: 211.99, std: 9.49}
+      - name: bt_channel_11
+        weight: 1.0
+        units: K
+        normalization: {mean: 215.01, std: 9.37}
+      - name: bt_channel_12
+        weight: 1.0
+        units: K
+        normalization: {mean: 221.00, std: 10.17}
+      - name: bt_channel_13
+        weight: 1.0
+        units: K
+        normalization: {mean: 229.26, std: 11.30}
+      - name: bt_channel_14
+        weight: 1.0
+        units: K
+        normalization: {mean: 240.06, std: 11.97}
+      - name: bt_channel_15
+        weight: 1.0
+        units: K
+        normalization: {mean: 250.28, std: 11.52}
+      - name: bt_channel_16
+        weight: 1.0
+        units: K
+        normalization: {mean: 237.76, std: 28.61}
+      - name: bt_channel_17
+        weight: 1.0
+        units: K
+        normalization: {mean: 258.29, std: 29.35}
+      - name: bt_channel_18
+        weight: 1.0
+        units: K
+        normalization: {mean: 260.31, std: 22.15}
+      - name: bt_channel_19
+        weight: 1.0
+        units: K
+        normalization: {mean: 258.26, std: 18.46}
+      - name: bt_channel_20
+        weight: 1.0
+        units: K
+        normalization: {mean: 255.12, std: 15.34}
+      - name: bt_channel_21
+        weight: 1.0
+        units: K
+        normalization: {mean: 250.24, std: 12.39}
+      - name: bt_channel_22
+        weight: 1.0
+        units: K
+        normalization: {mean: 245.38, std: 10.41}
+
+  amsua:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [3, 5, 206, 209, 223]
+    scan_angle_channels: 1  # Number of scan angle dimensions
+    metadata: [sensorZenithAngle, solarZenithAngle, solarAzimuthAngle]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    features:
+      - name: bt_channel_1
+        weight: 1.0
+        units: K
+        normalization: {mean: 209.92, std: 40.44}
+      - name: bt_channel_2
+        weight: 1.0
+        units: K
+        normalization: {mean: 201.16, std: 42.14}
+      - name: bt_channel_3
+        weight: 1.0
+        units: K
+        normalization: {mean: 239.63, std: 20.68}
+      - name: bt_channel_4
+        weight: 1.0
+        units: K
+        normalization: {mean: 252.44, std: 14.20}
+      - name: bt_channel_5
+        weight: 1.0
+        units: K
+        normalization: {mean: 245.45, std: 11.31}
+      - name: bt_channel_6
+        weight: 1.0
+        units: K
+        normalization: {mean: 231.10, std: 7.86}
+      - name: bt_channel_7
+        weight: 1.0
+        units: K
+        normalization: {mean: 222.16, std: 6.51}
+      - name: bt_channel_8
+        weight: 1.0
+        units: K
+        normalization: {mean: 216.24, std: 7.12}
+      - name: bt_channel_9
+        weight: 1.0
+        units: K
+        normalization: {mean: 211.48, std: 9.39}
+      - name: bt_channel_10
+        weight: 1.0
+        units: K
+        normalization: {mean: 214.51, std: 9.34}
+      - name: bt_channel_11
+        weight: 1.0
+        units: K
+        normalization: {mean: 220.23, std: 10.18}
+      - name: bt_channel_12
+        weight: 1.0
+        units: K
+        normalization: {mean: 228.57, std: 11.32}
+      - name: bt_channel_13
+        weight: 1.0
+        units: K
+        normalization: {mean: 239.08, std: 11.94}
+      - name: bt_channel_14
+        weight: 1.0
+        units: K
+        normalization: {mean: 249.39, std: 11.47}
+      - name: bt_channel_15
+        weight: 1.0
+        units: K
+        normalization: {mean: 237.78, std: 28.23}
+
+  ssmis:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [285]
+    scan_angle_channels: 2  # Number of scan angle dimensions
+    metadata: [sensorScanPosition, satelliteAscendingFlag]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    features:
+      - name: bt_ch_1
+        weight: 1.0
+        units: K
+        normalization: {mean: 238.43, std: 20.42}
+      - name: bt_ch_2
+        weight: 1.0
+        units: K
+        normalization: {mean: 250.4, std: 16.73}
+      - name: bt_ch_3
+        weight: 1.0
+        units: K
+        normalization: {mean: 241.66, std: 13.37}
+      - name: bt_ch_4
+        weight: 1.0
+        units: K
+        normalization: {mean: 228.59, std: 5.36}
+      - name: bt_ch_5
+        weight: 1.0
+        units: K
+        normalization: {mean: 216.18, std: 8.4}
+      - name: bt_ch_6
+        weight: 1.0
+        units: K
+        normalization: {mean: 213.07, std: 8.51}
+      - name: bt_ch_7
+        weight: 1.0
+        units: K
+        normalization: {mean: 217.33, std: 6.51}
+      - name: bt_ch_8
+        weight: 1.0
+        units: K
+        normalization: {mean: 250.04, std: 35.18}
+      - name: bt_ch_9
+        weight: 1.0
+        units: K
+        normalization: {mean: 257.22, std: 22.09}
+      - name: bt_ch_10
+        weight: 1.0
+        units: K
+        normalization: {mean: 252.93, std: 11.01}
+      - name: bt_ch_11
+        weight: 1.0
+        units: K
+        normalization: {mean: 241.98, std: 9.31}
+      - name: bt_ch_12
+        weight: 1.0
+        units: K
+        normalization: {mean: 182.48, std: 53.52}
+      - name: bt_ch_13
+        weight: 1.0
+        units: K
+        normalization: {mean: 224.26, std: 34.52}
+      - name: bt_ch_14
+        weight: 1.0
+        units: K
+        normalization: {mean: 237.05, std: 29.52}
+      - name: bt_ch_15
+        weight: 1.0
+        units: K
+        normalization: {mean: 194.48, std: 44.93}
+      - name: bt_ch_16
+        weight: 1.0
+        units: K
+        normalization: {mean: 231.97, std: 26.43}
+      - name: bt_ch_17
+        weight: 1.0
+        units: K
+        normalization: {mean: 250.07, std: 26.02}
+      - name: bt_ch_18
+        weight: 1.0
+        units: K
+        normalization: {mean: 231.07, std: 32.5}
+      - name: bt_ch_19
+        weight: 1.0
+        units: K
+        normalization: {mean: 229.95, std: 7.91}
+      - name: bt_ch_20
+        weight: 1.0
+        units: K
+        normalization: {mean: 212.22, std: 9.38}
+      - name: bt_ch_21
+        weight: 1.0
+        units: K
+        normalization: {mean: 247.08, std: 6.36}
+      - name: bt_ch_22
+        weight: 1.0
+        units: K
+        normalization: {mean: 247.2, std: 9.42}
+      - name: bt_ch_23
+        weight: 1.0
+        units: K
+        normalization: {mean: 237.59, std: 8.08}
+      - name: bt_ch_24
+        weight: 1.0
+        units: K
+        normalization: {mean: 225.99, std: 5.44}
+
+  seviri_asr:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [56, 57]  # Meteosat-11
+    scan_angle_channels: 1  # Number of scan angle dimensions
+    metadata: [satelliteZenithAngle, solarZenithAngle]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    features:
+      - name: bt_ch_4
+        weight: 1.0
+        units: K
+        normalization: {mean: 280.87, std: 17.44}
+      - name: bt_ch_5
+        weight: 1.0
+        units: K
+        normalization: {mean: 237.38, std: 9.03}
+      - name: bt_ch_6
+        weight: 1.0
+        units: K
+        normalization: {mean: 254.14, std: 12.27}
+      - name: bt_ch_7
+        weight: 1.0
+        units: K
+        normalization: {mean: 276.28, std: 18.76}
+      - name: bt_ch_8
+        weight: 1.0
+        units: K
+        normalization: {mean: 257.31, std: 14.28}
+      - name: bt_ch_9
+        weight: 1.0
+        units: K
+        normalization: {mean: 278.26, std: 19.92}
+      - name: bt_ch_10
+        weight: 1.0
+        units: K
+        normalization: {mean: 276.59, std: 20.07}
+      - name: bt_ch_11
+        weight: 1.0
+        units: K
+        normalization: {mean: 257.99, std: 14.21}
+
+  seviri_csr:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [56, 57]  # Meteosat-11
+    scan_angle_channels: 1  # Number of scan angle dimensions
+    metadata: [satelliteZenithAngle, solarZenithAngle]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    features:
+      - name: bt_ch_4
+        weight: 1.0
+        units: K
+        normalization: {mean: 289.44, std: 10.47}
+      - name: bt_ch_5
+        weight: 1.0
+        units: K
+        normalization: {mean: 240.56, std: 6.74}
+      - name: bt_ch_6
+        weight: 1.0
+        units: K
+        normalization: {mean: 259.72, std: 6.67}
+      - name: bt_ch_7
+        weight: 1.0
+        units: K
+        normalization: {mean: 287.38, std: 8.72}
+      - name: bt_ch_8
+        weight: 1.0
+        units: K
+        normalization: {mean: 264.54, std: 10.17}
+      - name: bt_ch_9
+        weight: 1.0
+        units: K
+        normalization: {mean: 290.17, std: 8.95}
+      - name: bt_ch_10
+        weight: 1.0
+        units: K
+        normalization: {mean: 288.54, std: 8.77}
+      - name: bt_ch_11
+        weight: 1.0
+        units: K
+        normalization: {mean: 265.76, std: 6.91}
+
+  avhrr:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [3, 5, 209, 223]
+    scan_angle_channels: 1  # Number of scan angle dimensions
+    metadata: [satelliteZenithAngle, solarZenithAngle]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    features:
+      - name: brightnessTemperature_ch_50
+        weight: 1.0
+        units: K
+        normalization: {mean: 284.58, std: 17.52}
+      - name: brightnessTemperature_ch_51
+        weight: 1.0
+        units: K
+        normalization: {mean: 283.07, std: 15.83}
+      - name: brightnessTemperature_ch_52
+        weight: 1.0
+        units: K
+        normalization: {mean: 281.21, std: 15.2}
+
+  cris_pca:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [225]
+    scan_angle_channels: 1  # Number of scan angle dimensions
+    metadata: [sensorZenithAngle, solarZenithAngle]
+    model:
+      encoder_hidden_layers: 3
+      decoder_hidden_layers: 3
+    features:
+      - name: global_pc_score_PC_1
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 2766.046, std: 9542.266}
+      - name: global_pc_score_PC_2
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 26.432, std: 1223.621}
+      - name: global_pc_score_PC_3
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 103.793, std: 702.201}
+      - name: global_pc_score_PC_4
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 31.302, std: 606.326}
+      - name: global_pc_score_PC_5
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 48.051, std: 506.067}
+      - name: global_pc_score_PC_6
+        weight: 1.0
+        units: unitless
+        normalization: {mean: -3.433, std: 351.318}
+      - name: global_pc_score_PC_7
+        weight: 1.0
+        units: unitless
+        normalization: {mean: -22.427, std: 305.146}
+      - name: global_pc_score_PC_8
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 4.131, std: 226.219}
+      - name: global_pc_score_PC_9
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 1.732, std: 186.408}
+      - name: global_pc_score_PC_10
+        weight: 1.0
+        units: unitless
+        normalization: {mean: 1.882, std: 135.888}
+
+  ascat:
+    kind: satellite
+    weight: 1.0
+    satellite_ids: [3, 4, 5]  # MetOp satellite IDs (v7 has satelliteIdentifier in {3,4,5})
+    scan_angle_channels: 3  # ASCAT has 3 beams, each with its own scan angle
+    metadata: [radarIncidenceAngle_ch_1, radarIncidenceAngle_ch_2, radarIncidenceAngle_ch_3,
+               antennaBeamAzimuthAngle_ch_1, antennaBeamAzimuthAngle_ch_2, antennaBeamAzimuthAngle_ch_3]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    require_all_flag_columns: true  # Ensure missing flags are rejected
+    qc_filters:
+      backscatter_ch_1:
+        units: dB
+        range: [-55.0, 3.0]
+        qm_flag_col: ascatSigma0Usability_ch_1
+        keep: [0]
+      backscatter_ch_2:
+        units: dB
+        range: [-55.0, 5.0]
+        qm_flag_col: ascatSigma0Usability_ch_2
+        keep: [0]
+      backscatter_ch_3:
+        units: dB
+        range: [-55.0, 3.2]
+        qm_flag_col: ascatSigma0Usability_ch_3
+        keep: [0]
+      radarIncidenceAngle_ch_1:
+        units: degrees
+        range: [20.0, 70.0]
+        clip: true
+      radarIncidenceAngle_ch_2:
+        units: degrees
+        range: [20.0, 70.0]
+        clip: true
+      radarIncidenceAngle_ch_3:
+        units: degrees
+        range: [20.0, 70.0]
+        clip: true
+      antennaBeamAzimuthAngle_ch_1:
+        units: degrees
+        range: [0.0, 360.0]
+        clip: true
+      antennaBeamAzimuthAngle_ch_2:
+        units: degrees
+        range: [0.0, 360.0]
+        clip: true
+      antennaBeamAzimuthAngle_ch_3:
+        units: degrees
+        range: [0.0, 360.0]
+        clip: true
+    features:
+      - name: backscatter_ch_1
+        weight: 1.0
+        units: dB
+        normalization: {mean: -17.84, std: 5.77}  # 2022-2024 dB mean/std (filtered to [-80, 40] dB)
+      - name: backscatter_ch_2
+        weight: 1.0
+        units: dB
+        normalization: {mean: -14.84, std: 5.12}
+      - name: backscatter_ch_3
+        weight: 1.0
+        units: dB
+        normalization: {mean: -17.81, std: 5.73}
+
+  # Conventional instruments
+  surface_obs:
+    kind: conventional
+    weight: 1.0
+    source: zarr
+    zarr_name: raw_surface_obs
+    metadata: [height_prepbufr_event_1]
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    qc_filters:
+      pressureMeanSeaLevel_prepbufr:
+        units: hPa
+        range: [800, 1100]  # hPa; physically reasonable sea-level pressure range
+      airTemperature:
+        units: degC
+        range: [-90, 60]  # Celsius; physically reasonable surface temperature range
+        qm_flag_col: airTemperatureQuality_event_1
+        keep: [0, 1, 2, 4, 9]
+      dewPointTemperature:
+        units: degC
+        range: [-100, 50]  # Celsius; physically reasonable (Td <= T, can be very dry)
+        qm_flag_col: dewPointTemperatureQuality_event_1
+        keep: [1, 2, 4, 9]
+      windSpeed:
+        units: m/s
+        range: [0, 150]  # m/s; physically reasonable (hurricanes ~90 m/s, allow margin)
+      windDirection:
+        units: radians
+        range: [0, 6.2832]  # radians; full circle 0-2*pi
+      # Metadata QC
+      height_prepbufr_event_1:
+        units: m
+        range: [-500, 9000]  # meters; clip mild errors, treat 9999+ as missing in code
+        clip: true
+        qm_flag_col: heightQuality_event_1
+        keep: [1, 2]
+        require_flag_column: true
+    qc_relations:  # Cross-variable checks
+      dewpoint_le_temp: true  # Td <= T (+0.5 C margin)
+      max_temp_dewpoint_spread: 60  # C; invalid if T - Td > 60
+      rh_from_td_consistency_pct: 25  # %pts; invalidate RH if |RH - RH*| > 25
+    features:
+      # Surface obs use sea-level pressure.
+      - name: pressureMeanSeaLevel_prepbufr
+        weight: 1.0
+        units: hPa
+        normalization: {mean: 1014.39, std: 13.63}  # hPa
+      - name: airTemperature
+        weight: 1.0
+        units: degC
+        normalization: {mean: 13.99, std: 12.14}  # Celsius; 2020-2024: 545M valid samples (87.2% pass QC)
+      - name: dewPointTemperature
+        weight: 1.0
+        units: degC
+        normalization: {mean: 7.94, std: 11.47}  # Celsius; 2020-2024: 485M valid samples (77.7% pass QC)
+      - name: wind_u
+        weight: 1.0
+        units: m/s
+        normalization: {mean: 0.03, std: 3.30}  # m/s (u-component, computed from windSpeed/windDirection)
+      - name: wind_v
+        weight: 1.0
+        units: m/s
+        normalization: {mean: -0.03, std: 3.37}  # m/s (v-component, computed from windSpeed/windDirection)
+
+  radiosonde:
+    kind: conventional
+    weight: 1.0
+    source: zarr
+    zarr_name: raw_radiosonde
+    metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    level_selection:
+      filter_col: airPressure
+      matching_mode: all  # Use ALL pressure levels (no filtering)
+    qc_filters:
+      # Keep airPressure QC to filter bad pressure values (needed for log_pressure_height)
+      airPressure:
+        units: hPa
+        range: [1, 1100]  # hPa; physically reasonable (surface to high altitude)
+        qm_flag_col: airPressureQuality
+        keep: [0, 1, 2]
+      airTemperature:
+        units: degC
+        range: [-90, 50]  # Celsius; physically reasonable atmospheric range
+        qm_flag_col: airTemperatureQuality
+        reject: [13, 14, 15]  # Reject bad flags
+      dewPointTemperature:
+        units: degC
+        range: [-120, 50]  # Celsius; physically reasonable (very dry stratosphere to humid surface)
+        qm_flag_col: dewPointTemperatureQuality
+        reject: [13, 14, 15]  # Reject bad flags
+      windSpeed:
+        units: m/s
+        range: [0, 150]  # m/s; physically reasonable (jet stream can exceed 100 m/s)
+        qm_flag_col: windQuality
+        keep: [2]  # Keep only good flag 2
+      windDirection:
+        units: radians
+        range: [0, 6.2832]  # radians; full circle 0-2*pi
+        qm_flag_col: windQuality
+        keep: [2]  # Keep only good flag 2
+    auxiliary_variables:
+      airPressure:
+        units: hPa
+        normalization: {mean: 319.23, std: 296.08}  # Used to derive log_pressure_height
+    features:
+      # airPressure is a vertical coordinate, not a prediction feature.
+      - name: airTemperature
+        weight: 1.0
+        units: degC
+        normalization: {mean: -32.49, std: 28.82}  # Celsius (as stored in zarr); 2020-2024: ~54% pass QC
+      - name: dewPointTemperature
+        weight: 1.0
+        units: degC
+        normalization: {mean: -47.40, std: 34.48}  # Celsius (as stored in zarr); 2020-2024: ~52% pass QC
+      - name: wind_u
+        weight: 1.0
+        units: m/s
+        normalization: {mean: 4.95, std: 13.71}  # m/s (computed from windSpeed/windDirection); 2020-2024: ~60% pass QC
+      - name: wind_v
+        weight: 1.0
+        units: m/s
+        normalization: {mean: -0.31, std: 8.13}  # m/s (computed from windSpeed/windDirection); 2020-2024: ~60% pass QC
+
+  aircraft:
+    kind: conventional
+    weight: 1.0
+    source: zarr
+    zarr_name: aircraft
+    metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
+    model:
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+    qc_filters:
+      # QC filters based on physical reasonableness
+      airPressure:
+        units: hPa
+        range: [100, 1100]  # hPa; physically reasonable for aircraft altitude range
+        qm_flag_col: airPressureQuality
+        keep: [0, 1, 2]
+      airTemperature:
+        units: degC
+        range: [-90, 50]  # Celsius; physically reasonable for atmospheric temperature
+        qm_flag_col: airTemperatureQuality
+        keep: [0, 1, 2]
+      windU:
+        units: m/s
+        range: [-150, 150]  # m/s; physically reasonable bound (rare extremes can exceed 100 m/s)
+        qm_flag_col: windQuality
+        keep: [0, 1, 2]
+      windV:
+        units: m/s
+        range: [-150, 150]  # m/s; physically reasonable bound (rare extremes can exceed 100 m/s)
+        qm_flag_col: windQuality
+        keep: [0, 1, 2]
+    auxiliary_variables:
+      airPressure:
+        units: hPa
+        normalization: {mean: 505.53, std: 274.24}  # Used to derive log_pressure_height
+    features:
+      # airPressure is a vertical coordinate, not a prediction feature.
+      - name: airTemperature
+        weight: 1.0
+        units: degC
+        normalization: {mean: -18.56, std: 27.68}  # Celsius; 2020-2024: ~91% pass QC (flags 0,1,2)
+      - name: windU
+        weight: 1.0
+        units: m/s
+        normalization: {mean: 11.28, std: 15.43}  # m/s; 2020-2024: ~92% pass QC (flags 0,1,2)
+      - name: windV
+        weight: 1.0
+        units: m/s
+        normalization: {mean: 0.27, std: 11.46}  # m/s; 2020-2024: ~92% pass QC (flags 0,1,2)

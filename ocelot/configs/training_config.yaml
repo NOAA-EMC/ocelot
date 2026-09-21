@@ -1,6 +1,7 @@
 experiment_name: baseline_v1
 checkpoint_dir: checkpoints/baseline_v1
-observation_config_path: configs/observation_config.yaml
+instrument_config_path: configs/instrument_config.yaml
+pipeline_config_path: configs/pipeline_config.yaml
 seed: null
 
 data:

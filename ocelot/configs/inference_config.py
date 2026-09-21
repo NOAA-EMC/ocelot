@@ -31,6 +31,8 @@ class InferenceResourcesConfig(ConfigBase):
 class InferenceConfig(ConfigBase):
     experiment_name = StrField()
     checkpoint = StrField()
+    instrument_config_path = Optional(StrField(), default='configs/instrument_config.yaml')
+    pipeline_config_path = Optional(StrField(), default='configs/pipeline_config.yaml')
     output_dir = Optional(StrField(), default='predictions')
     eval_mode = Optional(BoolField(), default=False)
     data = InferenceDataConfig()

@@ -44,7 +44,8 @@ from fsoi_model_extensions import (  # noqa: E402
     predict_at_targets,  # Use correct graph construction
     freeze_model_for_fsoi,
 )
-from weight_utils import load_weights_from_yaml  # noqa: E402
+from configs.instrument_config import InstrumentCatalogConfig  # noqa: E402
+from configs.pipeline_config import PipelineConfig  # noqa: E402
 
 
 def find_checkpoint(checkpoint_path):
@@ -98,12 +99,16 @@ def test_config_loading():
         print(f"  Lead steps: {fsoi_config['forecast']['lead_steps']}")
         print(f"  Output dir: {fsoi_config['data']['output_dir']}")
 
-        obs_config, feature_stats, inst_weights, ch_weights, name_to_id = \
-            load_weights_from_yaml("configs/observation_config.yaml")
-        print("✓ Observation config loaded")
+        instrument_catalog = InstrumentCatalogConfig("configs/instrument_config.yaml")
+        pipeline_config = PipelineConfig("configs/pipeline_config.yaml")
+        pipeline_config.validate_instruments(instrument_catalog)
+        name_to_id = pipeline_config.instrument_name_to_id(instrument_catalog)
+        inst_weights = pipeline_config.instrument_weights(instrument_catalog)
+        ch_weights = pipeline_config.channel_weights(instrument_catalog)
+        print("✓ Instrument and pipeline configs loaded")
         print(f"  Instruments: {list(name_to_id.keys())[:5]}...")
 
-        return True, (fsoi_config, obs_config, feature_stats, inst_weights, ch_weights, name_to_id)
+        return True, (fsoi_config, instrument_catalog, pipeline_config, inst_weights, ch_weights, name_to_id)
     except Exception as e:
         print(f"✗ Config loading failed: {e}")
         return False, None
@@ -148,7 +153,7 @@ def test_model_loading(checkpoint_path):
         return False, None
 
 
-def test_dataset_creation(obs_config, feature_stats):
+def test_dataset_creation(instrument_catalog, pipeline_config):
     """Test 3: Create sequential dataset"""
     print("\n" + "="*80)
     print("TEST 3: Dataset Creation")
@@ -280,22 +285,11 @@ def test_gradient_requires_grad():
         dummy_batch = HeteroData()
         dummy_batch['atms_input'].x = torch.randn(10, 22)
 
-        # Test get_fsoi_inputs with proper config structure
-        from gnn_model import _build_instrument_map
-        obs_config = {
-            'satellite': {
-                'atms': {
-                    'input_dim': 22,
-                    'target_dim': 22,
-                    'features': [f'ch{i}' for i in range(22)],  # Add features list
-                    'metadata': [],
-                    'scan_angle_channels': 1,
-                }
-            }
-        }
-        inst_map = _build_instrument_map(obs_config)
+        instrument_catalog = InstrumentCatalogConfig("configs/instrument_config.yaml")
+        pipeline_config = PipelineConfig("configs/pipeline_config.yaml")
+        inst_map = pipeline_config.instrument_name_to_id(instrument_catalog)
 
-        inputs = get_fsoi_inputs(dummy_batch, obs_config, inst_map)
+        inputs = get_fsoi_inputs(dummy_batch, instrument_catalog, pipeline_config, inst_map)
 
         if 'atms' in inputs:
             requires_grad = inputs['atms'].requires_grad
@@ -350,7 +344,7 @@ def main():
         print("\n❌ Cannot proceed without configs")
         sys.exit(1)
 
-    fsoi_config, obs_config, feature_stats, inst_weights, ch_weights, name_to_id = data
+    fsoi_config, instrument_catalog, pipeline_config, inst_weights, ch_weights, name_to_id = data
 
     # Test 2: Model loading
     success, data = test_model_loading(checkpoint_path)
@@ -362,7 +356,7 @@ def main():
     model, device = data
 
     # Test 3: Dataset creation (skipped for now)
-    success, _ = test_dataset_creation(obs_config, feature_stats)
+    success, _ = test_dataset_creation(instrument_catalog, pipeline_config)
     results.append(("Dataset Creation", success))
 
     # Test 4: Gradient computation

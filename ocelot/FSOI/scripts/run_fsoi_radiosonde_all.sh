@@ -52,7 +52,7 @@ find_gnn_model_dir() {
     local d="$start_dir"
     # Walk up a few levels to locate the repo's gnn_model/ root.
     for _ in 1 2 3 4 5 6 7 8; do
-        if [ -f "$d/configs/observation_config.yaml" ] && [ -d "$d/FSOI" ]; then
+        if [ -f "$d/configs/instrument_config.yaml" ] && [ -d "$d/FSOI" ]; then
             echo "$d"
             return 0
         fi
@@ -72,7 +72,7 @@ elif [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
         :
     else
         # common alternative: submitted from ocelot root
-        if [ -d "$SLURM_SUBMIT_DIR/gnn_model" ] && [ -f "$SLURM_SUBMIT_DIR/gnn_model/configs/observation_config.yaml" ]; then
+        if [ -d "$SLURM_SUBMIT_DIR/gnn_model" ] && [ -f "$SLURM_SUBMIT_DIR/gnn_model/configs/instrument_config.yaml" ]; then
             GNN_MODEL_DIR_RESOLVED="$SLURM_SUBMIT_DIR/gnn_model"
         fi
     fi
@@ -85,7 +85,7 @@ fi
 
 if [ -z "$GNN_MODEL_DIR_RESOLVED" ]; then
     echo "ERROR: Could not resolve gnn_model working directory."
-    echo "  Expected to find 'configs/observation_config.yaml' and 'FSOI/' by walking up from SLURM_SUBMIT_DIR."
+    echo "  Expected to find 'configs/instrument_config.yaml' and 'FSOI/' by walking up from SLURM_SUBMIT_DIR."
     echo "  Typical usage (from gnn_model/FSOI/scripts):"
     echo "    sbatch $(basename "$0") checkpoints/"
     echo "  Or provide an explicit override:"

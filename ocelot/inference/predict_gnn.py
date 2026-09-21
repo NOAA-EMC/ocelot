@@ -8,10 +8,8 @@ import argparse
 import os
 import sys
 import time
-import yaml
 import pandas as pd
 import socket
-import inspect
 from datetime import timedelta
 
 sys.path.append(
@@ -24,10 +22,10 @@ from lightning.pytorch.strategies import DDPStrategy
 
 import ocelot
 from ocelot.configs.inference_config import InferenceConfig
+from ocelot.configs.instrument_config import InstrumentCatalogConfig
 from ocelot.configs.model_config import ModelConfig
+from ocelot.configs.pipeline_config import PipelineConfig
 from ocelot.gnn_datamodule import GNNDataModule
-from ocelot.model.ocelot import Ocelot
-from ocelot.weight_utils import load_weights_from_yaml
 
 
 torch.set_float32_matmul_precision("medium")
@@ -98,27 +96,9 @@ def main():
     os.makedirs(inference_config.output_dir, exist_ok=True)
     start_time = time.time()
 
-    # Load configuration
-    cfg_path = "configs/observation_config.yaml"
-    observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = load_weights_from_yaml(cfg_path)
-
-    with open(cfg_path, "r") as f:
-        _raw_cfg = yaml.safe_load(f)
-
-    with open('configs/mesh_config.yaml', 'r') as f:
-        mesh_config = yaml.safe_load(f)
-
-    # Optional runtime override for mesh pressure level without editing repo config.
-    _mesh_idx_env = os.environ.get("MESH_PRESSURE_LEVEL_IDX", "").strip()
-    if _mesh_idx_env != "":
-        try:
-            mesh_config = dict(mesh_config or {})
-            mesh_config["mesh_pressure_level_idx"] = int(_mesh_idx_env)
-            print(f"[MESH CONFIG] Overriding mesh_pressure_level_idx via env: {mesh_config['mesh_pressure_level_idx']}")
-        except Exception as exc:
-            raise ValueError(f"Invalid MESH_PRESSURE_LEVEL_IDX={_mesh_idx_env!r}: {exc}")
-
-    pipeline_cfg = _raw_cfg.get("pipeline", {})
+    instrument_catalog = InstrumentCatalogConfig(inference_config.instrument_config_path)
+    pipeline_config = PipelineConfig(inference_config.pipeline_config_path)
+    pipeline_config.validate_instruments(instrument_catalog)
 
     # Data path
     if args.data_path is None:
@@ -139,7 +119,8 @@ def main():
     model = ocelot.inference.make_module(
         model_config=model_config,  # Replace with actual model config if available
         inference_config=inference_config,  # Replace with actual inference config if available
-        observation_config=observation_config,
+        instrument_catalog=instrument_catalog,
+        pipeline_config=pipeline_config,
         verbose=True
     )
 
@@ -159,12 +140,11 @@ def main():
         data_path=data_path,
         start_date=inference_config.data.start_date,
         end_date=inference_config.data.end_date,
-        observation_config=observation_config,
-        mesh_structure=model.mesh_structure,
+        instrument_catalog=instrument_catalog,
+        pipeline_config=pipeline_config,
+        mesh_structure=model.model.mesh.mesh_structure,
         batch_size=inference_config.data.batch_size,
         num_neighbors=3,
-        feature_stats=feature_stats,
-        pipeline=pipeline_cfg,
         window_size=f"{data_window_hours}h",
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=1.0,

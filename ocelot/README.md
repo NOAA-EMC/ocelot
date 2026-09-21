@@ -71,7 +71,7 @@ pip install numpy pandas scipy torch trimesh networkx torch-geometric scikit-lea
 ### Configure Your Experiment
 Modify `train_gnn.py` to set the hyperparameters for your run:
 - Set the full date range for the experiment (FULL_START_DATE, FULL_END_DATE).
-- Configure the observation_config dictionary to define which instruments and features to use.
+- Configure the instrument catalog and pipeline to define available and enabled instruments.
 - Adjust model hyperparameters like mesh_resolution, hidden_dim, and num_layers.
 
 ### Launch training

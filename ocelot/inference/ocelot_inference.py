@@ -34,7 +34,7 @@ class OcelotInferenceModule(pl.LightningModule):
 
         target_init_filter = os.environ.get("PREDICT_INIT_TIME_FILTER", "").strip()
         if target_init_filter:
-            batch_init_time = self._extract_init_time_str(batch)
+            batch_init_time = self.model._extract_init_time_str(batch)
             if batch_init_time != target_init_filter:
                 print(
                     f"[PREDICT] Skipping batch {batch_idx}: init_time={batch_init_time} "
@@ -94,7 +94,7 @@ class OcelotInferenceModule(pl.LightningModule):
             )
 
         # Save mesh predictions (target variables on grid)
-        if self.enable_mesh_pred:
+        if self.model.enable_mesh_pred:
             try:
                 with torch.no_grad():
                     # Use mesh features from forward pass
@@ -125,9 +125,8 @@ class OcelotInferenceModule(pl.LightningModule):
     def on_predict_epoch_start(self):
         """Setup before prediction epoch starts."""
         print("[PREDICT] Starting prediction epoch")
-        if not self.enable_mesh_pred:
-            print("[WARN] enable_mesh_pred is False — mesh grid outputs will NOT be generated. "
-                  "Set 'enable_mesh_pred: true' in mesh_config.yaml to produce gridded outputs.")
+        if not self.model.enable_mesh_pred:
+            print("[WARN] Mesh prediction is disabled in the pipeline configuration.")
         self._mesh_predictions_buffer = {}
         self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
         os.makedirs(self._prediction_output_dir, exist_ok=True)
@@ -177,11 +176,11 @@ class OcelotInferenceModule(pl.LightningModule):
         os.makedirs(output_dir, exist_ok=True)
 
         # Extract init time for logging
-        init_time_str = self._extract_init_time_str(batch)
+        init_time_str = self.model._extract_init_time_str(batch)
 
         # Calculate forecast hours
         num_steps = len(next(iter(predictions.values())))
-        latent_step_hours = self.latent_step_hours
+        latent_step_hours = self.model.latent_step_hours
         forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
 
         print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
@@ -193,11 +192,10 @@ class OcelotInferenceModule(pl.LightningModule):
             base_inst_name = inst_name.replace('_target', '')
 
             # Get target variables (only the ones we want to predict on mesh)
-            mesh_vars = self.mesh_variable_config.get('variables', {}).get(inst_name, [])
+            mesh_vars = self.model.mesh_prediction_config.variables.get(inst_name, [])
 
             # Get ALL features and find indices of target variables
-            obs_type = "satellite" if inst_name in self.observation_config.get("satellite", {}) else "conventional"
-            all_features = self.observation_config[obs_type][inst_name]['features']
+            all_features = self.model.instrument_catalog.get(inst_name).feature_names
 
             # Find indices of target variables
             mesh_indices = [i for i, feat in enumerate(all_features) if feat in mesh_vars]
@@ -205,7 +203,7 @@ class OcelotInferenceModule(pl.LightningModule):
             for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
                 # Unnormalize using existing method
                 node_type = f"{inst_name}_target"
-                pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
+                pred_unnorm = self.model.unnormalize_standardscaler(pred_tensor, node_type)
                 pred_np = pred_unnorm.detach().cpu().numpy()
 
                 df = pd.DataFrame({
@@ -217,11 +215,11 @@ class OcelotInferenceModule(pl.LightningModule):
                 # Only add pressure columns for instruments that use pressure-level conditioning
                 if base_inst_name in ['radiosonde', 'aircraft']:
                     STANDARD_PRESSURE_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
-                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.mesh_pressure_level_idx]
+                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.model.mesh_pressure_level_idx]
                     log_pressure_height = -8000.0 * np.log(np.clip(pressure_hpa, 1.0, 1100.0) / 1013.25)
 
                     df['pressure_hPa'] = pressure_hpa
-                    df['pressure_level_idx'] = self.mesh_pressure_level_idx
+                    df['pressure_level_idx'] = self.model.mesh_pressure_level_idx
                     df['pressure_level_label'] = f"{pressure_hpa}hPa"
                     df['log_pressure_height_m'] = log_pressure_height
                     df['log_pressure_height_norm'] = log_pressure_height / 20000.0

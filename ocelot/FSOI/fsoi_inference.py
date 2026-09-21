@@ -38,6 +38,9 @@ import lightning.pytorch as pl  # noqa: E402
 from torch_geometric.loader import DataLoader as PyGDataLoader  # noqa: E402
 
 from ocelot.model.ocelot import Ocelot  # noqa: E402
+from ocelot.configs.instrument_config import InstrumentCatalogConfig  # noqa: E402
+from ocelot.configs.model_config import ModelConfig  # noqa: E402
+from ocelot.configs.pipeline_config import PipelineConfig  # noqa: E402
 from ocelot.gnn_datamodule import GNNDataModule, BinDataset  # noqa: E402
 from ocelot.fsoi_dataset import (  # noqa: E402
     FSOIDataset,
@@ -65,9 +68,6 @@ from ocelot.fsoi_model_extensions import (  # noqa: E402
     predict_at_targets,  # Use the CORRECT graph construction method
     freeze_model_for_fsoi,
 )
-from ocelot.weight_utils import load_weights_from_yaml  # noqa: E402
-
-
 def find_checkpoint(checkpoint_path):
     """
     Find checkpoint file from path or directory.
@@ -176,7 +176,8 @@ def compute_fsoi_for_pair(
     prev_batch,
     curr_batch,
     fsoi_config: dict,
-    observation_config: dict,
+    instrument_catalog,
+    pipeline_config,
     instrument_weights: dict,
     channel_weights: dict,
     pair_idx: int,
@@ -193,7 +194,8 @@ def compute_fsoi_for_pair(
         prev_batch: Previous window batch (k-1)
         curr_batch: Current window batch (k)
         fsoi_config: FSOI configuration dict
-        observation_config: Observation configuration dict
+        instrument_catalog: Typed instrument catalog
+        pipeline_config: Typed pipeline configuration
         instrument_weights: Weight per instrument
         channel_weights: Weight per channel
         pair_idx: Index of this pair (for logging)
@@ -273,7 +275,8 @@ def compute_fsoi_for_pair(
         print("[FSOI Strategy] Extracting observation CHANNELS from current INPUT nodes")
         xa = get_fsoi_inputs(
             curr_batch,
-            observation_config,
+            instrument_catalog,
+            pipeline_config,
             model.instrument_name_to_id,
             match_targets=False,  # Unused parameter (kept for compatibility)
         )
@@ -283,7 +286,7 @@ def compute_fsoi_for_pair(
             continue
 
         # Extract metadata (pressure levels, lat/lon, etc.)
-        metadata = get_fsoi_metadata(curr_batch, observation_config)
+        metadata = get_fsoi_metadata(curr_batch, instrument_catalog, pipeline_config)
 
         # Propagate target pressure to all instruments for downstream plotting/aggregation
         target_pressure_level = None
@@ -356,7 +359,8 @@ def compute_fsoi_for_pair(
             model,
             prev_batch,
             curr_batch,  # Pass curr_batch for INPUT locations and metadata
-            observation_config,  # Pass config for proper channel/metadata handling
+            instrument_catalog,
+            pipeline_config,
             forecast_step=lead_step,
             keep_instruments=keep_x_instruments,  # Only predict for instruments in xa
             max_decoder_nodes=max_decoder_nodes,  # Cap heavy decoder instruments
@@ -381,7 +385,7 @@ def compute_fsoi_for_pair(
                       f"(matched to xb subsample)")
 
         # Optionally zero specific channels (e.g., aircraft humidity) at inference time
-        zero_feature_columns(xa, observation_config, feature_mask_map)
+        zero_feature_columns(xa, instrument_catalog, feature_mask_map)
 
         # Enable gradients for xb
         # NOTE: xb is treated as an independent variable for computing ∂e/∂xb
@@ -392,7 +396,7 @@ def compute_fsoi_for_pair(
             if inst_name in xa:  # Only keep instruments that are also in xa
                 xb_tensor = tensor.clone().detach()
                 tmp = {inst_name: xb_tensor}
-                zero_feature_columns(tmp, observation_config, feature_mask_map)
+                zero_feature_columns(tmp, instrument_catalog, feature_mask_map)
                 xb_tensor = tmp[inst_name]  # pick up any new tensor zero_feature_columns may have returned
                 xb_tensor.requires_grad_(True)
                 xb[inst_name] = xb_tensor
@@ -462,7 +466,7 @@ def compute_fsoi_for_pair(
                     curr_batch=curr_batch,
                     xa=xa,
                     xb=xb,
-                    observation_config=observation_config,
+                    instrument_catalog=instrument_catalog,
                     forecast_lead_step=lead_step,
                     instrument_weights=instrument_weights,
                     channel_weights=channel_weights,
@@ -539,7 +543,7 @@ def compute_fsoi_for_pair(
                     curr_batch=curr_batch,
                     xa=xa,
                     xb=xb,
-                    observation_config=observation_config,
+                    instrument_catalog=instrument_catalog,
                     forecast_lead_step=lead_step,
                     instrument_weights=instrument_weights,
                     channel_weights=channel_weights,
@@ -575,7 +579,7 @@ def compute_fsoi_for_pair(
 
             # Replace batch inputs with xa (indexed for subsampled instruments)
             curr_batch_xa = curr_batch.clone()
-            replace_batch_inputs(curr_batch_xa, xa, observation_config,
+            replace_batch_inputs(curr_batch_xa, xa, instrument_catalog,
                                  replace_indices=subsample_indices)
 
             # Compute forecast error for analysis
@@ -625,7 +629,7 @@ def compute_fsoi_for_pair(
 
             # Replace batch inputs with xb (indexed for subsampled instruments)
             curr_batch_xb = curr_batch.clone()
-            replace_batch_inputs(curr_batch_xb, xb, observation_config,
+            replace_batch_inputs(curr_batch_xb, xb, instrument_catalog,
                                  replace_indices=subsample_indices)
 
             # Compute forecast error for background
@@ -778,10 +782,22 @@ def main():
         help="Path to FSOI configuration file",
     )
     parser.add_argument(
-        "--obs_config",
+        "--instrument_config",
         type=str,
-        default="configs/observation_config.yaml",
-        help="Path to observation configuration file",
+        default="configs/instrument_config.yaml",
+        help="Path to instrument catalog YAML",
+    )
+    parser.add_argument(
+        "--pipeline_config",
+        type=str,
+        default="configs/pipeline_config.yaml",
+        help="Path to pipeline configuration YAML",
+    )
+    parser.add_argument(
+        "--model_config",
+        type=str,
+        default="configs/model_config.yaml",
+        help="Path to model configuration YAML",
     )
     parser.add_argument(
         "--output_dir",
@@ -830,8 +846,15 @@ def main():
     # Load configurations
     print("Loading configurations...")
     fsoi_config = load_fsoi_config(args.config)
-    observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = \
-        load_weights_from_yaml(args.obs_config)
+    instrument_catalog = InstrumentCatalogConfig(args.instrument_config)
+    pipeline_config = PipelineConfig(args.pipeline_config)
+    pipeline_config.validate_instruments(instrument_catalog)
+    name_to_id = pipeline_config.instrument_name_to_id(instrument_catalog)
+    instrument_weights = pipeline_config.instrument_weights(instrument_catalog)
+    channel_weights = {
+        key: torch.tensor(value, dtype=torch.float32)
+        for key, value in pipeline_config.channel_weights(instrument_catalog).items()
+    }
 
     # Override config with command-line args
     if args.output_dir:
@@ -857,7 +880,19 @@ def main():
 
     # Load trained model
     print(f"\nLoading model from checkpoint: {checkpoint_path}")
-    model = Ocelot.load_from_checkpoint(checkpoint_path)
+    model = Ocelot(
+        ModelConfig(args.model_config),
+        instrument_catalog,
+        pipeline_config,
+    )
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    state = checkpoint.get("state_dict", checkpoint)
+    model_state = {
+        key.removeprefix("model."): value
+        for key, value in state.items()
+        if key.startswith("model.")
+    }
+    model.load_state_dict(model_state or state, strict=False)
     model.to(device)
 
     # Freeze model for FSOI
@@ -930,13 +965,12 @@ def main():
         data_path=data_path,
         start_date=fsoi_config['data']['start_date'],
         end_date=fsoi_config['data']['end_date'],
-        observation_config=observation_config,
+        instrument_catalog=instrument_catalog,
+        pipeline_config=pipeline_config,
         mesh_structure=model.mesh_structure,
         batch_size=1,  # Must be 1 for FSOI
-        feature_stats=feature_stats,
         num_neighbors=3,
         window_size="12h",
-        pipeline=None,  # No special pipeline for FSOI - use default processing
     )
 
     # Setup data
@@ -951,8 +985,8 @@ def main():
         datamodule.z,
         fsoi_config['data']['start_date'],
         fsoi_config['data']['end_date'],
-        observation_config,
-        pipeline_cfg={},
+        instrument_catalog,
+        pipeline_config,
         window_size="12h",
     )
 
@@ -971,8 +1005,8 @@ def main():
         data_summary=fsoi_summary,
         zarr_store=datamodule.z,
         create_graph_fn=create_graph_fn,
-        observation_config=observation_config,
-        feature_stats=feature_stats,
+        instrument_catalog=instrument_catalog,
+        pipeline_config=pipeline_config,
         tag="FSOI",
     )
 
@@ -1008,7 +1042,8 @@ def main():
                 prev_batch=prev_batch,
                 curr_batch=curr_batch,
                 fsoi_config=fsoi_config,
-                observation_config=observation_config,
+                instrument_catalog=instrument_catalog,
+                pipeline_config=pipeline_config,
                 instrument_weights=instrument_weights,
                 channel_weights=channel_weights,
                 pair_idx=pair_idx,

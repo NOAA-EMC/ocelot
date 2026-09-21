@@ -52,5 +52,5 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python inference/predict
     --eval-mode  # comment out to run in inference mode
     # Evaluation mode: Predict on obs-space for all instruments (AMSUA, aircraft, etc.) with ground truth comparisons.
     #                  The last timebin is held as the target bin, consistent with training.
-    # Inference mode: Predict on mesh-grid for the instruments specified in configs/mesh_config.yaml.
+    # Inference mode: Predict on mesh-grid for the instruments specified in configs/pipeline_config.yaml.
     #                 As the target bin is not used in this mode, all timebins are used as input.

@@ -16,8 +16,9 @@ sys.path.append(
 import yaml
 
 from ocelot.training import make_module
+from ocelot.configs.instrument_config import InstrumentCatalogConfig
 from ocelot.configs.model_config import ModelConfig
-from ocelot.configs.observation_config import ObservationConfig
+from ocelot.configs.pipeline_config import PipelineConfig
 from ocelot.configs.training_config import TrainingConfig
 from ocelot.gnn_datamodule import GNNDataModule
 from ocelot.logger import LogLevel, log
@@ -260,7 +261,9 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
 
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)
-    observation_config = ObservationConfig(training_config.observation_config_path)
+    instrument_catalog = InstrumentCatalogConfig(training_config.instrument_config_path)
+    pipeline_config = PipelineConfig(training_config.pipeline_config_path)
+    pipeline_config.validate_instruments(instrument_catalog)
 
     verbose = bool(verbose or training_config.verbose)
     if verbose:
@@ -278,7 +281,8 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     module = make_module(
         model_config=model_config,
         training_config=training_config,
-        observation_config=observation_config,
+        instrument_catalog=instrument_catalog,
+        pipeline_config=pipeline_config,
         verbose=verbose,
     )
 
@@ -301,13 +305,12 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
         data_path=training_config.data.path,
         start_date=windows.train_start,
         end_date=windows.initial_train_end,
-        observation_config=observation_config.observation_config,
+        instrument_catalog=instrument_catalog,
+        pipeline_config=pipeline_config,
         mesh_structure=module.model.mesh.mesh_structure,
         batch_size=training_config.data.batch_size,
         num_neighbors=training_config.data.num_neighbors,
-        feature_stats=observation_config.feature_stats,
         verbose=verbose,
-        pipeline=observation_config.pipeline,
         window_size=f"{training_config.data.window_hours}h",
         latent_step_hours=training_config.data.latent_step_hours,
         train_val_split_ratio=split_ratio,

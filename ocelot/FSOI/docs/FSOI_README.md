@@ -87,7 +87,9 @@ data:
 python FSOI/fsoi_inference.py \
     --checkpoint path/to/model.ckpt \
   --config FSOI/configs/fsoi_config.yaml \
-  --obs_config configs/observation_config.yaml \
+  --instrument_config configs/instrument_config.yaml \
+  --pipeline_config configs/pipeline_config.yaml \
+  --model_config configs/model_config.yaml \
   --start_date 2024-01-01 \
   --end_date 2024-01-31 \
     --output_dir ./FSOI/fsoi_outputs \

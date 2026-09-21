@@ -55,7 +55,7 @@ find_gnn_model_dir() {
     local start_dir="$1"
     local d="$start_dir"
     for _ in 1 2 3 4 5 6 7 8; do
-        if [ -f "$d/configs/observation_config.yaml" ] && [ -d "$d/FSOI" ]; then
+        if [ -f "$d/configs/instrument_config.yaml" ] && [ -d "$d/FSOI" ]; then
             echo "$d"
             return 0
         fi
@@ -71,7 +71,7 @@ elif [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
     if GNN_MODEL_DIR_RESOLVED="$(find_gnn_model_dir "$SLURM_SUBMIT_DIR")"; then
         :
     else
-        if [ -d "$SLURM_SUBMIT_DIR/gnn_model" ] && [ -f "$SLURM_SUBMIT_DIR/gnn_model/configs/observation_config.yaml" ]; then
+        if [ -d "$SLURM_SUBMIT_DIR/gnn_model" ] && [ -f "$SLURM_SUBMIT_DIR/gnn_model/configs/instrument_config.yaml" ]; then
             GNN_MODEL_DIR_RESOLVED="$SLURM_SUBMIT_DIR/gnn_model"
         fi
     fi

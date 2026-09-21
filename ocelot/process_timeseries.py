@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ocelot.configs.instrument_config import InstrumentCatalogConfig
+from ocelot.configs.pipeline_config import PipelineConfig
 from ocelot.timing_utils import timing_resource_decorator
 
 # Maximum number of channels supported for per-channel variable mapping
@@ -171,29 +173,6 @@ def _stable_seed(seed_base: int, bin_time: pd.Timestamp, obs_type: str, key: str
     return int(np.frombuffer(h, dtype=np.uint64)[0] % (2**32))
 
 
-def _resolve_stride_mode(subs_cfg: dict, obs_type: str, inst_name: str, default_stride: int, default_mode: str) -> tuple[int, str]:
-    """
-    Resolve (stride, mode) for a given obs_type ('satellite'|'conventional') and instrument name.
-    Supports legacy ints/strings and new per-instrument dicts with optional '_default'.
-    """
-    # stride
-    stride_spec = subs_cfg.get(obs_type, default_stride)
-    if isinstance(stride_spec, dict):
-        stride = int(stride_spec.get(inst_name, stride_spec.get("_default", default_stride)))
-    else:
-        stride = int(stride_spec)
-
-    # mode
-    mode_cfg = subs_cfg.get("mode", {}) or {}
-    mode_spec = mode_cfg.get(obs_type, default_mode)
-    if isinstance(mode_spec, dict):
-        mode = str(mode_spec.get(inst_name, mode_spec.get("_default", default_mode)))
-    else:
-        mode = str(mode_spec)
-
-    return max(1, stride), mode
-
-
 def _sampled_non_decreasing(time_arr, n_checks: int = 16) -> bool:
     """Heuristic check that `time_arr` is non-decreasing.
 
@@ -243,8 +222,8 @@ def organize_bins_times(
     z_dict,
     start_date,
     end_date,
-    observation_config,
-    pipeline_cfg=None,
+    instrument_catalog: InstrumentCatalogConfig,
+    pipeline_config: PipelineConfig,
     window_size="12h",
     latent_step_hours=12,
     require_targets=True,    # PREDICTION MODE: False for inference (no targets needed)
@@ -268,15 +247,7 @@ def organize_bins_times(
     if not window_size.endswith("h"):
         raise ValueError("window_size must end with 'h' (e.g., '6h', '12h').")
 
-    # subsampling config
-    subs_cfg = (pipeline_cfg or {}).get("subsample", {}) or {}
-    seed_base = int(subs_cfg.get("seed", 12345))
-
-    # defaults if not specified (mode defaults to "random" for both)
-    DEFAULTS = {
-        "satellite": {"stride": 25, "mode": "random"},
-        "conventional": {"stride": 20, "mode": "random"},
-    }
+    seed_base = pipeline_config.subsampling.seed
 
     # latent rollout setup
     target_hours = int(window_size[:-1])
@@ -290,8 +261,8 @@ def organize_bins_times(
 
     data_summary = {}
 
-    for obs_type in observation_config.keys():
-        for key in observation_config[obs_type].keys():
+    for key, instrument in pipeline_config.enabled(instrument_catalog):
+            obs_type = instrument.kind
             z = z_dict[obs_type][key]
 
             # --- Chunked scan to find candidate indices (time + optional sat filter) ---
@@ -314,7 +285,7 @@ def organize_bins_times(
                     continue
 
                 if obs_type == "satellite":
-                    conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                    conf_sat_ids = np.asarray(instrument.satellite_ids)
                     sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
                     sats = z[sat_id_field][left:right]
                     m = np.isin(sats, conf_sat_ids)
@@ -331,7 +302,7 @@ def organize_bins_times(
             if idx_all is None:
                 idx_parts = []
                 if obs_type == "satellite":
-                    conf_sat_ids = np.asarray(observation_config[obs_type][key]["sat_ids"])
+                    conf_sat_ids = np.asarray(instrument.satellite_ids)
                     # Handle different satellite ID field names
                     sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
                     for i0 in range(0, n_total, chunk):
@@ -402,13 +373,8 @@ def organize_bins_times(
                     print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
                 continue
 
-            # Resolve subsampling policy for this instrument
-            if obs_type == "satellite":
-                stride, mode = _resolve_stride_mode(subs_cfg, "satellite", key, DEFAULTS["satellite"]["stride"], DEFAULTS["satellite"]["mode"])
-            else:
-                stride, mode = _resolve_stride_mode(
-                    subs_cfg, "conventional", key, DEFAULTS["conventional"]["stride"], DEFAULTS["conventional"]["mode"]
-                )
+            sampling = pipeline_config.subsampling.resolve(key)
+            stride, mode = sampling.factor, sampling.mode
 
             # --- Build bins; reproducible per-bin subsampling ---
             for bi in range(n_bins):  # exclude last window as target-only
@@ -499,14 +465,6 @@ def organize_bins_times(
     return data_summary
 
 
-def _name2id(observation_config):
-    order = []
-    for obs_type in ("satellite", "conventional"):
-        if obs_type in observation_config:
-            order += sorted(observation_config[obs_type].keys())
-    return {name: i for i, name in enumerate(order)}
-
-
 # Helper that returns an empty (N,0) if there are no keys
 def _stack_or_empty(arrs, keys, idx):
     if not keys:
@@ -514,13 +472,12 @@ def _stack_or_empty(arrs, keys, idx):
     return np.column_stack([arrs[k][idx] for k in keys]).astype(np.float32)
 
 
-def _stats_from_cfg(feature_stats, inst_name, feat_keys):
+def _stats_from_cfg(instrument, feat_keys):
     """Return (means, stds) for this instrument/feature order or (None, None) if missing."""
-    if feature_stats is None or inst_name not in feature_stats:
-        return None, None
     try:
-        means = np.array([feature_stats[inst_name][k][0] for k in feat_keys], dtype=np.float32)
-        stds = np.array([feature_stats[inst_name][k][1] for k in feat_keys], dtype=np.float32)
+        stats = instrument.feature_stats
+        means = np.array([stats[k][0] for k in feat_keys], dtype=np.float32)
+        stds = np.array([stats[k][1] for k in feat_keys], dtype=np.float32)
     except Exception:
         return None, None
     stds[(stds == 0) | ~np.isfinite(stds)] = 1.0
@@ -533,8 +490,8 @@ def extract_features(
     z_dict,
     data_summary,
     bin_name,
-    observation_config,
-    feature_stats=None,
+    instrument_catalog: InstrumentCatalogConfig,
+    pipeline_config: PipelineConfig,
     require_targets=True,
     include_persistence_inputs=False,
 ):
@@ -565,12 +522,12 @@ def extract_features(
                 continue
 
             # --- Level selection ---
-            obs_cfg = observation_config[obs_type][inst_name]
-            level_selection = obs_cfg.get('level_selection')
+            instrument = instrument_catalog.get(inst_name)
+            level_selection = instrument.level_selection
 
             if level_selection:
                 # Check if we should use all levels (skip filtering)
-                matching_mode = level_selection.get('matching_mode', 'exact')
+                matching_mode = level_selection.matching_mode
 
                 # Support for using ALL pressure levels
                 if matching_mode == 'all' or matching_mode == 'none':
@@ -578,8 +535,8 @@ def extract_features(
                     pass
                 else:
                     # Original behavior: filter to specific levels
-                    col = level_selection["filter_col"]
-                    levels = np.asarray(level_selection["levels"])
+                    col = level_selection.filter_col
+                    levels = np.asarray(level_selection.levels)
 
                     if input_idx.size:
                         input_idx = input_idx[np.isin(z[col][input_idx], levels)]
@@ -588,9 +545,9 @@ def extract_features(
                             target_indices_list[i] = idx[np.isin(z[col][idx], levels)]
 
             # --- Config & feature ordering ---
-            qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
-            feat_keys = obs_cfg["features"]
-            meta_keys = obs_cfg.get("metadata") or []
+            qc_filters = instrument.qc_filters
+            feat_keys = instrument.feature_names
+            meta_keys = instrument.metadata
             feat_pos = {k: i for i, k in enumerate(feat_keys)}
             n_ch = len(feat_keys)
 
@@ -614,10 +571,10 @@ def extract_features(
             if qc_filters:
                 print(f"Applying QC for {inst_name}...")
                 for var, cfg in qc_filters.items():
-                    rng = cfg.get("range") if isinstance(cfg, dict) else (cfg if isinstance(cfg, (list, tuple)) else None)
-                    flag_col = cfg.get("qm_flag_col") if isinstance(cfg, dict) else None
-                    keep = set(cfg.get("keep", [])) if isinstance(cfg, dict) else None
-                    reject = set(cfg.get("reject", [])) if isinstance(cfg, dict) else None
+                    rng = cfg.range
+                    flag_col = cfg.qm_flag_col
+                    keep = set(cfg.keep) if cfg.keep is not None else None
+                    reject = set(cfg.reject) if cfg.reject is not None else None
                     pos = feat_pos.get(var, None)
                     meta_j = meta_pos.get(var, None) if n_meta else None
                     # Map per-channel variables to channel indices (generic pattern for any instrument)
@@ -635,7 +592,7 @@ def extract_features(
                         in_vals = z[var][input_idx]
                         if meta_j is not None:
                             # Metadata range QC: either invalidate, or (if clip=True) record a clip spec.
-                            if isinstance(cfg, dict) and bool(cfg.get("clip", False)):
+                            if cfg.clip:
                                 meta_clip_specs[int(meta_j)] = (float(lo), float(hi))
                             else:
                                 input_valid_meta[:, meta_j] &= (in_vals >= lo) & (in_vals <= hi)
@@ -654,7 +611,7 @@ def extract_features(
                                 continue
                             tg_vals = z[var][target_idx]
                             if meta_j is not None:
-                                if not (isinstance(cfg, dict) and bool(cfg.get("clip", False))):
+                                if not cfg.clip:
                                     target_valid_meta_list[step][:, meta_j] &= (tg_vals >= lo) & (tg_vals <= hi)
                             elif pos is not None:
                                 target_valid_ch_list[step][:, pos] &= (tg_vals >= lo) & (tg_vals <= hi)
@@ -668,18 +625,18 @@ def extract_features(
                                         wd_ok_tg_list[step] & ((tg_vals >= lo) & (tg_vals <= hi)))
 
                     # --- flag QC ---
-                    if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
+                    if flag_col and (keep is not None or reject is not None) and (flag_col in z):
                         # Missing QC flags handling:
                         # - obs_cfg.qc_strict_flags applies instrument-wide
                         # - cfg.strict_flags can override per variable (useful for metadata like height)
-                        strict_flags = bool(cfg.get("strict_flags", obs_cfg.get("qc_strict_flags", False)))
+                        strict_flags = cfg.require_flag_column or instrument.require_all_flag_columns
 
                         # Apply to inputs
                         in_flags = z[flag_col][input_idx]
-                        if "reject" in cfg:
-                            keep_in = ~np.isin(in_flags, list(cfg["reject"]))          # reject listed flags
+                        if reject is not None:
+                            keep_in = ~np.isin(in_flags, list(reject))                 # reject listed flags
                         else:
-                            keep_in = np.isin(in_flags, list(cfg["keep"]))             # keep listed flags
+                            keep_in = np.isin(in_flags, list(keep))                    # keep listed flags
                         if not strict_flags:
                             keep_in = keep_in | (in_flags < 0)                         # accept missing when not strict
 
@@ -698,10 +655,10 @@ def extract_features(
                             if target_idx.size == 0:
                                 continue
                             tg_flags = z[flag_col][target_idx]
-                            if "reject" in cfg:
-                                keep_tg = ~np.isin(tg_flags, list(cfg["reject"]))
+                            if reject is not None:
+                                keep_tg = ~np.isin(tg_flags, list(reject))
                             else:
-                                keep_tg = np.isin(tg_flags, list(cfg["keep"]))
+                                keep_tg = np.isin(tg_flags, list(keep))
                             if not strict_flags:
                                 keep_tg = keep_tg | (tg_flags < 0)
 
@@ -798,7 +755,7 @@ def extract_features(
             input_times_raw = z["time"][input_idx]
 
             # Satellite ID extraction (optional; used as explicit feature for instruments that expect sat_id one-hot)
-            sat_ids_cfg = obs_cfg.get("sat_ids", None)
+            sat_ids_cfg = instrument.satellite_ids
             sat_id_field = None
             input_sat_ids_raw = None
             if obs_type == "satellite" and sat_ids_cfg:
@@ -878,7 +835,7 @@ def extract_features(
                             target_metadata_raw[:, j] = np.where(np.isfinite(col), np.clip(col, lo, hi), col)
 
             # -------------------- EXTRA CROSS-VARIABLE QC (following original pattern) --------------------
-            rel = obs_cfg.get("qc_relations") or {}
+            rel = instrument.qc_relations
 
             def _es_hpa(Tc):
                 # Magnus (over water); Tc in °C → hPa
@@ -899,7 +856,7 @@ def extract_features(
                         continue
 
                     # -- Td ≤ T (+0.5) and spread cap --
-                    if rel.get("dewpoint_le_temp", False) and "airTemperature" in feat_pos and "dewPointTemperature" in feat_pos:
+                    if rel and rel.dewpoint_le_temp and "airTemperature" in feat_pos and "dewPointTemperature" in feat_pos:
                         jT = feat_pos["airTemperature"]
                         jTd = feat_pos["dewPointTemperature"]
                         for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
@@ -908,14 +865,16 @@ def extract_features(
                             T, Td = arr[:, jT], arr[:, jTd]
                             m = np.isfinite(T) & np.isfinite(Td)
                             bad_hi = m & (Td > T + 0.5)
-                            bad_spread = m & ((T - Td) > float(rel.get("max_temp_dewpoint_spread", 60.0)))
+                            spread = rel.max_temp_dewpoint_spread if rel.max_temp_dewpoint_spread is not None else 60.0
+                            bad_spread = m & ((T - Td) > float(spread))
                             bad = bad_hi | bad_spread
                             if np.any(bad):
                                 mask[bad, jTd] = False
 
                     # -- RH vs Td consistency --
                     if (
-                        np.isfinite(float(rel.get("rh_from_td_consistency_pct", np.nan))) and
+                        rel is not None and
+                        np.isfinite(float(rel.rh_from_td_consistency_pct or np.nan)) and
                         "relativeHumidity" in feat_pos and
                         "airTemperature" in feat_pos and
                         "dewPointTemperature" in feat_pos
@@ -930,14 +889,14 @@ def extract_features(
                                 continue
                             RH_star = 100.0 * (_es_hpa(Td[m]) / _es_hpa(T[m]))
                             bad = np.zeros(RH.shape, dtype=bool)
-                            bad[m] = np.abs(RH[m] - RH_star) > float(rel.get("rh_from_td_consistency_pct"))
+                            bad[m] = np.abs(RH[m] - RH_star) > float(rel.rh_from_td_consistency_pct)
                             if np.any(bad):
                                 mask[bad, jRH] = False
 
                     # -- Pressure vs height --
-                    pvh = rel.get("pressure_vs_height") or {}
+                    pvh = rel.pressure_vs_height if rel is not None else None
                     # Allow flexible column names (e.g. airPressure_prepbufr_event_1, height_prepbufr_event_1)
-                    if pvh.get("enable", False):
+                    if pvh is not None and pvh.enable:
                         jP = None
                         for k in feat_keys:
                             if "airpressure" in k.lower():
@@ -950,8 +909,8 @@ def extract_features(
                                 jH = j
                                 break
 
-                    if pvh.get("enable", False) and jP is not None and jH is not None:
-                        H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
+                    if pvh is not None and pvh.enable and jP is not None and jH is not None:
+                        H, tol_hpa = float(pvh.scale_height_m), float(pvh.tolerance_hpa)
                         for feat_arr, meta_arr, vmask in (
                             (input_features_raw, input_metadata_raw, input_valid_ch),
                             (target_features_raw, target_metadata_raw, target_valid_ch)
@@ -1105,7 +1064,7 @@ def extract_features(
             input_cos_time = np.cos(2 * np.pi * input_time_fraction)[:, None]
 
             # -------------------- Normalization (using ALL target data for stats) --------------------
-            means, stds = _stats_from_cfg(feature_stats, inst_name, feat_keys)
+            means, stds = _stats_from_cfg(instrument, feat_keys)
 
             if means is None or stds is None:
                 # Fallback: compute per-bin stats using input + ALL targets combined
@@ -1153,7 +1112,7 @@ def extract_features(
 
                 # Append sat_id one-hot ONLY when the configured input_dim indicates it is expected.
                 # This keeps backward compatibility for instruments whose input_dim does not include sat_id columns.
-                expected_input_dim = obs_cfg.get("input_dim", None)
+                expected_input_dim = instrument.input_dim
                 if sat_ids_cfg and expected_input_dim is not None:
                     sat_ids_cfg_list = [int(x) for x in sat_ids_cfg]
                     k = len(sat_ids_cfg_list)
@@ -1185,7 +1144,7 @@ def extract_features(
                     target_data = target_data_cleaned[step]
 
                     if target_data['features'].shape[0] == 0:
-                        scan_cols = obs_cfg.get("scan_angle_channels", 1)
+                        scan_cols = instrument.scan_angle_channels
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
                         target_metadata_list.append(torch.empty(0, len(meta_keys) + 2 + TARGET_TIME_FEATURE_DIM, dtype=torch.float32))
                         scan_angle_list.append(torch.empty(0, scan_cols, dtype=torch.float32))
@@ -1212,7 +1171,7 @@ def extract_features(
                     target_features_final = np.nan_to_num(target_features_norm, nan=0.0).astype(np.float32)
 
                     # Handle scan angle geometry (config-driven)
-                    scan_cols = obs_cfg.get("scan_angle_channels", 1)
+                    scan_cols = instrument.scan_angle_channels
                     if target_metadata_cos.shape[1] >= scan_cols:
                         scan_angle = target_metadata_cos[:, 0:scan_cols].astype(np.float32)
                     else:
@@ -1371,7 +1330,7 @@ def extract_features(
             if inst_name in ['radiosonde', 'aircraft'] and target_pressure_level_list_filtered:
                 data_summary_bin["target_pressure_level_list"] = target_pressure_level_list_filtered
 
-            NAME2ID = _name2id(observation_config)
+            NAME2ID = pipeline_config.instrument_name_to_id(instrument_catalog)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]
 
             # Print summary

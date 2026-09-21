@@ -45,7 +45,9 @@ cd /scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/FSOI/ocelot/gnn_model
 
 python FSOI/fsoi_inference.py \
    --config FSOI/configs/fsoi_config_radiosonde_temp.yaml \
-   --obs_config configs/observation_config.yaml \
+   --instrument_config configs/instrument_config.yaml \
+   --pipeline_config configs/pipeline_config.yaml \
+   --model_config configs/model_config.yaml \
    --checkpoint checkpoints/ \
    --start_date 2024-01-01 \
    --end_date 2024-01-07

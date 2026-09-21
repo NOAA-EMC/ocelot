@@ -91,8 +91,8 @@ class BinDataset(Dataset):
         data_summary,
         zarr_store,
         create_graph_fn,
-        observation_config,
-        feature_stats=None,
+        instrument_catalog,
+        pipeline_config,
         require_targets=True,
         include_persistence_inputs=False,
         tag="TRAIN",
@@ -102,8 +102,8 @@ class BinDataset(Dataset):
         self.data_summary = data_summary
         self.z = zarr_store
         self.create_graph_fn = create_graph_fn
-        self.observation_config = observation_config
-        self.feature_stats = feature_stats
+        self.instrument_catalog = instrument_catalog
+        self.pipeline_config = pipeline_config
         self.require_targets = require_targets
         self.include_persistence_inputs = bool(include_persistence_inputs)
         self.tag = tag
@@ -122,8 +122,8 @@ class BinDataset(Dataset):
                 self.z,
                 self.data_summary,
                 bin_name,
-                self.observation_config,
-                feature_stats=self.feature_stats,
+                self.instrument_catalog,
+                self.pipeline_config,
                 require_targets=self.require_targets,
                 include_persistence_inputs=self.include_persistence_inputs,
             )
@@ -178,11 +178,11 @@ class GNNDataModule(pl.LightningDataModule):
         data_path,
         start_date,
         end_date,
-        observation_config,
+        instrument_catalog,
+        pipeline_config,
         mesh_structure,
         batch_size=1,
         num_neighbors=3,
-        feature_stats=None,
         latent_step_hours=12,       # latent rollout support
         window_size="12h",          # binning window
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
@@ -197,7 +197,9 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Normalize to int so Lightning hparams merge is stable across module/datamodule.
         latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["instrument_catalog", "pipeline_config", "mesh_structure"])
+        self.instrument_catalog = instrument_catalog
+        self.pipeline_config = pipeline_config
         self.prediction_mode = bool(prediction_mode)
         self.include_persistence_inputs = bool(prediction_mode)
 
@@ -225,8 +227,6 @@ class GNNDataModule(pl.LightningDataModule):
         self.hparams.verbose = bool(verbose)
 
         self.mesh_structure = mesh_structure
-        self.feature_stats = feature_stats
-
         # Zarr handles (stable across window changes)
         self.z = None
 
@@ -308,8 +308,14 @@ class GNNDataModule(pl.LightningDataModule):
             "window_size": str(getattr(self.hparams, "window_size", "")),
             "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
             "require_targets": bool(require_targets),
-            "observation_config": getattr(self.hparams, "observation_config", None),
-            "pipeline": getattr(self.hparams, "pipeline", None),
+            "enabled_instruments": list(self.pipeline_config.enabled_instruments),
+            "subsampling": {
+                "seed": self.pipeline_config.subsampling.seed,
+                "policies": {
+                    name: vars(self.pipeline_config.subsampling.resolve(name))
+                    for name, _ in self.pipeline_config.enabled(self.instrument_catalog)
+                },
+            },
         }
         s = json.dumps(payload, sort_keys=True, default=str)
         h = hashlib.blake2b(s.encode("utf-8"), digest_size=16).hexdigest()
@@ -326,8 +332,8 @@ class GNNDataModule(pl.LightningDataModule):
                 self.z,
                 start_dt,
                 end_dt,
-                self.hparams.observation_config,
-                pipeline_cfg=self.hparams.pipeline,
+                self.instrument_catalog,
+                self.pipeline_config,
                 window_size=self.hparams.window_size,
                 latent_step_hours=self.hparams.latent_step_hours,
                 require_targets=require_targets,
@@ -399,51 +405,47 @@ class GNNDataModule(pl.LightningDataModule):
         # Open Zarrs once
         if self.z is None:
             self.z = {}
-            for obs_type, instruments in self.hparams.observation_config.items():
-                self.z[obs_type] = {}
-                for inst_name, inst_cfg in instruments.items():
-                    src = inst_cfg.get("source", "zarr")
+            for inst_name, inst_cfg in self.pipeline_config.enabled(self.instrument_catalog):
+                obs_type = inst_cfg.kind
+                self.z.setdefault(obs_type, {})
+                src = inst_cfg.source or "zarr"
 
-                    if src == "zarr":
-                        zarr_dir = inst_cfg.get("zarr_dir")
-                        if zarr_dir:
-                            zarr_path = zarr_dir
-                        else:
-                            zname = inst_cfg.get("zarr_name", inst_name)
-                            zarr_path, used_fallback = _resolve_zarr_path(
-                                self.hparams.data_path,
-                                zname,
-                                self.hparams.start_date,
-                            )
-                            if used_fallback and rank == 0:
-                                print(
-                                    f"[ZARR] {obs_type}/{inst_name} requested year {self.hparams.start_date} "
-                                    f"not found; using available store {zarr_path}"
-                                )
-
-                        if not os.path.isdir(zarr_path):
-                            raise FileNotFoundError(f"Zarr not found: {zarr_path}")
-
-                        # Use LRU cache; ensure int for max_size
-                        store = LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=int(2e9))
-                        self.z[obs_type][inst_name] = zarr.open(store, mode="r")
-
-                        if rank == 0:
-                            print(f"[ZARR] {obs_type}/{inst_name} -> {zarr_path}")
-                            try:
-                                print("       keys:", list(self.z[obs_type][inst_name].keys())[:12])
-                            except Exception:
-                                pass
-
-                        if obs_type == "conventional" and inst_name == "surface_obs":
-                            if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
-                                print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
-
-                    else:
-                        raise ValueError(
-                            f"Unknown source '{src}' for {inst_name}. "
-                            "NNJA support has been removed from this repo; use src='zarr'."
+                if src == "zarr":
+                    zname = inst_cfg.zarr_name or inst_name
+                    zarr_path, used_fallback = _resolve_zarr_path(
+                        self.hparams.data_path,
+                        zname,
+                        self.hparams.start_date,
+                    )
+                    if used_fallback and rank == 0:
+                        print(
+                            f"[ZARR] {obs_type}/{inst_name} requested year {self.hparams.start_date} "
+                            f"not found; using available store {zarr_path}"
                         )
+
+                    if not os.path.isdir(zarr_path):
+                        raise FileNotFoundError(f"Zarr not found: {zarr_path}")
+
+                    # Use LRU cache; ensure int for max_size
+                    store = LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=int(2e9))
+                    self.z[obs_type][inst_name] = zarr.open(store, mode="r")
+
+                    if rank == 0:
+                        print(f"[ZARR] {obs_type}/{inst_name} -> {zarr_path}")
+                        try:
+                            print("       keys:", list(self.z[obs_type][inst_name].keys())[:12])
+                        except Exception:
+                            pass
+
+                    if obs_type == "conventional" and inst_name == "surface_obs":
+                        if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
+                            print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
+
+                else:
+                    raise ValueError(
+                        f"Unknown source '{src}' for {inst_name}. "
+                        "NNJA support has been removed from this repo; use src='zarr'."
+                    )
 
         if dist.is_available() and dist.is_initialized():
             dist.barrier()
@@ -542,16 +544,16 @@ class GNNDataModule(pl.LightningDataModule):
 
         # 3) Observation data and mesh connections
         # ALL instruments get the same node structure based on detected batch mode
-        for obs_type, instruments in self.hparams.observation_config.items():
-            for inst_name, inst_cfg in instruments.items():
+        for inst_name, inst_cfg in self.pipeline_config.enabled(self.instrument_catalog):
+            obs_type = inst_cfg.kind
 
-                # Check if this instrument has data for this time bin
-                if obs_type in bin_data and inst_name in bin_data[obs_type]:
-                    inst_dict = bin_data[obs_type][inst_name]
-                    self._create_latent_nodes(data, inst_name, inst_dict, num_latent_steps)
-                else:
-                    # MISSING INSTRUMENT: Create empty nodes with same structure as present instruments
-                    self._create_empty_latent_nodes(data, inst_name, inst_cfg, num_latent_steps)
+            # Check if this instrument has data for this time bin
+            if obs_type in bin_data and inst_name in bin_data[obs_type]:
+                inst_dict = bin_data[obs_type][inst_name]
+                self._create_latent_nodes(data, inst_name, inst_dict, num_latent_steps)
+            else:
+                # MISSING INSTRUMENT: Create empty nodes with same structure as present instruments
+                self._create_empty_latent_nodes(data, inst_name, inst_cfg, num_latent_steps)
 
         return data
 
@@ -651,8 +653,7 @@ class GNNDataModule(pl.LightningDataModule):
 
             # Scan angle handling per-instrument (config-driven)
             # Determine observation type to look up config
-            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
-            scan_angle_cols = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+            scan_angle_cols = self.instrument_catalog.get(inst_name).scan_angle_channels
 
             if "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
                 x_aux = inst_dict["scan_angle_list"][step][keep_t]
@@ -729,7 +730,7 @@ class GNNDataModule(pl.LightningDataModule):
         """Create empty nodes for missing instrument in latent mode."""
         # Create empty input node
         node_type_input = f"{inst_name}_input"
-        data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+        data[node_type_input].x = torch.empty((0, inst_cfg.input_dim), dtype=torch.float32)
         data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
         data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
@@ -738,16 +739,15 @@ class GNNDataModule(pl.LightningDataModule):
         # Create empty target nodes for all latent steps
         for step in range(num_latent_steps):
             node_type_target = f"{inst_name}_target_step{step}"
-            data[node_type_target].y = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.float32)
+            data[node_type_target].y = torch.empty((0, inst_cfg.target_dim), dtype=torch.float32)
             # Get scan angle dimension from config
-            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
-            scan_angle_dim = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+            scan_angle_dim = self.instrument_catalog.get(inst_name).scan_angle_channels
             data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
             # lat/lon + instrument metadata + appended target time features
-            metadata_dim = len(inst_cfg.get("metadata", [])) + LAT_LON_COLUMNS + 5
+            metadata_dim = len(inst_cfg.metadata) + LAT_LON_COLUMNS + 5
             data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
             data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
-            data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg["target_dim"]), dtype=torch.bool)
+            data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg.target_dim), dtype=torch.bool)
             data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
             data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
             data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float32)
@@ -772,8 +772,8 @@ class GNNDataModule(pl.LightningDataModule):
             self.train_data_summary,
             self.z,
             self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
+            self.instrument_catalog,
+            self.pipeline_config,
             require_targets=True,  # Training always requires targets
             include_persistence_inputs=False,
             tag="TRAIN",
@@ -799,8 +799,8 @@ class GNNDataModule(pl.LightningDataModule):
             self.val_data_summary,
             self.z,
             self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
+            self.instrument_catalog,
+            self.pipeline_config,
             require_targets=True,  # Validation requires targets for comparison
             include_persistence_inputs=self.include_persistence_inputs,
             tag="VAL",
@@ -837,8 +837,8 @@ class GNNDataModule(pl.LightningDataModule):
             self.val_data_summary,
             self.z,
             self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
+            self.instrument_catalog,
+            self.pipeline_config,
             require_targets=self.require_targets,  # Use datamodule's require_targets setting
             include_persistence_inputs=self.include_persistence_inputs,
             tag="PREDICT",
@@ -876,8 +876,8 @@ class GNNDataModule(pl.LightningDataModule):
             self.val_data_summary,
             self.z,
             self._create_graph_structure,
-            self.hparams.observation_config,
-            feature_stats=self.feature_stats,
+            self.instrument_catalog,
+            self.pipeline_config,
             require_targets=self.require_targets,
             include_persistence_inputs=self.include_persistence_inputs,
             tag="FSOI",

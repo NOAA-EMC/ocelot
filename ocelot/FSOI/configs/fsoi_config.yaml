@@ -13,7 +13,7 @@ forecast:
   target_instruments: "all"
 
   # Weighting scheme for forecast error
-  # Uses the same instrument_weights and channel_weights from observation_config.yaml
+  # Uses instrument and channel weights from the instrument and pipeline configs.
   use_instrument_weights: true
   use_channel_weights: true
 

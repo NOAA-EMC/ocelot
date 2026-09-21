@@ -5,35 +5,36 @@ The training script then loads these pre-computed edges instead of calling
 obs_mesh_conn at runtime.
 
 Usage:
-    python precompute_mesh_edges.py --config configs/mesh_config.yaml --output mesh_pred_edges.npz
+    python precompute_mesh_edges.py --model-config configs/model_config.yaml --pipeline-config configs/pipeline_config.yaml
 """
 
 import argparse
 import numpy as np
 import torch
-import yaml
 from create_mesh_graph_global import create_mesh, obs_mesh_conn
+from ocelot.configs.model_config import ModelConfig
+from ocelot.configs.pipeline_config import PipelineConfig
 
 
-def precompute_edges(mesh_config_path, output_path, mesh_resolution=6):
+def precompute_edges(model_config_path, pipeline_config_path, output_path):
     """
     Pre-compute mesh prediction edges and save to file.
 
     Args:
-        mesh_config_path: Path to mesh_config.yaml
+        model_config_path: Path to model configuration YAML
+        pipeline_config_path: Path to pipeline configuration YAML
         output_path: Path to output .npz file
-        mesh_resolution: Mesh resolution (default: 6)
     """
-    # Load mesh configuration
-    print(f"Loading config from {mesh_config_path}...")
-    with open(mesh_config_path, 'r') as f:
-        mesh_config = yaml.safe_load(f)
+    print(f"Loading configs from {model_config_path} and {pipeline_config_path}...")
+    model_config = ModelConfig(model_config_path)
+    pipeline_config = PipelineConfig(pipeline_config_path)
+    mesh_prediction = pipeline_config.outputs.mesh_prediction
 
-    if not mesh_config.get('enable_mesh_pred', False):
+    if not mesh_prediction.enabled:
         print("Mesh-grid variables not enabled in config. Exiting.")
         return
 
-    mesh_instruments = list(mesh_config.get('variables', {}).keys())
+    mesh_instruments = list(mesh_prediction.variables)
     print(f"Mesh-grid instruments: {mesh_instruments}")
 
     if not mesh_instruments:
@@ -41,8 +42,14 @@ def precompute_edges(mesh_config_path, output_path, mesh_resolution=6):
         return
 
     # Create mesh structure
-    print(f"Creating mesh with resolution {mesh_resolution}...")
-    mesh_structure = create_mesh(splits=mesh_resolution, levels=4, hierarchical=False, plot=False)
+    mesh_config = model_config.mesh
+    print(f"Creating mesh with resolution {mesh_config.resolution}...")
+    mesh_structure = create_mesh(
+        splits=mesh_config.resolution,
+        levels=mesh_config.levels,
+        hierarchical=mesh_config.type == "hierarchical",
+        plot=False,
+    )
 
     # Get mesh coordinates (mesh grid points)
     mesh_latlon = mesh_structure["mesh_lat_lon_list"][-1]
@@ -104,10 +111,16 @@ def precompute_edges(mesh_config_path, output_path, mesh_resolution=6):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pre-compute mesh prediction edges")
     parser.add_argument(
-        "--config",
+        "--model-config",
         type=str,
-        default="configs/mesh_config.yaml",
-        help="Path to mesh config YAML file"
+        default="configs/model_config.yaml",
+        help="Path to model config YAML file"
+    )
+    parser.add_argument(
+        "--pipeline-config",
+        type=str,
+        default="configs/pipeline_config.yaml",
+        help="Path to pipeline config YAML file"
     )
     parser.add_argument(
         "--output",
@@ -115,12 +128,5 @@ if __name__ == "__main__":
         default="mesh_pred_edges.npz",
         help="Output path for .npz file"
     )
-    parser.add_argument(
-        "--mesh_resolution",
-        type=int,
-        default=6,
-        help="Mesh resolution (default: 6)"
-    )
-
     args = parser.parse_args()
-    precompute_edges(args.config, args.output, args.mesh_resolution)
+    precompute_edges(args.model_config, args.pipeline_config, args.output)

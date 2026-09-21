@@ -24,43 +24,43 @@ class BipartiteGAT(nn.Module):
 
     def __init__(self, coder_config: GatCoderConfig):
         super().__init__()
+        self.coder_config = coder_config
+
+        # bipartite GATs consume the computed spatial edge_attr
+        # directly, with edge_dim (GraphCast-style features are 4-dim).
+        if self.coder_config.edge_dim <= 0:
+            raise ValueError(
+                f"bipartite GAT edge_dim must be > 0 (gat: {self.coder_config.edge_dim})"
+            )
+
         self.layers = nn.ModuleList()
         self.norms = nn.ModuleList()
-        self.dropout = nn.Dropout(coder_config.dropout)
+        self.dropout = nn.Dropout(self.coder_config.dropout)
 
-        # For very large bipartite graphs (e.g., mesh -> satellite targets),
-        # PyG's GATv2Conv builds per-edge attention tensors that can exceed GPU memory.
-        # We mitigate this by chunking over destination nodes (dst) so peak edge
-        # attention memory is bounded. Chunking preserves exact results as long as
-        # all incoming edges for a dst node are processed together.
-        self.dst_chunk_size = coder_config.dst_chunk_size
-        self.dst_chunk_threshold = coder_config.dst_chunk_threshold
-        self.use_activation_checkpointing = coder_config.use_activation_checkpointing
-
-        in_src = coder_config.send_dim
-        in_dst = coder_config.rec_dim
-        for li in range(coder_config.layers):
+        in_src = self.coder_config.send_dim
+        in_dst = self.coder_config.rec_dim
+        for li in range(self.coder_config.layers):
             conv = GATv2Conv(
                 in_channels=(in_src, in_dst),   # bipartite (src,dst)
-                out_channels=coder_config.hidden_dim,
-                heads=coder_config.heads,
-                dropout=coder_config.dropout,
+                out_channels=self.coder_config.hidden_dim,
+                heads=self.coder_config.heads,
+                dropout=self.coder_config.dropout,
                 concat=False,                   # shape = [N_dst, hidden_dim]
-                edge_dim=coder_config.edge_dim,              # use edge_attr in attention if provided
+                edge_dim=self.coder_config.edge_dim,              # use edge_attr in attention if provided
                 share_weights=False,
                 add_self_loops=False,           # we are bipartite; no self loops
             )
             self.layers.append(conv)
-            self.norms.append(nn.LayerNorm(coder_config.hidden_dim))
+            self.norms.append(nn.LayerNorm(self.coder_config.hidden_dim))
 
             # after first layer, both sides live in hidden_dim
-            in_src = coder_config.hidden_dim
-            in_dst = coder_config.hidden_dim
+            in_src = self.coder_config.hidden_dim
+            in_dst = self.coder_config.hidden_dim
 
         # if the very first dst dim != hidden_dim, build a projection for residual
         self.res_proj = (
-            nn.Linear(coder_config.rec_dim, coder_config.hidden_dim)
-            if coder_config.rec_dim != coder_config.hidden_dim else nn.Identity()
+            nn.Linear(self.coder_config.rec_dim, self.coder_config.hidden_dim)
+            if self.coder_config.rec_dim != self.coder_config.hidden_dim else nn.Identity()
         )
 
     @property
@@ -98,13 +98,20 @@ class BipartiteGAT(nn.Module):
 
         E = int(edge_index.size(1))
 
+
+        # For very large bipartite graphs (e.g., mesh -> satellite targets),
+        # PyG's GATv2Conv builds per-edge attention tensors that can exceed GPU memory.
+        # We mitigate this by chunking over destination nodes (dst) so peak edge
+        # attention memory is bounded. Chunking preserves exact results as long as
+        # all incoming edges for a dst node are processed together.
+        
         # Heuristic chunk size selection.
         # If dst_chunk_size is not provided, use an auto chunk size for huge dst.
-        chunk_size = self.dst_chunk_size
-        if chunk_size is None and N_dst >= self.dst_chunk_threshold:
+        chunk_size = self.coder_config.dst_chunk_size
+        if chunk_size is None and N_dst >= self.coder_config.dst_chunk_threshold:
             chunk_size = 10_000
 
-        use_chunking = chunk_size is not None and N_dst >= self.dst_chunk_threshold
+        use_chunking = chunk_size is not None and N_dst >= self.coder_config.dst_chunk_threshold
 
         if not use_chunking:
             res0 = self.res_proj(x_dst)
@@ -175,7 +182,7 @@ class BipartiteGAT(nn.Module):
                         ei = ei.clone()
                         ei[1] = ei[1] - dst_start
 
-                if self.training and self.use_activation_checkpointing:
+                if self.training and self.coder_config.use_activation_checkpointing:
                     # `checkpoint.checkpoint` only accepts Tensor inputs; `edge_attr` may be None.
                     if ea is None:
                         def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor) -> torch.Tensor:
@@ -244,9 +251,9 @@ class BipartiteGAT(nn.Module):
                     msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
             print(msg)
 
-        if not self.use_bipartite_edge_attr:
+        if not self.coder_config.edge_dim:
             _maybe_print("disabled")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
 
         edge_rep = None
         try:
@@ -257,26 +264,26 @@ class BipartiteGAT(nn.Module):
 
         if edge_rep is None:
             _maybe_print("missing")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
 
         if torch.is_tensor(edge_rep) and edge_rep.numel() == 0:
             _maybe_print("empty")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
 
         if not torch.is_tensor(edge_rep):
             _maybe_print("non_tensor")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
 
         if edge_rep.size(0) != E:
             _maybe_print(f"edge_count_mismatch(edge_attr={int(edge_rep.size(0))})")
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
 
         edge_rep = edge_rep.to(device=device, dtype=dtype)
-        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.bipartite_edge_attr_dim)
+        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.coder_config.edge_dim)
 
-        if edge_rep.size(-1) != self.bipartite_edge_attr_dim:
+        if edge_rep.size(-1) != self.coder_config.edge_dim:
             _maybe_print(f"dim_mismatch(edge_attr={int(edge_rep.size(-1))})", edge_rep)
-            return torch.zeros((E, self.bipartite_edge_attr_dim), device=device, dtype=dtype)
+            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
 
         _maybe_print("ok", edge_rep)
         return edge_rep

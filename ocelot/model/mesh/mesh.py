@@ -138,7 +138,7 @@ class Mesh(torch.nn.Module):
         self.mesh_features_torch: torch.tensor = None
         self.mesh_lat_lon_torch: torch.tensor = None
 
-        self._create_mesh(levels=mesh_config.levels, splits=mesh_config.resolution)
+        self._create_mesh(levels=mesh_config.levels, splits=self.resolution)
     
     @property
     def mesh_structure(self) -> dict:
