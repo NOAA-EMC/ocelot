@@ -33,7 +33,6 @@ def merge_zarr_datasets(zarr_files: list[str], output_dir: str, data_type: str):
     
     ChunkSize = 1024  # Define a reasonable chunk size for appending
 
-    print ('**** ', zarr_files[0])
     # Open the first zarr file to get the structure
     first_zarr = zarr.open(zarr_files[0], mode='r')
 
@@ -104,3 +103,4 @@ if __name__ == "__main__":
 
     zarr_files = find_zarr_files(input_dir, data_type)
     merge_zarr_datasets(zarr_files, output_dir, data_type)
+
