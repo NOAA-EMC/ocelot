@@ -12,7 +12,20 @@ def find_zarr_files(input_dir, data_type) -> list[str]:
     pattern = os.path.join(input_dir, f"{data_type}_*.zarr")
     zarr_files = glob(pattern)
     zarr_files.sort()  # Sort by filename which includes year
-    return zarr_files
+
+    # filter out invalid zarr files
+    filtered_zarr_files = []
+    for zarr_file in zarr_files:
+        try:
+            with zarr.open(zarr_file, 'r') as f:
+                pass
+        except:
+            print (f'Invalid ZARR file {zarr_file}')
+            continue
+
+        filtered_zarr_files.append(zarr_file)
+
+    return filtered_zarr_files
 
 def merge_zarr_datasets(zarr_files: list[str], output_dir: str, data_type: str):
     if not zarr_files:
@@ -20,6 +33,7 @@ def merge_zarr_datasets(zarr_files: list[str], output_dir: str, data_type: str):
     
     ChunkSize = 1024  # Define a reasonable chunk size for appending
 
+    print ('**** ', zarr_files[0])
     # Open the first zarr file to get the structure
     first_zarr = zarr.open(zarr_files[0], mode='r')
 
