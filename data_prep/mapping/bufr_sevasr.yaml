@@ -27,17 +27,13 @@ bufr:
 
     # Early 2022 sevasr data has 12 channels for some reason (inconsistent)... 
     # So we filter it to 11 here.
-    bt_all:
+    bt:
       query: "*/RPSEQ10{1-11}/TMBRST[1]"
-
-    bt_clear:
-      query: "*/RPSEQ10{1-11}/TMBRST[2]"
 
 encoder:
   dimensions:
     - name: ch
-      paths: 
-        - "*/RPSEQ7{1-11}"
+      paths:
         - "*/RPSEQ10{1-11}"
         
   variables:
@@ -72,13 +68,7 @@ encoder:
       longName: "Satellite Zenith Angle"
       units: "degree"
 
-    - name: "bt_all"
-      source: variables/bt_all
+    - name: "bt"
+      source: variables/bt
       longName: "Brightness Temperature"
       units: "K"
-
-    - name: "bt_clear"
-      source: variables/bt_clear
-      longName: "Brightness Temperature"
-      units: "K"
-

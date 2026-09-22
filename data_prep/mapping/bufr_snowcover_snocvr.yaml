@@ -47,7 +47,6 @@ encoder:
       source: variables/groundState
       longName: "Ground State"
       description: "Type of ground cover (e.g., snow, ice, water, vegetation)"
-      units: "1"  # Dimensionless
 
     - name: "longitude"
       source: variables/longitude
@@ -63,7 +62,7 @@ encoder:
     - name: "airTemperature"
       source: variables/airTemperature
       longName: "Air Temperature"
-      units: "C"
+      units: "deg C"
 
     - name: "height"
       source: variables/height

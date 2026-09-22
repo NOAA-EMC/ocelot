@@ -1,0 +1,87 @@
+# FSOI Configuration
+# Forecast Sensitivity to Observations Impact (FSOI) Configuration
+
+# Forecast scoring parameters
+forecast:
+  # Which latent rollout step(s) to score (0-indexed)
+  # Step 0 = first forecast window (+12h if latent_step_hours=12)
+  # Step 1 = second forecast window (+24h if latent_step_hours=12)
+  lead_steps: [0]  # List of steps to compute FSOI for
+
+  # Which target variables to include in the error metric
+  # Options: "all" or list of instrument names (e.g., ["atms", "amsua"])
+  target_instruments: "all"
+
+  # Weighting scheme for forecast error
+  # Uses the same instrument_weights and channel_weights from observation_config.yaml
+  use_instrument_weights: true
+  use_channel_weights: true
+
+  # Optional: apply area-weighting by latitude (cosine weighting)
+  use_area_weights: true
+
+# Data processing parameters
+data:
+  # Date range for FSOI computation
+  start_date: "2024-01-01"
+  end_date: "2024-01-31"
+
+  # Must be single GPU for sequential processing
+  batch_size: 1
+  num_workers: 1  # Keep low for stability
+
+  # Output paths
+  output_dir: "./FSOI/fsoi_outputs"
+  save_per_obs_impacts: false  # Set to true for gridded maps (large files)
+
+# Model parameters
+model:
+  checkpoint_path: null  # Will be set at runtime or via command line
+
+# Aggregation options
+aggregation:
+  # Aggregate FSOI by these dimensions
+  by_instrument: true
+  by_channel: true
+  by_time: true  # Daily aggregates
+  by_region: false  # Requires defining lat/lon bins
+
+  # Region definitions (if by_region: true)
+  regions:
+    tropics:
+      lat_range: [-30, 30]
+    mid_latitudes:
+      lat_range: [30, 60]
+    polar:
+      lat_range: [60, 90]
+
+# Validation checks
+validation:
+  # Verify reproducibility
+  check_reproducibility: true
+
+  # Check for non-null gradients
+  check_gradients: true
+
+  # Verify alignment between xa and xb
+  check_alignment: true
+
+  # Finite-difference gradient validation
+  # Tests that gradients match numerical derivatives (gold standard)
+  finite_difference_check: false  # Set to true for thorough validation (slow)
+  fd_num_samples: 3  # Number of random obs to test
+  fd_epsilon: 1.0e-4  # Perturbation size for finite differences
+
+  # Print diagnostic info
+  verbose: true
+
+# Output formats
+output:
+  # Save summary statistics as CSV
+  save_csv: true
+
+  # Save per-observation impacts as Zarr (for mapping)
+  save_zarr: false  # Set to true for spatial analysis (large files)
+
+  # Save aggregated impacts as NetCDF
+  save_netcdf: false

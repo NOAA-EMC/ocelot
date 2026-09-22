@@ -1,0 +1,109 @@
+# FSOI Configuration — Mesh-space verification against GFS analysis
+#
+# Scientific purpose
+# ------------------
+# Unlike obs-space FSOI (which verifies at radiosonde locations, NH-concentrated,
+# with background-field bias), mesh-space FSOI:
+#   - Verifies at 40,962 global icosahedral mesh nodes (uniform global coverage)
+#   - Uses GFS analysis as an INDEPENDENT reference (no instrument-space bias)
+#   - Is directly comparable to traditional NWP FSOI which uses gridded state
+#
+# Run via:
+#   python FSOI/fsoi_inference.py \
+#       --config FSOI/configs/fsoi_config_mesh_radiosonde.yaml \
+#       --verification_target mesh \
+#       --mesh_instrument radiosonde \
+#       --mesh_pressure_level_idx 4   (4=500hPa, standard mid-troposphere level)
+#       --gfs_root /scratch3/NCEPDEV/da/Mu-Chieh.Ko/JEDI-nudging/gfs-rt25
+#
+# Note: The obs-space FSOI config options (target_instruments, stratify_by_pressure,
+# etc.) are largely unused in mesh mode — the GFS reference replaces them.
+# Only use_area_weights and loss_reduction still apply.
+
+forecast:
+  lead_steps: [0]
+
+  # Mesh mode ignores target_instruments/target_variables/pressure_levels —
+  # verification is against GFS analysis at all mesh nodes.
+  # Keep these for compatibility with the obs-space fallback path.
+  target_instruments: ["radiosonde"]
+  target_variables: "all"
+  target_pressure_levels: "all"
+
+  use_instrument_weights: false
+  use_channel_weights: false
+
+  # Area weighting: mesh nodes are icosahedral (roughly uniform), but
+  # cos(lat) weighting still correct and recommended.
+  use_area_weights: true
+
+  loss_reduction: "mean"
+  impact_factor: 0.5
+
+  # Mesh mode does not support pressure stratification (would require one
+  # GFS load per level — very expensive). Use the total-column metric.
+  stratify_by_pressure: false
+  stratify_by_variable: false
+
+plots:
+  save_scatter_samples: true
+  scatter_max_points: 200000
+
+data:
+  start_date: "2025-07-01"
+  end_date: "2025-07-31"
+
+  batch_size: 1
+  num_workers: 1
+
+  output_dir: "./FSOI/fsoi_outputs/mesh_radiosonde_500hPa_impact"
+  save_per_obs_impacts: false
+  store_full_tensors: false
+
+  feature_masks: {}
+
+memory:
+  max_decoder_nodes:
+    avhrr: 30000
+    atms: 50000
+    amsua: 30000
+    ssmis: 30000
+    seviri_asr: 30000
+    seviri_csr: 30000
+
+model:
+  checkpoint_path: "checkpoints/"
+
+aggregation:
+  by_instrument: true
+  by_channel: true
+  by_time: true
+  by_region: false
+  by_pressure_level: false
+
+validation:
+  check_reproducibility: true
+  check_gradients: true
+  check_alignment: true
+
+  finite_difference_check: true
+  fd_num_samples: 10
+  fd_epsilon: 1.0e-2
+  require_fd_pass: false
+
+  min_pairs_warning: 20
+  verbose: true
+
+output:
+  save_csv: true
+  save_zarr: false
+  save_netcdf: false
+
+experiment:
+  name: "mesh_radiosonde_500hPa_impact"
+  description: |
+    Mesh-space FSOI: observation impact on OCELOT's atmospheric state quality
+    measured against GFS analysis at 40,962 global mesh nodes.
+    Verification variable: temperature + winds at 500 hPa.
+    This removes geographic concentration bias (NH radiosonde stations) and
+    background-field bias (ASCAT/surface_obs xb contamination).

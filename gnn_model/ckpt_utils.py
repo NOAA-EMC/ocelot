@@ -1,3 +1,5 @@
+"""Checkpoint discovery helpers for OCELOT training jobs."""
+
 import glob
 import os
 

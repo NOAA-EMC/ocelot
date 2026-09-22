@@ -31,6 +31,17 @@ bufr:
       query: "*/HEIT"
       type: float
 
+    geopotentialHeight_gp07:
+      query: "*/UARLVB/UAGP07/GP07"
+      type: float
+
+    geopotentialHeight_gp10:
+      query: "*/UARLVB/UAGP10/GP10"
+      type: float
+
+    geopotentialHeightQuality:
+      query: "*/UARLVB/QMGP"
+
     airPressure:
       query: "*/UARLVB/PRLC"  # Air pressure at station level
       type: float
@@ -39,12 +50,16 @@ bufr:
 
     airTemperature:
       query: "*/UARLVB/UATMP/TMDB"
+      transforms:
+        - offset: -273.15 # Convert Kelvin to deg C
 
     dewPointTemperature:
       query: "*/UARLVB/UATMP/TMDP"
+      transforms:
+        - offset: -273.15 # Convert Kelvin to deg C
 
-    relativeHumidity: # only applies to NC004005
-      query: "*/REHU"
+          #relativeHumidity: # only applies to NC004005
+          #   query: "*/REHU"
 
     windDirection:
       query: "*/UARLVB/UAWND/WDIR"
@@ -63,23 +78,37 @@ encoder:
       longName: "height of Station (SELV)"
       units: "m"
 
+    - name: "ObsValue/geopotentialHeight_gp07"
+      source: geopotentialHeight_gp07
+      longName: "Geopotential Height Class 7"
+      units: "m2/s2"
+
+    - name: "ObsValue/geopotentialHeight_gp10"
+      source: geopotentialHeight_gp10
+      longName: "Geopotential Height Class 10"
+      units: "m2/s2"
+
+    - name: "geopotentialHeightQuality"
+      source: geopotentialHeightQuality
+      longName: "Geopotential Height Quality Marker"
+
     - name: "ObsValue/airTemperature"
       source: airTemperature
       longName: "Air Temperature"
-      units: "deg C"
-      range: [-100, 100]
+      units: "C"
+        #range: [-100, 100]
 
     - name: "ObsValue/dewPointTemperature"
       source: dewPointTemperature
       longName: "Dew Point Temperature"
-      units: "deg C"
-      range: [ -100, 100 ]
+      units: "C"
+        #range: [ -100, 100 ]
 
-    - name: "ObsValue/relativeHumidity"
-      source: relativeHumidity
-      longName: "Specific Humidity"
-      units: "mg/kg"
-      range: [0, 50000]
+        #- name: "ObsValue/relativeHumidity"
+        # source: relativeHumidity
+        #longName: "Relative Humidity"
+        #units: "%"
+        #range: [0, 50000]
 
     - name: "ObsValue/windDirection"
       source: windDirection

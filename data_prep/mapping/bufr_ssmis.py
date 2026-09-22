@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""SSMIS BUFR mapping for OCELOT data preparation.
+
+"""
 import os
 import numpy as np
 import bufr

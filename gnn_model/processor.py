@@ -1,3 +1,8 @@
+"""Fixed-mesh interaction processor for OCELOT.
+
+Author: Azadeh Gholoubi
+"""
+
 import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData

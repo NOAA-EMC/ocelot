@@ -1,3 +1,7 @@
+"""Raw observation reader for OCELOT data preparation.
+
+"""
+
 import os
 import sys
 import argparse

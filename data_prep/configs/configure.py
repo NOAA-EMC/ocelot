@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+"""Configure OCELOT data-preparation settings.
+
+"""
 
 import os
 import pathlib

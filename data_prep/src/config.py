@@ -1,3 +1,7 @@
+"""Configuration loader for OCELOT data preparation.
+
+"""
+
 # read the tank yaml configuration
 import os
 import yaml
