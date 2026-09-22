@@ -15,7 +15,7 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
-    stationIdentification:
+    stationIdentification_prepbufr:
       query: "*/SID"
 
     stationElevation:
@@ -79,8 +79,8 @@ encoder:
       longName: "Longitude"
       units: "degree_east"
 
-    - name: "stationIdentification"
-      source: stationIdentification
+    - name: "stationIdentification_prepbufr"
+      source: stationIdentification_prepbufr
       longName: "Station Identification"
 
     - name: "stationElevation_prepbufr"

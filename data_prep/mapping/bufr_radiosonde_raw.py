@@ -134,6 +134,7 @@ class RawRadiosondeBuilder(ObsBuilder):
         for var in ['driftTime',
                     'driftLatitude',
                     'driftLongitude',
+                    'stationIdentification_prepbufr',
                     'height_prepbufr',
                     'stationElevation',
                     'specificHumidity',
@@ -142,7 +143,8 @@ class RawRadiosondeBuilder(ObsBuilder):
                     'dewPointTemperatureQuality',
                     'windQuality',
                     'airPressureQuality',
-                    'heightQuality']:
+                    'heightQuality',
+                    'obsType']:
 
             data = prep_container.get(var)
             path = prep_container.get_paths(var)
@@ -203,12 +205,6 @@ class RawRadiosondeBuilder(ObsBuilder):
                 'units': "kg/kg"
             },
             {
-                'name': "stationElevation",
-                'source': 'stationElevation',
-                'longName': "Station Elevation",
-                'units': "meters"
-            },
-            {
                 'name': "airTemperatureQuality",
                 'source': 'airTemperatureQuality',
                 'longName': "Air Temperature Quality Marker",
@@ -239,10 +235,15 @@ class RawRadiosondeBuilder(ObsBuilder):
                 'longName': "Height Quality Marker",
             },
             {
-                'name': "flightId",
-                'source': 'flightId',
-                'longName': "Flight Identifier",
+                'name': "stationIdentification_prepbufr",
+                'source': 'stationIdentification_prepbufr',
+                'longName': "StationIdentification",
                 'units': ""
+            },
+            {
+                'name': "obsType",
+                'source': 'obsType',
+                'longName': "ObsType",
             }
         ])
 

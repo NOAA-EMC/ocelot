@@ -20,7 +20,7 @@ bufr:
     longitude:
       query: "[*/CLON]"
 
-    reportId:
+    stationIdentification_bufr:
       query: "*/RPID"
 
     height_bufr:
@@ -70,6 +70,10 @@ bufr:
 encoder:
   variables:
     # MetaData
+
+    - name: "stationIdentification_bufr"
+      source: stationIdentification_bufr
+      longName: "stationIdentification_bufr"
 
     - name: "height_bufr"
       source: height_bufr

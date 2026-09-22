@@ -18,8 +18,11 @@ bufr:
     stationElevation:
       query: "*/ELV"
 
-    sequenceId:
+    stationIdentification_prepbufr:
       query: "*/SID"
+
+    obsType:
+      query: "*/TYP"
 
     driftCycleTime:
       query: "*/PRSLEVEL/DRFTINFO/HRDR"

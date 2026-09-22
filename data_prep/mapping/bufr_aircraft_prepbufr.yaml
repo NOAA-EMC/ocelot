@@ -11,6 +11,9 @@ bufr:
     stationIdentification:
       query: "*/SID"
 
+    obsType:
+      query: "*/TYP"
+
     aircraftFlightNumber:
       query: "[*/ACID_SEQ/ACID, */ACID]"
 
