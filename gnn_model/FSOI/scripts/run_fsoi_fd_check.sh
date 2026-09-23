@@ -63,7 +63,7 @@ cd "$GNN_DIR"
 echo "[PATH] Working dir: $(pwd)"
 
 # Checkpoint -------------------------------------------------------------
-CHECKPOINT="${CHECKPOINT_PATH:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}"
+CHECKPOINT="${CHECKPOINT_PATH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}"
 if [ ! -f "$CHECKPOINT" ]; then
     echo "ERROR: checkpoint not found: $CHECKPOINT"
     echo "Override with: CHECKPOINT_PATH=/path/to/model.ckpt sbatch $0"
