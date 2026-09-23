@@ -37,6 +37,13 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
+def _validation_loss_kwargs(model, inst_name, forecast_step):
+    configured = getattr(model, 'fsoi_verification_loss_kwargs', None)
+    if configured is None:
+        raise ValueError("Configure the balanced verification target before running finite differences")
+    return dict(configured, forecast_lead_step=forecast_step)
+
+
 def finite_difference_check(
     model,
     batch,
@@ -119,16 +126,8 @@ def finite_difference_check(
     replace_batch_inputs(batch_grad, xa, model.observation_config)
 
     # Compute error — use 'mean' so scale ~O(1) and float32 FD is numerically stable
-    error_grad = compute_forecast_error(
-        model,
-        batch_grad,
-        forecast_lead_step=forecast_step,
-        instrument_weights=model.instrument_weights,
-        channel_weights=model.channel_weights,
-        use_area_weights=True,
-        target_instruments=[inst_name],
-        loss_reduction='mean',
-    )
+    shared_kwargs = _validation_loss_kwargs(model, inst_name, forecast_step)
+    error_grad = compute_forecast_error(model, batch_grad, **shared_kwargs)
 
     # Compute gradient
     gradient = torch.autograd.grad(error_grad, xa[inst_name])[0]
@@ -153,16 +152,7 @@ def finite_difference_check(
 
     # Compute error with perturbation
     with torch.no_grad():
-        error_plus = compute_forecast_error(
-            model,
-            batch_plus,
-            forecast_lead_step=forecast_step,
-            instrument_weights=model.instrument_weights,
-            channel_weights=model.channel_weights,
-            use_area_weights=True,
-            target_instruments=[inst_name],
-            loss_reduction='mean',
-        ).item()
+        error_plus = compute_forecast_error(model, batch_plus, **shared_kwargs).item()
 
     print(f"  Error (x + ε): {error_plus:.6e}")
 
@@ -181,16 +171,7 @@ def finite_difference_check(
     replace_batch_inputs(batch_minus, xa_minus, model.observation_config)
 
     with torch.no_grad():
-        error_minus = compute_forecast_error(
-            model,
-            batch_minus,
-            forecast_lead_step=forecast_step,
-            instrument_weights=model.instrument_weights,
-            channel_weights=model.channel_weights,
-            use_area_weights=True,
-            target_instruments=[inst_name],
-            loss_reduction='mean',
-        ).item()
+        error_minus = compute_forecast_error(model, batch_minus, **shared_kwargs).item()
 
     print(f"  Error (x - ε): {error_minus:.6e}")
 
@@ -364,6 +345,7 @@ def directional_derivative_check(
     n_trials: int = 5,
     seed: int = 42,
     forecast_step: int = 0,
+    valid_only: bool = False,
 ) -> Dict:
     """
     Validate gradient direction using random Rademacher perturbation vectors.
@@ -407,16 +389,24 @@ def directional_derivative_check(
 
     x_orig = xa_original[inst_name].detach()
     N_obs, N_ch = x_orig.shape
+
+    # Restrict the perturbation to the entries FSOI actually sums, so the test
+    # covers the valid-observation subspace rather than the whole input tensor.
+    support = None
+    if valid_only:
+        from fsoi_utils import get_fsoi_input_masks
+        masks = get_fsoi_input_masks(batch, model.observation_config, device=device)
+        if inst_name not in masks or masks[inst_name].shape != x_orig.shape:
+            raise RuntimeError(f"{inst_name}: no aligned validity mask for a valid-only direction")
+        support = masks[inst_name].to(device=device, dtype=x_orig.dtype)
+        n_valid = int(support.sum().item())
+        if n_valid == 0:
+            print(f"[SKIP] {inst_name}: no valid entries for a valid-only direction")
+            return {'inst_name': inst_name, 'status': 'NO_VALID_ENTRIES', 'n_trials': 0}
+        print(f"  Valid-only direction: {n_valid:,} of {x_orig.numel():,} entries perturbed")
     print(f"  Tensor shape: ({N_obs}, {N_ch})  —  {N_obs * N_ch:,} elements\n")
 
-    shared_kwargs = dict(
-        forecast_lead_step=forecast_step,
-        instrument_weights=model.instrument_weights,
-        channel_weights=model.channel_weights,
-        use_area_weights=True,
-        target_instruments=[inst_name],
-        loss_reduction='mean',
-    )
+    shared_kwargs = _validation_loss_kwargs(model, inst_name, forecast_step)
 
     # ── Compute full autograd gradient once ──────────────────────────────────
     xa_grad = xa_original.copy()
@@ -447,8 +437,10 @@ def directional_derivative_check(
     torch.manual_seed(seed)
     trials = []
     for k in range(n_trials):
-        # Rademacher ±1 vector
+        # Rademacher ±1 vector, zeroed outside the support when one is set
         v = (torch.randint(0, 2, x_orig.shape, device=device).float() * 2 - 1)
+        if support is not None:
+            v = v * support
 
         autograd_dd = (g * v).sum().item()
 
@@ -507,6 +499,7 @@ def directional_derivative_check(
         'n_obs': N_obs,
         'n_channels': N_ch,
         'epsilon': epsilon,
+        'direction_support': 'valid_entries' if valid_only else 'all_entries',
         'n_trials': n_trials,
         'l1_norm': l1_norm,
         'l2_norm': l2_norm,
@@ -566,7 +559,9 @@ def finite_difference_check_float64(
 
         freeze_model_for_fsoi(model)
         device = next(model.parameters()).device
-        batch64 = batch.to(device)
+        # Work on a cloned batch so float64 validation cannot leave the caller's
+        # HeteroData object in double precision after an exception or CUDA OOM.
+        batch64 = batch.clone().to(device)
 
         # Cast all floating-point tensors in the batch to float64.
         # HeteroData stores tensors inside per-node-type sub-objects, so we
@@ -618,14 +613,7 @@ def finite_difference_check_float64(
         original_value = x_orig[obs_idx, channel_idx].item()
         print(f"  Value at [{obs_idx},{channel_idx}]: {original_value:.8f}  (dtype={x_orig.dtype})")
 
-        shared_kwargs = dict(
-            forecast_lead_step=forecast_step,
-            instrument_weights=model.instrument_weights,
-            channel_weights=model.channel_weights,
-            use_area_weights=True,
-            target_instruments=[inst_name],
-            loss_reduction='mean',
-        )
+        shared_kwargs = _validation_loss_kwargs(model, inst_name, forecast_step)
 
         # Autograd
         xa_grad = xa_original.copy()
@@ -700,6 +688,8 @@ def finite_difference_check_float64(
     finally:
         if model_was_float32:
             model.float()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def validate_fsoi_gradients_all(
@@ -731,7 +721,7 @@ def validate_fsoi_gradients_all(
     instruments_scalar_fd : list of instrument names for per-obs scalar FD test.
         Instruments with very small per-obs gradients will auto-SKIP.
     instruments_directional : list of instrument names for Rademacher direction test.
-        Recommended for: atms, avhrr, ssmis, ascat, amsua, seviri_asr.
+        Recommended for: atms, avhrr, ssmis, ascat, amsua, seviri_asr, seviri_csr.
     instruments_float64 : list of instrument names for float64 per-obs FD test.
         Recommended for: atms, avhrr, ssmis (any SKIP from scalar test).
     output_csv : if provided, write merged results to this path.

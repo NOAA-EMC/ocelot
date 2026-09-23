@@ -145,6 +145,7 @@ echo "Configuration: $CONFIG_FILE"
 echo "  Target instrument: surface_obs"
 echo "  Target variables: T, q, u, v, ps"
 echo "  Pressure stratified: NO (surface targets)"
+echo "  Variable stratified: YES (per-variable rows: T, Td, u, v, ps)"
 echo "  Area weighted: YES"
 echo "  Finite-difference check: YES (10 samples)"
 echo "  Date range: $START_DATE_RUN to $END_DATE_RUN"
@@ -213,7 +214,7 @@ python FSOI/evaluate_fsoi_results.py \
 
 # Gridded FSOI maps (requires lat/lon in scatter_samples.csv)
 if [ -f "$CSV_DIR/scatter_samples.csv" ]; then
-    python FSOI/plot_fsoi_maps.py \
+    python FSOI/plotting/plot_fsoi_maps.py \
         --input "$CSV_DIR/scatter_samples.csv" \
         --output "$OUTPUT_DIR/figures/maps" \
         --title "Surface Obs FSOI" \
@@ -226,7 +227,7 @@ INNO_SCATTER_ARG=""; INNO_DIAG_ARG=""
 [ -f "$CSV_DIR/scatter_samples.csv" ] && INNO_SCATTER_ARG="--scatter $CSV_DIR/scatter_samples.csv"
 [ -f "$DIAG_CSV" ] && INNO_DIAG_ARG="--diag $DIAG_CSV"
 if [ -n "$INNO_SCATTER_ARG" ] || [ -n "$INNO_DIAG_ARG" ]; then
-    python FSOI/plot_innovation_diagnostics.py \
+    python FSOI/plotting/plot_innovation_diagnostics.py \
         $INNO_SCATTER_ARG $INNO_DIAG_ARG \
         --output "$OUTPUT_DIR/figures/innovation" \
         2>&1 | tee "${LOG_DIR}/plot_innovation_surface_obs_${SLURM_JOB_ID}.log" || true

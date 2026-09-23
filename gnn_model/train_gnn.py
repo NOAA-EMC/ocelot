@@ -226,6 +226,20 @@ def main():
     parser.add_argument("--latent_step_hours", type=int, default=3)
     parser.add_argument("--processor_window", type=int, default=None)   # DEFAULT:None = target_window_hours//latent_step_hours
     parser.add_argument(
+        "--encoding_order",
+        type=str,
+        default="default",
+        choices=["default", "reversed", "random"],
+        help=(
+            "Order in which instruments are encoded into the shared mesh.\n"
+            "  default:  YAML config order (satellite-first).\n"
+            "  reversed: Reverse of config order (conventional-first).\n"
+            "  random:   Shuffle per-batch during training; removes positional bias.\n"
+            "Use 'random' for fine-tuning to eliminate the encoding-order gradient asymmetry\n"
+            "identified by the H1 FSOI experiment (ENCODING_ORDER_INVESTIGATION.md)."
+        ),
+    )
+    parser.add_argument(
         "--spatial_mixing_steps",
         type=int,
         default=1,
@@ -510,16 +524,35 @@ def main():
     )
 
     if resume_path and args.load_weights_only:
-        print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
+        # Load weights only on rank 0 to avoid 8-rank simultaneous torch.load
+        # which spikes CPU RAM and can cause OOM during DDP init.
+        # All other ranks start with random init; Lightning's DDP broadcast
+        # then synchronises weights from rank 0 before the first step.
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        global_rank = int(os.environ.get("SLURM_PROCID", os.environ.get("RANK", 0)))
+
         model = GNNLightning(**model_kwargs)
-        ckpt = torch.load(resume_path, map_location="cpu")
-        state = ckpt.get("state_dict", ckpt)
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(
-            f"[INFO] Weights-only load complete. missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
-        )
+
+        if global_rank == 0:
+            print(f"[INFO] Rank 0: loading weights from {resume_path}")
+            ckpt = torch.load(resume_path, map_location="cpu")
+            state = ckpt.get("state_dict", ckpt)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(
+                f"[INFO] Weights-only load complete. missing={len(missing)} unexpected={len(unexpected)}"
+            )
+            del ckpt, state  # free CPU RAM before DDP init
+        else:
+            print(f"[INFO] Rank {global_rank}: waiting for rank-0 weight broadcast.")
     else:
         model = GNNLightning(**model_kwargs)
+
+    # Apply encoding order (runtime attribute — not a trained parameter).
+    # "random" shuffles instrument encoding order each forward pass to remove
+    # the positional gradient-path bias identified in ENCODING_ORDER_INVESTIGATION.md.
+    model.encoding_order = str(args.encoding_order)
+    if args.encoding_order != "default":
+        print(f"[ENCODING ORDER] '{args.encoding_order}' — gradient-path bias mitigation active.")
 
     data_module = GNNDataModule(
         data_path=data_path,

@@ -202,7 +202,7 @@ python FSOI/visualize_fsoi.py \
     --output "$OUTPUT_DIR/figures" \
     2>&1 | tee "${LOG_DIR}/visualize_aircraft_${SLURM_JOB_ID}.log" || true
 
-python FSOI/plot_instrument_channel_heatmaps.py \
+python FSOI/plotting/plot_instrument_channel_heatmaps.py \
     --input "$CSV_DIR" \
     --output "$OUTPUT_DIR/figures" \
     2>&1 | tee "${LOG_DIR}/plot_heatmaps_aircraft_${SLURM_JOB_ID}.log" || true
@@ -214,7 +214,7 @@ python FSOI/evaluate_fsoi_results.py \
 
 # Gridded FSOI maps (requires lat/lon in scatter_samples.csv)
 if [ -f "$CSV_DIR/scatter_samples.csv" ]; then
-    python FSOI/plot_fsoi_maps.py \
+    python FSOI/plotting/plot_fsoi_maps.py \
         --input "$CSV_DIR/scatter_samples.csv" \
         --output "$OUTPUT_DIR/figures/maps" \
         --title "Aircraft FSOI" \
@@ -227,7 +227,7 @@ INNO_SCATTER_ARG=""; INNO_DIAG_ARG=""
 [ -f "$CSV_DIR/scatter_samples.csv" ] && INNO_SCATTER_ARG="--scatter $CSV_DIR/scatter_samples.csv"
 [ -f "$DIAG_CSV" ] && INNO_DIAG_ARG="--diag $DIAG_CSV"
 if [ -n "$INNO_SCATTER_ARG" ] || [ -n "$INNO_DIAG_ARG" ]; then
-    python FSOI/plot_innovation_diagnostics.py \
+    python FSOI/plotting/plot_innovation_diagnostics.py \
         $INNO_SCATTER_ARG $INNO_DIAG_ARG \
         --output "$OUTPUT_DIR/figures/innovation" \
         2>&1 | tee "${LOG_DIR}/plot_innovation_aircraft_${SLURM_JOB_ID}.log" || true

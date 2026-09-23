@@ -11,28 +11,26 @@ forecast:
   # CRITICAL: Only score radiosonde temperature targets
   # This measures how well the model predicts radiosonde temp given all obs
   # NOTE: Also controls which instruments get decoded (memory optimization)
-  # Start with ["radiosonde"] for testing, then expand
   target_instruments: ["radiosonde"]  # Memory-efficient: only decode radiosonde targets
-  # For broader study: ["radiosonde", "atms", "amsua"]
-  # For full study: "all" (warning: high memory usage)
 
   # Which radiosonde variables to include in error metric
   # Options: "all" or list of variable names
   target_variables: ["temperature"]  # Focus on temperature only
-  # If you want multiple: ["temperature", "u_wind", "v_wind", "specific_humidity"]
+  # If you want multiple: ["temperature", "dewpoint_temperature", "u_wind", "v_wind"]
 
   # Which pressure levels to include (optional filter)
   # Common levels: 1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100 hPa
   target_pressure_levels: "all"  # Or specify: [850, 500, 250, 100]
 
   # Weighting scheme for forecast error
-  # DISABLED for GraphDOP comparison - use unweighted MSE
+  # No extra instrument/channel factors beyond the balanced target weights.
   use_instrument_weights: false  # Disable instrument weights
   use_channel_weights: false     # Disable channel/pressure weights
 
-  # Optional: apply area-weighting by latitude
-  # DISABLED for GraphDOP comparison
-  use_area_weights: false  # Disable area weights (no cos(lat))
+  verification_metric:
+    spatial_weighting: equal_area
+    group_balancing: variable_level
+  loss_reduction: mean
 
   # Compute a separate loss per radiosonde pressure level, then differentiate.
   # This propagates a pressure_hpa value to ALL instruments (including ATMS,
@@ -55,8 +53,8 @@ data:
   save_per_obs_impacts: false  # Set to true for spatial maps (large files)
 
   # Feature masks applied at inference (zeroed before computing FSOI)
-  feature_masks:
-    aircraft: [specificHumidity]  # Zero aircraft humidity channels at inference
+  # Aircraft has no humidity channel in observation_config (features: T, U, V).
+  feature_masks: {}
 
   # Memory control: whether to store full xa/xb/ga/gb tensors
   # For long time windows, storing full tensors can consume excessive memory

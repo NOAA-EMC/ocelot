@@ -37,15 +37,16 @@ import pandas as pd  # noqa: E402
 # ── Color palette consistent across all plots ─────────────────────────────────
 
 INST_COLORS = {
-    "atms": "#1f77b4",   # blue
-    "amsua": "#aec7e8",   # light blue
-    "ssmis": "#17becf",   # teal
-    "avhrr": "#9edae5",   # light teal
+    "atms": "#1f77b4",        # blue
+    "amsua": "#aec7e8",        # light blue
+    "ssmis": "#17becf",        # teal
+    "avhrr": "#9edae5",        # light teal
     "seviri_asr": "#ff7f0e",   # orange
-    "ascat": "#ffbb78",   # light orange
+    "seviri_csr": "#ffad60",   # light orange (sibling of seviri_asr)
+    "ascat": "#ffbb78",        # pale orange
     "radiosonde": "#2ca02c",   # green
-    "aircraft": "#98df8a",   # light green
-    "surface_obs": "#d62728",   # red
+    "aircraft": "#98df8a",     # light green
+    "surface_obs": "#d62728",  # red
 }
 
 PRESSURE_COLORS = {850: "#e377c2", 500: "#7f7f7f", 250: "#bcbd22"}

@@ -7,10 +7,15 @@ for comparing instruments across date windows.
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
 
 def _resolve_csv_dir(path: Path) -> Path:
@@ -304,8 +309,8 @@ def write_closure_diagnostics(
                per-stratum error change with better-than-random reliability.
   FAIL       : sign_agreement < 55% — FSOI sign is indistinguishable from random
                at this stratum.  Expected causes:
-                 (a) near-zero signal (ea_p ≈ eb_p at this level/variable);
-                 (b) GNN nonlinearity at 3-4σ innovations breaks the tangent-
+                 (a) near-zero signal (ea_p ~ eb_p at this level/variable);
+                 (b) GNN nonlinearity at 3-4 sigma innovations breaks the tangent-
                      linear approximation for this stratum specifically;
                  (c) cross-level message passing means per-stratum gradients do
                      not isolate the stratum being scored.
@@ -501,6 +506,11 @@ def evaluate(csv_dir: Path, output_dir: Path, n_boot: int, seed: int) -> None:
     impact_col = _impact_col(df)
     count_col = _count_col(df, impact_col)
 
+    # Instrument ranking is scored on the single-metric scale: average the
+    # per-target_variable rows so surface_obs stays comparable to single-target
+    # runs. Closure/beneficial diagnostics below keep the stratified `df`.
+    inst_df = collapse_target_variable_rows(df)
+
     agg_spec = {
         "impact_sum": (impact_col, "sum"),
         "mean_impact": ("mean_impact", "mean"),
@@ -510,7 +520,7 @@ def evaluate(csv_dir: Path, output_dir: Path, n_boot: int, seed: int) -> None:
         agg_spec["n_observations"] = (count_col, "sum")
 
     pair_summary = (
-        df.groupby(["pair_idx", "instrument"], dropna=False)
+        inst_df.groupby(["pair_idx", "instrument"], dropna=False)
         .agg(**agg_spec)
         .reset_index()
     )

@@ -1,18 +1,12 @@
 # FSOI Outputs Guide
 
-**What is FSOI?**
-FSOI (Forecast Sensitivity to Observations) answers the question: *"How much did each observation type improve — or worsen — the model's forecast?"*
+This guide is a **reference for interpreting the files a run produces** — the output
+directory layout and a column-by-column description of every CSV and plot. For what
+FSOI is, how the estimator is derived and what the study found, see
+[FSOI_WORK_EXPLAINED_SIMPLY.md](FSOI_WORK_EXPLAINED_SIMPLY.md).
 
-For each pair of time steps, the pipeline computes:
-- **xa** — the analysis: the real observation values at the current time (the truth / verified state)
-- **xb** — the background: the GNN's forecast at the current time, made without seeing current observations (the prior)
-- **ga, gb** — the gradients of forecast error with respect to xa and xb
-- **FSOI_i = 0.5 × (xa_i − xb_i) · (ga_i + gb_i)** — the estimated impact of observation i
-
-`xa − xb` is the **analysis increment**: how much the real observations differ from what the GNN predicted. Large increments mean the GNN was far from truth and observations carried a lot of information.
-
-Negative FSOI = observation reduced forecast error = **beneficial**.
-Positive FSOI = observation increased forecast error = **detrimental**.
+The one convention you need while reading these files: **negative FSOI = beneficial**
+(the observation reduced forecast error); positive = detrimental.
 
 ---
 
@@ -43,7 +37,7 @@ flowchart TD
     CLOS --> CLOS1{Global closure ratio?}
     CLOS1 -->|0.85 – 1.15| CLOS2[PASS: linear approx holds\nQuantitative results reliable]
     CLOS1 -->|1.15 – 1.5| CLOS3[WARN: mild nonlinearity\nRankings reliable, magnitudes approximate]
-    CLOS1 -->|> 1.5| CLOS4[FAIL: large nonlinearity\nRankings qualitative only\nOur result: 1.524]
+    CLOS1 -->|> 1.5| CLOS4[FAIL: large nonlinearity\nRankings qualitative only]
 
     C --> HLTH[**STEP 5: System Health**\nevaluation/fsoi_system_health.csv]
     HLTH --> HLTH1{helpful_fraction?}
@@ -56,8 +50,8 @@ flowchart TD
     LVLS1 -->|PASS / WARN| LVLS3[FSOI captures vertical\nstructure correctly]
     LVLS1 -->|FAIL| LVLS4[FSOI sign wrong at\nthis level — GNN\nassimilation problematic here]
 
-    C --> OSE[**STEP 7: OSE Cross-check**\nose_atms_jul2025_fixed/csv/\nose_atms_jan2025_fixed/csv/]
-    OSE --> OSE1{sign_agree & closure?}
+    C --> OSE[**STEP 7: OSE Cross-check**\nose_frozen_metric/ose_INSTRUMENT_MONTH_MODE/\nose_frozen_metric_surface/...]
+    OSE --> OSE1{signal_valid, then\nsign_agree & closure?}
     OSE1 -->|Yes| OSE2[FSOI rankings confirmed\nby direct experiment]
     OSE1 -->|No| OSE3[Nonlinearity\naffects sign — report\nwith caution]
 
@@ -71,34 +65,30 @@ flowchart TD
 
 ```
 FSOI/fsoi_outputs/
-├── fd_check_skip/                        ← Step 1a: scalar float32 FD (radiosonde WARN, satellites SKIP)
-├── fd_check_enhanced/                    ← Steps 1b+1c: directional + float64 FD for satellites
-├── full_eval_fixed_20250701_20250731/    ← Full month evaluation (Jul 2025)
-│   └── radiosonde/
-│       ├── csv/                          ← Raw FSOI numbers
-│       ├── evaluation/                   ← All diagnostic checks
-│       ├── figures/                      ← All plots
-│       └── logs/                         ← Config snapshot
-├── seasonal_fixed/                       ← Obs-space seasonal runs (biased)
-│   ├── radiosonde_jan2025/
-│   ├── radiosonde_apr2025/
-│   └── radiosonde_oct2025/
-├── mesh_seasonal/                        ← Primary unbiased runs
-│   ├── radiosonde_250hPa_{jan,apr,jul,oct}2025/
-│   ├── radiosonde_500hPa_{jan,apr,jul,oct}2025/
-│   └── radiosonde_850hPa_{jan,apr,jul,oct}2025/
-├── ose_atms_jul2025_fixed/               ← OSE experiment: ATMS Jul 2025
-└── ose_atms_jan2025_fixed/               ← OSE experiment: ATMS Jan 2025
-
-FSOI/fsoi_weights/                        ← Biased weights (do not use for training)
-FSOI/fsoi_weights_mesh/                   ← Primary weights (use these)
+├── seasonal_inclusion_weighted_final/    ← PRIMARY: the scored seasonal evaluations
+│   └── {radiosonde,aircraft,surface}_{jan,apr,jul,oct}2025/
+│       ├── csv/                          ← raw FSOI numbers
+│       ├── evaluation/                   ← closure, reproducibility, coverage ledger
+│       ├── figures/                      ← per-run diagnostic plots
+│       └── logs/                         ← config snapshot
+├── seasonal_combined_maps/               ← the same evaluations, also saving 5° grids
+├── ose_frozen_metric/                    ← OSE against the frozen radiosonde metric
+├── ose_frozen_metric_surface/            ← OSE against the frozen surface metric
+├── combined_path/                        ← per-instrument residuals along the combined path
+├── path_convergence/                     ← path integration at 9 and 17 points
+├── directional_coverage/                 ← directional gradient checks, per direction support
+├── fd_check_skip/                        ← scalar float32 FD (radiosonde WARN, satellites SKIP)
+├── fd_check_enhanced/                    ← directional + float64 FD for satellites
+├── target_metric_audit_v2/               ← coverage audit that fixes the retained groups
+├── sampling_rank_sensitivity/            ← rank stability under the sampling scheme
+└── paper_figures_v2/                     ← manuscript and SI figures, and their source CSVs
 ```
 
 ---
 
 ## Step 1 — Gradient Validation (Three-Tier)
 
-Gradient correctness is verified using three complementary tests that together cover all instrument types regardless of observation count.
+Gradient correctness is verified using three complementary tests that together cover all instrument types regardless of observation count. The tables below focus on the output columns and status flags; each subsection states why its test exists.
 
 ---
 
@@ -122,8 +112,6 @@ Perturbs a single observation by ε, reruns the model, checks whether `(e(x+ε) 
 | **WARN** | Match within 5% | Proceed — minor rounding |
 | **SKIP** | Per-obs gradient ~10⁻⁸; ε×gradient ~10⁻¹⁰ below float32 ULP — indistinguishable from zero by design | Run Steps 1b and 1c |
 | **FAIL** | Gradient is wrong | Stop |
-
-**Our results:** Radiosonde **WARN** (1.5%). All satellites **SKIP** (float32 precision limit — expected).
 
 ---
 
@@ -217,8 +205,11 @@ These plots check whether the background (previous forecast) is behaving sensibl
 | `innovation_mean` | Average difference between obs and background (should be near 0 — no systematic bias) |
 | `innovation_std` | Spread of innovations |
 | `innovation_rmse` | Root-mean-square innovation |
-| `normalized_rmse` | RMSE divided by obs value range (0–1 scale; < 50% is healthy) |
-| `innovation_skewness` | Are innovations symmetric? Near 0 = symmetric distribution |
+| `normalized_rmse` | RMSE divided by obs value range; <5% is good, >20% flags a poor background |
+| `innovation_skewness` | Classical third-moment skewness; useful as an outlier/tail warning |
+| `innovation_median` | Robust signed median bias of `xa - xb` |
+| `innovation_iqr_scaled` | Robust spread, computed as IQR / 1.349 |
+| `innovation_bowley_skewness` | Robust quartile skewness; near 0 = symmetric, larger absolute values = asymmetric IQR |
 
 ### What the plots show
 
@@ -230,17 +221,16 @@ These plots check whether the background (previous forecast) is behaving sensibl
 
 **`background_quality_summary.png`** — Summary heatmap: normalized RMSE per instrument and channel. Green = background close to observations. Red = large departure.
 
-### Our results
-
-ATMS channels: normalized RMSE 9–22%. Radiosonde innovation RMS = 3.21σ (large — observations strongly disagree with background). Surface_obs innovation RMS = 4.01σ. These large innovations are the root cause of the closure failure (Step 4).
-
 ---
 
 ## Step 3 — FSOI Numbers (the core output)
 
 ### `csv/fsoi_by_instrument.csv`
 
-One row per (instrument, pair). Aggregates all channels and observations for that instrument into a single impact number per time pair.
+Usually one row per (instrument, pair). Stratified runs can write one row per
+(instrument, pair, target variable, pressure/level). Sum rows when checking full
+closure against the scored metric; collapse/average target-variable rows only
+when you intentionally want comparable instrument ranking scales.
 
 | Column | Simple explanation |
 |---|---|
@@ -298,11 +288,11 @@ where `ea` = forecast error with the full analysis and `eb` = forecast error wit
 | `mean_sum_fsoi` | Average total FSOI across pairs |
 | `mean_ea_minus_eb` | Average actual error reduction |
 
-### Our results
+### Interpreting the closure ratio
 
-Global closure ratio = **1.524 (FAIL)**. This means the actual observation impact is ~52% larger than FSOI's linear estimate. This is caused by the 3–4σ innovations (radiosonde, surface_obs) — when the analysis departs far from the background, higher-order nonlinear terms become large and FSOI's linear formula misses them.
+A ratio well above 1.0 means the actual observation impact is larger than FSOI's linear estimate, caused by large (3–4σ) innovations — when the analysis departs far from the background, higher-order nonlinear terms become significant and the linear formula misses them.
 
-**This does not invalidate the rankings.** The sign agreement across pairs is high (>88% for most instruments). Rankings are qualitatively correct; magnitudes are approximate.
+**A failing closure ratio does not invalidate the rankings.** Sign agreement across pairs stays high, so rankings are qualitatively correct; magnitudes are approximate.
 
 ---
 
@@ -321,10 +311,6 @@ A single-row overall health check of the FSOI run.
 | `mean_beneficial_fraction_of_ea` | How large is the total helpful FSOI relative to the forecast error? |
 | `n_pairs_warn` | Number of pairs that triggered a warning |
 | `system_flag` | OK / WARN |
-
-### Our results
-
-`helpful_fraction = 82.2%` (OK). `system_flag = OK`. The model is assimilating observations beneficially in the majority of cases.
 
 ---
 
@@ -357,15 +343,6 @@ The global closure test above collapses everything into one number. This check r
 | **WARN** | Sign agreement 55–65% — marginal |
 | **FAIL** | Sign agreement < 55% — FSOI gets the direction wrong here |
 | **INSUF** | Too few pairs to draw conclusions |
-
-### Our results
-
-- **35 LOW_SIGNAL** — signal at those levels/variables is negligible
-- **21 PASS** — u_wind throughout the troposphere is the strongest
-- **3 WARN** — borderline cases
-- **5 FAIL** — temperature 200/250 hPa, dewpoint 925 hPa: GNN analysis is *worse* than background at these levels, but FSOI incorrectly predicts improvement
-
-The 5 FAIL cells identify specific levels where the GNN's assimilation is counterproductive — a real scientific finding.
 
 ---
 
@@ -419,7 +396,7 @@ One row per time pair. Shows the total FSOI per instrument per pair — the raw 
 
 Checks that running the same pair twice gives the same FSOI. Any non-determinism (from dropout, random GPU operations) would show up here as non-zero `ea_diff` or `max_ga_diff`.
 
-In our runs this was NOT_RUN (we did not run two identical passes), so this file is populated with empty entries. It is a placeholder for future use.
+If two identical passes are not run, this file is populated with empty entries — a placeholder for future use.
 
 ---
 
@@ -503,36 +480,67 @@ Multi-panel: one panel per target variable. Shows where temperature, wind, and m
 
 ## OSE Output
 
-**Directories:** `ose_atms_jul2025_fixed/`, `ose_atms_jan2025_fixed/`
+**Directories:** `ose_frozen_metric/` (radiosonde metric), `ose_frozen_metric_surface/`
+(surface metric). One subdirectory per run, named
+`ose_<instrument>_<month>_<denial_mode>/`.
 
 ### What it is
 
-An Observing System Experiment (OSE) is a direct test of what happens when you remove ATMS from the analysis entirely. Instead of using the linear FSOI approximation, we actually replace ATMS's analysis values `xa[ATMS]` with the background `xb[ATMS]` and rerun the model to measure the actual change in forecast error.
+An Observing System Experiment (OSE) is a direct test of what happens when one
+instrument is denied. Instead of using the linear FSOI approximation, the denied
+instrument's analysis values are actually replaced and the model rerun, so the change
+in forecast error is measured rather than attributed:
 
 ```
-OSE_ATMS = ea(xa with ATMS denied) − ea(xa full)
+OSE = ea(xa with the instrument denied) − ea(xa full)
 ```
 
-If ATMS is detrimental (FSOI > 0), then denying it should *reduce* error → OSE_ATMS < 0.
-If ATMS is beneficial (FSOI < 0), then denying it should *increase* error → OSE_ATMS > 0.
+If the instrument is detrimental (FSOI > 0), denying it should *reduce* error → OSE < 0.
+If it is beneficial (FSOI < 0), denying it should *increase* error → OSE > 0.
 
-The OSE validates whether the FSOI sign direction is correct.
+The OSE is what the per-instrument FSOI numbers are validated against: it checks both
+the sign and, through the closure ratio, the magnitude.
 
-### Files produced (after run completes)
+### Inventory
+
+| | |
+|---|---|
+| Instruments | aircraft, AMSU-A, ATMS against the radiosonde metric; SEVIRI ASR against the surface metric |
+| Months | January, April, July and October 2025 |
+| Denial mode | `background_replacement` throughout; one `drop_nodes` and one `pathsweep` run are kept for comparison only |
+| Metric | the frozen target metric, whose config digest is checked on every reuse |
+
+Because the config digest matches the seasonal FSOI runs, J is the same quantity in
+both, so the OSE closure ratios are directly comparable to the FSOI ones.
+
+One caveat when counting cycles: AMSU-A reports nothing in `bin2025072912`, so the
+control tensor cannot be built and no OSE record is written for that pair — but the
+cycle ledger still marks it completed. The loss is visible only by comparing row
+counts between instruments. Do not assume the intervention runs retain exactly the
+FSOI cycles; check `target_metric_cycles.csv` against `ose_results.csv`.
+
+### Files produced
 
 | File | What it shows |
 |---|---|
-| `csv/ose_results.csv` | Per-pair OSE impact: ea_control, ea_denied, ose_impact |
-| `evaluation/ose_vs_fsoi_comparison.csv` | Merged table: FSOI predicted vs. OSE measured, closure ratio, sign_agree |
+| `evaluation/ose_results.csv` | Per-pair OSE impact: `ea_control`, `ea_denied`, `ose_impact`, plus the matched FSOI and path-integration columns (full inventory in the appendix) |
+| `evaluation/ose_vs_fsoi_comparison.csv` | Merged table: FSOI predicted vs OSE measured, closure ratio, sign agreement |
+| `evaluation/target_metric_cycles.csv` | The cycle ledger — which pairs were attempted, completed or skipped |
+| `ose_summary.csv` | One row per run, at the root of each OSE tree |
 
 ### Key columns in ose_vs_fsoi_comparison.csv
 
 | Column | Simple explanation |
 |---|---|
-| `fsoi_predicted` | What FSOI said ATMS's impact would be |
-| `ose_impact` | What actually happened when ATMS was denied |
+| `fsoi_predicted` | What FSOI said the instrument's impact would be |
+| `ose_impact` | What actually happened when it was denied |
 | `closure_ratio` | fsoi_predicted / ose_impact — close to 1 = FSOI was accurate |
-| `sign_agree` | True if FSOI and OSE agree on beneficial vs. detrimental |
+| `sign_agree` | True if FSOI and OSE agree on beneficial vs detrimental |
+| `matched_signal_valid` | False when the difference is below the run's signal threshold, so the ratio carries no information |
+
+Read `closure_ratio` only where `signal_valid` is true. The per-pair rows carry the
+same pair of columns under the `matched_` prefix (`matched_closure_ratio`,
+`matched_signal_valid`), and the path-integration columns under `path_`.
 
 ---
 
@@ -540,6 +548,14 @@ The OSE validates whether the FSOI sign direction is correct.
 
 **Primary (use for training):** `FSOI/fsoi_weights_mesh/`
 **Biased (do not use):** `FSOI/fsoi_weights/`
+
+> **Provenance.** Both weight tables were computed in May 2026, before the coverage
+> audit, the frozen verification metric and the first-of-month exclusion were in
+> place, and their cycle counts do not match the current scored evaluations. They
+> remain usable as training weights, which is a separate question from verification,
+> but they are **not** the manuscript's numbers and must not be cited as such.
+> Regenerate them from `seasonal_inclusion_weighted_final/` before relying on the
+> magnitudes.
 
 ### Why two sets?
 
@@ -561,15 +577,6 @@ The mesh-space weights (`fsoi_weights_mesh/`) verify against the GFS analysis at
 
 **Variant B** (`w ∝ |mean_impact| × reliability²`): Adds a reliability penalty. An instrument that is helpful 90% of the time gets a higher weight than one with the same mean impact but that flips between helpful and detrimental. Encourages the model to learn from consistent signals.
 
-### Weight table (mesh-space)
-
-| Instrument | Weight A | Weight B | Interpretation |
-|---|---|---|---|
-| radiosonde | 8.166 | 8.180 | Dominant — 3–4σ innovations, globally consistent |
-| aircraft | 0.154 | 0.151 | Second — reliably beneficial |
-| surface_obs | 0.117 | 0.105 | Third — net detrimental but some pairs beneficial |
-| All satellites | 0.094 | 0.094 | At minimum floor — near-zero mean impact |
-
 ---
 
 ## Quick Reference: What Does Each File Answer?
@@ -590,3 +597,311 @@ The mesh-space weights (`fsoi_weights_mesh/`) verify against the GFS analysis at
 | `fsoi_regional_summary.csv` | Which regions benefit most from observations? |
 | `ose_vs_fsoi_comparison.csv` | Does removing ATMS actually do what FSOI predicted? |
 | `fsoi_weight_summary.csv` | How should each instrument be weighted in fine-tuning? |
+
+---
+
+## Step 12 — Stratification Framework (Subtype & Pressure Level)
+
+**Purpose:** Decompose FSOI by observation subtype (aircraft model, surface station type, pressure level) to understand population-specific contributions and detect cancellation artifacts.
+
+**Modules:**
+- `fsoi_utils.py` — Helper functions: `detect_aircraft_subtype()`, `detect_surface_subtype()`, `nearest_pressure_level()`, `build_stratification_key()`
+
+### Why stratification matters
+
+Instrument-level aggregation can hide important structure:
+
+**Example: Aircraft temperature**
+- Mixing AIRCAR and AIRCFT observations (different aircraft types with different preprocessing biases) into one channel leads to bimodal innovation distributions
+- FSOI aggregate masks the fact that one subtype is beneficial (+) while the other is detrimental (−), causing the two to partially cancel
+- Stratified FSOI reveals the true subpopulation impacts
+
+**Example: Surface wind**
+- Land stations (ADPSFC) and ship observations (SFCSHP) have different wind characteristics and assimilation behavior
+- Aggregated u_wind may show weak total impact; stratified reveals one subtype is consistently beneficial and the other detrimental
+- Allows targeted weight adjustments per subtype
+
+### Available stratification dimensions
+
+| Instrument | Dimensions | Method |
+|---|---|---|
+| Aircraft | AIRCAR vs AIRCFT | Inferred from station ID patterns or BUFR subset code |
+| Surface obs | ADPSFC vs SFCSHP | Inferred from BUFR subset code |
+| Radiosonde | Pressure level (16 standard levels: 1000–10 hPa) | Mapped via `nearest_pressure_level()` |
+| Satellites | Channel only (no subtype) | Use as-is |
+
+### Usage example
+
+```python
+from gnn_model.FSOI.fsoi_utils import build_stratification_key, detect_aircraft_subtype
+
+# Build a stratification key for aircraft temperature from AIRCAR subset
+key = build_stratification_key('aircraft', 'temperature', subtype='AIRCAR')
+# Returns: 'aircraft/temperature/AIRCAR'
+
+# Alternatively, infer from station ID:
+aircraft_type = detect_aircraft_subtype(station_id_array)
+# Returns: 'AIRCAR', 'AIRCFT', or None for each observation
+```
+
+### Output format
+
+When using stratified aggregation, the output CSV includes a `stratification_key` column:
+
+```
+instrument,variable,channel,subtype,pressure_level,sum_fsoi,mean_fsoi,n_obs
+aircraft,temperature,1,AIRCAR,,0.053,0.00015,350000
+aircraft,temperature,1,AIRCFT,,−0.027,−0.00011,220000
+surface_obs,u_wind,3,ADPSFC,,0.142,0.00089,160000
+surface_obs,u_wind,3,SFCSHP,,−0.089,−0.00044,85000
+radiosonde,temperature,1,,700,0.089,0.00042,210000
+radiosonde,temperature,1,,500,−0.012,−0.00008,195000
+```
+
+### Integration into fsoi_inference.py
+
+To enable automatic subtype detection during FSOI computation:
+
+1. Extract BUFR metadata (subset code or station ID) from observations during scatter sample collection
+2. Call `detect_aircraft_subtype()` or `detect_surface_subtype()` to tag each observation
+3. Add `subtype` column to `scatter_samples.csv`
+4. Aggregation functions use the column automatically to produce stratified outputs
+
+---
+
+## Step 13 — Conventional Obs Variable Naming
+
+**Purpose:** Replace generic channel numbers (Ch1, Ch2, Ch3, Ch4, Ch5) with physically meaningful variable names (temperature, specific_humidity, u_wind, v_wind, surface_pressure) for conventional observations.
+
+### Channel mapping
+
+**Aircraft (BUFR AIRCAR/AIRCFT):**
+
+| Channel | Variable | Units | Typical Range |
+|---|---|---|---|
+| 1 | Temperature (2 m) | K | 255–305 |
+| 2 | Specific humidity | kg/kg | 0.001–0.020 |
+| 3 | u-wind (10 m) | m/s | −30 to +30 |
+| 4 | v-wind (10 m) | m/s | −30 to +30 |
+
+**Surface observations (BUFR ADPSFC/SFCSHP):**
+
+| Channel | Variable | Units | Typical Range |
+|---|---|---|---|
+| 1 | Temperature (2 m) | K | 255–305 |
+| 2 | Specific humidity | kg/kg | 0.001–0.020 |
+| 3 | u-wind (10 m) | m/s | −30 to +30 |
+| 4 | v-wind (10 m) | m/s | −30 to +30 |
+| 5 | Surface pressure | Pa | 95,000–105,000 |
+
+**Radiosonde (BUFR ADPUPA/UPRAIR/PREPBUFR):**
+
+| Channel | Variable | Units | Typical Range | Notes |
+|---|---|---|---|---|
+| 1 | Temperature | K | 190–310 | Depends on pressure level |
+| 2 | Dewpoint temperature | K | 190–310 | Often ≤ T; indicates moisture |
+| 3 | u-wind | m/s | −50 to +50 | High aloft |
+| 4 | v-wind | m/s | −50 to +50 | High aloft |
+
+### Implementation in plots
+
+All innovation diagnostic plots now display:
+- **For conventional obs (aircraft, surface, radiosonde):** Variable name (e.g., "temperature", "u_wind")
+- **For satellites (ATMS, AMSUA, AVHRR, etc.):** Channel number (e.g., "Ch1", "Ch23") since satellite channels do not have standardized physical names
+
+Example plot titles:
+- ✓ `innovation_histograms_aircraft_temperature.png` (clear)
+- ✓ `innovation_histograms_surface_obs_u_wind.png` (clear)
+- ✓ `innovation_histograms_atms.png` (channels 1–24 labeled on plot)
+
+### Updating existing plots
+
+To regenerate innovation diagnostic plots with variable names:
+
+```bash
+python gnn_model/FSOI/plotting/plot_innovation_diagnostics.py \
+    --scatter gnn_model/FSOI/fsoi_outputs/seasonal_inclusion_weighted_final/aircraft_apr2025/csv/scatter_samples.csv \
+    --diag gnn_model/FSOI/fsoi_outputs/seasonal_inclusion_weighted_final/aircraft_apr2025/evaluation/innovation_diagnostics.csv \
+    --output gnn_model/FSOI/fsoi_outputs/seasonal_inclusion_weighted_final/aircraft_apr2025/figures/innovation
+```
+
+The script now:
+1. Checks if the instrument is conventional (aircraft, surface_obs, radiosonde) or satellite
+2. Maps channel numbers to variable names for conventional obs
+3. Uses generic "Ch{N}" labels for satellites
+4. Updates all four diagnostic plots (histograms, bias timeseries, background quality, skewness) with readable labels
+
+---
+
+## Appendix — current column inventory
+
+Generated from the newest run of each kind on 23 September 2026, so it reflects
+what the code writes today rather than what it wrote when the prose above was
+first drafted. Where the two disagree, this appendix is the accurate one. The
+provenance columns repeat the frozen-metric identity on every row and exist so a
+file can be audited in isolation; they are not results.
+
+### `fsoi_by_instrument.csv`
+
+54 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/fsoi_by_instrument.csv`.
+
+```
+instrument, instrument_id, n_observations, n_channels
+n_valid_values, n_total_values, raw_n_observations, sampled_n_observations
+sample_scale, is_subsampled, mean_impact, sum_impact
+sum_impact_scaled, positive_frac, sum_impact_ht, sum_impact_scaled_uniform
+population_scaling_method, estimated_valid_values_ht, population_valid_values, mean_impact_population
+mean_impact_hajek, innovation_mean, innovation_std, innovation_abs_mean
+innovation_rms, gradient_mean, gradient_abs_mean, gradient_rms
+projection_mean, alignment_cosine, alignment_frac, target_variable
+target_channel, p_idx, p_hpa, group_weight
+target_metric_id, pair_idx, prev_bin, curr_bin
+lead_step, ea, eb, ea_p
+eb_p, ea_total, eb_total
+```
+
+Plus 7 provenance columns repeated on every row: `sampling_design`, `sampling_seed`, `target_metric_version`, `target_metric_ids`, `target_metric_config`, `target_mask_applied`, `target_loss_accumulation_dtype`.
+
+### `fsoi_by_channel.csv`
+
+59 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/fsoi_by_channel.csv`.
+
+```
+instrument, instrument_id, channel, mean_impact
+sum_impact, positive_count, negative_count, zero_count
+total_count, raw_total_count, positive_frac, raw_n_observations
+sampled_n_observations, sample_scale, is_subsampled, sum_impact_ht
+sum_impact_scaled, sum_impact_scaled_uniform, population_scaling_method, estimated_valid_values_ht
+population_valid_values, mean_impact_population, mean_impact_hajek, total_count_scaled
+innovation_mean, innovation_std, innovation_abs_mean, innovation_rms
+gradient_mean, gradient_abs_mean, gradient_rms, projection_mean
+alignment_cosine, alignment_frac, pressure_level_idx, pressure_hpa
+target_variable, target_channel, p_idx, p_hpa
+group_weight, target_metric_id, pair_idx, prev_bin
+curr_bin, lead_step, ea, eb
+ea_p, eb_p, ea_total, eb_total
+```
+
+Plus 7 provenance columns repeated on every row: `sampling_design`, `sampling_seed`, `target_metric_version`, `target_metric_ids`, `target_metric_config`, `target_mask_applied`, `target_loss_accumulation_dtype`.
+
+### `fsoi_combined_by_instrument.csv`
+
+47 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/fsoi_combined_by_instrument.csv`.
+
+```
+instrument, instrument_id, n_observations, n_channels
+n_valid_values, n_total_values, raw_n_observations, sampled_n_observations
+sample_scale, is_subsampled, mean_impact, sum_impact
+sum_impact_scaled, positive_frac, sum_impact_ht, sum_impact_scaled_uniform
+population_scaling_method, estimated_valid_values_ht, population_valid_values, mean_impact_population
+mean_impact_hajek, innovation_mean, innovation_std, innovation_abs_mean
+innovation_rms, gradient_mean, gradient_abs_mean, gradient_rms
+projection_mean, alignment_cosine, alignment_frac, pair_idx
+prev_bin, curr_bin, lead_step, ea
+eb, metric_aggregation, background_endpoint, control_repeat_abs_difference
+```
+
+Plus 7 provenance columns repeated on every row: `sampling_design`, `sampling_seed`, `target_metric_version`, `target_metric_ids`, `target_metric_config`, `target_mask_applied`, `target_loss_accumulation_dtype`.
+
+### `fsoi_combined_by_channel.csv`
+
+52 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/fsoi_combined_by_channel.csv`.
+
+```
+instrument, instrument_id, channel, mean_impact
+sum_impact, positive_count, negative_count, zero_count
+total_count, raw_total_count, positive_frac, raw_n_observations
+sampled_n_observations, sample_scale, is_subsampled, sum_impact_ht
+sum_impact_scaled, sum_impact_scaled_uniform, population_scaling_method, estimated_valid_values_ht
+population_valid_values, mean_impact_population, mean_impact_hajek, total_count_scaled
+innovation_mean, innovation_std, innovation_abs_mean, innovation_rms
+gradient_mean, gradient_abs_mean, gradient_rms, projection_mean
+alignment_cosine, alignment_frac, pressure_level_idx, pressure_hpa
+pair_idx, prev_bin, curr_bin, lead_step
+ea, eb, metric_aggregation, background_endpoint
+control_repeat_abs_difference
+```
+
+Plus 7 provenance columns repeated on every row: `sampling_design`, `sampling_seed`, `target_metric_version`, `target_metric_ids`, `target_metric_config`, `target_mask_applied`, `target_loss_accumulation_dtype`.
+
+### `fsoi_combined_closure.csv`
+
+12 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/fsoi_combined_closure.csv`.
+
+```
+pair_idx, lead_step, curr_bin, fsoi_raw_sampled
+delta_j_actual, signal_threshold, control_reproducibility_error, signal_valid
+threshold_basis, sign_agreement, closure_ratio, relative_absolute_closure_error
+```
+
+### `fsoi_summary.csv`
+
+18 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/fsoi_summary.csv`.
+
+```
+instrument, sum_impact_mean, sum_impact_std, sum_impact_sum
+mean_impact_mean, mean_impact_std, positive_frac_mean, sum_impact_scaled_mean
+sum_impact_scaled_std, sum_impact_scaled_sum, raw_n_observations_sum, sample_scale_mean
+innovation_abs_mean_mean, innovation_rms_mean, gradient_abs_mean_mean, gradient_rms_mean
+alignment_cosine_mean, alignment_frac_mean
+```
+
+### `ose_results.csv`
+
+75 columns. Sampled from `FSOI/fsoi_outputs/combined_path/radiosonde_jul2025/evaluation/ose_results.csv`.
+
+```
+pair_idx, prev_bin, curr_bin, lead_step
+denied_instruments, ose_intervention_scope, denied_channel_indices, denied_channel_numbers
+denied_channel_names, ose_denial_mode, ose_denial_description, ose_mask_fill_values
+ose_mask_fill_conventions, ea_control, ea_denied, ose_impact
+ose_sign, ose_relative_impact, verification_target, mesh_instrument
+mesh_pressure_level_idx, ose_spatial_npz, loss_reduction, ose_input_channel_mask_synced
+ose_input_channel_mask_false_counts, ose_all_missing_row_fraction, ose_max_all_missing_row_fraction, ose_dropped_rows
+matched_comparison_mode, matched_sign_convention, matched_fsoi, matched_fsoi_by_instrument
+delta_j_actual, j_control, j_denied, matched_control_repeated
+matched_control_repeat, matched_control_reproducibility_error, matched_control_reproducibility_source, matched_closure_ratio
+matched_signal_threshold, matched_signal_threshold_basis, matched_observed_control_reproducibility_error, matched_signal_valid
+matched_sign_agree, matched_population_scaled, matched_sampled_rows, matched_raw_rows
+matched_sample_scale, path_integration_enabled, path_integration_t_values, path_integration_rule
+path_j_values, path_directional_derivatives, path_directional_derivatives_by_instrument, path_integrated_fsoi
+path_closure_ratio, path_signal_valid, path_sign_agree, path_abs_error
+matched_abs_error, path_abs_error_improvement, path_relative_error_reduction, path_minus_matched_fsoi
+path_minus_delta_j_actual, observed_control_reproducibility_error
+```
+
+Plus 9 provenance columns repeated on every row: `target_metric_version`, `target_metric_ids`, `target_metric_config`, `target_mask_applied`, `target_loss_accumulation_dtype`, `target_instruments`, `target_variables`, `target_pressure_levels`, `use_area_weights`.
+
+### `fd_directional_validation.csv`
+
+19 columns. Sampled from `FSOI/fsoi_outputs/directional_coverage/surface_obs_valid_only/evaluation/fd_directional_validation.csv`.
+
+```
+pair_idx, curr_bin, inst_name, trial
+autograd_dd, fd_dd, rel_error, pearson_r
+l1_norm, n_ulp, status, epsilon
+direction_support
+```
+
+Plus 6 provenance columns repeated on every row: `seed`, `target_metric_version`, `target_metric_ids`, `target_metric_config`, `target_mask_applied`, `target_loss_accumulation_dtype`.
+
+### `innovation_diagnostics.csv`
+
+15 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/evaluation/innovation_diagnostics.csv`.
+
+```
+pair_idx, curr_bin, lead_step, instrument
+channel, n_obs, innovation_mean, innovation_std
+innovation_skewness, innovation_median, innovation_iqr_scaled, innovation_bowley_skewness
+innovation_rmse, obs_range, normalized_rmse
+```
+
+### `scatter_samples.csv`
+
+10 columns. Sampled from `FSOI/fsoi_outputs/seasonal_combined_maps/surface_obs_oct2025/csv/scatter_samples.csv`.
+
+```
+instrument, channel, innovation, fsoi
+lat, lon, pair_idx, lead_step
+target_variable, p_hpa
+```
