@@ -60,6 +60,10 @@ def merge_zarr_datasets(zarr_files: list[str], output_dir: str, data_type: str):
             filters=filters,
             fill_value=fill_value,
         )
+        if "units" in src.attrs:
+            output_zarr[key].attrs["units"] = src.attrs["units"]
+        if "longName" in src.attrs:
+            output_zarr[key].attrs["longName"] = src.attrs["longName"]
 
     # Append data from each zarr file using chunked reads to limit memory use
     for zarr_file in zarr_files:
