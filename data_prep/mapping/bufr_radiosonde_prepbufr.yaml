@@ -35,6 +35,9 @@ bufr:
       transforms:
         - wrap: [ -180.0, 180.0 ]
 
+    prepbufrDataLevelCategory:
+      query: "*/PRSLEVEL/CAT"
+
     airPressure:
       query: "*/PRSLEVEL/P___INFO/P__EVENT{1}/POB"
 

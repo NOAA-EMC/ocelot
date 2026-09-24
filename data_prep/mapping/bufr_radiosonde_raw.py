@@ -135,6 +135,7 @@ class RawRadiosondeBuilder(ObsBuilder):
                     'driftLatitude',
                     'driftLongitude',
                     'stationIdentification_prepbufr',
+                    'prepbufrDataLevelCategory',
                     'height_prepbufr',
                     'stationElevation',
                     'specificHumidity',
@@ -185,6 +186,11 @@ class RawRadiosondeBuilder(ObsBuilder):
                 'source': 'driftLongitude',
                 'longName': "Longitude",
                 'units': "degree_east"
+            },
+            {   
+                'name': "prepbufrDataLevelCategory",
+                'source': 'prepbufrDataLevelCategory',
+                'longName': 'prepbufrDataLevelCategory',
             },
             {
                 'name': "height_prepbufr",

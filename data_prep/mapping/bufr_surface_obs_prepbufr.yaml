@@ -3,8 +3,36 @@ bufr:
     - ADPSFC
     - SFCSHP
   variables:
+    stationIdentification_prepbufr:
+      query: "*/SID"
+        #type: string
+
+    obsType:
+      query: "*/TYP"
+
+    observationSubTypeNum:
+      query: "*/T29"
+
+        #temperatureEventCode:
+        #query: "*/T___INFO/T__EVENT/TPC"
+
+    temperatureEventCode1:
+      query: "*/T___INFO/T__EVENT{1}/TPC"
+
+    temperatureEventCode2:
+      query: "*/T___INFO/T__EVENT{2}/TPC"
+
+    temperatureEventCode3:
+      query: "*/T___INFO/T__EVENT{3}/TPC"
+
+    specificHumidityEventCode:
+      query: "*/Q___INFO/Q__EVENT/QPC"
+
     obsTimeMinusCycleTime:
       query: "*/DHR"
+
+    prepbufrDataLevelCategory:
+      query: "*/CAT"
 
     latitude:
       query: "*/YOB"
@@ -16,15 +44,20 @@ bufr:
 
     height_prepbufr:
       query: "*/Z___INFO/Z__EVENT/ZOB"
+      type: float
 
     stationElevation_prepbufr:
       query: "*/ELV"
+      type: float
 
     pressureMeanSeaLevel_prepbufr:
       query: "*/PMSL_SEQ/PMO"
 
     airPressure_prepbufr:
       query: "*/P___INFO/P__EVENT{1-3}/POB"
+
+    dewPointTemperature_prepbufr:
+      query: "*/Q___INFO/TDO"
 
     eastwardWind:
       query: "*/W___INFO/W__EVENT/UOB"
@@ -41,6 +74,9 @@ bufr:
     # Quality Markers
     airTemperatureQuality:
       query: "*/T___INFO/T__EVENT/TQM"
+
+    pressureMeanSeaLevelQuality:
+      query: "*/PMSL_SEQ/PMQ" 
 
     specificHumidityQuality:
       query: "*/Q___INFO/Q__EVENT/QQM"
@@ -62,6 +98,10 @@ bufr:
 encoder:
   variables:
     # MetaData
+    - name: "stationIdentification_prepbufr"
+      source: variables/stationIdentification_prepbufr
+      longName: "stationIdentification"
+
     - name: "latitude"
       source: variables/latitude
       longName: "Latitude"
@@ -72,6 +112,30 @@ encoder:
       source: variables/longitude
       longName: "Longitude"
       units: "degree_east"
+
+    - name: "prepbufrDataLevelCategory"
+      source: variables/prepbufrDataLevelCategory
+      longName: "prepbufrDataLevelCategory"
+
+        #    - name: "temperatureEventCode"
+        #source: variables/temperatureEventCode
+        #longName: "temperature Event Code"
+
+    - name: "temperatureEventCode1"
+      source: variables/temperatureEventCode1
+      longName: "temperature Event Code"
+
+    - name: "temperatureEventCode2"
+      source: variables/temperatureEventCode2
+      longName: "temperature Event Code"
+
+    - name: "temperatureEventCode3"
+      source: variables/temperatureEventCode3
+      longName: "temperature Event Code"
+
+    - name: "specificHumidityEventCode"
+      source: variables/specificHumidityEventCode
+      longName: "Specific Humidity Event Code"
 
     - name: "height_prepbufr"
       source: variables/height_prepbufr
@@ -93,9 +157,18 @@ encoder:
       longName: "pressureMeanSeaLevel from pb (PMO)"
       units: "hPa"
 
+    - name: "dewPointTemperature_prepbufr"
+      source: variables/dewPointTemperature_prepbufr
+      longName: "dew point from pb"
+      units: "C"
+
     - name: "airTemperatureQuality"
       source: variables/airTemperatureQuality
       longName: "Air Temperature Quality Marker"
+
+    - name: "pressureMeanSeaLevelQuality"
+      source: variables/pressureMeanSeaLevelQuality
+      longName: "Pressure Mean Sea Level Quality Marker"
 
     - name: "specificHumidityQuality"
       source: variables/specificHumidityQuality
@@ -116,3 +189,11 @@ encoder:
     - name: "heightQuality"
       source: variables/heightQuality
       longName: "Height Quality Marker"
+
+    - name: "obsType"
+      source: variables/obsType
+      longName: "ObsType"
+
+    - name: "observationSubTypeNum"
+      source: variables/observationSubTypeNum
+      longName: "Observation SubType Number"

@@ -15,7 +15,21 @@ bufr:
     longitude:
       query: "[*/CLONH, */CLON]"
 
+    stationIdentification_bufr:
+      query: "*/RPID"
+        #type: string
+
     # Observation Values
+    height_bufr:
+      query: "[*/SELV, */HSMSL]"  # Height above ground level
+      type: float
+
+    altimeter_bufr:
+      query: "*/ALSE"
+      type: float
+      transforms:
+        - scale: 0.01  # Convert Pa to hPa
+
     airPressure_bufr:
       query: "[*/PRES, */PRLC]"  # Air pressure  missing from NC000007
       type: float
@@ -30,11 +44,6 @@ bufr:
 
     airTemperature:
       query: "*/TMDB"  # Dry bulb temperature
-      transforms:
-        - offset: -273.15  # Convert from Kelvin to Celsius
-
-    seaTemperature:
-      query: "*/SST1"
       transforms:
         - offset: -273.15  # Convert from Kelvin to Celsius
 
@@ -55,9 +64,10 @@ bufr:
       transforms:
         - scale: 0.0174533  # Convert degrees to radians
 
-    height_bufr:
-      query: "[*/SELV, */HSMSL]"  # Height above ground level
-      type: float
+    seaTemperature:
+      query: "*/SST1"
+      transforms:
+        - offset: -273.15  # Convert from Kelvin to Celsius
 
 encoder:
   variables:
@@ -79,7 +89,21 @@ encoder:
       units: "degree_east"
       range: [-180, 180]
 
+    - name: "stationIdentification_bufr"
+      source: variables/stationIdentification_bufr
+      longName: "stationIdentification"
+
     # Observation Values
+    - name: "height_bufr"
+      source: variables/height_bufr
+      longName: "Height Above Ground Level"
+      units: "m"
+
+    - name: "altimeter_bufr"
+      source: variables/altimeter_bufr
+      longName: "Altimeter reading"
+      units: "hPa"
+
     - name: "airPressure_bufr"
       source: variables/airPressure_bufr
       longName: "Air Pressure at Station Level"
@@ -93,11 +117,6 @@ encoder:
     - name: "airTemperature"
       source: variables/airTemperature
       longName: "Air Temperature at Station Level"
-      units: "C"
-
-    - name: "seaTemperature"
-      source: variables/seaTemperature
-      longName: "Sea Temperature"
       units: "C"
 
     - name: "dewPointTemperature"
@@ -120,7 +139,8 @@ encoder:
       longName: "Wind Direction at Station Level"
       units: "radians"
 
-    - name: "height_bufr"
-      source: variables/height_bufr
-      longName: "Height Above Ground Level"
-      units: "m"
+    - name: "seaTemperature"
+      source: variables/seaTemperature
+      longName: "Sea Temperature"
+      units: "C"
+

@@ -31,6 +31,10 @@ bufr:
     instantaneousAltitudeRate:
       query: "*/PRSLEVLA/IALR"
 
+    prepbufrDataLevelCategory:
+      query: "*/PRSLEVLA/CAT"
+
+
     # Observation Values
 
     airPressure:
@@ -99,6 +103,10 @@ encoder:
       longName: "Longitude"
       units: "degree_east"
       range: [-180, 180]
+
+    - name: "prepbufrDataLevelCategory"
+      source: variables/prepbufrDataLevelCategory
+      longName: "prepbufrDataLevelCategory"
 
     # Observation Values
     - name: "airPressure"
