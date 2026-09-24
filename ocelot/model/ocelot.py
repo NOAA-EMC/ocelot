@@ -234,7 +234,7 @@ class Ocelot(nn.Module):
             # Initial MLP to project raw features to hidden_dim
             # Add pressure-level embedding dimensions for radiosonde and aircraft input
             embedder_input_dim = input_dim
-            if inst_name in ["radiosonde", "aircraft"]:
+            if instrument.add_pressure_level_embed_dim:
                 embedder_input_dim += self.pressure_level_embed_dim
             self.observation_embedders[node_type_input] = mlp_block.make([embedder_input_dim] + self.mlp_blueprint_end)
 

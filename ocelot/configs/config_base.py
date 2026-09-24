@@ -6,6 +6,9 @@ from typing import Any
 
 _MISSING = object()
 
+class ConfigError(Exception):
+    pass
+
 
 class ConfigItem:
     pass
@@ -59,7 +62,8 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
         unknown_fields = config_dict.keys() - self._fields.keys()
         if unknown_fields:
             names = ", ".join(sorted(unknown_fields))
-            raise ValueError(f"Unknown field(s) for {type(self).__name__}: {names}")
+            raise ConfigError(f"Unknown field(s) for {type(self).__name__}: {names}. \n"
+                              f"\n{self.describe()}")
 
         for field_name in self._fields:
             field = self._fields[field_name]
@@ -68,9 +72,17 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
                 if isinstance(field, Optional):
                     field.load()
                     continue
-                raise ValueError(f"Missing required field '{field_name}' in config")
+                raise ConfigError(f"Missing required field '{field_name}' in config")
             if isinstance(field, (ConfigBase, ConfigField)):
                 field.load(config_dict[field_name])
+
+    def describe(self) -> str:
+        optional_fields = [name for name, field in self._fields.items() if isinstance(field, Optional)]
+        required_fields = [name for name, field in self._fields.items() if not isinstance(field, Optional)]
+        newline = "  \n"
+        description = f"Required fields:\n  {newline.join(required_fields)}\n"
+        description += f"Optional fields:\n  {newline.join(optional_fields)}"
+        return description
 
     def to_dict(self) -> dict[str, Any]:
         config_dict = {}
@@ -107,22 +119,22 @@ class Choices(ConfigField):
     def load(self, value: dict | str) -> None:
         if isinstance(self.choices, list):
             if value not in self.choices:
-                raise ValueError(
+                raise ConfigError(
                     f"Value '{value}' not in allowed choices: {self.choices}"
                 )
             self.choice = value
 
         elif isinstance(self.choices, dict):
             if not isinstance(value, dict):
-                raise TypeError(f"Expected value of type dict but got {type(value)}")
+                raise ConfigError(f"Expected value of type dict but got {type(value)}")
 
             if "type" not in value:
-                raise ValueError(
+                raise ConfigError(
                     f"Missing 'type' key in value: {value}. Possible types are: {list(self.choices.keys())}"
                 )
 
             if value["type"] not in self.choices:
-                raise ValueError(
+                raise ConfigError(
                     f"Value '{value['type']}' not in allowed choices: {list(self.choices.keys())}"
                 )
 
@@ -192,7 +204,7 @@ class ListField(ConfigField):
 
     def load(self, value):
         if not isinstance(value, list):
-            raise TypeError(
+            raise ConfigError(
                 f"Expected value of type list but got {type(value).__name__}"
             )
 
@@ -215,7 +227,7 @@ class MapField(ConfigField):
 
     def load(self, value):
         if not isinstance(value, dict):
-            raise ValueError(f"Expected value of type dict but got {type(value).__name__}")
+            raise ConfigError(f"Expected value of type dict but got {type(value).__name__}")
 
         items = {}
         for key, item in value.items():
@@ -236,6 +248,6 @@ class DatetimeField(ConfigField):
                 value.year, value.month, value.day, tzinfo=timezone.utc
             )
         else:
-            raise TypeError(
-                f"Expected value of type str or datetime but got {type(value)}"
+            raise ConfigError(
+                f"Expected value of type str, date, or datetime but got {type(value)}"
             )

@@ -572,6 +572,7 @@ instruments:
     weight: 1.0
     source: zarr
     zarr_name: raw_radiosonde
+    add_pressure_level_embed_dim: true
     metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
     model:
       encoder_hidden_layers: 2
@@ -634,6 +635,7 @@ instruments:
     weight: 1.0
     source: zarr
     zarr_name: aircraft
+    add_pressure_level_embed_dim: true
     metadata: [log_pressure_height]  # Derived from airPressure: z = -8000 * ln(P/1013.25)
     model:
       encoder_hidden_layers: 2

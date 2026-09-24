@@ -7,14 +7,14 @@ mesh:
   levels: 4
 
 encoder:
-  type: gat  # gat | interaction
+  type: interaction  # gat | interaction
   rec_dim: *hidden_dim
   send_dim: *hidden_dim
   hidden_dim: *hidden_dim
-  edge_dim: 4
-  layers: 2
-  heads: 4
-  dropout: 0.0
+  # edge_dim: 4
+  # layers: 2
+  # heads: 4
+  # dropout: 0.0
 
 processor:
   type: sliding_window  # sliding_window | interaction | hierarchical_interaction | hierarchical_sliding_window
@@ -26,14 +26,14 @@ processor:
   spatial_mixing_steps: 1
 
 decoder:
-  type: gat  # gat | interaction
+  type: interaction  # gat | interaction
   rec_dim: *hidden_dim
   send_dim: *hidden_dim
   hidden_dim: *hidden_dim
-  edge_dim: 4
-  layers: 2
-  heads: 4
-  dropout: 0.0
+  # edge_dim: 4
+  # layers: 2
+  # heads: 4
+  # dropout: 0.0
 
 embeddings:
   scan_angle_dim: 8

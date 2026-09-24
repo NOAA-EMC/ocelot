@@ -91,6 +91,7 @@ class InstrumentConfig(ConfigBase):
     weight = Optional(FloatField(), default=1.0)
     source = Optional(StrField())
     zarr_name = Optional(StrField())
+    add_pressure_level_embed_dim = Optional(BoolField(), default=False)
     satellite_ids = Optional(ListField(IntField()))
     scan_angle_channels = Optional(IntField(), default=1)
     metadata = Optional(ListField(StrField()), default=[])

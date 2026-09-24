@@ -2,13 +2,13 @@
 enabled_instruments:
   # Satellite instruments
   - atms
-  # - amsua
-  # - ssmis
-  # - seviri_asr
-  # - seviri_csr
-  # - avhrr
-  # - cris_pca
-  # - ascat
+  - amsua
+  - ssmis
+  - seviri_asr
+  - seviri_csr
+  - avhrr
+  - cris_pca
+  - ascat
   # Conventional instruments
   - aircraft
   - radiosonde
