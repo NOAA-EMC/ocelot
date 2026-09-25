@@ -256,8 +256,9 @@ def organize_bins_times(
     end_date,
     observation_config,
     pipeline_cfg=None,
-    window_size="12h",
-    latent_step_hours=12,
+    input_window_hours=12,
+    target_window_hours=12,
+    latent_step_hours=3,
     require_targets=True,    # PREDICTION MODE: False for inference (no targets needed)
     verbose=False,
 ):
@@ -274,11 +275,6 @@ def organize_bins_times(
     start_date = _to_utc(start_date)
     end_date = _to_utc(end_date)
 
-    # normalize window unit (avoid pandas 'H' deprecation)
-    window_size = window_size.lower()
-    if not window_size.endswith("h"):
-        raise ValueError("window_size must end with 'h' (e.g., '6h', '12h').")
-
     # subsampling config
     subs_cfg = (pipeline_cfg or {}).get("subsample", {}) or {}
     seed_base = int(subs_cfg.get("seed", 12345))
@@ -289,18 +285,41 @@ def organize_bins_times(
         "conventional": {"stride": 20, "mode": "random"},
     }
 
+    # input and target window setup
+    target_window_hours = int(target_window_hours)
+    input_window_hours = int(input_window_hours)
+    if target_window_hours <= 0 or input_window_hours <= 0:
+        raise ValueError("target_window_hours and input_window_hours must both be positive.")
+
+    if target_window_hours % latent_step_hours != 0:
+        raise ValueError(
+            f"target_window_hours ({target_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
+        )
+
+    init_window_freq = f"{input_window_hours}h"  # replacement of window_size(e.g.,"12h"), which sets stride between forecast init times
+
     # latent rollout setup
-    target_hours = int(window_size[:-1])
-    num_latent_steps = target_hours // latent_step_hours
+    num_latent_steps = target_window_hours // latent_step_hours
     sub_window_freq = f"{latent_step_hours}h"
     if verbose:
+        print(f"Input window: {input_window_hours}h.")
+        print(f"Target window: {target_window_hours}h.")
         print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
-    t0 = int(start_date.timestamp())
+    # Builing pandas input and target delta separately
+    input_delta = pd.Timedelta(hours=input_window_hours)
+    target_delta = pd.Timedelta(hours=target_window_hours)
+
+    # t0 = int(start_date.timestamp())
+    t0 = int((start_date - input_delta).timestamp())  # [MK] This fixes the first empty bin, will test separately next
     t1 = int(end_date.timestamp())
 
     data_summary = {}
 
+    # searchsorted (O(log N)) vs boolean masks (O(N)). Requires time_ts monotonic —
+    # true here since zar_time order matches obs-time order, but unenforced, and a
+    # violation gives wrong slices silently. Set False for the always-correct masks.
+    SEARCHSORT = True
     for obs_type in observation_config.keys():
         for key in observation_config[obs_type].keys():
             z = z_dict[obs_type][key]
@@ -396,7 +415,7 @@ def organize_bins_times(
                 time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
 
             # --- Build window labels without a big DataFrame ---
-            win = time_ts.floor(window_size)  # tz-aware
+            win = time_ts.floor(init_window_freq)
 
             if win.isna().any():
                 continue
@@ -407,12 +426,13 @@ def organize_bins_times(
 
             # unique ordered windows + integer codes for each row's window
             uniq_win = pd.Index(win_valid).unique().sort_values()
-            codes = pd.Categorical(win_valid, categories=uniq_win, ordered=True).codes
+            uniq_win = uniq_win[uniq_win >= start_date]  # [MK] This is for the first empty bin fix, will test separately next
 
             if require_targets:
-                n_bins = len(uniq_win) - 1
-            else:
-                n_bins = len(uniq_win)  # PREDICTION MODE: include last window
+                uniq_win = uniq_win[uniq_win + target_delta <= end_date]
+
+            n_bins = len(uniq_win)
+
             if n_bins <= 0:
                 if verbose:
                     print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
@@ -428,24 +448,36 @@ def organize_bins_times(
 
             # --- Build bins; reproducible per-bin subsampling ---
             for bi in range(n_bins):  # exclude last window as target-only
-                t_in = uniq_win[bi]
+                t_target_start = uniq_win[bi]
+                t_input_start = t_target_start - input_delta
 
-                m_in = codes == bi
-                input_indices = idx_all[m_in]
+                if SEARCHSORT:
+                    lo_in = int(time_ts.searchsorted(t_input_start, side="left"))
+                    hi_in = int(time_ts.searchsorted(t_target_start, side="left"))
+                    input_indices = idx_all[lo_in:hi_in]
+                else:  # boolean masks
+                    input_mask = (time_ts >= t_input_start) & (time_ts < t_target_start)
+                    input_indices = idx_all[input_mask]
 
                 # Subsample input once
-                seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
+                seed_in = _stable_seed(seed_base, t_input_start, obs_type, key, is_target=False)
                 input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
 
                 # PREDICTION MODE:
                 if require_targets:
                     # LATENT ROLLOUT: Split target window into sub-windows
-                    t_target_start = uniq_win[bi + 1]
+                    t_target_end = t_target_start + target_delta
 
                     # Get all indices in the main target window
-                    m_target_full = codes == (bi + 1)
-                    idx_target_full = idx_all[m_target_full]
-                    ts_target_full = time_ts[m_target_full]
+                    if SEARCHSORT:
+                        lo_tg = int(time_ts.searchsorted(t_target_start, side="left"))
+                        hi_tg = int(time_ts.searchsorted(t_target_end, side="left"))
+                        idx_target_full = idx_all[lo_tg:hi_tg]
+                        ts_target_full = time_ts[lo_tg:hi_tg]
+                    else:
+                        target_mask_full = (time_ts >= t_target_start) & (time_ts < t_target_end)
+                        idx_target_full = idx_all[target_mask_full]
+                        ts_target_full = time_ts[target_mask_full]
 
                     # Generate the start/end times for each sub-window
                     target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
@@ -487,14 +519,10 @@ def organize_bins_times(
                 # We therefore name bins by the *forecast init* (start of the target window).
                 # This makes bin keys consistent across instruments even when some instruments
                 # have missing windows.
-                if require_targets:
-                    init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
-                else:
-                    # In inference mode there is no target window; use input window start.
-                    init_key = pd.to_datetime(t_in, utc=True).strftime('%Y%m%d%H')
+                init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
                 bin_name = f"bin{init_key}"
                 data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                    "input_time": t_in,
+                    "input_time": t_input_start,
                     "input_time_index": input_indices,
                     "target_times": list(target_sub_window_times[:-1]) if require_targets else [],  # List of timestamps
                     "target_time_indices": target_indices_list,          # List of index arrays
@@ -606,6 +634,46 @@ def extract_features(
             # --- Config & feature ordering ---
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
             feat_keys = obs_cfg["features"]
+
+            # --- resolve a valid range for every feature ---
+            # A value outside its physical range is not an observation, whatever
+            # sentinel the store happens to use. Declaring the range per observation
+            # type means a new instrument needs one line of config, rather than the
+            # code carrying a list of known fill values. Precedence: a per-variable
+            # "range" wins, otherwise the instrument's "feature_range" applies.
+            # A feature with neither is refused rather than left unguarded, which is
+            # how float32-max sentinels reached the encoder unnoticed.
+            feature_range = obs_cfg.get("feature_range")
+            if feature_range is not None:
+                qc_filters = {
+                    key: dict(value) if isinstance(value, dict) else value
+                    for key, value in (qc_filters or {}).items()
+                }
+                for _feat in feat_keys:
+                    _entry = qc_filters.get(_feat)
+                    if isinstance(_entry, dict):
+                        _entry.setdefault("range", list(feature_range))
+                    elif _entry is None:
+                        qc_filters[_feat] = {"range": list(feature_range)}
+            # Only features read straight from the store need a range. Derived
+            # features such as wind_u/wind_v are not columns; their validity comes
+            # from the source variables (windSpeed, windDirection), which carry their
+            # own ranges, so requiring one here would be satisfied by an entry that
+            # can never fire.
+            _unguarded = [
+                f for f in feat_keys
+                if f in z
+                and not (isinstance((qc_filters or {}).get(f), dict) and "range" in qc_filters[f])
+                and not isinstance((qc_filters or {}).get(f), (list, tuple))
+            ]
+            if _unguarded:
+                raise ValueError(
+                    f"{inst_name}: no valid range for {_unguarded}. Give the instrument a "
+                    f"feature_range: [lo, hi] in observation_config, or a per-variable "
+                    f"range under qc_filters. Without one, a fill value in that column is "
+                    f"indistinguishable from a measurement and corrupts the column statistics."
+                )
+
             meta_keys = obs_cfg.get("metadata") or []
             feat_pos = {k: i for i, k in enumerate(feat_keys)}
             n_ch = len(feat_keys)
@@ -682,6 +750,55 @@ def extract_features(
                                 if var == "windDirection":
                                     wd_ok_tg_list[step] = (tg_vals >= lo) & (tg_vals <= hi) if wd_ok_tg_list[step] is None else (
                                         wd_ok_tg_list[step] & ((tg_vals >= lo) & (tg_vals <= hi)))
+
+                    # --- pressure-ceiling QC ---
+                    # Flag-independent level limit: keep the variable only at or below
+                    # min_pressure_hpa (i.e. reject everything higher in the atmosphere).
+                    # A reject list cannot do this job, because the quality marker is
+                    # itself a fill value on a large share of rows, and a fill value
+                    # matches no entry in "reject". Missing or out-of-range pressure
+                    # cannot establish the level, so it must fail this check too.
+                    plim = cfg.get("min_pressure_hpa") if isinstance(cfg, dict) else None
+                    pcol = cfg.get("pressure_col", "airPressure") if isinstance(cfg, dict) else None
+                    if plim is not None:
+                        plim = float(plim)
+                        pressure_cfg = qc_filters.get(pcol, {})
+                        pressure_range = pressure_cfg.get("range") if isinstance(pressure_cfg, dict) else pressure_cfg
+
+                        def _at_or_below(idx):
+                            if pcol not in z:
+                                return np.zeros(len(idx), dtype=bool)
+                            p = np.asarray(z[pcol][idx], dtype="float64")
+                            valid = np.isfinite(p) & (p >= plim) & (p < 3.402823e38)
+                            if pressure_range is not None:
+                                lo_p, hi_p = pressure_range
+                                valid &= (p >= lo_p) & (p <= hi_p)
+                            return valid
+
+                        keep_in_p = _at_or_below(input_idx)
+                        if meta_j is not None:
+                            input_valid_meta[:, meta_j] &= keep_in_p
+                        elif pos is not None:
+                            input_valid_ch[:, pos] &= keep_in_p
+                        else:
+                            if var == "windSpeed":
+                                ws_ok_in = keep_in_p if ws_ok_in is None else (ws_ok_in & keep_in_p)
+                            if var == "windDirection":
+                                wd_ok_in = keep_in_p if wd_ok_in is None else (wd_ok_in & keep_in_p)
+
+                        for step, target_idx in enumerate(target_indices_list):
+                            if target_idx.size == 0:
+                                continue
+                            keep_tg_p = _at_or_below(target_idx)
+                            if meta_j is not None:
+                                target_valid_meta_list[step][:, meta_j] &= keep_tg_p
+                            elif pos is not None:
+                                target_valid_ch_list[step][:, pos] &= keep_tg_p
+                            else:
+                                if var == "windSpeed":
+                                    ws_ok_tg_list[step] = keep_tg_p if ws_ok_tg_list[step] is None else (ws_ok_tg_list[step] & keep_tg_p)
+                                if var == "windDirection":
+                                    wd_ok_tg_list[step] = keep_tg_p if wd_ok_tg_list[step] is None else (wd_ok_tg_list[step] & keep_tg_p)
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
@@ -819,8 +936,9 @@ def extract_features(
             input_sat_ids_raw = None
             if obs_type == "satellite" and sat_ids_cfg:
                 sat_id_field = "satelliteId" if "satelliteId" in z else ("satelliteIdentifier" if "satelliteIdentifier" in z else None)
-                if sat_id_field is not None:
-                    input_sat_ids_raw = z[sat_id_field][input_idx].astype(np.int64)
+                if sat_id_field is None:
+                    raise ValueError(f"{inst_name}: sat_ids requires a satelliteId or satelliteIdentifier column.")
+                input_sat_ids_raw = np.asarray(z[sat_id_field][input_idx])
 
             # Extract pressure level indices for radiosonde and aircraft (categorical embedding)
             input_pressure_level = None
@@ -905,29 +1023,24 @@ def extract_features(
                 return 6.112 * np.exp(x)
 
             def _apply_relational_qc():
-                # Apply to input + ALL targets
-                for step in range(num_latent_steps):
-                    target_features_raw = target_features_raw_list[step]
-                    target_metadata_raw = target_metadata_raw_list[step]
-                    target_valid_ch = target_valid_ch_list[step]
-
-                    if target_features_raw.size == 0:
+                # Input QC must also run during forecasts without observed targets.
+                batches = [(input_features_raw, input_metadata_raw, input_valid_ch)]
+                batches.extend(zip(target_features_raw_list, target_metadata_raw_list, target_valid_ch_list))
+                for arr, meta_arr, mask in batches:
+                    if arr.size == 0:
                         continue
 
                     # -- Td ≤ T (+0.5) and spread cap --
                     if rel.get("dewpoint_le_temp", False) and "airTemperature" in feat_pos and "dewPointTemperature" in feat_pos:
                         jT = feat_pos["airTemperature"]
                         jTd = feat_pos["dewPointTemperature"]
-                        for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
-                            if arr.shape[0] == 0:
-                                continue
-                            T, Td = arr[:, jT], arr[:, jTd]
-                            m = np.isfinite(T) & np.isfinite(Td)
-                            bad_hi = m & (Td > T + 0.5)
-                            bad_spread = m & ((T - Td) > float(rel.get("max_temp_dewpoint_spread", 60.0)))
-                            bad = bad_hi | bad_spread
-                            if np.any(bad):
-                                mask[bad, jTd] = False
+                        T, Td = arr[:, jT], arr[:, jTd]
+                        m = np.isfinite(T) & np.isfinite(Td)
+                        bad_hi = m & (Td > T + 0.5)
+                        bad_spread = m & ((T - Td) > float(rel.get("max_temp_dewpoint_spread", 60.0)))
+                        bad = bad_hi | bad_spread
+                        if np.any(bad):
+                            mask[bad, jTd] = False
 
                     # -- RH vs Td consistency --
                     if (
@@ -937,13 +1050,9 @@ def extract_features(
                         "dewPointTemperature" in feat_pos
                     ):
                         jRH, jT, jTd = feat_pos["relativeHumidity"], feat_pos["airTemperature"], feat_pos["dewPointTemperature"]
-                        for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
-                            if arr.shape[0] == 0:
-                                continue
-                            RH, T, Td = arr[:, jRH], arr[:, jT], arr[:, jTd]
-                            m = np.isfinite(RH) & np.isfinite(T) & np.isfinite(Td)
-                            if not m.any():
-                                continue
+                        RH, T, Td = arr[:, jRH], arr[:, jT], arr[:, jTd]
+                        m = np.isfinite(RH) & np.isfinite(T) & np.isfinite(Td)
+                        if m.any():
                             RH_star = 100.0 * (_es_hpa(Td[m]) / _es_hpa(T[m]))
                             bad = np.zeros(RH.shape, dtype=bool)
                             bad[m] = np.abs(RH[m] - RH_star) > float(rel.get("rh_from_td_consistency_pct"))
@@ -966,22 +1075,16 @@ def extract_features(
                                 jH = j
                                 break
 
-                    if pvh.get("enable", False) and jP is not None and jH is not None:
+                    if pvh.get("enable", False) and jP is not None and jH is not None and meta_arr.size:
                         H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
-                        for feat_arr, meta_arr, vmask in (
-                            (input_features_raw, input_metadata_raw, input_valid_ch),
-                            (target_features_raw, target_metadata_raw, target_valid_ch)
-                        ):
-                            if feat_arr.shape[0] == 0 or meta_arr.size == 0:
-                                continue
-                            z_h, p = meta_arr[:, jH], feat_arr[:, jP]
-                            m = np.isfinite(p) & np.isfinite(z_h)
-                            if m.any():
-                                p_exp = 1013.25 * np.exp(-np.clip(z_h[m], -500.0, 9000.0) / H)
-                                bad = np.zeros_like(p, dtype=bool)
-                                bad[m] = np.abs(p[m] - p_exp) > tol_hpa
-                                if np.any(bad):
-                                    vmask[bad, jP] = False
+                        z_h, p = meta_arr[:, jH], arr[:, jP]
+                        m = np.isfinite(p) & np.isfinite(z_h)
+                        if m.any():
+                            p_exp = 1013.25 * np.exp(-np.clip(z_h[m], -500.0, 9000.0) / H)
+                            bad = np.zeros_like(p, dtype=bool)
+                            bad[m] = np.abs(p[m] - p_exp) > tol_hpa
+                            if np.any(bad):
+                                mask[bad, jP] = False
 
             # Treat sentinel height (e.g. 9999 or int32 max) as missing for any height-like metadata key
             height_cols = [
@@ -1001,8 +1104,26 @@ def extract_features(
             # -------------------- Continue with original processing pattern --------------------
             # The rest follows the original extract_features logic but handles multiple targets
 
+            # --- non-finite guard ---
+            # The valid ranges resolved above reject out-of-range sentinels whatever
+            # their magnitude; this covers NaN and +/-inf, which no range can express.
+            # Folding both into the channel validity is what matters: the values then
+            # become NaN, drop out of the column statistics, and are reported as
+            # missing by input_channel_mask. Without it a sentinel survived ~isnan and
+            # was not excluded by np.nanmean, so it destroyed the statistics - with
+            # AVHRR's 54% float32-max rows every genuine row normalised to the same
+            # constant and the channel carried no information at all.
+            def _observed(values):
+                return np.isfinite(values)
+
+            input_valid_ch &= _observed(input_features_raw)
+            for _step in range(num_latent_steps):
+                _tf = target_features_raw_list[_step]
+                if _tf.size:
+                    target_valid_ch_list[_step] &= _observed(_tf)
+
             # Row keeping for INPUTS (same as original)
-            observed_in = ~np.isnan(input_features_raw)
+            observed_in = _observed(input_features_raw)
             keep_inputs = (observed_in & input_valid_ch).any(axis=1)
 
             if not keep_inputs.any():
@@ -1167,24 +1288,34 @@ def extract_features(
                     np.nan_to_num(input_features_norm, nan=0.0)
                 ]).astype(np.float32)
 
-                # Append sat_id one-hot ONLY when the configured input_dim indicates it is expected.
-                # This keeps backward compatibility for instruments whose input_dim does not include sat_id columns.
+                # Append the sat_id one-hot. Declaring sat_ids means the satellite
+                # identity is wanted as a feature, so input_dim must leave room for it:
+                # 7 geo/time + metadata + features + len(sat_ids). A mismatch used to
+                # fall through silently and train without satellite identity, which is
+                # invisible in the outputs and survived unnoticed in both SEVIRI
+                # configurations. Refuse instead, naming the value input_dim needs.
                 expected_input_dim = obs_cfg.get("input_dim", None)
-                if sat_ids_cfg and expected_input_dim is not None:
+                if sat_ids_cfg:
                     sat_ids_cfg_list = [int(x) for x in sat_ids_cfg]
                     k = len(sat_ids_cfg_list)
+                    if len(set(sat_ids_cfg_list)) != k:
+                        raise ValueError(f"{inst_name}: sat_ids must contain unique identifiers.")
                     core_dim = int(input_features_final_core.shape[1])
-                    if k > 0 and int(expected_input_dim) == (core_dim + k):
-                        if input_sat_ids_raw_clean is not None:
-                            input_sat_onehot = np.stack(
-                                [(input_sat_ids_raw_clean == sid).astype(np.float32) for sid in sat_ids_cfg_list],
-                                axis=1,
-                            )
-                        else:
-                            input_sat_onehot = np.zeros((input_features_final_core.shape[0], k), dtype=np.float32)
-                        input_features_final = np.column_stack([input_features_final_core, input_sat_onehot]).astype(np.float32)
-                    else:
-                        input_features_final = input_features_final_core
+                    if expected_input_dim is None or int(expected_input_dim) != (core_dim + k):
+                        raise ValueError(
+                            f"{inst_name}: input_dim is {expected_input_dim} but "
+                            f"sat_ids has {k} entries, so it must be {core_dim + k} "
+                            f"({core_dim} core + {k} sat_id one-hot columns). Set "
+                            f"input_dim to {core_dim + k}. Note that "
+                            f"sat_ids also selects which satellites are read at all."
+                        )
+                    if not np.isin(input_sat_ids_raw_clean, sat_ids_cfg_list).all():
+                        raise ValueError(f"{inst_name}: input satellite IDs are missing or outside configured sat_ids; check bin filtering.")
+                    input_sat_onehot = np.stack(
+                        [(input_sat_ids_raw_clean == sid).astype(np.float32) for sid in sat_ids_cfg_list],
+                        axis=1,
+                    )
+                    input_features_final = np.column_stack([input_features_final_core, input_sat_onehot]).astype(np.float32)
                 else:
                     input_features_final = input_features_final_core
 
@@ -1337,13 +1468,13 @@ def extract_features(
             data_summary_bin["input_metadata"] = torch.tensor(np.column_stack([lat_rad_input, lon_rad_input]), dtype=torch.float32)
             data_summary_bin["input_lat_deg"] = input_lat_raw_clean
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
+            # Encoder validity features need this mask even when persistence is disabled.
+            data_summary_bin["input_channel_mask"] = input_valid_ch_clean.astype(bool)
             if include_persistence_inputs:
                 data_summary_bin["input_features_raw"] = input_features_raw_clean.astype(np.float32)
-                data_summary_bin["input_channel_mask"] = input_valid_ch_clean.astype(bool)
                 data_summary_bin["input_time_unix"] = np.asarray(input_times_clean, dtype=np.int64)
             else:
                 data_summary_bin.pop("input_features_raw", None)
-                data_summary_bin.pop("input_channel_mask", None)
                 data_summary_bin.pop("input_time_unix", None)
 
             # Store pressure level indices for radiosonde and aircraft

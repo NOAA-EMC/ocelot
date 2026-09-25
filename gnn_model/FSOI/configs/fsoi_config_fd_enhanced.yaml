@@ -19,7 +19,9 @@ forecast:
   target_pressure_levels: "all"
   use_instrument_weights: false
   use_channel_weights: false
-  use_area_weights: true
+  verification_metric:
+    spatial_weighting: equal_area
+    group_balancing: variable_level
   loss_reduction: "mean"
   impact_factor: 0.5
   stratify_by_pressure: true
@@ -32,8 +34,8 @@ data:
   num_workers: 1
   output_dir: "FSOI/fsoi_outputs/fd_check_enhanced"
   save_per_obs_impacts: false
-  feature_masks:
-    aircraft: [specificHumidity]
+  # Aircraft has no humidity channel in observation_config (features: T, U, V).
+  feature_masks: {}
   store_full_tensors: false
 
 memory:
@@ -84,7 +86,7 @@ validation:
 
   # ── Step 1b: directional derivative (Rademacher, float32) ───────────────
   # Runs for high-N satellite instruments (atms, avhrr, ssmis, ascat, amsua,
-  # seviri_asr). 5 random sign vectors per instrument per check pair.
+  # seviri_asr, seviri_csr). 5 random sign vectors per instrument per check pair.
   # Expected |Δe| for ATMS ~ 90 float32 ULP at ε=0.01.
   directional_derivative_check: true
   directional_n_trials: 5

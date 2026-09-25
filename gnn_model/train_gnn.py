@@ -219,10 +219,35 @@ def main():
     parser.add_argument("--node_dropout", type=float, default=0.03)
     parser.add_argument("--encoder_dropout", type=float, default=0.1)
     parser.add_argument("--decoder_dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--channel_validity_features", action=argparse.BooleanOptionalAction, default=True,
+        help="Give the encoder one validity column per satellite channel, so a missing "
+             "channel (imputed as normalized zero, i.e. the climatological mean) is "
+             "distinguishable from an average reading. On by default for new training "
+             "runs. Legacy checkpoints require --no-channel_validity_features AND "
+             "their original observation configuration; this setting changes the "
+             "width of the observation embedders.",
+    )
 
     # Windowing / latent rollout
-    parser.add_argument("--data_window_hours", type=int, default=12)
+    parser.add_argument("--input_window_hours", type=int, default=12)
+    parser.add_argument("--target_window_hours", type=int, default=12)
     parser.add_argument("--latent_step_hours", type=int, default=3)
+    parser.add_argument("--processor_window", type=int, default=None)   # DEFAULT:None = target_window_hours//latent_step_hours
+    parser.add_argument(
+        "--encoding_order",
+        type=str,
+        default="default",
+        choices=["default", "reversed", "random"],
+        help=(
+            "Order in which instruments are encoded into the shared mesh.\n"
+            "  default:  YAML config order (satellite-first).\n"
+            "  reversed: Reverse of config order (conventional-first).\n"
+            "  random:   Shuffle per-batch during training; removes positional bias.\n"
+            "Use 'random' for fine-tuning to eliminate the encoding-order gradient asymmetry\n"
+            "identified by the H1 FSOI experiment (ENCODING_ORDER_INVESTIGATION.md)."
+        ),
+    )
     parser.add_argument(
         "--spatial_mixing_steps",
         type=int,
@@ -433,15 +458,20 @@ def main():
     max_rollout_steps = 1
     rollout_schedule = "fixed"
 
-    data_window_hours = int(args.data_window_hours)
+    input_window_hours = int(args.input_window_hours)
+    target_window_hours = int(args.target_window_hours)
     latent_step_hours = int(args.latent_step_hours)
 
-    if data_window_hours % latent_step_hours != 0:
+    if target_window_hours % latent_step_hours != 0:
         raise ValueError(
-            f"data_window_hours ({data_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
+            f"target_window_hours ({target_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
         )
 
-    processor_window = int(data_window_hours // latent_step_hours)
+    # default processor_window = rollout depth
+    if args.processor_window is not None:
+        processor_window = int(args.processor_window)
+    else:
+        processor_window = int(target_window_hours // latent_step_hours)
 
     start_time = time.time()
 
@@ -492,6 +522,8 @@ def main():
         verbose=bool(args.verbose),
         max_rollout_steps=max_rollout_steps,
         rollout_schedule=rollout_schedule,
+        input_window_hours=int(input_window_hours),
+        target_window_hours=int(target_window_hours),
         latent_step_hours=int(latent_step_hours),
         feature_stats=feature_stats,
         processor_type="sliding_transformer",
@@ -509,6 +541,7 @@ def main():
         decoder_heads=4,
         encoder_dropout=float(args.encoder_dropout),
         decoder_dropout=float(args.decoder_dropout),
+        channel_validity_features=bool(args.channel_validity_features),
         val_csv_enabled=(not args.disable_val_csv),
         val_csv_out_dir=str(args.val_csv_out_dir),
         val_csv_num_batches=int(args.val_csv_num_batches),
@@ -522,16 +555,35 @@ def main():
     )
 
     if resume_path and args.load_weights_only:
-        print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
+        # Load weights only on rank 0 to avoid 8-rank simultaneous torch.load
+        # which spikes CPU RAM and can cause OOM during DDP init.
+        # All other ranks start with random init; Lightning's DDP broadcast
+        # then synchronises weights from rank 0 before the first step.
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        global_rank = int(os.environ.get("SLURM_PROCID", os.environ.get("RANK", 0)))
+
         model = GNNLightning(**model_kwargs)
-        ckpt = torch.load(resume_path, map_location="cpu")
-        state = ckpt.get("state_dict", ckpt)
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(
-            f"[INFO] Weights-only load complete. missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
-        )
+
+        if global_rank == 0:
+            print(f"[INFO] Rank 0: loading weights from {resume_path}")
+            ckpt = torch.load(resume_path, map_location="cpu")
+            state = ckpt.get("state_dict", ckpt)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            print(
+                f"[INFO] Weights-only load complete. missing={len(missing)} unexpected={len(unexpected)}"
+            )
+            del ckpt, state  # free CPU RAM before DDP init
+        else:
+            print(f"[INFO] Rank {global_rank}: waiting for rank-0 weight broadcast.")
     else:
         model = GNNLightning(**model_kwargs)
+
+    # Apply encoding order (runtime attribute — not a trained parameter).
+    # "random" shuffles instrument encoding order each forward pass to remove
+    # the positional gradient-path bias identified in ENCODING_ORDER_INVESTIGATION.md.
+    model.encoding_order = str(args.encoding_order)
+    if args.encoding_order != "default":
+        print(f"[ENCODING ORDER] '{args.encoding_order}' — gradient-path bias mitigation active.")
 
     data_module = GNNDataModule(
         data_path=data_path,
@@ -544,7 +596,8 @@ def main():
         feature_stats=feature_stats,
         verbose=bool(args.verbose),
         pipeline=pipeline_cfg,
-        window_size=f"{data_window_hours}h",
+        input_window_hours=input_window_hours,
+        target_window_hours=target_window_hours,
         latent_step_hours=latent_step_hours,
         train_val_split_ratio=float(args.train_val_split_ratio) if args.train_val_split_ratio is not None else 0.9,
         cache_val_windows=bool(args.cache_val_windows),

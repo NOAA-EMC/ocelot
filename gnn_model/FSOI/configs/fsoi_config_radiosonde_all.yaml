@@ -25,13 +25,14 @@ forecast:
 
   use_instrument_weights: false
   use_channel_weights: false
-  # Cosine-latitude area weighting for fair global comparison (dense NH obs
-  # would otherwise dominate unweighted totals).
-  use_area_weights: true
+  # Equal-area cell means and fixed variable/level weights define J.
+  # Audit coverage and freeze supported levels before production runs.
+  verification_metric:
+    spatial_weighting: equal_area
+    group_balancing: variable_level
 
   # Use a normalized forecast-error metric so different verification dates
   # are comparable even when radiosonde target counts differ.
-  # Options: "mean" or "sum".
   loss_reduction: "mean"
 
   # Trapezoidal FSOI factor. 0.5 matches the usual observation-impact
@@ -64,8 +65,8 @@ data:
   output_dir: "./FSOI/fsoi_outputs/radiosonde_allvars_impact"
   save_per_obs_impacts: false
 
-  feature_masks:
-    aircraft: [specificHumidity]
+  # Aircraft has no humidity channel in observation_config (features: T, U, V).
+  feature_masks: {}
 
   store_full_tensors: false
 
