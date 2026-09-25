@@ -96,6 +96,7 @@ def plot_graph(graph, title=None):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _mk_2d_graph(xy, nx_pts, ny_pts):
     """Create a directed 2D grid graph with diagonal edges in Cartesian space."""
     xm, xM = np.amin(xy[0][0, :]), np.amax(xy[0][0, :])
@@ -328,7 +329,7 @@ def create_regional_mesh(xy, hierarchical, mesh_splits=None, plot=False):
 # ---------------------------------------------------------------------------
 
 def create_regional_mesh_from_corners(lon_min, lon_max, lat_min, lat_max, hierarchical,
-                                       mesh_splits=None, plot=False):
+                                      mesh_splits=None, plot=False):
     """
     Build a regional mesh from domain corner coordinates in degrees.
 
@@ -452,8 +453,8 @@ def project_coords(lat, lon):
 # ---------------------------------------------------------------------------
 
 def create_regional_mesh_structure(lon_min, lon_max, lat_min, lat_max, hierarchical,
-                                    mesh_splits=None, plot=False,
-                                    cutoff_factor=0.67, num_neighbors=4):
+                                   mesh_splits=None, plot=False,
+                                   cutoff_factor=0.67, num_neighbors=4):
     """
     Build a regional mesh and repackage it into the same dict shape that
     create_mesh_graph_global.create_mesh() returns, so downstream code
