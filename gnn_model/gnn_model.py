@@ -129,6 +129,12 @@ class GNNLightning(pl.LightningModule):
         decoder_layers: int = 2,
         encoder_dropout: float = 0.0,
         decoder_dropout: float = 0.0,
+        # Let the encoder see which satellite channels are real. Missing channels
+        # are imputed as normalized zero, which is the climatological mean, so
+        # without this the model cannot tell a missing channel from an average
+        # reading. Enabled for new models; legacy architectures must explicitly
+        # set this to False and use their original observation configuration.
+        channel_validity_features: bool = True,
         weight_decay: float = 1e-5,
         lr_schedule: str = "plateau",  # "plateau" | "cosine_warmup"
         warmup_pct: float = 0.05,
@@ -322,6 +328,11 @@ class GNNLightning(pl.LightningModule):
         self.observation_decoders = nn.ModuleDict()
         self.output_mappers = nn.ModuleDict()  # For final prediction MLPs
 
+        # Node types that get channel-validity columns, and how many each gets.
+        # Empty unless channel_validity_features is on.
+        self.channel_validity_features = bool(channel_validity_features)
+        self.channel_validity_dims: dict[str, int] = {}
+
         first_instrument_config = next(iter(next(iter(observation_config.values())).values()))
         hidden_layers = first_instrument_config.get("encoder_hidden_layers", 2)
 
@@ -463,6 +474,14 @@ class GNNLightning(pl.LightningModule):
                 embedder_input_dim = input_dim
                 if inst_name in ["radiosonde", "aircraft"]:
                     embedder_input_dim += 8  # Add pressure-level embedding dimension
+                # One validity column per satellite channel, appended to the input
+                # features. Conventional inputs already encode missingness with the
+                # -9.0 sentinel written in preprocessing, so they need no extra column.
+                if self.channel_validity_features and obs_type == "satellite":
+                    n_channels = len(cfg.get("features", []) or [])
+                    if n_channels:
+                        self.channel_validity_dims[node_type_input] = n_channels
+                        embedder_input_dim += n_channels
                 self.observation_embedders[node_type_input] = make_mlp([embedder_input_dim] + self.mlp_blueprint_end)
 
                 # Output mapper takes ONLY decoded features (hidden_dim)
@@ -991,6 +1010,43 @@ class GNNLightning(pl.LightningModule):
 
         return tensor * std_vec + mean_vec
 
+    def _append_channel_validity(self, node_type, data, x):
+        """Append one 1/0 column per channel saying whether that channel is real.
+
+        Preprocessing imputes missing satellite channels as normalized zero, and
+        satellite features are standardized, so a missing channel is numerically a
+        climatological-mean observation. Without these columns the encoder cannot
+        tell the two apart, which also means writing the missing-value
+        representation does not remove the channel's information pathway.
+
+        Models with validity disabled bypass this step. Enabled models require
+        a real mask for every nonempty satellite input.
+        """
+        n_channels = self.channel_validity_dims.get(node_type)
+        if not n_channels:
+            return x
+
+        mask = getattr(data[node_type], "input_channel_mask", None)
+        if mask is None:
+            if x.shape[0]:
+                raise ValueError(
+                    f"{node_type}: channel_validity_features=True requires input_channel_mask. "
+                    "Preprocessing must retain the QC mask even when persistence inputs are disabled."
+                )
+            validity = x.new_empty((0, n_channels))
+        else:
+            validity = mask.to(device=x.device, dtype=x.dtype)
+            if validity.ndim == 1:
+                validity = validity.unsqueeze(-1)
+            if validity.shape[0] != x.shape[0] or validity.shape[1] != n_channels:
+                raise ValueError(
+                    f"{node_type}: input_channel_mask has shape {tuple(validity.shape)}, "
+                    f"expected ({x.shape[0]}, {n_channels}). The mask must align with "
+                    f"the configured channel count, or validity columns would be "
+                    f"attached to the wrong channels."
+                )
+        return torch.cat([x, validity], dim=-1)
+
     def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
 
         num_graphs = data.num_graphs
@@ -1029,9 +1085,11 @@ class GNNLightning(pl.LightningModule):
                         f"PRESSURE-LEVEL EMBEDDING APPLIED: {node_type} | "
                         f"orig={x.shape} + embed={pressure_embed.shape} → combined={x_with_embed.shape}"
                     )
+                    x_with_embed = self._append_channel_validity(node_type, data, x_with_embed)
                     embedded_features[node_type] = self.observation_embedders[node_type](x_with_embed)
 
                 else:
+                    x = self._append_channel_validity(node_type, data, x)
                     embedded_features[node_type] = self.observation_embedders[node_type](x)
 
         # --------------------------------------------------------------------

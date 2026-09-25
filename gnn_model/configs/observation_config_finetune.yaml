@@ -39,7 +39,6 @@ pipeline:
 #         Detrimental instruments downweighted; beneficial upweighted.
 #         ATMS/SSMIS/surface_obs still included but with lower weight
 #         so the model continues to see all observation types.
-# Derived from ENCODING_ORDER_INVESTIGATION.md, Table (H1 results).
 # ============================================================
 instrument_weights:
   radiosonde:  8.17   # dominant beneficial (order-corrected: ~-1268/month)
@@ -97,6 +96,7 @@ channel_weights:
 observation_config:
   satellite:
     atms:
+      feature_range: [50, 400]      # K; brightness temperature
       sat_ids: [224, 225]
       scan_angle_channels: 1  # Number of scan angle dimensions
       features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
@@ -111,6 +111,7 @@ observation_config:
       decoder_hidden_layers: 2
 
     amsua:
+      feature_range: [50, 400]      # K; brightness temperature
       sat_ids: [3, 5, 206, 209, 223]
       scan_angle_channels: 1  # Number of scan angle dimensions
       features: [bt_channel_1, bt_channel_2, bt_channel_3, bt_channel_4, bt_channel_5,
@@ -123,7 +124,8 @@ observation_config:
       decoder_hidden_layers: 2
 
     ssmis:
-      sat_ids: [285,]
+      feature_range: [50, 400]      # K; brightness temperature
+      sat_ids: [249, 285, 286, 287]
       scan_angle_channels: 2  # Number of scan angle dimensions
       features: [bt_ch_1, bt_ch_2, bt_ch_3, bt_ch_4, bt_ch_5,
                  bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10,
@@ -131,32 +133,35 @@ observation_config:
                  bt_ch_16, bt_ch_17, bt_ch_18, bt_ch_19, bt_ch_20,
                  bt_ch_21, bt_ch_22, bt_ch_23, bt_ch_24]
       metadata: [sensorScanPosition, satelliteAscendingFlag]
-      input_dim: 34
+      input_dim: 37   # 33 core (24 channels + 2 metadata + 7 geo/time) + 4 sat_id one-hot
       target_dim: 24
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
     seviri_asr:
-      sat_ids: [56, 57]  # Meteosat-11
+      feature_range: [50, 400]      # K; brightness temperature
+      sat_ids: [55, 56, 57, 70, 71]
       scan_angle_channels: 1  # Number of scan angle dimensions
       features:  [bt_ch_4, bt_ch_5, bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10, bt_ch_11]
       metadata: [satelliteZenithAngle, solarZenithAngle]
-      input_dim: 17
+      input_dim: 22   # 17 core (8 channels + 2 metadata + 7 geo/time) + 5 sat_id one-hot
       target_dim: 8
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
     seviri_csr:
-      sat_ids: [56, 57]  # Meteosat-11
+      feature_range: [50, 400]      # K; brightness temperature
+      sat_ids: [55, 56, 57, 70]
       scan_angle_channels: 1  # Number of scan angle dimensions
       features: [bt_ch_4, bt_ch_5, bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10, bt_ch_11]
       metadata: [satelliteZenithAngle, solarZenithAngle]
-      input_dim: 17
+      input_dim: 21   # 17 core (8 channels + 2 metadata + 7 geo/time) + 4 sat_id one-hot
       target_dim: 8
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
 
     avhrr:
+      feature_range: [50, 400]      # K; brightness temperature
       sat_ids: [3, 5, 209, 223]
       scan_angle_channels: 1  # Number of scan angle dimensions
       features: [brightnessTemperature_ch_50, brightnessTemperature_ch_51, brightnessTemperature_ch_52]
@@ -179,6 +184,7 @@ observation_config:
     #   decoder_hidden_layers: 3
 
     ascat:
+      feature_range: [-60, 10]      # dB; backscatter
       sat_ids: [3, 4, 5]  # MetOp satellite IDs (v7 has satelliteIdentifier in {3,4,5})
       scan_angle_channels: 3  # ASCAT has 3 beams, each with its own scan angle
       features: [backscatter_ch_1, backscatter_ch_2, backscatter_ch_3]  # fore, mid, aft beams
@@ -285,11 +291,12 @@ observation_config:
         airTemperature:
           range: [-90, 50]              # Celsius; physically reasonable atmospheric range
           qm_flag_col: airTemperatureQuality
-          reject: [13, 14, 15]          # Reject bad flags
+          reject: [9, 13, 14, 15]       # Reject unchecked and bad quality flags.
         dewPointTemperature:
           range: [-120, 50]             # Celsius; physically reasonable (very dry stratosphere to humid surface)
           qm_flag_col: dewPointTemperatureQuality
-          reject: [13, 14, 15]          # Reject bad flags
+          reject: [9, 13, 14, 15]       # Reject unchecked and bad quality flags.
+          min_pressure_hpa: 300        # Apply the pressure cutoff regardless of quality flag.
         windSpeed:
           range: [0, 150]               # m/s; physically reasonable (jet stream can exceed 100 m/s)
           qm_flag_col: windQuality
@@ -298,6 +305,10 @@ observation_config:
           range: [0, 6.2832]              # radians; full circle 0-2π
           qm_flag_col: windQuality
           keep: [2]                     # Keep only good flag 2
+
+      qc_relations:                   # cross-variable checks, as for surface_obs
+        dewpoint_le_temp: true        # Td <= T (+0.5 °C margin)
+        max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
 
     aircraft:
       source: zarr

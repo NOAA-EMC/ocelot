@@ -734,6 +734,7 @@ class GNNDataModule(pl.LightningDataModule):
         # Create empty input node
         node_type_input = f"{inst_name}_input"
         data[node_type_input].x = torch.empty((0, inst_cfg["input_dim"]), dtype=torch.float32)
+        data[node_type_input].input_channel_mask = torch.empty((0, len(inst_cfg["features"])), dtype=torch.bool)
         data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
         data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
         data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)

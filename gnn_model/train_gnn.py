@@ -219,6 +219,15 @@ def main():
     parser.add_argument("--node_dropout", type=float, default=0.03)
     parser.add_argument("--encoder_dropout", type=float, default=0.1)
     parser.add_argument("--decoder_dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--channel_validity_features", action=argparse.BooleanOptionalAction, default=True,
+        help="Give the encoder one validity column per satellite channel, so a missing "
+             "channel (imputed as normalized zero, i.e. the climatological mean) is "
+             "distinguishable from an average reading. On by default for new training "
+             "runs. Legacy checkpoints require --no-channel_validity_features AND "
+             "their original observation configuration; this setting changes the "
+             "width of the observation embedders.",
+    )
 
     # Windowing / latent rollout
     parser.add_argument("--input_window_hours", type=int, default=12)
@@ -511,6 +520,7 @@ def main():
         decoder_heads=4,
         encoder_dropout=float(args.encoder_dropout),
         decoder_dropout=float(args.decoder_dropout),
+        channel_validity_features=bool(args.channel_validity_features),
         val_csv_enabled=(not args.disable_val_csv),
         val_csv_out_dir=str(args.val_csv_out_dir),
         val_csv_num_batches=int(args.val_csv_num_batches),
