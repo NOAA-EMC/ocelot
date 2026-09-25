@@ -1,0 +1,520 @@
+fill_values: [99999997952.00, 1000000.00, 1000000000, 9999] # Values to replace with NaN when loading data
+
+instrument_weights:
+  atms: 1.0
+  amsua: 1.0
+  avhrr: 1.0
+  ssmis: 1.0
+  seviri: 1.0
+  iasi: 1.0
+  cris-fsr: 1.0
+  ascat: 1.0
+  surface_obs: 1.0
+  snow_cover: 1.0
+  radiosonde: 1.0
+  sst: 1.0
+  gps: 1.0
+  surface_obs_t: 1.0
+  surface_obs_uv: 1.0
+
+
+channel_weights:
+  atms: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] 
+  amsua: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  avhrr: [1.0, 1.0, 1.0]
+  ssmis: [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0
+    ]
+  seviri: [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0
+    ]
+  iasi: [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    ]
+  cris-fsr: [
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 
+    1.0, 1.0, 1.0, 1.0, 1.0,
+    ]                 
+  surface_obs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # one per predicted feature (6)
+  snow_cover: [1.0]            # snowDepth
+  radiosonde: [1.0, 1.0, 1.0, 1.0, 1.0]
+
+observation_config:
+  satellite:
+    diag_atms:
+      sat_ids: ['npp', 'n20'] # n21?
+      features: [observation_channel_1, observation_channel_2, observation_channel_3, observation_channel_4, observation_channel_5,
+                 observation_channel_6, observation_channel_7, observation_channel_8, observation_channel_9, observation_channel_10,
+                 observation_channel_11, observation_channel_12, observation_channel_13, observation_channel_14, observation_channel_15,
+                 observation_channel_16, observation_channel_17, observation_channel_18, observation_channel_19, observation_channel_20,
+                 observation_channel_21, observation_channel_22]
+      metadata: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      dropna_cols: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      input_dim: 33
+      target_dim: 22
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/40
+        seed: 12345
+
+    diag_amsua:
+      sat_ids: ['n15', 'n18', 'n19', 'metop-b', 'metop-c']
+      features: [observation_channel_1, observation_channel_2, observation_channel_3, observation_channel_4, observation_channel_5,
+                observation_channel_6, observation_channel_7, observation_channel_8, observation_channel_9, observation_channel_10,
+                observation_channel_11, observation_channel_12, observation_channel_13, observation_channel_14, observation_channel_15]
+      metadata: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      dropna_cols: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      input_dim: 26
+      target_dim: 15
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/30
+        seed: 12345
+
+    diag_avhrr:
+      sat_ids: ['metop-c', 'n18', 'metop-b']
+      features: [observation_channel_3, observation_channel_4, observation_channel_5, ]
+      dropna_cols: [sat_zenith_angle, sol_zenith_angle]
+      metadata: [sat_zenith_angle, sol_zenith_angle]
+      input_dim: 13
+      target_dim: 3
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/100
+        seed: 12345
+
+    ascat:
+      sat_ids: [3]  # MetOp satellite IDs
+      scan_angle_channels: 3  # ASCAT has 3 beams, each with its own scan angle
+      features: [backscatter_ch_1, backscatter_ch_2, backscatter_ch_3]  # fore, mid, aft beams
+      metadata: [radarIncidenceAngle_ch_1, radarIncidenceAngle_ch_2, radarIncidenceAngle_ch_3,
+                 antennaBeamAzimuthAngle_ch_1, antennaBeamAzimuthAngle_ch_2, antennaBeamAzimuthAngle_ch_3]  # angles for each channel (beam IDs are implicit in channel order)
+      input_dim: 17   # 8 (geo/time enc) + 6 (metadata) + 3 (features)
+      target_dim: 3   # 3 backscatter channels
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_strict_flags: true     # ensure missing flags are rejected
+      qc_filters:
+        # QC filters: Based on empirical data analysis (1M samples)
+        # ascatSigma0Usability: 0=usable (96-99% of data), 1=good (1-4%), 2147483647=missing
+        # Both 0 and 1 contain valid backscatter data matching feature_stats means
+        backscatter_ch_1:
+          range: [-55.0, 3.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.8, -2.3]; allow +0.7 dB buffer
+          # qm_flag_col: ascatSigma0Usability_ch_1
+          # keep: [1]
+        backscatter_ch_2:
+          range: [-55.0, 5.0]  # 2022-2024 dB data: 0.1–99.9% ≈ [-35.6, -0.6]; retain wet-snow spikes
+          # qm_flag_col: ascatSigma0Usability_ch_2
+          # keep: [1]
+        backscatter_ch_3:
+          range: [-55.0, 3.2]  # 2022-2024 dB data: 0.1–99.9% ≈ [-39.6, -2.4]
+          # qm_flag_col: ascatSigma0Usability_ch_3
+          # keep: [1]
+      subsample:
+        mode: random
+        fraction: 0.05 # 1/100
+        seed: 12345
+
+    diag_iasi:
+      sat_ids: ['metop-c', 'metop-b']
+      scan_angle_channels: 2  # Number of scan angle dimensions
+      features: [observation_channel_89, observation_channel_148, observation_channel_259, observation_channel_350, observation_channel_414,
+                 observation_channel_1027, observation_channel_1271, observation_channel_1579, observation_channel_1710, observation_channel_2346,
+                 observation_channel_2701, observation_channel_3027, observation_channel_3322, observation_channel_5992, observation_channel_6182,
+                 observation_channel_6489, observation_channel_7584]
+      metadata: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      dropna_cols: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      input_dim: 28
+      target_dim: 17
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/100
+        seed: 12345
+
+    diag_cris-fsr:
+      sat_ids: ['n20', 'n21']
+      scan_angle_channels: 2  # Number of scan angle dimensions
+      features: [observation_channel_28, observation_channel_95, observation_channel_132, observation_channel_158, observation_channel_400, 
+                 observation_channel_496, observation_channel_626, observation_channel_678, observation_channel_748, observation_channel_874, 
+                 observation_channel_1018, observation_channel_1133, observation_channel_1596, observation_channel_1635, observation_channel_2182]
+      metadata: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      dropna_cols: [sat_zenith_angle, sol_zenith_angle, sol_azimuth_angle]
+      input_dim: 26
+      target_dim: 15
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/100
+        seed: 12345
+
+    diag_ssmis:
+      sat_ids: ['f17',]
+      scan_angle_channels: 2  # Number of scan angle dimensions
+      features: [observation_channel_1, observation_channel_2, observation_channel_3, observation_channel_4, observation_channel_5,
+                 observation_channel_6, observation_channel_7, observation_channel_8, observation_channel_9, observation_channel_10,
+                 observation_channel_11, observation_channel_12, observation_channel_13, observation_channel_14, observation_channel_15,
+                 observation_channel_16, observation_channel_17, observation_channel_18, observation_channel_19, observation_channel_20,
+                 observation_channel_21, observation_channel_22, observation_channel_23, observation_channel_24]
+      metadata: [scan_position, sat_zenith_angle]
+      input_dim: 31
+      target_dim: 24
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/100
+        seed: 12345
+
+    # seviri:
+    #   sat_ids: [56, 57]  # Meteosat-11
+    #   scan_angle_channels: 1  # Number of scan angle dimensions
+    #   features: [bt_all_ch_4, bt_all_ch_5, bt_all_ch_6, bt_all_ch_7, 
+    #              bt_all_ch_8, bt_all_ch_9, bt_all_ch_10, bt_all_ch_11,
+    #              bt_clear_ch_4, bt_clear_ch_5, bt_clear_ch_6, bt_clear_ch_7,
+    #              bt_clear_ch_8, bt_clear_ch_9, bt_clear_ch_10, bt_clear_ch_11
+    #             ]
+    #   metadata: [satelliteZenithAngle, solarZenithAngle]
+    #   input_dim: 23
+    #   target_dim: 16
+    #   encoder_hidden_layers: 2
+    #   decoder_hidden_layers: 2
+    #   subsample:
+    #     mode: random
+    #     fraction: 0.02 # 1/50
+    #     seed: 12345
+
+  conventional:
+    surface_obs:
+      source: zarr
+      zarr_name: raw_surface_obs
+      features: [airPressure_bufr, airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: [height_bufr]
+      dropna_cols: [height_bufr, ]
+      input_dim: 18                      # feats + geo/time (8) + mask; see FEATURES_AUX_DIM in constants
+      target_dim: 5
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        airPressure_bufr:
+          range: [5.7, 7.5]
+          qm_flag_col: airPressureQuality_event_0
+          keep: [1,2,4,9]
+        airTemperature:
+          range: [-80, 60]
+          qm_flag_col: airTemperatureQuality_event_0
+          keep: [1,2,4,9]
+        dewPointTemperature:
+          range: [-100, 40]
+          qm_flag_col: dewPointTemperatureQuality_event_0
+          keep: [1,2,4,9]
+        height_bufr:
+          range: [-388, 9000]
+        windSpeed:
+          range: [0, 75]
+        windDirection:
+          range: [0, 360]   # degrees
+
+      qc_relations:                   # cross-variable checks
+        dewpoint_le_temp: true        # Td ≤ T (+0.5 °C margin)
+        max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
+        rh_from_td_consistency_pct: 25  # %pts; invalidate RH if |RH - RH*| > 25
+        pressure_vs_height:
+          enable: true
+          tolerance_hpa: 100          # |p - p_exp(height)| ≤ 100 hPa
+          scale_height_m: 8000
+      subsample:
+        mode: random
+        fraction: 0.1 # 1/10
+        seed: 12345
+
+    diag_sst:
+      source: zarr
+      zarr_name: diag_sst
+      features: [observation]
+      metadata: [station_elevation]
+      dropna_cols: []
+      input_dim: 10
+      target_dim: 1
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/10
+        seed: 12345
+
+    diag_surface_obs_t:
+      source: zarr
+      zarr_name: diag_surface_obs_t
+      features: [observation,]
+      metadata: [height, ]
+      dropna_cols: [height, ]
+      input_dim: 10
+      target_dim: 1
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        height:
+          range: [-388, 9000]
+        observation:
+          range: [240.00, 350.00]
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/10
+        seed: 12345
+
+    diag_surface_obs_uv:
+      source: zarr
+      zarr_name: diag_surface_obs_uv
+      features: [u_observation, v_observation]
+      metadata: [height, ]
+      dropna_cols: [height, ]
+      input_dim: 12
+      target_dim: 2
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      qc_filters:
+        height:
+          range: [-388, 9000]
+        u_observation:
+          range: [-50, 50]
+        v_observation:
+          range: [-50, 50]
+      subsample:
+        mode: random
+        fraction: 0.5 # 1/10
+        seed: 12345
+
+    radiosonde:
+      source: zarr
+      zarr_name: raw_radiosonde
+      features: [airPressure, airTemperature, dewPointTemperature, wind_u, wind_v]
+      metadata: [airPressure, ]
+      dropna_cols: [airPressure, ]
+      input_dim: 15                     # 7 (geo/time enc) + 1 meta + 6 feats
+      target_dim: 5
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      level_selection:
+        filter_col: airPressure
+        levels: [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+      qc_filters:
+        airPressure:
+          range: [1, 1200]
+          qm_flag_col: airPressureQuality
+          keep: [1, 2]
+        airTemperature:
+          range: [173, 370]
+          qm_flag_col: airTemperatureQuality
+          keep: [1, 2, 3, 13, 14, 15] 
+        dewPointTemperature:
+          range: [135, 350]
+          qm_flag_col: dewPointTemperatureQuality
+          keep: [2, 3, 9, 13, 14, 15]
+        windSpeed:
+          range: [0, 75]
+          qm_flag_col: windQuality
+          keep: [2,]
+        windDirection:
+          range: [0, 6.28]  # radians
+          qm_flag_col: windQuality
+          keep: [2,]
+      subsample:
+        mode: random
+        fraction: 1.0 # 1/1
+        seed: 12345
+
+
+
+    snow_cover:
+      source: zarr
+      zarr_name: snow_cover
+      features: [snowDepth]
+      metadata: [height, airTemperature]
+      dropna_cols: [height, airTemperature]
+      qc_filters:
+        snowDepth:
+          range: [0, 6.5]
+      input_dim: 10
+      target_dim: 1
+      encoder_hidden_layers: 2
+      decoder_hidden_layers: 2
+      subsample:
+        mode: none
+        fraction: 1.0 # 1/1
+        seed: 12345
+
+feature_stats:  # Statistics for the features used in the model
+  surface_obs:
+    latitude           : [ 30.25,  28.51]
+    longitude          : [-23.17,  84.75]
+    airPressure_bufr   : [  6.88,   0.13]
+    airTemperature     : [ 14.47,  12.1 ]
+    dewPointTemperature: [  8.55,  11.44]
+    relativeHumidity   : [ 74.88,  19.12]
+    windSpeed          : [  3.67,   5.01]
+    windDirection      : [167.85, 109.79]
+    height_bufr        : [315.15, 508.54]
+    wind_u: [0.08, 4.17]
+    wind_v: [0.25, 3.37]
+ 
+  radiosonde:  
+    airTemperature     :  [240.26,    28.63]
+    dewPointTemperature:  [224.33,    34.44]
+    windDirection      :  [  3.66,     1.66]
+    windSpeed          :  [ 14.91,    12.64]
+    latitude           :  [ 30.18,    28.81]
+    longitude          :  [ 15.98,   102.35]
+    height             :  [724.68, 11977.6 ]
+    wind_u: [10.00, 8.5]
+    wind_v: [0.25, 6.78]
+    airPressure: [5.981, 0.746]
+  snow_cover:
+    snowDepth: [0.38, 0.68]
+  diag_atms:
+    observation_channel_1 :  [210.69, 43.28] 
+    observation_channel_2 :  [201.18, 44.83] 
+    observation_channel_3 :  [241.53, 21.07] 
+    observation_channel_4 :  [251.89, 15.75] 
+    observation_channel_5 :  [256.48, 12.03] 
+    observation_channel_6 :  [249.02,  9.69] 
+    observation_channel_7 :  [234.3 ,  6.71] 
+    observation_channel_8 :  [223.82,  5.18] 
+    observation_channel_9 :  [216.72,  5.91] 
+    observation_channel_10:  [211.71,  8.43] 
+    observation_channel_11:  [215.03,  7.65] 
+    observation_channel_12:  [221.55,  7.95] 
+    observation_channel_13:  [230.05,  9.08] 
+    observation_channel_14:  [240.81,  9.97]
+    observation_channel_15:  [250.72,  9.97] 
+    observation_channel_16:  [242.77, 27.09] 
+    observation_channel_17:  [264.79, 24.85] 
+    observation_channel_18:  [265.09, 17.98] 
+    observation_channel_19:  [262.17, 14.75]
+    observation_channel_20:  [258.42, 12.08] 
+    observation_channel_21:  [252.79, 10.18] 
+    observation_channel_22:  [247.3 ,  8.84] 
+  diag_amsua:
+    observation_channel_1 : [ 209.32,  43.66] 
+    observation_channel_2 : [ 200.7 ,  45.23] 
+    observation_channel_3 : [ 241.86,  20.9 ] 
+    observation_channel_4 : [ 256.42,  12.51] 
+    observation_channel_5 : [ 249.35,   9.79] 
+    observation_channel_6 : [ 234.14,   6.64]
+    observation_channel_7 : [ 223.82,   5.08] 
+    observation_channel_8 : [ 217.29,   5.9 ] 
+    observation_channel_9 : [ 211.51,   8.64] 
+    observation_channel_10: [ 214.84,   7.93] 
+    observation_channel_11: [ 221.06,   8.22]
+    observation_channel_12: [ 229.17,   9.33] 
+    observation_channel_13: [ 239.67,  10.24] 
+    observation_channel_14: [ 249.88,  10.25] 
+    observation_channel_15: [ 242.44,  27.38] 
+  diag_avhrr:
+    observation_channel_3: [291.07, 11.91]   
+    observation_channel_4: [289.00, 10.01]   
+    observation_channel_5: [286.86,  9.59]   
+  ascat:
+    backscatter_ch_1: [-17.84, 5.77]   # 2022-2024 dB mean/std (filtered to [-80, 40] dB)
+    backscatter_ch_2: [-14.84, 5.12]
+    backscatter_ch_3: [-17.81, 5.73]
+  diag_ssmis:
+    observation_channel_1 : [241.56, 18.18]
+    observation_channel_2 : [253.06, 11.59]
+    observation_channel_3 : [243.67,  7.89]
+    observation_channel_4 : [228.35,  5.02]
+    observation_channel_5 : [214.87,  6.93]
+    observation_channel_6 : [212.03,  8.47]
+    observation_channel_7 : [216.7 ,  7.75]
+    observation_channel_8 : [259.45, 28.54]
+    observation_channel_9 : [262.34, 17.43]
+    observation_channel_10: [256.26, 12.29]
+    observation_channel_11: [243.89,  8.39]
+    observation_channel_12: [179.17, 56.61]
+    observation_channel_13: [222.94, 34.67]
+    observation_channel_14: [238.08, 29.15]
+    observation_channel_15: [191.91, 44.78]
+    observation_channel_16: [232.2 , 25.78]
+    observation_channel_17: [254.83, 22.86]
+    observation_channel_18: [234.82, 30.33]
+    observation_channel_19: [228.97,  7.64]
+    observation_channel_20: [208.37, 10.73]
+    observation_channel_21: [248.93,  7.13]
+    observation_channel_22: [250.07,  9.89]
+    observation_channel_23: [239.85, 10.08]
+    observation_channel_24: [226.23,  8.88]
+  seviri:
+    bt_all_ch_10  : [99.96, 277.3 ]
+    bt_all_ch_11  : [99.96, 258.43]
+    bt_all_ch_4   : [99.95, 282.76]
+    bt_all_ch_5   : [99.96, 237.52]
+    bt_all_ch_6   : [99.96, 254.45]
+    bt_all_ch_7   : [99.96, 276.94]
+    bt_all_ch_8   : [99.96, 257.69]
+    bt_all_ch_9   : [99.96, 278.99]
+    bt_clear_ch_10: [73.44, 288.78]
+    bt_clear_ch_11: [73.44, 265.8 ]
+    bt_clear_ch_4 : [73.44, 290.5 ]
+    bt_clear_ch_5 : [73.44, 240.42]
+    bt_clear_ch_6 : [73.44, 259.62]
+    bt_clear_ch_7 : [73.44, 287.69]
+    bt_clear_ch_8 : [73.44, 264.72]
+    bt_clear_ch_9 : [73.44, 290.49]
+  diag_cris-fsr:
+    observation_channel_28  : [225.18,  6.55]
+    observation_channel_95  : [230.25,  5.52]
+    observation_channel_132 : [244.95,  8.81]
+    observation_channel_158 : [258.28, 12.03]
+    observation_channel_400 : [277.74, 19.51]
+    observation_channel_496 : [277.95, 19.11]
+    observation_channel_626 : [244.97, 12.71]
+    observation_channel_678 : [275.72, 18.21]
+    observation_channel_748 : [277.62, 19.19]
+    observation_channel_874 : [263.07, 12.82]
+    observation_channel_1018: [243.97,  8.07]
+    observation_channel_1133: [224.63,  4.68]
+    observation_channel_1596: [273.96, 17.5 ]
+    observation_channel_1635: [263.64, 14.14]
+    observation_channel_2182: [281.99, 20.33]
+  diag_iasi:
+    observation_channel_89  : [222.98,  7.43]
+    observation_channel_148 : [215.24,  7.72]
+    observation_channel_259 : [234.08, 19.48]
+    observation_channel_350 : [254.57, 11.42]
+    observation_channel_414 : [249.7 ,  9.55]
+    observation_channel_1027: [277.62, 19.33]
+    observation_channel_1271: [278.48, 19.36]
+    observation_channel_1579: [244.61, 12.13]
+    observation_channel_1710: [274.12, 28.85]
+    observation_channel_2346: [275.56, 29.46]
+    observation_channel_2701: [244.82,  8.23]
+    observation_channel_3027: [257.42, 10.94]
+    observation_channel_3322: [242.87,  8.32]
+    observation_channel_5992: [279.62, 19.43]
+    observation_channel_6182: [256.76, 24.31]
+    observation_channel_6489: [222.7 , 19.74]
+    observation_channel_7584: [278.99, 32.83]
+  diag_sst:
+    observation: [292.12, 8.12]
+    station_elevation: [3.15, 22.34]
+  diag_surface_obs_t:
+    observation: [288.81, 13.12]
+    height: [285.12, 480.22]
+  diag_surface_obs_uv:
+    u_observation: [0.2, 4.58]
+    v_observation: [0.14, 3.94]
+    height: [285.12, 480.22]
+    
+    
