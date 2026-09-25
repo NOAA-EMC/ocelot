@@ -34,48 +34,50 @@ class InteractionNet(pyg.nn.MessagePassing):
 
         if coder_config.hidden_dim is None:
             # Default to receiver dim if not explicitly given
-            hidden_dim = rec_dim
+            hidden_dim = coder_config.rec_dim
+        else:
+            hidden_dim = coder_config.hidden_dim
 
         # Register the edge_index buffer. It will be set dynamically.
-        self.register_buffer("edge_index", edge_index, persistent=False)
+        self.register_buffer("edge_index", coder_config.edge_index, persistent=False)
 
         # Create MLPs
         # Edge MLP input: [edge_attr (optional), x_j, x_i]
-        if update_edges:
+        if coder_config.update_edges:
             # This assumes edge features have the same dim as receiver nodes
-            edge_mlp_input_dim = send_dim + rec_dim + rec_dim
+            edge_mlp_input_dim = coder_config.send_dim + coder_config.rec_dim + coder_config.rec_dim
         else:
-            edge_mlp_input_dim = send_dim + rec_dim
+            edge_mlp_input_dim = coder_config.send_dim + coder_config.rec_dim
         # Output of edge_mlp is the message, which has hidden_dim
-        edge_mlp_recipe = [edge_mlp_input_dim] + [hidden_dim] * (hidden_layers + 1)
+        edge_mlp_recipe = [edge_mlp_input_dim] + [hidden_dim] * (coder_config.hidden_layers + 1)
 
         # Aggregation MLP input: [rec_rep, edge_rep_aggr]
         # Output of aggr_mlp is the residual update, which has rec_dim
-        aggr_mlp_input_dim = rec_dim + hidden_dim
+        aggr_mlp_input_dim = coder_config.rec_dim + hidden_dim
         aggr_mlp_recipe = (
-            [aggr_mlp_input_dim] + [hidden_dim] * hidden_layers + [rec_dim]
+            [aggr_mlp_input_dim] + [hidden_dim] * coder_config.hidden_layers + [coder_config.rec_dim]
         )
 
-        if edge_chunk_sizes is None:
+        if coder_config.edge_chunk_sizes is None:
             self.edge_mlp = mlp_block.make(edge_mlp_recipe)
         else:
             self.edge_mlp = SplitMLPs(
-                [mlp_block.make(edge_mlp_recipe) for _ in edge_chunk_sizes],
-                edge_chunk_sizes,
+                [mlp_block.make(edge_mlp_recipe) for _ in coder_config.edge_chunk_sizes],
+                coder_config.edge_chunk_sizes,
             )
 
-        if aggr_chunk_sizes is None:
+        if coder_config.aggr_chunk_sizes is None:
             self.aggr_mlp = mlp_block.make(aggr_mlp_recipe)
         else:
             self.aggr_mlp = SplitMLPs(
-                [mlp_block.make(aggr_mlp_recipe) for _ in aggr_chunk_sizes],
-                aggr_chunk_sizes,
+                [mlp_block.make(aggr_mlp_recipe) for _ in coder_config.aggr_chunk_sizes],
+                coder_config.aggr_chunk_sizes,
             )
 
         # Add normalization for receiver nodes
-        self.rec_norm = nn.LayerNorm(rec_dim)
+        self.rec_norm = nn.LayerNorm(coder_config.rec_dim)
 
-        self.update_edges = update_edges
+        self.update_edges = coder_config.update_edges
 
     def forward(self, send_rep, rec_rep, edge_rep):
         """
