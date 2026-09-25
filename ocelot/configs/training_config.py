@@ -74,8 +74,6 @@ class TrainingDataConfig(ConfigBase):
         'random': RandomSamplingConfig(),
         'sequential': SequentialSamplingConfig(),
     })
-    window_hours = Optional(IntField(), default=12)
-    latent_step_hours = Optional(IntField(), default=3)
     max_rollout_steps = Optional(IntField(), default=1)
     rollout_schedule = Optional(Choices(['step', 'linear', 'graphcast', 'fixed']), default='step')
     batch_size = Optional(IntField(), default=1)
@@ -83,11 +81,6 @@ class TrainingDataConfig(ConfigBase):
 
     def load(self, config_dict: dict) -> None:
         super().load(config_dict)
-        if self.window_hours % self.latent_step_hours != 0:
-            raise ValueError(
-                f"window_hours ({self.window_hours}) must be divisible by "
-                f"latent_step_hours ({self.latent_step_hours})"
-            )
 
 
 class EarlyStoppingConfig(ConfigBase):

@@ -7,7 +7,7 @@ enabled_instruments:
   - seviri_asr
   - seviri_csr
   - avhrr
-  - cris_pca
+  # - cris_pca
   - ascat
   # Conventional instruments
   - aircraft
@@ -17,9 +17,8 @@ enabled_instruments:
 subsampling:
   seed: 12345
   # Factor N keeps every Nth sample in stride mode or approximately 1/N in random mode.
-  default: {factor: 10, mode: random}
-  overrides:
-    # Satellite-specific factors; conventional instruments use the default.
+  satellite:
+    _default: {factor: 30, mode: random}
     atms: {factor: 6}
     amsua: {factor: 3}
     avhrr: {factor: 300}
@@ -28,6 +27,8 @@ subsampling:
     seviri_asr: {factor: 60}
     seviri_csr: {factor: 60}
     ssmis: {factor: 20}
+  conventional:
+    _default: {factor: 1, mode: random}
 
 outputs:
   mesh_prediction:

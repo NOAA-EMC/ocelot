@@ -127,13 +127,10 @@ def main():
     model.eval()
     model.prediction_output_dir = inference_config.output_dir
 
-    # Get model hyperparameters
-    latent_step_hours = model.hparams.get('latent_step_hours', 3)
-    data_window_hours = model.hparams.get('data_window_hours', 12)
-
     print(f"\nSetting up data module:")
-    print(f"  Window size: {data_window_hours}h")
-    print(f"  Latent step hours: {latent_step_hours}h")
+    print(f"  Input window: {model_config.input_window_hours}h")
+    print(f"  Target window: {model_config.target_window_hours}h")
+    print(f"  Latent step hours: {model_config.latent_step_hours}h")
 
     # Create data module
     data_module = GNNDataModule(
@@ -145,8 +142,9 @@ def main():
         mesh_structure=model.model.mesh.mesh_structure,
         batch_size=inference_config.data.batch_size,
         num_neighbors=3,
-        window_size=f"{data_window_hours}h",
-        latent_step_hours=latent_step_hours,
+        input_window_hours=model_config.input_window_hours,
+        target_window_hours=model_config.target_window_hours,
+        latent_step_hours=model_config.latent_step_hours,
         train_val_split_ratio=1.0,
         train_start=inference_config.data.start_date,
         train_end=inference_config.data.end_date,

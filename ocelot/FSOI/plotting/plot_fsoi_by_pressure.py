@@ -12,6 +12,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+import sys
+
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from fsoi_utils import collapse_target_variable_rows  # noqa: E402
 
 # Standard pressure levels used in the model
 STANDARD_PRESSURE_LEVELS = np.array([
@@ -25,6 +30,7 @@ def load_fsoi_data(data_dir):
 
     by_channel = pd.read_csv(data_dir / 'csv' / 'fsoi_by_channel.csv')
     by_instrument = pd.read_csv(data_dir / 'csv' / 'fsoi_by_instrument.csv')
+    by_instrument = collapse_target_variable_rows(by_instrument)
 
     return by_channel, by_instrument
 
@@ -34,14 +40,13 @@ def map_channels_to_pressure(df, instrument='radiosonde'):
     Map radiosonde/aircraft channels to pressure levels and variables.
 
     For radiosonde:
-        Channel 0: temperature
-        Channel 1: dewpoint
-        Channel 2: u_wind
-        Channel 3: v_wind
+        Channel 1: temperature
+        Channel 2: dewpoint
+        Channel 3: u_wind
+        Channel 4: v_wind
 
     For aircraft:
-        Channel 0: temperature
-        Channel 1: humidity (specific humidity)
+        Channel 1: temperature
         Channel 2: u_wind
         Channel 3: v_wind
 
@@ -53,15 +58,14 @@ def map_channels_to_pressure(df, instrument='radiosonde'):
 
     if instrument == 'radiosonde':
         channel_map = {
-            0: 'temperature',
-            1: 'dewpoint',
-            2: 'u_wind',
-            3: 'v_wind'
+            1: 'temperature',
+            2: 'dewpoint',
+            3: 'u_wind',
+            4: 'v_wind'
         }
     elif instrument == 'aircraft':
         channel_map = {
-            0: 'temperature',
-            1: 'humidity',
+            1: 'temperature',
             2: 'u_wind',
             3: 'v_wind'
         }

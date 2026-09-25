@@ -1,4 +1,6 @@
 hidden_dim: &hidden_dim 192
+input_window_hours: 12
+target_window_hours: 12
 latent_step_hours: 3
 
 mesh:

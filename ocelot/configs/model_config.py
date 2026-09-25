@@ -111,7 +111,10 @@ class EmbeddingsConfig(ConfigBase):
 
 class ModelConfig(ConfigBase):
     hidden_dim = IntField()
-    latent_step_hours = IntField()
+    input_window_hours = Optional(IntField(), default=12)
+    target_window_hours = Optional(IntField(), default=12)
+    latent_step_hours = Optional(IntField(), default=3)
+    processor_window = Optional(IntField())
     
     mesh = Choices({
         'fixed': FixedMeshConfig(),
@@ -145,4 +148,13 @@ class ModelConfig(ConfigBase):
             raise ValueError(
                 f"Processor type '{self.processor.type}' is incompatible with "
                 f"mesh type '{self.mesh.type}'"
+            )
+
+        if self.processor_window is None:
+            self.processor_window = self.target_window_hours // self.latent_step_hours
+
+        if self.target_window_hours % self.latent_step_hours != 0:
+            raise ValueError(
+                f"target_window_hours ({self.target_window_hours}) must be divisible by "
+                f"latent_step_hours ({self.latent_step_hours})"
             )

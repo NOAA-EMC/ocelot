@@ -6,7 +6,6 @@ seed: null
 
 data:
   path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7
-  window_hours: 12
   max_rollout_steps: 1
 
   sampler:

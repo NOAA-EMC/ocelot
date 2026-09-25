@@ -79,7 +79,7 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
     def describe(self) -> str:
         optional_fields = [name for name, field in self._fields.items() if isinstance(field, Optional)]
         required_fields = [name for name, field in self._fields.items() if not isinstance(field, Optional)]
-        newline = "  \n"
+        newline = "\n  "
         description = f"Required fields:\n  {newline.join(required_fields)}\n"
         description += f"Optional fields:\n  {newline.join(optional_fields)}"
         return description
@@ -98,6 +98,9 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
                 value = value_dict
             config_dict[field_name] = value
         return config_dict
+
+    def warn(self, message: str) -> None:
+        print(f"WARNING: {self.__class__.__name__} {message}")
 
     # return the value of the field
     def __getattribute__(self, name):

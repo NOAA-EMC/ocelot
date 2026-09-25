@@ -8,17 +8,16 @@ forecast:
   # Step 1 = second forecast window (+24h if latent_step_hours=12)
   lead_steps: [0]  # List of steps to compute FSOI for
 
-  # Which target variables to include in the error metric
-  # Options: "all" or list of instrument names (e.g., ["atms", "amsua"])
-  target_instruments: "all"
+  # One verification network per experiment; all source instruments remain inputs.
+  target_instruments: ["radiosonde"]
 
-  # Weighting scheme for forecast error
-  # Uses instrument and channel weights from the instrument and pipeline configs.
-  use_instrument_weights: true
-  use_channel_weights: true
+  use_instrument_weights: false
+  use_channel_weights: false
 
-  # Optional: apply area-weighting by latitude (cosine weighting)
-  use_area_weights: true
+  verification_metric:
+    spatial_weighting: equal_area
+    group_balancing: variable_level
+  loss_reduction: mean
 
 # Data processing parameters
 data:

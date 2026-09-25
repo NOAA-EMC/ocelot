@@ -223,9 +223,10 @@ def organize_bins_times(
     start_date,
     end_date,
     instrument_catalog: InstrumentCatalogConfig,
-    pipeline_config: PipelineConfig,
-    window_size="12h",
-    latent_step_hours=12,
+    pipeline_config: PipelineConfig = None,
+    input_window_hours=12,
+    target_window_hours=12,
+    latent_step_hours=3,
     require_targets=True,    # PREDICTION MODE: False for inference (no targets needed)
     verbose=False,
 ):
@@ -242,225 +243,260 @@ def organize_bins_times(
     start_date = _to_utc(start_date)
     end_date = _to_utc(end_date)
 
-    # normalize window unit (avoid pandas 'H' deprecation)
-    window_size = window_size.lower()
-    if not window_size.endswith("h"):
-        raise ValueError("window_size must end with 'h' (e.g., '6h', '12h').")
-
+    # subsampling config
     seed_base = pipeline_config.subsampling.seed
 
+    # defaults if not specified (mode defaults to "random" for both)
+    DEFAULTS = {
+        "satellite": {"stride": 25, "mode": "random"},
+        "conventional": {"stride": 20, "mode": "random"},
+    }
+
+    # input and target window setup
+    target_window_hours = int(target_window_hours)
+    input_window_hours = int(input_window_hours)
+    if target_window_hours <= 0 or input_window_hours <= 0:
+        raise ValueError("target_window_hours and input_window_hours must both be positive.")
+
+    if target_window_hours % latent_step_hours != 0:
+        raise ValueError(
+            f"target_window_hours ({target_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
+        )
+
+    init_window_freq = f"{input_window_hours}h"  # replacement of window_size(e.g.,"12h"), which sets stride between forecast init times
+
     # latent rollout setup
-    target_hours = int(window_size[:-1])
-    num_latent_steps = target_hours // latent_step_hours
+    num_latent_steps = target_window_hours // latent_step_hours
     sub_window_freq = f"{latent_step_hours}h"
     if verbose:
+        print(f"Input window: {input_window_hours}h.")
+        print(f"Target window: {target_window_hours}h.")
         print(f"Latent rollout enabled: {num_latent_steps} steps of {latent_step_hours}h each.")
 
-    t0 = int(start_date.timestamp())
+    # Builing pandas input and target delta separately
+    input_delta = pd.Timedelta(hours=input_window_hours)
+    target_delta = pd.Timedelta(hours=target_window_hours)
+
+    # t0 = int(start_date.timestamp())
+    t0 = int((start_date - input_delta).timestamp())  # [MK] This fixes the first empty bin, will test separately next
     t1 = int(end_date.timestamp())
 
     data_summary = {}
 
+    # searchsorted (O(log N)) vs boolean masks (O(N)). Requires time_ts monotonic —
+    # true here since zar_time order matches obs-time order, but unenforced, and a
+    # violation gives wrong slices silently. Set False for the always-correct masks.
+    SEARCHSORT = True
     for key, instrument in pipeline_config.enabled(instrument_catalog):
-            obs_type = instrument.kind
-            z = z_dict[obs_type][key]
+        obs_type = instrument.kind
 
-            # --- Chunked scan to find candidate indices (time + optional sat filter) ---
-            time_arr = z["time"]
-            n_total = len(time_arr)
-            chunk = getattr(time_arr, "chunks", (2_000_000,))[0]  # safe default if not chunked
+        z = z_dict[obs_type][key]
 
-            # Fast path: if time is (likely) sorted, use binary-search bounds (O(log N)).
-            # This avoids scanning the entire time array for multi-year runs.
-            idx_all = None
-            fast_bounds = None  # (left,right) for contiguous slices
-            try_fast = _sampled_non_decreasing(time_arr)
-            if try_fast:
-                left = _zarr_bisect_left(time_arr, t0)
-                right = _zarr_bisect_left(time_arr, t1)  # exclusive upper bound
+        # --- Chunked scan to find candidate indices (time + optional sat filter) ---
+        time_arr = z["time"]
+        n_total = len(time_arr)
+        chunk = getattr(time_arr, "chunks", (2_000_000,))[0]  # safe default if not chunked
 
-                if right <= left:
-                    if verbose:
-                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
-                    continue
+        # Fast path: if time is (likely) sorted, use binary-search bounds (O(log N)).
+        # This avoids scanning the entire time array for multi-year runs.
+        idx_all = None
+        fast_bounds = None  # (left,right) for contiguous slices
+        try_fast = _sampled_non_decreasing(time_arr)
+        if try_fast:
+            left = _zarr_bisect_left(time_arr, t0)
+            right = _zarr_bisect_left(time_arr, t1)  # exclusive upper bound
 
-                if obs_type == "satellite":
-                    conf_sat_ids = np.asarray(instrument.satellite_ids)
-                    sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
-                    sats = z[sat_id_field][left:right]
-                    m = np.isin(sats, conf_sat_ids)
-                    if not np.any(m):
-                        if verbose:
-                            print(f"No observations for {obs_type}.{key} in {start_date} → {end_date} (sat filter)")
-                        continue
-                    idx_all = (np.arange(left, right, dtype=np.int64))[m]
-                else:
-                    idx_all = np.arange(left, right, dtype=np.int64)
-                    fast_bounds = (left, right)
-
-            # Fallback: chunked scan (safe for unsorted arrays)
-            if idx_all is None:
-                idx_parts = []
-                if obs_type == "satellite":
-                    conf_sat_ids = np.asarray(instrument.satellite_ids)
-                    # Handle different satellite ID field names
-                    sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
-                    for i0 in range(0, n_total, chunk):
-                        i1 = min(i0 + chunk, n_total)
-                        t = time_arr[i0:i1]
-                        m_time = (t >= t0) & (t < t1)
-                        if not m_time.any():
-                            continue
-                        sats = z[sat_id_field][i0:i1]
-                        m = m_time & np.isin(sats, conf_sat_ids)
-                        if m.any():
-                            idx_parts.append(np.flatnonzero(m) + i0)
-                else:
-                    for i0 in range(0, n_total, chunk):
-                        i1 = min(i0 + chunk, n_total)
-                        t = time_arr[i0:i1]
-                        m_time = (t >= t0) & (t < t1)
-                        if m_time.any():
-                            idx_parts.append(np.flatnonzero(m_time) + i0)
-
-                if not idx_parts:
-                    if verbose:
-                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
-                    continue
-
-                idx_all = np.concatenate(idx_parts)
-
-            # --- Sort by zar_time (or time) with minimal copies ---
-            if fast_bounds is not None:
-                left, right = fast_bounds
-                if "zar_time" in z:
-                    zar = z["zar_time"][left:right]
-                else:
-                    zar = time_arr[left:right]
-                order = np.argsort(zar, kind="stable")
-                idx_all = (np.arange(left, right, dtype=np.int64))[order]
-                time_vals = time_arr[left:right]
-                time_ts = pd.to_datetime(time_vals[order], unit="s", utc=True)
-            else:
-                if "zar_time" in z:
-                    zar = z["zar_time"][idx_all]
-                else:
-                    zar = time_arr[idx_all]
-                order = np.argsort(zar, kind="stable")
-                idx_all = idx_all[order]
-                time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
-
-            # --- Build window labels without a big DataFrame ---
-            win = time_ts.floor(window_size)  # tz-aware
-
-            if win.isna().any():
-                continue
-
-            # keep only valid windows
-            valid_mask = win.notna()
-            win_valid = win[valid_mask]
-
-            # unique ordered windows + integer codes for each row's window
-            uniq_win = pd.Index(win_valid).unique().sort_values()
-            codes = pd.Categorical(win_valid, categories=uniq_win, ordered=True).codes
-
-            if require_targets:
-                n_bins = len(uniq_win) - 1
-            else:
-                n_bins = len(uniq_win)  # PREDICTION MODE: include last window
-            if n_bins <= 0:
+            if right <= left:
                 if verbose:
-                    print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
+                    print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
                 continue
 
-            sampling = pipeline_config.subsampling.resolve(key)
-            stride, mode = sampling.factor, sampling.mode
-
-            # --- Build bins; reproducible per-bin subsampling ---
-            for bi in range(n_bins):  # exclude last window as target-only
-                t_in = uniq_win[bi]
-
-                m_in = codes == bi
-                input_indices = idx_all[m_in]
-
-                # Subsample input once
-                seed_in = _stable_seed(seed_base, t_in, obs_type, key, is_target=False)
-                input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
-
-                # PREDICTION MODE:
-                if require_targets:
-                    # LATENT ROLLOUT: Split target window into sub-windows
-                    t_target_start = uniq_win[bi + 1]
-
-                    # Get all indices in the main target window
-                    m_target_full = codes == (bi + 1)
-                    idx_target_full = idx_all[m_target_full]
-                    ts_target_full = time_ts[m_target_full]
-
-                    # Generate the start/end times for each sub-window
-                    target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
-
-                    target_indices_list = []
-
-                    # For each target sub-window, filter and subsample
-                    for step in range(num_latent_steps):
-                        t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
-
-                        # Include end boundary for the last step
-                        if step == num_latent_steps - 1:
-                            m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
-                        else:
-                            m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
-
-                        target_indices_step = idx_target_full[m_step]
-
-                        seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
-                        subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
-                        target_indices_list.append(subsampled_indices)
-                else:
-                    # Inference mode: No targets
-                    target_indices_list = [np.array([], dtype=int) for _ in range(num_latent_steps)]
-
-                # PREDICTION MODE
-                # Skip only if no inputs
-                if input_indices.size == 0:
+            if obs_type == "satellite":
+                conf_sat_ids = np.asarray(instrument.satellite_ids)
+                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
+                sats = z[sat_id_field][left:right]
+                m = np.isin(sats, conf_sat_ids)
+                if not np.any(m):
+                    if verbose:
+                        print(f"No observations for {obs_type}.{key} in {start_date} → {end_date} (sat filter)")
                     continue
-                # In testing mode, also skip bins without targets
-                if require_targets and any(t.size == 0 for t in target_indices_list):
-                    continue
+                idx_all = (np.arange(left, right, dtype=np.int64))[m]
+            else:
+                idx_all = np.arange(left, right, dtype=np.int64)
+                fast_bounds = (left, right)
 
-                # IMPORTANT: Bin names must be globally time-aligned across instruments.
-                # Using per-instrument sequential numbering (bin1, bin2, ...) causes different
-                # instruments' windows to be mixed under the same bin name, which breaks
-                # init/valid/obs time semantics in downstream CSVs and plots.
-                #
-                # We therefore name bins by the *forecast init* (start of the target window).
-                # This makes bin keys consistent across instruments even when some instruments
-                # have missing windows.
-                if require_targets:
-                    init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
-                else:
-                    # In inference mode there is no target window; use input window start.
-                    init_key = pd.to_datetime(t_in, utc=True).strftime('%Y%m%d%H')
-                bin_name = f"bin{init_key}"
-                data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
-                    "input_time": t_in,
-                    "input_time_index": input_indices,
-                    "target_times": list(target_sub_window_times[:-1]) if require_targets else [],  # List of timestamps
-                    "target_time_indices": target_indices_list,          # List of index arrays
-                    "num_latent_steps": num_latent_steps,
-                }
+        # Fallback: chunked scan (safe for unsorted arrays)
+        if idx_all is None:
+            idx_parts = []
+            if obs_type == "satellite":
+                conf_sat_ids = np.asarray(instrument.satellite_ids)
+                # Handle different satellite ID field names
+                sat_id_field = "satelliteId" if "satelliteId" in z else "satelliteIdentifier"
+                for i0 in range(0, n_total, chunk):
+                    i1 = min(i0 + chunk, n_total)
+                    t = time_arr[i0:i1]
+                    m_time = (t >= t0) & (t < t1)
+                    if not m_time.any():
+                        continue
+                    sats = z[sat_id_field][i0:i1]
+                    m = m_time & np.isin(sats, conf_sat_ids)
+                    if m.any():
+                        idx_parts.append(np.flatnonzero(m) + i0)
+            else:
+                for i0 in range(0, n_total, chunk):
+                    i1 = min(i0 + chunk, n_total)
+                    t = time_arr[i0:i1]
+                    m_time = (t >= t0) & (t < t1)
+                    if m_time.any():
+                        idx_parts.append(np.flatnonzero(m_time) + i0)
 
+            if not idx_parts:
+                if verbose:
+                    print(f"No observations for {obs_type}.{key} in {start_date} → {end_date}")
+                continue
+
+            idx_all = np.concatenate(idx_parts)
+
+        # --- Sort by zar_time (or time) with minimal copies ---
+        if fast_bounds is not None:
+            left, right = fast_bounds
+            if "zar_time" in z:
+                zar = z["zar_time"][left:right]
+            else:
+                zar = time_arr[left:right]
+            order = np.argsort(zar, kind="stable")
+            idx_all = (np.arange(left, right, dtype=np.int64))[order]
+            time_vals = time_arr[left:right]
+            time_ts = pd.to_datetime(time_vals[order], unit="s", utc=True)
+        else:
+            if "zar_time" in z:
+                zar = z["zar_time"][idx_all]
+            else:
+                zar = time_arr[idx_all]
+            order = np.argsort(zar, kind="stable")
+            idx_all = idx_all[order]
+            time_ts = pd.to_datetime(time_arr[idx_all], unit="s", utc=True)
+
+        # --- Build window labels without a big DataFrame ---
+        win = time_ts.floor(init_window_freq)
+
+        if win.isna().any():
+            continue
+
+        # keep only valid windows
+        valid_mask = win.notna()
+        win_valid = win[valid_mask]
+
+        # unique ordered windows + integer codes for each row's window
+        uniq_win = pd.Index(win_valid).unique().sort_values()
+        uniq_win = uniq_win[uniq_win >= start_date]  # [MK] This is for the first empty bin fix, will test separately next
+
+        if require_targets:
+            uniq_win = uniq_win[uniq_win + target_delta <= end_date]
+
+        n_bins = len(uniq_win)
+
+        if n_bins <= 0:
             if verbose:
-                total_bins = sum(
-                    1
-                    for _bin_name, _bin_dict in (data_summary or {}).items()
-                    if isinstance(_bin_dict, dict)
-                    and obs_type in _bin_dict
-                    and isinstance(_bin_dict.get(obs_type), dict)
-                    and key in _bin_dict[obs_type]
-                )
-                print(f"Created {total_bins} bins (pairs of input-target) for {obs_type}.{key}.")
+                print(f"Not enough windows to form input/target pairs for {obs_type}.{key}")
+            continue
+
+        sampling = pipeline_config.subsampling.resolve(key, obs_type)
+        stride, mode = sampling.factor, sampling.mode
+
+        # --- Build bins; reproducible per-bin subsampling ---
+        for bi in range(n_bins):  # exclude last window as target-only
+            t_target_start = uniq_win[bi]
+            t_input_start = t_target_start - input_delta
+
+            if SEARCHSORT:
+                lo_in = int(time_ts.searchsorted(t_input_start, side="left"))
+                hi_in = int(time_ts.searchsorted(t_target_start, side="left"))
+                input_indices = idx_all[lo_in:hi_in]
+            else:  # boolean masks
+                input_mask = (time_ts >= t_input_start) & (time_ts < t_target_start)
+                input_indices = idx_all[input_mask]
+
+            # Subsample input once
+            seed_in = _stable_seed(seed_base, t_input_start, obs_type, key, is_target=False)
+            input_indices = _subsample_by_mode(input_indices, mode, stride, seed_in)
+
+            # PREDICTION MODE:
+            if require_targets:
+                # LATENT ROLLOUT: Split target window into sub-windows
+                t_target_end = t_target_start + target_delta
+
+                # Get all indices in the main target window
+                if SEARCHSORT:
+                    lo_tg = int(time_ts.searchsorted(t_target_start, side="left"))
+                    hi_tg = int(time_ts.searchsorted(t_target_end, side="left"))
+                    idx_target_full = idx_all[lo_tg:hi_tg]
+                    ts_target_full = time_ts[lo_tg:hi_tg]
+                else:
+                    target_mask_full = (time_ts >= t_target_start) & (time_ts < t_target_end)
+                    idx_target_full = idx_all[target_mask_full]
+                    ts_target_full = time_ts[target_mask_full]
+
+                # Generate the start/end times for each sub-window
+                target_sub_window_times = pd.date_range(start=t_target_start, periods=num_latent_steps + 1, freq=sub_window_freq)
+
+                target_indices_list = []
+
+                # For each target sub-window, filter and subsample
+                for step in range(num_latent_steps):
+                    t_step_start, t_step_end = target_sub_window_times[step], target_sub_window_times[step+1]
+
+                    # Include end boundary for the last step
+                    if step == num_latent_steps - 1:
+                        m_step = (ts_target_full >= t_step_start) & (ts_target_full <= t_step_end)
+                    else:
+                        m_step = (ts_target_full >= t_step_start) & (ts_target_full < t_step_end)
+
+                    target_indices_step = idx_target_full[m_step]
+
+                    seed_out = _stable_seed(seed_base, t_step_start, obs_type, key, is_target=True)
+                    subsampled_indices = _subsample_by_mode(target_indices_step, mode, stride, seed_out)
+                    target_indices_list.append(subsampled_indices)
+            else:
+                # Inference mode: No targets
+                target_indices_list = [np.array([], dtype=int) for _ in range(num_latent_steps)]
+
+            # PREDICTION MODE
+            # Skip only if no inputs
+            if input_indices.size == 0:
+                continue
+            # In testing mode, also skip bins without targets
+            if require_targets and any(t.size == 0 for t in target_indices_list):
+                continue
+
+            # IMPORTANT: Bin names must be globally time-aligned across instruments.
+            # Using per-instrument sequential numbering (bin1, bin2, ...) causes different
+            # instruments' windows to be mixed under the same bin name, which breaks
+            # init/valid/obs time semantics in downstream CSVs and plots.
+            #
+            # We therefore name bins by the *forecast init* (start of the target window).
+            # This makes bin keys consistent across instruments even when some instruments
+            # have missing windows.
+            init_key = pd.to_datetime(t_target_start, utc=True).strftime('%Y%m%d%H')
+            bin_name = f"bin{init_key}"
+            data_summary.setdefault(bin_name, {}).setdefault(obs_type, {})[key] = {
+                "input_time": t_input_start,
+                "input_time_index": input_indices,
+                "target_times": list(target_sub_window_times[:-1]) if require_targets else [],  # List of timestamps
+                "target_time_indices": target_indices_list,          # List of index arrays
+                "num_latent_steps": num_latent_steps,
+            }
+
+        if verbose:
+            total_bins = sum(
+                1
+                for _bin_name, _bin_dict in (data_summary or {}).items()
+                if isinstance(_bin_dict, dict)
+                and obs_type in _bin_dict
+                and isinstance(_bin_dict.get(obs_type), dict)
+                and key in _bin_dict[obs_type]
+            )
+            print(f"Created {total_bins} bins (pairs of input-target) for {obs_type}.{key}.")
 
     return data_summary
 

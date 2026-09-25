@@ -11,6 +11,7 @@ from ocelot.configs.config_base import (
     MapField,
     Optional,
     StrField,
+    ConfigError,
 )
 
 
@@ -28,9 +29,9 @@ class SamplingPolicyConfig(ConfigBase):
     def load(self, config_dict: dict) -> None:
         super().load(config_dict)
         if self.factor is not None and self.factor < 1:
-            raise ValueError("Sampling factor must be positive")
+            raise ConfigError("Sampling factor must be positive")
         if self.mode is not None and self.mode not in SAMPLING_MODES:
-            raise ValueError(
+            raise ConfigError(
                 f"Sampling mode must be one of: {', '.join(sorted(SAMPLING_MODES))}"
             )
 
@@ -43,33 +44,75 @@ class ResolvedSamplingPolicy:
 
 class SubsamplingConfig(ConfigBase):
     seed = Optional(IntField(), default=12345)
-    default = SamplingPolicyConfig()
-    overrides = Optional(MapField(SamplingPolicyConfig()), default={})
+    satellite = MapField(SamplingPolicyConfig())
+    conventional = MapField(SamplingPolicyConfig())
 
     def load(self, config_dict: dict) -> None:
         super().load(config_dict)
-        if self.default.factor is None or self.default.mode is None:
-            raise ValueError("Subsampling default requires factor and mode")
-        for name, override in self.overrides.items():
-            if override.factor is None and override.mode is None:
-                raise ValueError(
-                    f"Subsampling override for {name} must set factor or mode"
+        for kind, policies in self._policy_groups():
+            if "_default" not in policies:
+                raise ConfigError(
+                    f"Missing '_default' entry in {kind} sampling policies"
+                )
+            default = policies["_default"]
+            if default.factor is None or default.mode is None:
+                raise ConfigError(
+                    f"The {kind} default sampling policy requires factor and mode"
+                )
+            for name, policy in policies.items():
+                if name != "_default" and policy.factor is None and policy.mode is None:
+                    raise ConfigError(
+                        f"Sampling override for {name} must set factor or mode"
+                    )
+
+    def validate_instruments(self, catalog) -> None:
+        for kind, policies in self._policy_groups():
+            instrument_names = set(policies) - {"_default"}
+            unknown = instrument_names - catalog.names
+            if unknown:
+                raise ConfigError(
+                    f"Unknown {kind} sampling instrument(s): "
+                    f"{', '.join(sorted(unknown))}"
                 )
 
-    def resolve(self, instrument: str) -> ResolvedSamplingPolicy:
-        override = self.overrides.get(instrument)
+            wrong_kind = {
+                name
+                for name in instrument_names
+                if catalog.get(name).kind != kind
+            }
+            if wrong_kind:
+                raise ConfigError(
+                    f"Instrument(s) in the {kind} sampling group have a different "
+                    f"kind: {', '.join(sorted(wrong_kind))}"
+                )
+
+    def resolve(self, instrument: str, kind: str) -> ResolvedSamplingPolicy:
+        policies_by_kind = dict(self._policy_groups())
+        if kind not in policies_by_kind:
+            raise ConfigError("Kind must be either 'satellite' or 'conventional'")
+
+        policies = policies_by_kind[kind]
+        default = policies["_default"]
+        override = policies.get(instrument)
         return ResolvedSamplingPolicy(
             factor=(
                 override.factor
                 if override is not None and override.factor is not None
-                else self.default.factor
+                else default.factor
             ),
             mode=(
                 override.mode
                 if override is not None and override.mode is not None
-                else self.default.mode
+                else default.mode
             ),
         )
+
+    def _policy_groups(self):
+        return (
+            ("satellite", self.satellite),
+            ("conventional", self.conventional),
+        )
+
 
 
 class MeshPredictionConfig(ConfigBase):
@@ -81,11 +124,25 @@ class MeshPredictionConfig(ConfigBase):
         super().load(config_dict)
         if self.pressure_level not in STANDARD_PRESSURE_LEVELS:
             levels = ', '.join(str(level) for level in STANDARD_PRESSURE_LEVELS)
-            raise ValueError(f"pressure_level must be one of: {levels} hPa")
+            raise ConfigError(f"pressure_level must be one of: {levels} hPa")
 
     @property
     def pressure_level_index(self) -> int:
         return STANDARD_PRESSURE_LEVELS.index(self.pressure_level)
+
+    def validate_instruments(self, catalog) -> None:
+        for name, variables in self.variables.items():
+            if name not in catalog.names:
+                raise ConfigError(
+                    f"Mesh prediction references unknown instrument: {name}"
+                )
+            instrument = catalog.get(name)
+            unknown_variables = set(variables) - set(instrument.feature_names)
+            if unknown_variables:
+                raise ConfigError(
+                    f"Unknown mesh variable(s) for {name}: "
+                    f"{', '.join(sorted(unknown_variables))}"
+                )
 
 
 class OutputConfig(ConfigBase):
@@ -104,33 +161,16 @@ class PipelineConfig(ConfigBase):
 
     def validate_instruments(self, catalog) -> None:
         if len(self.enabled_instruments) != len(set(self.enabled_instruments)):
-            raise ValueError("Enabled instrument names must be unique")
+            raise ConfigError("Enabled instrument names must be unique")
         unknown = set(self.enabled_instruments) - catalog.names
         if unknown:
-            raise ValueError(
+            raise ConfigError(
                 "Unknown enabled instrument(s): "
                 f"{', '.join(sorted(unknown))}"
             )
 
-        unknown_overrides = set(self.subsampling.overrides) - catalog.names
-        if unknown_overrides:
-            raise ValueError(
-                "Subsampling override(s) reference unknown instrument(s): "
-                f"{', '.join(sorted(unknown_overrides))}"
-            )
-
-        for name, variables in self.outputs.mesh_prediction.variables.items():
-            if name not in catalog.names:
-                raise ValueError(
-                    f"Mesh prediction references unknown instrument: {name}"
-                )
-            instrument = catalog.get(name)
-            unknown_variables = set(variables) - set(instrument.feature_names)
-            if unknown_variables:
-                raise ValueError(
-                    f"Unknown mesh variable(s) for {name}: "
-                    f"{', '.join(sorted(unknown_variables))}"
-                )
+        self.subsampling.validate_instruments(catalog)
+        self.outputs.mesh_prediction.validate_instruments(catalog)
 
     def enabled(self, catalog):
         self.validate_instruments(catalog)

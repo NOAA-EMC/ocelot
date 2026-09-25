@@ -884,7 +884,7 @@ class Ocelot(nn.Module):
             return init_ts
         elif input_ts is not None:
             try:
-                window_h = self.hparams.get('data_window_hours', None)
+                window_h = self.model_config.input_window_hours
                 if window_h is not None and isinstance(window_h, (int, float)):
                     return float(input_ts) + float(window_h) * 3600.0
                 else:
