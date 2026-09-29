@@ -9,7 +9,7 @@ parameter count of a checkpoint.
 
 Usage (CPU, from gnn_model/):
     python evaluation/revision/data_inventory.py --data_path /scratch4/.../ocelot/data/v7 \
-        --ckpt checkpoints/PR_Test/Epoch3079_fixedval.ckpt --out evaluation/revision/results/data_inventory.csv
+        --ckpt /scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt --out evaluation/revision/results/data_inventory.csv
 """
 
 from __future__ import annotations

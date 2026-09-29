@@ -3,7 +3,7 @@
 Branch: `revision/aies-d-26-0089`, created from `release/ocelot-v1.0` so that the manuscript checkpoint
 runs with exactly the code it was trained with. All commands run from `gnn_model/` on Ursa
 (`mkdir -p logs` first). Every experiment uses the
-manuscript checkpoint `checkpoints/PR_Test/Epoch3079_fixedval.ckpt` (override with `CKPT=`).
+manuscript checkpoint `/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt` (override with `CKPT=`).
 Nothing below changes OCELOT v1 itself; the code changes are opt-in flags:
 
 | File | Change |
@@ -37,7 +37,7 @@ To size E6: `MAX_EPOCHS=1000` is ~1/3 of the v1 run. Estimate the wall time from
 ```bash
 # E0
 python evaluation/revision/data_inventory.py --data_path $DATA_PATH \
-  --ckpt checkpoints/PR_Test/Epoch3079_fixedval.ckpt --out evaluation/revision/results/data_inventory.csv
+  --ckpt /scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt --out evaluation/revision/results/data_inventory.csv
 
 # E2 -> climatology
 sbatch evaluation/revision/run_climatology_dump.sh
