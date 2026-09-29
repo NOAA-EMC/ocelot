@@ -160,8 +160,8 @@ class SlidingWindowTransformer(FlatProcessorBase):
     """
 
     def __init__(self,
-                 mesh: FixedMesh, 
-                 processor_config: SlidingWindowProcessorConfig, 
+                 mesh: FixedMesh,
+                 processor_config: SlidingWindowProcessorConfig,
                  graph_schema: GraphSchema):
         super().__init__(mesh)
         self.window = processor_config.window

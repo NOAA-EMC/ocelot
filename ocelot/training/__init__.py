@@ -18,4 +18,3 @@ def make_module(model_config: ModelConfig,
         verbose=verbose)
 
     return OcelotTrainingModule(model=model, training_config=training_config)
-

@@ -14,9 +14,10 @@ processor_types = {
     "hierarchical_sliding_window": HierarchicalSlidingWindowTransformer
 }
 
-def make(mesh : Mesh, processor_config: ProcessorConfig, graph_schema: GraphSchema) -> ProcessorBase:
+
+def make(mesh: Mesh, processor_config: ProcessorConfig, graph_schema: GraphSchema) -> ProcessorBase:
     if processor_config.type not in processor_types:
         raise ValueError(f"Unknown processor_type: {processor_config.type}")
-        
-    print (f"Created {processor_config.type}.")
+
+    print(f"Created {processor_config.type}.")
     return processor_types[processor_config.type](mesh, processor_config, graph_schema)

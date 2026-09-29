@@ -1027,7 +1027,7 @@ def get_fsoi_inputs(
         fsoi_inputs[inst_name] = x_obs
 
         print(f"[FSOI Inputs] {inst_name}: extracted {n_channels} channels "
-                f"(shape={x_obs.shape}), requires_grad={x_obs.requires_grad}")
+              f"(shape={x_obs.shape}), requires_grad={x_obs.requires_grad}")
 
     if not fsoi_inputs:
         print("[WARNING] No FSOI inputs extracted from batch!")

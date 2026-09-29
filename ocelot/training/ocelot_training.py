@@ -636,12 +636,11 @@ class OcelotTrainingModule(pl.LightningModule):
             # "fixed"
             return self.training_config.data.max_rollout_steps
 
-    def _compute_channel_loss(
-        self,
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor,
-        instrument_ids: Optional[torch.Tensor],
-        valid_mask: Optional[torch.Tensor]) -> torch.Tensor:
+    def _compute_channel_loss(self,
+                              y_pred: torch.Tensor,
+                              y_true: torch.Tensor,
+                              instrument_ids: Optional[torch.Tensor],
+                              valid_mask: Optional[torch.Tensor]) -> torch.Tensor:
 
         if self.training_config.loss.type == "mse":
             return weighted_mse_loss(

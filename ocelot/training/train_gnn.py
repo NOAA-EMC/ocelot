@@ -22,6 +22,7 @@ from ocelot.configs.training_config import TrainingConfig  # noqa: E402
 from ocelot.gnn_datamodule import GNNDataModule  # noqa: E402
 from ocelot.logger import LogLevel, log  # noqa: E402
 
+
 @dataclass(frozen=True)
 class WindowPlan:
     train_start: datetime

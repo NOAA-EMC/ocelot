@@ -75,8 +75,7 @@ class InteractionProcessor(FlatProcessorBase):
         Processes the graph through multiple message-passing steps.
         """
 
-        processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
-                    if "_target" not in et[2]}
+        processor_edges = {et: ei for et, ei in data.edge_index_dict.items() if "_target" not in et[2]}
 
         processed_x_dict = encoded_mesh_features
         for i in range(self.num_message_passing_steps):

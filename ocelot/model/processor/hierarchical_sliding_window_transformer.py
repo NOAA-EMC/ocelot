@@ -475,7 +475,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
         output_list = [x_seq[:, -1, :] for x_seq in processed_list]
 
         return self._gather_node_features(step, processed_list)
-    
+
     @dataclass
     class MeshData:
         mesh_features_list: List[torch.Tensor]
@@ -557,7 +557,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
                 src_max = down_edge_index[0].max().item()
                 dst_max = down_edge_index[1].max().item()
                 print(f"[COARSE→FINE] Edge direction check: src_max={src_max} (expect <{coarse_features.shape[0]}), "
-                        f"dst_max={dst_max} (expect <{fine_features.shape[0]})")
+                      f"dst_max={dst_max} (expect <{fine_features.shape[0]})")
 
             # Gather: each edge gets coarse features from source
             coarse_gathered = coarse_features[down_edge_index[0]]  # [E, H]

@@ -158,7 +158,7 @@ class Ocelot(nn.Module):
         print(f"{'='*70}\n")
 
         # TODO: Delete this once hierarchical-specific logic is fully integrated
-        self.is_hierarchical = (self.model_config.mesh.type == "hierarchical")  
+        self.is_hierarchical = (self.model_config.mesh.type == "hierarchical")
 
         # # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
@@ -597,7 +597,7 @@ class Ocelot(nn.Module):
         step_mapping = step_info["step_mapping"]
         num_latent_steps = step_info["num_steps"]
         edge_mapping = self.mesh.map_step_edges(data, step_mapping)
-        
+
         log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         log.debug(f"[LATENT] Step mapping: {step_mapping}")
 
