@@ -85,10 +85,13 @@ class SlidingWindowProcessorConfig(TransformerProcessorConfig):
 
 
 class InteractionProcessorConfig(ProcessorConfig):
+    hidden_dim = IntField()
     num_message_passing_steps = IntField()
 
 
 class HierarchicalInteractionProcessorConfig(ProcessorConfig):
+    hidden_dim = IntField()
+    num_levels = IntField()
     num_message_passing_steps = Optional(IntField(), default=4)
 
 

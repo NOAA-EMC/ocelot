@@ -11,6 +11,10 @@ class ProcessorBase(nn.Module):
         self.mesh = mesh
         self.enable_mesh_pred = enable_mesh_pred
 
+    def reset(self):
+        """Reset the processor state if needed."""
+        pass
+
     @staticmethod
     def _get_latent_step_info(data: HeteroData) -> dict:
         """

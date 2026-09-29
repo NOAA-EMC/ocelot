@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 
 from ocelot.configs.model_config import SlidingWindowProcessorConfig
+from ocelot.model.graph_schema import GraphSchema
 from ocelot.model.mesh.fixed_mesh import FixedMesh
 from ocelot.model.processor.flat_processor_base import FlatProcessorBase
 
@@ -158,7 +159,11 @@ class SlidingWindowTransformer(FlatProcessorBase):
     then call forward() each rollout step.
     """
 
-    def __init__(self, mesh: FixedMesh, processor_config: SlidingWindowProcessorConfig):
+    def __init__(self, 
+                 mesh: FixedMesh, 
+                 processor_config: SlidingWindowProcessorConfig, 
+                 graph_schema: GraphSchema,
+    ):
         super().__init__(mesh)
         self.window = processor_config.window
         self.use_causal_mask = processor_config.use_causal_mask

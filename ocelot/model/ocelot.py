@@ -23,6 +23,7 @@ from ocelot.model import coder
 from ocelot.model import processor
 from ocelot.model import mesh
 from ocelot.model import mlp_block
+from ocelot.model.graph_schema import GraphSchema
 from ocelot.process_timeseries import _encode_target_time_features
 
 
@@ -207,27 +208,23 @@ class Ocelot(nn.Module):
         self.target_time_embedder = mlp_block.make([self.target_time_feature_dim, self.target_time_embed_dim])
         self.target_time_projector = nn.Linear(self.target_time_embed_dim, self.model_config.hidden_dim)
 
-        node_types = ["mesh"]
-        edge_types = [("mesh", "to", "mesh")]
+        self.graph_schema = GraphSchema(
+            inst_name for inst_name, _ in self.pipeline_config.enabled(self.instrument_catalog)
+        )
 
         for inst_name, instrument in self.pipeline_config.enabled(self.instrument_catalog):
-            node_type_input = f"{inst_name}_input"
-            node_type_target = f"{inst_name}_target"
-
-            node_types.extend([node_type_input, node_type_target])
-            edge_types.extend([(node_type_input, "to", "mesh"), ("mesh", "to", node_type_target)])
+            node_type_input = self.graph_schema.input_node(inst_name)
+            node_type_target = self.graph_schema.target_node(inst_name)
 
             input_dim = instrument.input_dim
             target_dim = instrument.target_dim
 
             # Encoder GNN (obs -> mesh)
-            edge_type_tuple_enc = (node_type_input, "to", "mesh")
-            enc_key = self.mesh.edge_key(edge_type_tuple_enc)
+            enc_key = self.mesh.edge_key(self.graph_schema.encoder_edge(inst_name))
 
             self.observation_encoders[enc_key] = coder.make(self.model_config.encoder)
 
-            edge_type_tuple_dec = ("mesh", "to", node_type_target)
-            dec_key = self.mesh.edge_key(edge_type_tuple_dec)
+            dec_key = self.mesh.edge_key(self.graph_schema.decoder_edge(inst_name))
 
             self.observation_decoders[dec_key] = coder.make(self.model_config.decoder)
 
@@ -246,7 +243,7 @@ class Ocelot(nn.Module):
             self.output_mappers[node_type_target] = mlp_block.make(output_map_layers, layer_norm=False)
             # Geometry dependence is enforced solely through decoder conditioning
 
-        self.processor = processor.make(self.mesh, self.model_config.processor)
+        self.processor = processor.make(self.mesh, self.model_config.processor, self.graph_schema)
 
     def _safe_trainer(self):
         try:

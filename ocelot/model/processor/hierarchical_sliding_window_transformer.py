@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from ocelot.logger import log
 from ocelot.configs.model_config import HierarchicalSlidingWindowProcessorConfig
+from ocelot.model.graph_schema import GraphSchema
 from ocelot.model.processor.processor_base import ProcessorBase
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
@@ -177,7 +178,11 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
     - Spatial hierarchy: coarse to fine mesh levels
     - Temporal processing: transformer over time at each level
     """
-    def __init__(self, mesh: HierarchicalMesh, processor_config: HierarchicalSlidingWindowProcessorConfig):
+    def __init__(self,
+                 mesh: HierarchicalMesh,
+                 processor_config: HierarchicalSlidingWindowProcessorConfig,
+                 graph_schema: GraphSchema,
+    ):
         """
         Args:
             mesh: HierarchicalMesh instance representing the mesh hierarchy
