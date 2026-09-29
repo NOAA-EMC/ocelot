@@ -232,6 +232,22 @@ def main():
             "transformer block. Use 0 for a transformer-only ablation."
         ),
     )
+    parser.add_argument(
+        "--processor_type",
+        type=str,
+        default="sliding_transformer",
+        choices=["sliding_transformer", "interaction"],
+        help="Latent processor: 'sliding_transformer' (OCELOT v1) or 'interaction' (GraphCast-style ablation).",
+    )
+    parser.add_argument(
+        "--deny_input_instruments",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated instruments whose INPUTS are withheld from the encoder "
+            "(their targets are still predicted and verified). Used for data-denial retraining."
+        ),
+    )
 
     # Mesh config
     parser.add_argument(
@@ -473,7 +489,7 @@ def main():
         rollout_schedule=rollout_schedule,
         latent_step_hours=int(latent_step_hours),
         feature_stats=feature_stats,
-        processor_type="sliding_transformer",
+        processor_type=str(args.processor_type),
         processor_window=processor_window,
         processor_depth=4,
         processor_heads=4,
@@ -511,6 +527,10 @@ def main():
         )
     else:
         model = GNNLightning(**model_kwargs)
+
+    model.denied_input_instruments = [s.strip() for s in args.deny_input_instruments.split(",") if s.strip()]
+    if model.denied_input_instruments:
+        print(f"[DENIAL] Inputs withheld from encoder: {model.denied_input_instruments}")
 
     data_module = GNNDataModule(
         data_path=data_path,

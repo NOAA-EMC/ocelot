@@ -190,6 +190,7 @@ class GNNDataModule(pl.LightningDataModule):
         prediction_mode=False,
         require_targets=None,
         verbose: bool = False,
+        rollout_windows: int = 1,   # >1: extended-rollout evaluation (targets span N windows)
         **kwargs,
     ):
         super().__init__()
@@ -307,6 +308,8 @@ class GNNDataModule(pl.LightningDataModule):
             "window_size": str(getattr(self.hparams, "window_size", "")),
             "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
             "require_targets": bool(require_targets),
+            **({"rollout_windows": int(self.hparams.rollout_windows)}
+               if int(getattr(self.hparams, "rollout_windows", 1) or 1) != 1 else {}),
             "observation_config": getattr(self.hparams, "observation_config", None),
             "pipeline": getattr(self.hparams, "pipeline", None),
         }
@@ -331,6 +334,7 @@ class GNNDataModule(pl.LightningDataModule):
                 latent_step_hours=self.hparams.latent_step_hours,
                 require_targets=require_targets,
                 verbose=False,
+                rollout_windows=int(getattr(self.hparams, "rollout_windows", 1) or 1),
             )
             # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
             # Fall back to lexicographic ordering if parsing fails.
@@ -538,6 +542,7 @@ class GNNDataModule(pl.LightningDataModule):
             raise ValueError(f"window_size ({window_hours}h) must be divisible by latent_step_hours ({self.hparams.latent_step_hours}h)")
 
         num_latent_steps = window_hours // self.hparams.latent_step_hours
+        num_latent_steps *= int(getattr(self.hparams, "rollout_windows", 1) or 1)
 
         # 3) Observation data and mesh connections
         # ALL instruments get the same node structure based on detected batch mode

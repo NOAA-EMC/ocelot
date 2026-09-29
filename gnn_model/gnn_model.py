@@ -984,8 +984,16 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         encoded_mesh_features = embedded_features["mesh"]
 
+        # Observation-denial experiments: skip the encoders of denied instruments.
+        # With no encoder edges BipartiteGAT returns the mesh state unchanged, so this
+        # matches the data module's representation of a window in which the instrument
+        # reported nothing. Targets of denied instruments are still decoded and verified.
+        _denied = set(getattr(self, "denied_input_instruments", None) or ())
+
         for edge_type, edge_index in data.edge_index_dict.items():
             src_type, _, dst_type = edge_type
+            if _denied and src_type.replace("_input", "") in _denied:
+                continue
             print(f"encode: [edge_type] {edge_type}: {edge_index.shape}")
             if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
                 obs_features = embedded_features[src_type]

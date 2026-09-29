@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+"""Build an observation-space climatology from TRAINING-period observations.
+
+Input: obs-space prediction CSVs written by ``predict_gnn.py --eval-mode`` over sampled
+2015-2023 dates (see run_climatology_dump.sh). Only the ``true_*`` / ``mask_*`` columns
+are used, so the climatology passes through exactly the QC, subsampling and inverse
+normalization used for the 2025 verification, and it never touches 2024/2025 data.
+
+Output (per instrument): ``<out_dir>/clim_<inst>.csv.gz`` with the stratified means at the
+three fallback levels defined in revision_common.LEVELS, plus ``scan_edges.json``.
+
+Usage:
+    python evaluation/revision/build_obs_climatology.py \
+        --pred_dir predictions/clim_dump_2015_2023/pred_csv/obs-space --recursive \
+        --out_dir evaluation/revision/climatology
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from collections import defaultdict
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from revision_common import LEVELS, N_SCAN_BINS, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
+
+
+def _scan_edges(files_by_inst: dict[str, list[str]], max_files: int = 60) -> dict[str, list[float]]:
+    edges = {}
+    for inst, paths in files_by_inst.items():
+        vmax = 0.0
+        for p in paths[:: max(1, len(paths) // max_files)]:
+            try:
+                sa = pd.read_csv(p, usecols=["scan_angle_0"])["scan_angle_0"].to_numpy(float)
+            except (ValueError, KeyError):
+                break  # instrument has no scan-angle column
+            sa = np.abs(sa[np.isfinite(sa)])
+            if sa.size:
+                vmax = max(vmax, float(np.nanpercentile(sa, 99.9)))
+        if vmax > 0:
+            edges[inst] = np.linspace(0.0, vmax * 1.0001, N_SCAN_BINS + 1).tolist()
+    return edges
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--pred_dir", required=True)
+    ap.add_argument("--recursive", action="store_true")
+    ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--max_year", type=int, default=2023, help="Refuse files with init year > max_year (leakage guard)")
+    ap.add_argument("--consolidate_every", type=int, default=40)
+    args = ap.parse_args()
+
+    files = list_prediction_files(args.pred_dir, args.recursive)
+    bad = [f for f in files if int(f[2][:4]) > args.max_year]
+    if bad:
+        raise SystemExit(f"{len(bad)} files have init year > {args.max_year} (e.g. {bad[0][0]}); refusing to build climatology.")
+    if not files:
+        raise SystemExit(f"No prediction CSVs under {args.pred_dir}")
+
+    by_inst: dict[str, list[str]] = defaultdict(list)
+    for path, inst, _ in files:
+        by_inst[inst].append(path)
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    scan_edges = _scan_edges(by_inst)
+    with open(os.path.join(args.out_dir, "scan_edges.json"), "w") as f:
+        json.dump(scan_edges, f, indent=1)
+
+    for inst, paths in sorted(by_inst.items()):
+        edges = np.asarray(scan_edges[inst]) if inst in scan_edges else None
+        parts: dict[str, list[pd.DataFrame]] = {lvl: [] for lvl in LEVELS}
+
+        def _consolidate():
+            for lvl, cols in LEVELS.items():
+                if len(parts[lvl]) > 1:
+                    parts[lvl] = [pd.concat(parts[lvl]).groupby(["var"] + cols, as_index=False)[["sum", "count"]].sum()]
+
+        for i, p in enumerate(paths):
+            df = pd.read_csv(p, low_memory=False)
+            if df.empty:
+                continue
+            keys = strat_keys(df, inst, edges)
+            for var in variables_in(df):
+                ok = valid_rows(df, var)
+                if not ok.any():
+                    continue
+                sub = keys[ok].copy()
+                sub["var"] = var
+                sub["sum"] = df.loc[ok, f"true_{var}"].to_numpy(float)
+                sub["count"] = 1
+                for lvl, cols in LEVELS.items():
+                    parts[lvl].append(sub.groupby(["var"] + cols, as_index=False)[["sum", "count"]].sum())
+            if (i + 1) % args.consolidate_every == 0:
+                _consolidate()
+                print(f"[{inst}] {i + 1}/{len(paths)} files", flush=True)
+        _consolidate()
+
+        out = []
+        for lvl in LEVELS:
+            if parts[lvl]:
+                t = parts[lvl][0]
+                t["mean"] = t["sum"] / t["count"]
+                t.insert(0, "level", lvl)
+                out.append(t.drop(columns="sum"))
+        if out:
+            path = os.path.join(args.out_dir, f"clim_{inst}.csv.gz")
+            pd.concat(out, ignore_index=True).to_csv(path, index=False)
+            print(f"[{inst}] wrote {path} from {len(paths)} files")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

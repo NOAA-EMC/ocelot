@@ -248,9 +248,14 @@ def organize_bins_times(
     latent_step_hours=12,
     require_targets=True,    # PREDICTION MODE: False for inference (no targets needed)
     verbose=False,
+    rollout_windows=1,
 ):
     """
     Bin definition: a bin consists of a pair of input and targets, each covers window_size.
+
+    rollout_windows > 1 (evaluation only) extends the target period to rollout_windows
+    consecutive windows after the input window, e.g. 4 x 12 h = 48 h, split into
+    latent_step_hours sub-windows. rollout_windows = 1 is the trained OCELOT v1 setup.
     Organizes observation times into time bins and creates input-target pairs.
 
     Uses chunked scans to avoid loading entire arrays into memory.
@@ -278,7 +283,10 @@ def organize_bins_times(
     }
 
     # latent rollout setup
-    target_hours = int(window_size[:-1])
+    rollout_windows = int(rollout_windows)
+    if rollout_windows < 1:
+        raise ValueError("rollout_windows must be >= 1")
+    target_hours = int(window_size[:-1]) * rollout_windows
     num_latent_steps = target_hours // latent_step_hours
     sub_window_freq = f"{latent_step_hours}h"
     if verbose:
@@ -426,7 +434,13 @@ def organize_bins_times(
                     t_target_start = uniq_win[bi + 1]
 
                     # Get all indices in the main target window
-                    m_target_full = codes == (bi + 1)
+                    if rollout_windows == 1:
+                        m_target_full = codes == (bi + 1)
+                    else:
+                        # Extended-rollout evaluation: all obs in the rollout_windows windows
+                        # following the input window (boolean mask; time_ts need not be monotonic).
+                        t_target_end = t_target_start + pd.Timedelta(hours=target_hours)
+                        m_target_full = np.asarray((time_ts >= t_target_start) & (time_ts <= t_target_end))
                     idx_target_full = idx_all[m_target_full]
                     ts_target_full = time_ts[m_target_full]
 
