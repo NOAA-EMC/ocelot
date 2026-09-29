@@ -4,8 +4,13 @@
 set -euo pipefail
 mkdir -p logs
 GROUPS_TO_RUN=${GROUPS_TO_RUN:-"control mw_sounders mw_imager ir_imagers scatterometer aircraft radiosonde surface all_satellite all_conventional"}
+# CPU=1 submits on CPU nodes through submit_cpu.sh (control and all groups on the same hardware).
 for g in ${GROUPS_TO_RUN}; do
-  sbatch -J "deny_${g}" --export=ALL,DENY_GROUP="${g}" evaluation/revision/run_denial_ose.sh
+  if [[ "${CPU:-0}" == "1" ]]; then
+    bash evaluation/revision/submit_cpu.sh evaluation/revision/run_denial_ose.sh -J "deny_${g}" --export=ALL,DENY_GROUP="${g}" ${SBATCH_EXTRA:-}
+  else
+    sbatch -J "deny_${g}" --export=ALL,DENY_GROUP="${g}" ${SBATCH_EXTRA:-} evaluation/revision/run_denial_ose.sh
+  fi
 done
 
 cat <<'EOF'
