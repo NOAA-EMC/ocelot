@@ -23,6 +23,7 @@ GC_SPATIAL_FEATURES_KWARGS = {
     "relative_latitude_local_coordinates": True,
 }
 
+
 def obs_mesh_conn(
     grid_lat, grid_lon, m2m_graphs, mesh_lat_lon_list, mesh_list, o2m=True
 ):
@@ -123,13 +124,14 @@ def obs_mesh_conn(
     else:
         return (m2g_edge_index_torch, m2g_features_torch)
 
+
 class Mesh(torch.nn.Module):
     def __init__(self, mesh_config: MeshConfig):
         super().__init__()
 
         self.num_levels = mesh_config.levels
         self.resolution = mesh_config.resolution
-    
+
         self.m2m_graphs: torch.tensor = None
         self.mesh_lat_lon_list: list = None
         self.mesh_list: torch.tensor = None
@@ -139,7 +141,7 @@ class Mesh(torch.nn.Module):
         self.mesh_lat_lon_torch: torch.tensor = None
 
         self._create_mesh(levels=mesh_config.levels, splits=self.resolution)
-    
+
     @property
     def mesh_structure(self) -> dict:
         raise NotImplementedError("This should be implemented by subclasses")
@@ -230,7 +232,6 @@ class Mesh(torch.nn.Module):
         self.register_buffer("mesh_edge_index", self._as_i64(self.m2m_edge_index_torch[0]))
         self.register_buffer("mesh_edge_attr", self._as_f32(self.m2m_features_torch[0]))
 
-
     def _create_mesh(self, levels: int, splits: int):
         """Create the mesh hierarchy and spatial features used by OCELOT.
 
@@ -244,7 +245,7 @@ class Mesh(torch.nn.Module):
             Dictionary containing mesh objects, mesh lat/lon coordinates, processor
             edge indices, edge features, and optional hierarchy edges.
         """
-    
+
         mesh_list = gc_im.get_hierarchy_of_triangular_meshes_for_sphere(splits)
         if levels is not None:
             assert (levels <= splits + 1), \
@@ -333,4 +334,3 @@ class Mesh(torch.nn.Module):
             nodes_lon,
         ) = gc_mu.spherical_to_lat_lon(phi=phi, theta=theta)
         return np.stack((nodes_lat, nodes_lon), axis=1)  # (N, 2)
-        

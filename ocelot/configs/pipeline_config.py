@@ -114,7 +114,6 @@ class SubsamplingConfig(ConfigBase):
         )
 
 
-
 class MeshPredictionConfig(ConfigBase):
     enabled = Optional(BoolField(), default=False)
     pressure_level = Optional(FloatField(), default=1000)

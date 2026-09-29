@@ -76,7 +76,6 @@ class HierarchicalMesh(Mesh):
                 torch.tensor(mesh_down_features, dtype=DEFAULT_DTYPE)
             )
 
-
     def _register_buffers(self):
         super()._register_buffers()
 
@@ -97,13 +96,12 @@ class HierarchicalMesh(Mesh):
                 self.register_buffer(f"mesh_down_edge_index_{i}", self._as_i64(mde))
                 self.register_buffer(f"mesh_down_edge_attr_{i}", self._as_f32(mdea))
 
-
     def _create_m2m_graph(self, mesh_list):
         mesh_list_rev = list(reversed(mesh_list))  # 0 is finest graph now
         m2m_graphs = mesh_list_rev  # list of num_splitgraphs
 
         return m2m_graphs
-    
+
     @staticmethod
     def _inter_mesh_connection(from_mesh, to_mesh):
         """
@@ -127,7 +125,7 @@ class HierarchicalMesh(Mesh):
 
         edge_index = np.stack((from_edge_indices, to_edge_indices), axis=0)  # (2, M)
         return edge_index
-    
+
     @staticmethod
     def _vertice_cart_to_lat_lon(vertices):
         """
@@ -144,7 +142,7 @@ class HierarchicalMesh(Mesh):
             nodes_lon,
         ) = gc_mu.spherical_to_lat_lon(phi=phi, theta=theta)
         return np.stack((nodes_lat, nodes_lon), axis=1)  # (N, 2)
-    
+
     @staticmethod
     def _get_max_edge_distance(mesh):
         """Return the maximum Euclidean edge length in a triangular mesh."""

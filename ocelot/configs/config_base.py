@@ -6,6 +6,7 @@ from typing import Any
 
 _MISSING = object()
 
+
 class ConfigError(Exception):
     pass
 

@@ -1,4 +1,5 @@
-import os, sys
+import os
+import sys
 from typing import Dict, Tuple, List, Optional
 import lightning.pytorch as pl
 import torch
@@ -34,7 +35,6 @@ class OcelotTrainingModule(pl.LightningModule):
     def forward(self, data: HeteroData):
         return self.model(data)
 
-    
     def on_fit_start(self):
         # Reset one-time debug cache each run.
         self._edge_attr_debug_seen = set()
@@ -46,7 +46,6 @@ class OcelotTrainingModule(pl.LightningModule):
     def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
         """Converts an edge_type tuple to a string key for ModuleDict."""
         return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
-
 
     def training_step(self, batch, batch_idx):
         print("[DIAG] Entered training_step()")
@@ -158,7 +157,6 @@ class OcelotTrainingModule(pl.LightningModule):
 
         return avg_loss
 
-
     def on_train_epoch_start(self):
         super().on_train_epoch_start()
         rank = int(os.environ.get("RANK", "0"))
@@ -184,7 +182,6 @@ class OcelotTrainingModule(pl.LightningModule):
         current_lr = opt.param_groups[0]["lr"]
         self.log("learning_rate", current_lr, prog_bar=False, on_epoch=True, on_step=False)
 
-
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()
         rank = int(os.environ.get("RANK", "0"))
@@ -193,7 +190,6 @@ class OcelotTrainingModule(pl.LightningModule):
         print(f"[ValWindow]   {getattr(dm.hparams, 'val_start', None)} .. {getattr(dm.hparams, 'val_end', None)} "
               f"(sum_id={id(getattr(dm, 'val_data_summary', None))})")
         self._printed_first_val_batch = False
-
 
     def validation_step(self, batch, batch_idx):
         log.info(f"VALIDATION STEP batch: {batch.bin_name}")
@@ -457,7 +453,6 @@ class OcelotTrainingModule(pl.LightningModule):
 
         return avg_loss
 
-
     def on_validation_epoch_end(self):
         """Generate mesh predictions at END of validation epoch."""
         if not self.model.enable_mesh_pred or not self.trainer.is_global_zero:
@@ -495,7 +490,6 @@ class OcelotTrainingModule(pl.LightningModule):
             # Clean up
             self._last_val_mesh_features = None
             self._last_val_batch = None
-
 
     def configure_optimizers(self):
         opt_config = self.training_config.optimizer
@@ -597,7 +591,6 @@ class OcelotTrainingModule(pl.LightningModule):
             total_grad_norm = total_grad_norm**0.5
             log.debug(f"[DEBUG] Total Gradient Norm: {total_grad_norm:.6f}")
 
-
     def get_current_rollout_steps(self):
         """
         Determines the current number of rollout steps based on training progress.
@@ -648,9 +641,8 @@ class OcelotTrainingModule(pl.LightningModule):
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
         instrument_ids: Optional[torch.Tensor],
-        valid_mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        
+        valid_mask: Optional[torch.Tensor]) -> torch.Tensor:
+
         if self.training_config.loss.type == "mse":
             return weighted_mse_loss(
                 y_pred,
@@ -669,4 +661,3 @@ class OcelotTrainingModule(pl.LightningModule):
             rebalancing=True,
             valid_mask=valid_mask,
         )
-

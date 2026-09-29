@@ -159,18 +159,17 @@ class SlidingWindowTransformer(FlatProcessorBase):
     then call forward() each rollout step.
     """
 
-    def __init__(self, 
+    def __init__(self,
                  mesh: FixedMesh, 
                  processor_config: SlidingWindowProcessorConfig, 
-                 graph_schema: GraphSchema,
-    ):
+                 graph_schema: GraphSchema):
         super().__init__(mesh)
         self.window = processor_config.window
         self.use_causal_mask = processor_config.use_causal_mask
         self.spatial_mixing_steps = processor_config.spatial_mixing_steps
         self.blocks = nn.ModuleList([
-            TemporalBlock(processor_config.hidden_dim, 
-                          processor_config.num_heads, 
+            TemporalBlock(processor_config.hidden_dim,
+                          processor_config.num_heads,
                           processor_config.dropout) for _ in range(processor_config.depth)
         ])
         self.posenc = TemporalPositionalEncoding(processor_config.hidden_dim, max_len=processor_config.window)
@@ -198,7 +197,7 @@ class SlidingWindowTransformer(FlatProcessorBase):
         Returns:
             List of [N_mesh, H] updated mesh states per latent step
         """
-        
+
         # ensure device consistency
         device = encoded_mesh_features.device
         dtype = encoded_mesh_features.dtype
@@ -232,4 +231,3 @@ class SlidingWindowTransformer(FlatProcessorBase):
                 x_seq = torch.stack(mixed, dim=1)
 
         return x_seq[:, -1, :]  # new encoded_mesh_features
-    

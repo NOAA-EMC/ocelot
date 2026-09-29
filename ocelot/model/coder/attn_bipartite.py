@@ -98,13 +98,12 @@ class BipartiteGAT(nn.Module):
 
         E = int(edge_index.size(1))
 
-
         # For very large bipartite graphs (e.g., mesh -> satellite targets),
         # PyG's GATv2Conv builds per-edge attention tensors that can exceed GPU memory.
         # We mitigate this by chunking over destination nodes (dst) so peak edge
         # attention memory is bounded. Chunking preserves exact results as long as
         # all incoming edges for a dst node are processed together.
-        
+
         # Heuristic chunk size selection.
         # If dst_chunk_size is not provided, use an auto chunk size for huge dst.
         chunk_size = self.coder_config.dst_chunk_size

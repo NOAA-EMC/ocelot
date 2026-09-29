@@ -9,13 +9,14 @@ MeshTypes = {
     "hierarchical": HierarchicalMesh
 }
 
+
 def make(mesh_config: MeshConfig, plot: bool = False) -> Mesh:
-        if mesh_config.type not in MeshTypes:
-            raise ValueError(f"Unknown mesh_type: {mesh_config.type}")
+    if mesh_config.type not in MeshTypes:
+        raise ValueError(f"Unknown mesh_type: {mesh_config.type}")
 
-        mesh = MeshTypes[mesh_config.type](mesh_config)
+    mesh = MeshTypes[mesh_config.type](mesh_config)
 
-        if plot:
-            mesh.plot()
+    if plot:
+        mesh.plot()
 
-        return mesh
+    return mesh

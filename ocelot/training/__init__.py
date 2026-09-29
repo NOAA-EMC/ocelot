@@ -7,10 +7,10 @@ from ocelot.model.ocelot import Ocelot
 
 
 def make_module(model_config: ModelConfig,
-                            training_config: TrainingConfig,
-                            instrument_catalog: InstrumentCatalogConfig,
-                            pipeline_config: PipelineConfig,
-                            verbose: bool = False):
+                training_config: TrainingConfig,
+                instrument_catalog: InstrumentCatalogConfig,
+                pipeline_config: PipelineConfig,
+                verbose: bool = False):
     model = Ocelot(
         model_config=model_config,
         instrument_catalog=instrument_catalog,

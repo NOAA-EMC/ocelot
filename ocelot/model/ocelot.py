@@ -77,7 +77,7 @@ class Ocelot(nn.Module):
 
     def __init__(
         self,
-        model_config : ModelConfig,
+        model_config: ModelConfig,
         instrument_catalog: InstrumentCatalogConfig,
         pipeline_config: PipelineConfig,
         verbose=False,
@@ -96,7 +96,7 @@ class Ocelot(nn.Module):
         self.verbose = verbose
 
         self.model_config = model_config
-        
+
         self.instrument_catalog = instrument_catalog
         self.pipeline_config = pipeline_config
         self.pipeline_config.validate_instruments(self.instrument_catalog)
@@ -107,7 +107,7 @@ class Ocelot(nn.Module):
         self.enable_mesh_pred = self.mesh_prediction_config.enabled
         self.mesh_instruments = list(self.mesh_prediction_config.variables)
         self.mesh_pressure_level_idx = self.mesh_prediction_config.pressure_level_index
-        
+
         if self.verbose:
             print(f"[DEBUG CONFIG] enable_mesh_pred: {self.enable_mesh_pred}")
             print(f"[DEBUG CONFIG] mesh_prediction_config: {self.mesh_prediction_config}")
@@ -147,7 +147,6 @@ class Ocelot(nn.Module):
             print("[MODEL] instrument map:", self.instrument_name_to_id)
             print("[MODEL] instrument_weights:", {self.instrument_id_to_name[k]: float(v) for k, v in self.instrument_weights.items()})
 
-
         print(f"\n{'='*70}")
         print(f"[GNN MODEL] Initializing with configuration:")
         print(f"  - Mesh type: { self.model_config.mesh.type}")
@@ -158,7 +157,8 @@ class Ocelot(nn.Module):
         print(f"  - Decoder type: {self.model_config.decoder.type}")
         print(f"{'='*70}\n")
 
-        self.is_hierarchical = (self.model_config.mesh.type == "hierarchical")  # TODO: Delete this once hierarchical-specific logic is fully integrated
+        # TODO: Delete this once hierarchical-specific logic is fully integrated
+        self.is_hierarchical = (self.model_config.mesh.type == "hierarchical")  
 
         # # --- Initialize Network Dictionaries ---
         self.observation_embedders = nn.ModuleDict()  # For initial feature projection
@@ -170,7 +170,7 @@ class Ocelot(nn.Module):
         hidden_layers = first_instrument_config.model.encoder_hidden_layers
 
         self.mlp_blueprint_end = [self.model_config.hidden_dim] * (hidden_layers + 1)
-        
+
         # Get mesh feature dimension from the first mesh
         mesh_feature_dim = self.mesh.mesh_features_torch[0].shape[1]
 
@@ -407,7 +407,6 @@ class Ocelot(nn.Module):
         except KeyError:
             return None
 
-
     def unnormalize_standardscaler(self, tensor, node_type, mean=None, std=None):
         """
         Reverse a per-channel standardization: x = x * std + mean.
@@ -613,14 +612,14 @@ class Ocelot(nn.Module):
             encoded_features['mesh'] = self.processor(step, step_info, encoded_features['mesh'])
             self._generate_predictions(data, step, step_info['step_mapping'], edge_mapping, encoded_features['mesh'], predictions)
 
-        return predictions, None #, mesh_features_per_step
-    
-    def _generate_predictions(self, 
-                              data: HeteroData, 
-                              step: int, 
-                              step_mapping: dict, 
+        return predictions, None  # mesh_features_per_step
+
+    def _generate_predictions(self,
+                              data: HeteroData,
+                              step: int,
+                              step_mapping: dict,
                               edge_mapping: dict,
-                              mesh_features_processed: torch.Tensor, 
+                              mesh_features_processed: torch.Tensor,
                               predictions: dict) -> None:
 
         # Process all instruments for this step
@@ -770,7 +769,6 @@ class Ocelot(nn.Module):
 
         return predictions
 
-
     @staticmethod
     def _get_latent_step_info(data: HeteroData) -> dict:
         """
@@ -841,7 +839,6 @@ class Ocelot(nn.Module):
                     results[base_type]["valid_mask_list"].append(None)
 
         return results
-
 
     def _resolve_init_ts(self, batch):
         """Return raw init timestamp (int/float unix, pd.Timestamp, or datetime), or None."""
@@ -940,7 +937,6 @@ class Ocelot(nn.Module):
         if isinstance(ts, datetime):
             return int(ts.timestamp())
         return int(float(ts))
-
 
     def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
         """Decode all forecast steps to mesh grid."""

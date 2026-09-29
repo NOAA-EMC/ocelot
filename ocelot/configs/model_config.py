@@ -11,7 +11,8 @@ from ocelot.configs.config_base import (
     Optional,
 )
 
-## Mesh configurations ##
+# Mesh configurations ##
+
 
 class MeshConfig(ConfigBase):
     levels = IntField()
@@ -27,7 +28,7 @@ class HierarchicalMeshConfig(MeshConfig):
     pass
 
 
-## Coder (Encoder/Decoder) configurations ##
+# Coder (Encoder/Decoder) configurations ##
 
 class CoderConfig(ConfigBase):
     rec_dim = IntField()
@@ -64,7 +65,7 @@ class InteractionCoderConfig(CoderConfig):
             self.hidden_dim = self.rec_dim
 
 
-## Processor configurations ##
+# Processor configurations ##
 
 class ProcessorConfig(ConfigBase):
     pass
@@ -99,7 +100,7 @@ class HierarchicalSlidingWindowProcessorConfig(TransformerProcessorConfig):
     use_cross_scale = Optional(BoolField(), default=True)
 
 
-## Embeddings configurations ##
+# Embeddings configurations ##
 
 class EmbeddingsConfig(ConfigBase):
     scan_angle_dim = Optional(IntField(), default=8)
@@ -110,7 +111,7 @@ class EmbeddingsConfig(ConfigBase):
     num_pressure_levels = Optional(IntField(), default=16)
 
 
-## Model configuration ##
+# Model configuration ##
 
 class ModelConfig(ConfigBase):
     hidden_dim = IntField()
@@ -118,7 +119,7 @@ class ModelConfig(ConfigBase):
     target_window_hours = Optional(IntField(), default=12)
     latent_step_hours = Optional(IntField(), default=3)
     processor_window = Optional(IntField())
-    
+
     mesh = Choices({
         'fixed': FixedMeshConfig(),
         'hierarchical': HierarchicalMeshConfig(),

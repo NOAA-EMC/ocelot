@@ -996,38 +996,38 @@ def get_fsoi_inputs(
     fsoi_inputs = {}
 
     for inst_name, instrument in pipeline_config.enabled(instrument_catalog):
-            node_type_input = f"{inst_name}_input"
+        node_type_input = f"{inst_name}_input"
 
-            if node_type_input not in batch.node_types:
-                continue
+        if node_type_input not in batch.node_types:
+            continue
 
-            x_input = batch[node_type_input].x
-            if x_input is None or x_input.numel() == 0:
-                continue
+        x_input = batch[node_type_input].x
+        if x_input is None or x_input.numel() == 0:
+            continue
 
-            # Get number of observation channels from config
-            n_channels = instrument.target_dim
-            if n_channels == 0:
-                print(f"[WARNING] {inst_name}: No channels in config, skipping")
-                continue
+        # Get number of observation channels from config
+        n_channels = instrument.target_dim
+        if n_channels == 0:
+            print(f"[WARNING] {inst_name}: No channels in config, skipping")
+            continue
 
-            # x_input layout: [7 geo/time | n_meta instrument-metadata | n_channels obs | optional trailing]
-            # Skip the leading geo/time + metadata columns to reach actual observation channels.
-            n_meta = len(cfg.get('metadata', []))
-            bt_start = 7 + n_meta
-            x_channels = x_input[:, bt_start:bt_start + n_channels]
+        # x_input layout: [7 geo/time | n_meta instrument-metadata | n_channels obs | optional trailing]
+        # Skip the leading geo/time + metadata columns to reach actual observation channels.
+        n_meta = len(cfg.get('metadata', []))
+        bt_start = 7 + n_meta
+        x_channels = x_input[:, bt_start:bt_start + n_channels]
 
-            # Clone, detach, enable gradients
-            x_obs = x_channels.clone().detach()
-            x_obs.requires_grad_(True)
+        # Clone, detach, enable gradients
+        x_obs = x_channels.clone().detach()
+        x_obs.requires_grad_(True)
 
-            if not x_obs.requires_grad:
-                raise RuntimeError(f"Failed to enable gradients for {inst_name}")
+        if not x_obs.requires_grad:
+            raise RuntimeError(f"Failed to enable gradients for {inst_name}")
 
-            fsoi_inputs[inst_name] = x_obs
+        fsoi_inputs[inst_name] = x_obs
 
-            print(f"[FSOI Inputs] {inst_name}: extracted {n_channels} channels "
-                  f"(shape={x_obs.shape}), requires_grad={x_obs.requires_grad}")
+        print(f"[FSOI Inputs] {inst_name}: extracted {n_channels} channels "
+                f"(shape={x_obs.shape}), requires_grad={x_obs.requires_grad}")
 
     if not fsoi_inputs:
         print("[WARNING] No FSOI inputs extracted from batch!")
@@ -1127,66 +1127,66 @@ def get_fsoi_metadata(
     fsoi_metadata = {}
 
     for inst_name, _ in pipeline_config.enabled(instrument_catalog):
-            node_type_input = f"{inst_name}_input"
+        node_type_input = f"{inst_name}_input"
 
-            if node_type_input not in batch.node_types:
-                continue
+        if node_type_input not in batch.node_types:
+            continue
 
-            node_data = batch[node_type_input]
+        node_data = batch[node_type_input]
 
-            # Initialize metadata dict
-            metadata = {}
+        # Initialize metadata dict
+        metadata = {}
 
-            # Extract pressure level if available (for radiosonde and aircraft)
-            if hasattr(node_data, 'pressure_level'):
-                metadata['pressure_level'] = node_data.pressure_level.detach().cpu()
+        # Extract pressure level if available (for radiosonde and aircraft)
+        if hasattr(node_data, 'pressure_level'):
+            metadata['pressure_level'] = node_data.pressure_level.detach().cpu()
 
-                # Map indices to actual pressure values if possible
-                pressure_idx = node_data.pressure_level.detach().cpu().numpy()
-                if pressure_idx.ndim > 1:
-                    pressure_idx = pressure_idx.squeeze()
+            # Map indices to actual pressure values if possible
+            pressure_idx = node_data.pressure_level.detach().cpu().numpy()
+            if pressure_idx.ndim > 1:
+                pressure_idx = pressure_idx.squeeze()
 
-                # Convert indices to hPa values
-                pressure_hpa = np.array([
-                    STANDARD_PRESSURE_LEVELS[int(idx)] if 0 <= int(idx) < len(STANDARD_PRESSURE_LEVELS) else np.nan
-                    for idx in pressure_idx
-                ])
-                metadata['pressure_hpa'] = torch.from_numpy(pressure_hpa)
-            else:
-                metadata['pressure_level'] = None
-                metadata['pressure_hpa'] = None
+            # Convert indices to hPa values
+            pressure_hpa = np.array([
+                STANDARD_PRESSURE_LEVELS[int(idx)] if 0 <= int(idx) < len(STANDARD_PRESSURE_LEVELS) else np.nan
+                for idx in pressure_idx
+            ])
+            metadata['pressure_hpa'] = torch.from_numpy(pressure_hpa)
+        else:
+            metadata['pressure_level'] = None
+            metadata['pressure_hpa'] = None
 
-            # Extract lat/lon — try direct attributes first (most batch stores
-            # keep lat/lon as separate tensors), fall back to a combined
-            # .metadata tensor of shape [N, >=2] if present.
-            lat_t, lon_t = None, None
-            if hasattr(node_data, 'lat') and node_data.lat is not None:
-                lat_t = node_data.lat.detach().cpu().float()
-                if lat_t.dim() > 1:
-                    lat_t = lat_t.squeeze(1)
-            if hasattr(node_data, 'lon') and node_data.lon is not None:
-                lon_t = node_data.lon.detach().cpu().float()
-                if lon_t.dim() > 1:
-                    lon_t = lon_t.squeeze(1)
-            if lat_t is None and hasattr(node_data, 'metadata'):
-                node_metadata = node_data.metadata.detach().cpu()
-                if node_metadata.shape[1] >= 2:
-                    lat_t = node_metadata[:, 0]
-                    lon_t = node_metadata[:, 1]
-            metadata['lat'] = lat_t
-            metadata['lon'] = lon_t
+        # Extract lat/lon — try direct attributes first (most batch stores
+        # keep lat/lon as separate tensors), fall back to a combined
+        # .metadata tensor of shape [N, >=2] if present.
+        lat_t, lon_t = None, None
+        if hasattr(node_data, 'lat') and node_data.lat is not None:
+            lat_t = node_data.lat.detach().cpu().float()
+            if lat_t.dim() > 1:
+                lat_t = lat_t.squeeze(1)
+        if hasattr(node_data, 'lon') and node_data.lon is not None:
+            lon_t = node_data.lon.detach().cpu().float()
+            if lon_t.dim() > 1:
+                lon_t = lon_t.squeeze(1)
+        if lat_t is None and hasattr(node_data, 'metadata'):
+            node_metadata = node_data.metadata.detach().cpu()
+            if node_metadata.shape[1] >= 2:
+                lat_t = node_metadata[:, 0]
+                lon_t = node_metadata[:, 1]
+        metadata['lat'] = lat_t
+        metadata['lon'] = lon_t
 
-            fsoi_metadata[inst_name] = metadata
+        fsoi_metadata[inst_name] = metadata
 
-            # Log what we found
-            n_obs = node_data.x.shape[0] if node_data.x is not None else 0
-            has_pressure = metadata['pressure_level'] is not None
-            has_latlon = metadata['lat'] is not None
-            print(f"[FSOI Metadata] {inst_name}: {n_obs} obs, pressure={has_pressure}, latlon={has_latlon}")
+        # Log what we found
+        n_obs = node_data.x.shape[0] if node_data.x is not None else 0
+        has_pressure = metadata['pressure_level'] is not None
+        has_latlon = metadata['lat'] is not None
+        print(f"[FSOI Metadata] {inst_name}: {n_obs} obs, pressure={has_pressure}, latlon={has_latlon}")
 
-            if has_pressure:
-                pressure_levels_present = torch.unique(metadata['pressure_level']).numpy()
-                print(f"  Pressure levels: {pressure_levels_present}")
+        if has_pressure:
+            pressure_levels_present = torch.unique(metadata['pressure_level']).numpy()
+            print(f"  Pressure levels: {pressure_levels_present}")
 
     return fsoi_metadata
 
@@ -1214,78 +1214,78 @@ def replace_batch_inputs(
                          replacement; None means full replacement.
     """
     for inst_name, instrument in instrument_catalog.items():
-            node_type_input = f"{inst_name}_input"
+        node_type_input = f"{inst_name}_input"
 
-            if node_type_input not in batch.node_types:
-                continue
+        if node_type_input not in batch.node_types:
+            continue
 
-            if inst_name not in new_inputs:
-                continue
+        if inst_name not in new_inputs:
+            continue
 
-            # Get config info
-            n_channels = instrument.target_dim
-            if n_channels == 0:
-                continue
+        # Get config info
+        n_channels = instrument.target_dim
+        if n_channels == 0:
+            continue
 
-            # Get original INPUT .x
-            x_orig = batch[node_type_input].x
-            if x_orig is None or x_orig.numel() == 0:
-                continue
+        # Get original INPUT .x
+        x_orig = batch[node_type_input].x
+        if x_orig is None or x_orig.numel() == 0:
+            continue
 
-            # x_input layout: [7 geo/time | n_meta | n_channels obs | optional trailing]
-            n_meta = len(cfg.get('metadata', []))
-            bt_start = 7 + n_meta
+        # x_input layout: [7 geo/time | n_meta | n_channels obs | optional trailing]
+        n_meta = len(cfg.get('metadata', []))
+        bt_start = 7 + n_meta
 
-            # Get new channels (xa or xb)
-            new_channels = new_inputs[inst_name]
+        # Get new channels (xa or xb)
+        new_channels = new_inputs[inst_name]
 
-            if new_channels.shape[1] != n_channels:
-                raise ValueError(
-                    f"{inst_name}: new_channels has {new_channels.shape[1]} channels "
-                    f"but config specifies {n_channels} channels"
-                )
-
-            # Split: prefix (geo/time + inst-metadata) | channels | suffix (e.g. sat-id one-hot)
-            channels_base = x_orig[:, bt_start:bt_start + n_channels].detach()
-            prefix = x_orig[:, :bt_start].detach()
-            metadata_full = x_orig[:, bt_start + n_channels:].detach()
-
-            # Determine whether this is a partial (indexed) or full replacement
-            idx = None
-            if replace_indices is not None and inst_name in replace_indices:
-                idx = replace_indices[inst_name]
-                if idx is not None:
-                    idx = idx.to(x_orig.device).long()
-
-            if idx is None:
-                # Full replacement — row counts must match
-                if new_channels.shape[0] != channels_base.shape[0]:
-                    raise ValueError(
-                        f"{inst_name}: new_channels has {new_channels.shape[0]} obs "
-                        f"but batch has {channels_base.shape[0]} obs"
-                    )
-                full_channels = new_channels
-                n_replaced = full_channels.shape[0]
-            else:
-                # Partial (indexed) replacement via differentiable scatter.
-                # channels_full[idx] = new_channels via in-place copy would detach
-                # the grad path; scatter() is out-of-place and keeps the autograd
-                # graph:  loss -> batch.x -> full_channels -> new_channels.
-                if new_channels.shape[0] != idx.numel():
-                    raise ValueError(
-                        f"{inst_name}: new_channels has {new_channels.shape[0]} obs "
-                        f"but replace_indices has {idx.numel()} entries"
-                    )
-                idx_mat = idx.view(-1, 1).expand(-1, n_channels)  # [K, C]
-                full_channels = channels_base.scatter(0, idx_mat, new_channels)
-                n_replaced = idx.numel()
-
-            batch[node_type_input].x = torch.cat([prefix, full_channels, metadata_full], dim=1)
-            print(
-                f"[Replace Inputs] {inst_name}: replaced "
-                f"{('ALL' if idx is None else n_replaced)} rows; "
-                f"shape={batch[node_type_input].x.shape}"
+        if new_channels.shape[1] != n_channels:
+            raise ValueError(
+                f"{inst_name}: new_channels has {new_channels.shape[1]} channels "
+                f"but config specifies {n_channels} channels"
             )
+
+        # Split: prefix (geo/time + inst-metadata) | channels | suffix (e.g. sat-id one-hot)
+        channels_base = x_orig[:, bt_start:bt_start + n_channels].detach()
+        prefix = x_orig[:, :bt_start].detach()
+        metadata_full = x_orig[:, bt_start + n_channels:].detach()
+
+        # Determine whether this is a partial (indexed) or full replacement
+        idx = None
+        if replace_indices is not None and inst_name in replace_indices:
+            idx = replace_indices[inst_name]
+            if idx is not None:
+                idx = idx.to(x_orig.device).long()
+
+        if idx is None:
+            # Full replacement — row counts must match
+            if new_channels.shape[0] != channels_base.shape[0]:
+                raise ValueError(
+                    f"{inst_name}: new_channels has {new_channels.shape[0]} obs "
+                    f"but batch has {channels_base.shape[0]} obs"
+                )
+            full_channels = new_channels
+            n_replaced = full_channels.shape[0]
+        else:
+            # Partial (indexed) replacement via differentiable scatter.
+            # channels_full[idx] = new_channels via in-place copy would detach
+            # the grad path; scatter() is out-of-place and keeps the autograd
+            # graph:  loss -> batch.x -> full_channels -> new_channels.
+            if new_channels.shape[0] != idx.numel():
+                raise ValueError(
+                    f"{inst_name}: new_channels has {new_channels.shape[0]} obs "
+                    f"but replace_indices has {idx.numel()} entries"
+                )
+            idx_mat = idx.view(-1, 1).expand(-1, n_channels)  # [K, C]
+            full_channels = channels_base.scatter(0, idx_mat, new_channels)
+            n_replaced = idx.numel()
+
+        batch[node_type_input].x = torch.cat([prefix, full_channels, metadata_full], dim=1)
+        print(
+            f"[Replace Inputs] {inst_name}: replaced "
+            f"{('ALL' if idx is None else n_replaced)} rows; "
+            f"shape={batch[node_type_input].x.shape}"
+        )
 
 
 def compute_forecast_error(

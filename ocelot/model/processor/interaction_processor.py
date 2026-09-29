@@ -26,11 +26,10 @@ class InteractionProcessor(FlatProcessorBase):
     loop and residual connections.
     """
 
-    def __init__(self, 
-                 mesh: FixedMesh, 
-                 processor_config: ProcessorConfig, 
-                 graph_schema: GraphSchema,
-    ):
+    def __init__(self,
+                 mesh: FixedMesh,
+                 processor_config: ProcessorConfig,
+                 graph_schema: GraphSchema):
         super().__init__(mesh)
 
         if not isinstance(mesh, FixedMesh):
@@ -45,8 +44,8 @@ class InteractionProcessor(FlatProcessorBase):
             # This is now the simple, original InteractionNetwork call
             self.layers.append(
                 InteractionNetwork(
-                    processor_config.hidden_dim, 
-                    node_types, 
+                    processor_config.hidden_dim,
+                    node_types,
                     edge_types
                 )
             )
@@ -58,7 +57,6 @@ class InteractionProcessor(FlatProcessorBase):
                     {node_type: nn.LayerNorm(processor_config.hidden_dim) for node_type in node_types}
                 )
             )
-
 
     def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -76,6 +74,10 @@ class InteractionProcessor(FlatProcessorBase):
         """
         Processes the graph through multiple message-passing steps.
         """
+
+        processor_edges = {et: ei for et, ei in data.edge_index_dict.items()
+                    if "_target" not in et[2]}
+
         processed_x_dict = encoded_mesh_features
         for i in range(self.num_message_passing_steps):
             residual_x_dict = processed_x_dict

@@ -40,5 +40,3 @@ class FixedMesh(Mesh):
         m2m_graphs = [merged_mesh]  # Should be list of len 1
 
         return m2m_graphs
-
-

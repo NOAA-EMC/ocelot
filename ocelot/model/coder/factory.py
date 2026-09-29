@@ -7,9 +7,10 @@ coder_types = {
     "interaction": InteractionNet
 }
 
+
 def make(config: CoderConfig):
     if config.type not in coder_types:
         raise ValueError(f"Unknown coder type: {config.type}")
-        
-    print (f"Created {config.type}.")
+
+    print(f"Created {config.type}.")
     return coder_types[config.type](config)

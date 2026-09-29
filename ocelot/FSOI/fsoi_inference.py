@@ -1756,7 +1756,7 @@ def main():
         configure_observation_verification(fsoi_config['forecast'])
     observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = \
         load_weights_from_yaml(args.obs_config)
-    
+
     # ── Honor use_instrument_weights / use_channel_weights config flags ───────
     # These flags were defined in all YAML configs but were never read — weights
     # were always applied regardless.  This is now fixed.

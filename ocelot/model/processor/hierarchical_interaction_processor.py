@@ -131,13 +131,12 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
         log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         log.debug(f"[LATENT] Step mapping: {step_mapping}")
-        
+
         for step in range(num_latent_steps):
             self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
 
         return level_features
-    
-    
+
     def _do_forward_step(self, step: int, processed_levels: list) -> torch.Tensor:
         """
         Forward pass through hierarchical mesh levels.
@@ -154,7 +153,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         Returns:
             List of updated mesh features for each level
         """
-                
+
         mesh_data = self._prep_mesh_data(step, num_latent_steps, current_mesh_features)
 
         # Store features at each level
@@ -225,7 +224,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         down_edge_attr_list: List[torch.Tensor]
 
     def _prep_mesh_data(self, step: int, num_latent_steps: int, current_mesh_features: torch.Tensor) -> MeshData:
-            # Hierarchical processor with InteractionNet: process across multiple mesh levels
+        # Hierarchical processor with InteractionNet: process across multiple mesh levels
         # Prepare mesh features for all levels (replicate for batch)
         mesh_features_list = []
         mesh_edge_index_list = []
@@ -290,7 +289,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
             down_edge_index_list=down_edge_index_list,
             down_edge_attr_list=down_edge_attr_list,
         )
-    
+
     def _gather_node_features(self, step: int, processed_levels: list) -> torch.Tensor:
 
         current_mesh_features: torch.Tensor = None  # Will hold the final features for this step
@@ -340,4 +339,3 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
             current_mesh_features = processed_levels[0]
 
         return current_mesh_features
-

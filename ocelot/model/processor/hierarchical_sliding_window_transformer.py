@@ -181,15 +181,14 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
     def __init__(self,
                  mesh: HierarchicalMesh,
                  processor_config: HierarchicalSlidingWindowProcessorConfig,
-                 graph_schema: GraphSchema,
-    ):
+                 graph_schema: GraphSchema):
         """
         Args:
             mesh: HierarchicalMesh instance representing the mesh hierarchy
             processor_config: HierarchicalSlidingWindowProcessorConfig instance containing model hyperparameters
         """
         super().__init__(mesh)
-        
+
         self.hidden_dim = processor_config.hidden_dim
         self.num_levels = processor_config.num_levels
         self.window = processor_config.window
@@ -361,7 +360,6 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
 
         return fine_features
 
-
     def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
@@ -478,7 +476,6 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
 
         return self._gather_node_features(step, processed_list)
     
-
     @dataclass
     class MeshData:
         mesh_features_list: List[torch.Tensor]
@@ -486,7 +483,6 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
         down_edge_index_list: List[torch.Tensor]
         mesh_edge_index_list: List[torch.Tensor]
         mesh_edge_attr_list: List[torch.Tensor]
-    
 
     def _prep_mesh_data(self, step: int, num_latent_steps: int, current_mesh_features: torch.Tensor) -> MeshData:
         # Hierarchical transformer: process all mesh levels with cross-scale attention
@@ -518,7 +514,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
         down_edge_index_list = [None] * (self.num_mesh_levels - 1)
 
         for level in range(self.num_mesh_levels - 1):
-            up_edge_index_list[level] =  getattr(self.mesh, f"mesh_up_edge_index_{level}")
+            up_edge_index_list[level] = getattr(self.mesh, f"mesh_up_edge_index_{level}")
             down_edge_index_list[level] = getattr(self.mesh, f"mesh_down_edge_index_{level}")
 
         print(f"[FORWARD]   - Cross-scale connections: {len(up_edge_index_list)} up/down pairs")
@@ -540,8 +536,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
             mesh_edge_index_list=mesh_edge_index_list,
             mesh_edge_attr_list=mesh_edge_attr_list
         )
-    
-    
+
     def _gather_node_features(self, step: int, processed_levels: list) -> torch.Tensor:
         # COARSE→FINE CONDITIONING: Add hierarchical information flow
         # Gather coarse features (L1) to fine nodes (L0) for better multi-scale learning
@@ -593,7 +588,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
                 delta_norm = delta.norm(dim=-1).mean().item()
                 gate_mean = gate.mean().item()
                 print(f"[COARSE→FINE] L1({coarse_features.shape[0]})→L0({fine_features.shape[0]}) | "
-                        f"δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
+                      f"δ_norm={delta_norm:.4f}, gate_μ={gate_mean:.4f}")
         else:
             # Use the finest level output (level 0)
             current_mesh_features = processed_levels[0]

@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import time
+import yaml
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -13,16 +14,13 @@ sys.path.append(
     os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 )
 
-import yaml
-
-from ocelot.training import make_module
-from ocelot.configs.instrument_config import InstrumentCatalogConfig
-from ocelot.configs.model_config import ModelConfig
-from ocelot.configs.pipeline_config import PipelineConfig
-from ocelot.configs.training_config import TrainingConfig
-from ocelot.gnn_datamodule import GNNDataModule
-from ocelot.logger import LogLevel, log
-
+from ocelot.training import make_module  # noqa: E402
+from ocelot.configs.instrument_config import InstrumentCatalogConfig  # noqa: E402
+from ocelot.configs.model_config import ModelConfig  # noqa: E402
+from ocelot.configs.pipeline_config import PipelineConfig  # noqa: E402
+from ocelot.configs.training_config import TrainingConfig  # noqa: E402
+from ocelot.gnn_datamodule import GNNDataModule  # noqa: E402
+from ocelot.logger import LogLevel, log  # noqa: E402
 
 @dataclass(frozen=True)
 class WindowPlan:

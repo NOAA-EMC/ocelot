@@ -1,4 +1,5 @@
-import os, sys
+import os
+import sys
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
@@ -158,7 +159,6 @@ class OcelotInferenceModule(pl.LightningModule):
             if os.path.exists(mesh_dir):
                 mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
                 print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
-
 
     def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
         """

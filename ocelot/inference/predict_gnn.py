@@ -12,20 +12,20 @@ import pandas as pd
 import socket
 from datetime import timedelta
 
-sys.path.append(
-    os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-)
-
 import lightning.pytorch as pl
 import torch
 from lightning.pytorch.strategies import DDPStrategy
 
-import ocelot
-from ocelot.configs.inference_config import InferenceConfig
-from ocelot.configs.instrument_config import InstrumentCatalogConfig
-from ocelot.configs.model_config import ModelConfig
-from ocelot.configs.pipeline_config import PipelineConfig
-from ocelot.gnn_datamodule import GNNDataModule
+sys.path.append(
+    os.path.realpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+)
+
+import ocelot  # noqa: E402
+from ocelot.configs.inference_config import InferenceConfig  # noqa: E402
+from ocelot.configs.instrument_config import InstrumentCatalogConfig  # noqa: E402
+from ocelot.configs.model_config import ModelConfig  # noqa: E402
+from ocelot.configs.pipeline_config import PipelineConfig  # noqa: E402
+from ocelot.gnn_datamodule import GNNDataModule  # noqa: E402
 
 
 torch.set_float32_matmul_precision("medium")
