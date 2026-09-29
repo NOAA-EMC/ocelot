@@ -4,8 +4,7 @@
 #
 # Submit (from gnn_model/):
 #   mkdir -p logs && sbatch evaluation/revision/run_graphcastgfs_compare.sh
-#SBATCH -A gpu-emc-ai
-#SBATCH -p u1-service
+#SBATCH -A da-cpu
 #SBATCH -q batch
 #SBATCH -J ocelot_gcgfs
 #SBATCH --nodes=1
@@ -15,7 +14,7 @@
 #SBATCH --array=0-729%40
 #SBATCH --output=logs/ocelot_gcgfs_%A_%a.out
 #SBATCH --error=logs/ocelot_gcgfs_%A_%a.err
-# (Adjust -p/-q to your CPU partition.)
+# CPU-only: da-cpu account with the batch QOS on the default CPU partition.
 
 set -euo pipefail
 source "${SLURM_SUBMIT_DIR:-$PWD}/evaluation/revision/revision_env.sh"
