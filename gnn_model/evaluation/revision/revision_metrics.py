@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import sys
@@ -233,6 +234,26 @@ def summarize(stats: pd.DataFrame, n_boot: int, seed: int, min_acc_n: int) -> pd
     return pd.DataFrame(out)
 
 
+def _run_fingerprint(args) -> str:
+    """Identify the configuration a shard ran under, so a merge can refuse to mix two runs.
+
+    Concurrent runs writing the same out_dir overwrite each other's shard files one index at a
+    time, which silently produces a merged result built from two different configurations.
+    """
+    import hashlib
+    parts = [os.path.abspath(args.pred_dir), str(args.clim_dir), str(args.min_clim_count),
+             str(args.min_level_n), str(bool(args.recursive))]
+    for path in (args.verify_qc, args.flags_from_dir):
+        if path and os.path.exists(path) and os.path.isfile(path):
+            parts.append(open(path, "rb").read().decode("utf-8", "replace"))
+        else:
+            parts.append(str(path))
+    if args.clim_dir:
+        for f in sorted(glob.glob(os.path.join(args.clim_dir, "*"))):
+            parts.append(f"{os.path.basename(f)}:{os.path.getsize(f)}:{int(os.path.getmtime(f))}")
+    return hashlib.blake2b("|".join(parts).encode(), digest_size=8).hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pred_dir", required=True)
@@ -262,14 +283,20 @@ def main() -> int:
     stats_path = os.path.join(args.out_dir, "per_init_stats.csv")
     shard_dir = os.path.join(args.out_dir, "shards")
     if args.merge_shards:
-        import glob
         parts = sorted(glob.glob(os.path.join(shard_dir, "per_init_stats_*.csv")))
         done = sorted(glob.glob(os.path.join(shard_dir, "per_init_stats_*.done")))
         if not parts:
             raise SystemExit(f"No shard files under {shard_dir}")
-        n_expected = int(open(done[0]).read().split("/")[1]) if done else len(parts)
+        stamps = [open(f).read().strip().split() for f in done]
+        n_expected = int(stamps[0][0].split("/")[1]) if stamps else len(parts)
         if len(done) != n_expected:
             raise SystemExit(f"Only {len(done)} of {n_expected} shards finished; rerun the missing array tasks first.")
+        marks = {t[1] for t in stamps if len(t) > 1}
+        if len(marks) > 1:
+            raise SystemExit(
+                f"The shards in {shard_dir} come from {len(marks)} different configurations ({', '.join(sorted(marks))}). "
+                f"Two runs wrote the same out_dir, so the merge would mix them. Delete {shard_dir} and run once."
+            )
         stats = pd.concat([pd.read_csv(p, dtype={"init": str}) for p in parts], ignore_index=True)
         stats.to_csv(stats_path, index=False)
         qparts = sorted(glob.glob(os.path.join(shard_dir, "qc_counts_*.csv")))
@@ -297,7 +324,7 @@ def main() -> int:
             if not qc_counts.empty:
                 qc_counts.to_csv(os.path.join(shard_dir, f"qc_counts_{i:03d}.csv"), index=False)
             with open(os.path.join(shard_dir, f"per_init_stats_{i:03d}.done"), "w") as f:
-                f.write(f"{i}/{n}")
+                f.write(f"{i}/{n} {_run_fingerprint(args)}")
             print(f"Shard {i}/{n} done: {len(stats)} rows")
             return 0
         print(f"Computing per-init statistics for {len(files)} files ...")
