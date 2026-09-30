@@ -16,6 +16,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 import matplotlib
@@ -35,26 +36,50 @@ def _ord(inst):
     return ORDER.index(inst) if inst in ORDER else len(ORDER)
 
 
+def _chan_num(v):
+    """Trailing channel number, so bt_channel_2 sorts before bt_channel_10."""
+    m = re.search(r"(\d+)$", str(v))
+    return int(m.group(1)) if m else -1
+
+
 def scorecard(a):
     s = pd.read_csv(a.summary)
-    s = s[s["plev"] == "all"]
+    s = s[s["plev"] == "all"].copy()
     s["row"] = s["instrument"].map(lambda x: LABEL.get(x, x)) + " " + s["variable"].astype(str)
     s["o"] = s["instrument"].map(_ord)
-    piv = s.pivot_table(index=["o", "row"], columns="lead", values=a.metric).sort_index()
-    fig, ax = plt.subplots(figsize=(2.2 + 0.9 * piv.shape[1], 0.18 * len(piv) + 1.2))
-    vmax = 1.0
-    im = ax.imshow(piv.to_numpy(), aspect="auto", cmap="RdBu", vmin=-vmax if a.metric.startswith("msess") else 0, vmax=vmax)
-    ax.set_yticks(range(len(piv)), [r for _, r in piv.index], fontsize=6)
-    ax.set_xticks(range(piv.shape[1]), [f"+{int(c)} h" for c in piv.columns])
-    for i in range(piv.shape[0]):
-        for j in range(piv.shape[1]):
-            v = piv.iat[i, j]
-            if np.isfinite(v):
-                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=5)
-    fig.colorbar(im, ax=ax, label={"msess_clim": "MSESS vs climatology", "acc_centered_mean": "ACC",
-                                   "msess_pers": "MSESS vs persistence"}.get(a.metric, a.metric))
-    fig.tight_layout()
+    s["c"] = s["variable"].map(_chan_num)
+    piv = s.pivot_table(index=["o", "c", "row"], columns="lead", values=a.metric).sort_index()
+    label = {"msess_clim": "MSESS vs climatology", "acc_centered_mean": "ACC",
+             "msess_pers": "MSESS vs persistence"}.get(a.metric, a.metric)
+    diverging = a.metric.startswith("msess")
+
+    # With ~90 targets a single column of rows makes a figure too tall for a journal page, so the
+    # rows are dealt across `columns` panels that read top-to-bottom, left-to-right.
+    ncol = max(1, int(a.columns))
+    per = int(np.ceil(len(piv) / ncol))
+    fig, axes = plt.subplots(1, ncol, figsize=(ncol * (2.05 + 0.26 * piv.shape[1]) + 0.7, 0.155 * per + 0.9),
+                             squeeze=False, constrained_layout=True)
+    im = None
+    for k, ax in enumerate(axes[0]):
+        block = piv.iloc[k * per:(k + 1) * per]
+        if block.empty:
+            ax.axis("off")
+            continue
+        im = ax.imshow(block.to_numpy(), aspect="auto", cmap="RdBu",
+                       vmin=-1.0 if diverging else 0.0, vmax=1.0)
+        ax.set_yticks(range(len(block)), [r for *_, r in block.index], fontsize=5.5)
+        ax.set_xticks(range(block.shape[1]), [f"+{int(c)}" for c in block.columns], fontsize=7)
+        ax.tick_params(length=0)
+        for i in range(block.shape[0]):
+            for j in range(block.shape[1]):
+                v = block.iat[i, j]
+                if np.isfinite(v):
+                    ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=4.5)
+    fig.colorbar(im, ax=axes[0].tolist(), label=label, fraction=0.03, pad=0.01)
+    fig.suptitle(f"{label}   (lead time, hours)", fontsize=9)
     fig.savefig(a.out, dpi=300)
+    print(f"{a.out}: {len(piv)} targets x {piv.shape[1]} lead times in {ncol} column(s), "
+          f"{fig.get_size_inches()[0]:.1f} x {fig.get_size_inches()[1]:.1f} inches")
 
 
 def baselines(a):
@@ -129,6 +154,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("scorecard"); p.add_argument("--summary", required=True); p.add_argument("--metric", default="msess_clim"); p.add_argument("--out", required=True)
+    p.add_argument("--columns", type=int, default=2, help="deal the target rows across this many panels")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("denial"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("rollout"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
