@@ -94,9 +94,11 @@ def main() -> int:
           f"{len(inits)} in common")
 
     c, r = c[c["init"].isin(inits)], r[r["init"].isin(inits)]
-    g = (c.groupby(KEY)[["n", "sse"]].sum()
-          .join(r.groupby(KEY)[["n", "sse"]].sum(), lsuffix="_ctl", rsuffix="_ref", how="inner")
-          .reset_index())
+    agg = {"n": "sum", "sse": "sum", "init": "nunique"}
+    g = (c.groupby(KEY).agg(agg)
+          .join(r.groupby(KEY).agg(agg), lsuffix="_ctl", rsuffix="_ref", how="inner")
+          .reset_index()
+          .rename(columns={"init_ctl": "inits_ctl", "init_ref": "inits_ref"}))
     if g.empty:
         sys.exit("no targets in common between the two runs")
 
@@ -111,12 +113,27 @@ def main() -> int:
         print(f"\n{len(mismatched)} of {len(g)} targets have different sample sizes, so their errors "
               "are not comparable; they are excluded below.")
         m = mismatched.assign(gap=(mismatched["n_ctl"] - mismatched["n_ref"]).abs()).nlargest(8, "gap")
-        print(f"  {'instrument':>12s} {'variable':<32s} {'lead':>5s} {'n_control':>14s} "
-              f"{'n_reference':>14s} {'ratio':>7s}")
+        print(f"  {'instrument':>12s} {'variable':<30s} {'lead':>5s} {'n_control':>13s} "
+              f"{'n_reference':>13s} {'ratio':>6s} {'inits':>11s} {'obs per init':>19s}")
         for _, x in m.iterrows():
-            print(f"  {x['instrument']:>12s} {x['variable']:<32s} {str(x['lead']):>5s} "
-                  f"{int(x['n_ctl']):>14,} {int(x['n_ref']):>14,} "
-                  f"{x['n_ctl'] / max(x['n_ref'], 1):>7.3f}")
+            pi_c = x["n_ctl"] / max(x["inits_ctl"], 1)
+            pi_r = x["n_ref"] / max(x["inits_ref"], 1)
+            print(f"  {x['instrument']:>12s} {x['variable']:<30s} {str(x['lead']):>5s} "
+                  f"{int(x['n_ctl']):>13,} {int(x['n_ref']):>13,} "
+                  f"{x['n_ctl'] / max(x['n_ref'], 1):>6.3f} "
+                  f"{int(x['inits_ctl']):>5d}/{int(x['inits_ref']):<5d} "
+                  f"{pi_c:>9,.0f}/{pi_r:<9,.0f}")
+        per_init_same = (mismatched.assign(
+            a=mismatched["n_ctl"] / mismatched["inits_ctl"].clip(lower=1),
+            b=mismatched["n_ref"] / mismatched["inits_ref"].clip(lower=1))
+            .eval("abs(a - b) / b < 0.01").mean())
+        print("")
+        print(f"  For {100 * per_init_same:.0f}% of these targets the observations PER INITIALIZATION "
+              "agree to within 1%.")
+        print("  Where they agree, the two runs cover a different number of initializations for that")
+        print("  target (an incomplete merge, or a target absent from some inits), so the totals are")
+        print("  not comparable. Where they disagree, the two runs verified against different")
+        print("  observations within the same windows, which is a QC difference.")
         _explain_n(args)
 
     ok = g[g["n_match"]].copy()
