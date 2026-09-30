@@ -603,46 +603,6 @@ def extract_features(
             # --- Config & feature ordering ---
             qc_filters = obs_cfg.get("qc_filters") or obs_cfg.get("qc")
             feat_keys = obs_cfg["features"]
-
-            # --- resolve a valid range for every feature ---
-            # A value outside its physical range is not an observation, whatever
-            # sentinel the store happens to use. Declaring the range per observation
-            # type means a new instrument needs one line of config, rather than the
-            # code carrying a list of known fill values. Precedence: a per-variable
-            # "range" wins, otherwise the instrument's "feature_range" applies.
-            # A feature with neither is refused rather than left unguarded, which is
-            # how float32-max sentinels reached the encoder unnoticed.
-            feature_range = obs_cfg.get("feature_range")
-            if feature_range is not None:
-                qc_filters = {
-                    key: dict(value) if isinstance(value, dict) else value
-                    for key, value in (qc_filters or {}).items()
-                }
-                for _feat in feat_keys:
-                    _entry = qc_filters.get(_feat)
-                    if isinstance(_entry, dict):
-                        _entry.setdefault("range", list(feature_range))
-                    elif _entry is None:
-                        qc_filters[_feat] = {"range": list(feature_range)}
-            # Only features read straight from the store need a range. Derived
-            # features such as wind_u/wind_v are not columns; their validity comes
-            # from the source variables (windSpeed, windDirection), which carry their
-            # own ranges, so requiring one here would be satisfied by an entry that
-            # can never fire.
-            _unguarded = [
-                f for f in feat_keys
-                if f in z
-                and not (isinstance((qc_filters or {}).get(f), dict) and "range" in qc_filters[f])
-                and not isinstance((qc_filters or {}).get(f), (list, tuple))
-            ]
-            if _unguarded:
-                raise ValueError(
-                    f"{inst_name}: no valid range for {_unguarded}. Give the instrument a "
-                    f"feature_range: [lo, hi] in observation_config, or a per-variable "
-                    f"range under qc_filters. Without one, a fill value in that column is "
-                    f"indistinguishable from a measurement and corrupts the column statistics."
-                )
-
             meta_keys = obs_cfg.get("metadata") or []
             feat_pos = {k: i for i, k in enumerate(feat_keys)}
             n_ch = len(feat_keys)
@@ -719,55 +679,6 @@ def extract_features(
                                 if var == "windDirection":
                                     wd_ok_tg_list[step] = (tg_vals >= lo) & (tg_vals <= hi) if wd_ok_tg_list[step] is None else (
                                         wd_ok_tg_list[step] & ((tg_vals >= lo) & (tg_vals <= hi)))
-
-                    # --- pressure-ceiling QC ---
-                    # Flag-independent level limit: keep the variable only at or below
-                    # min_pressure_hpa (i.e. reject everything higher in the atmosphere).
-                    # A reject list cannot do this job, because the quality marker is
-                    # itself a fill value on a large share of rows, and a fill value
-                    # matches no entry in "reject". Missing or out-of-range pressure
-                    # cannot establish the level, so it must fail this check too.
-                    plim = cfg.get("min_pressure_hpa") if isinstance(cfg, dict) else None
-                    pcol = cfg.get("pressure_col", "airPressure") if isinstance(cfg, dict) else None
-                    if plim is not None:
-                        plim = float(plim)
-                        pressure_cfg = qc_filters.get(pcol, {})
-                        pressure_range = pressure_cfg.get("range") if isinstance(pressure_cfg, dict) else pressure_cfg
-
-                        def _at_or_below(idx):
-                            if pcol not in z:
-                                return np.zeros(len(idx), dtype=bool)
-                            p = np.asarray(z[pcol][idx], dtype="float64")
-                            valid = np.isfinite(p) & (p >= plim) & (p < 3.402823e38)
-                            if pressure_range is not None:
-                                lo_p, hi_p = pressure_range
-                                valid &= (p >= lo_p) & (p <= hi_p)
-                            return valid
-
-                        keep_in_p = _at_or_below(input_idx)
-                        if meta_j is not None:
-                            input_valid_meta[:, meta_j] &= keep_in_p
-                        elif pos is not None:
-                            input_valid_ch[:, pos] &= keep_in_p
-                        else:
-                            if var == "windSpeed":
-                                ws_ok_in = keep_in_p if ws_ok_in is None else (ws_ok_in & keep_in_p)
-                            if var == "windDirection":
-                                wd_ok_in = keep_in_p if wd_ok_in is None else (wd_ok_in & keep_in_p)
-
-                        for step, target_idx in enumerate(target_indices_list):
-                            if target_idx.size == 0:
-                                continue
-                            keep_tg_p = _at_or_below(target_idx)
-                            if meta_j is not None:
-                                target_valid_meta_list[step][:, meta_j] &= keep_tg_p
-                            elif pos is not None:
-                                target_valid_ch_list[step][:, pos] &= keep_tg_p
-                            else:
-                                if var == "windSpeed":
-                                    ws_ok_tg_list[step] = keep_tg_p if ws_ok_tg_list[step] is None else (ws_ok_tg_list[step] & keep_tg_p)
-                                if var == "windDirection":
-                                    wd_ok_tg_list[step] = keep_tg_p if wd_ok_tg_list[step] is None else (wd_ok_tg_list[step] & keep_tg_p)
 
                     # --- flag QC ---
                     if isinstance(cfg, dict) and flag_col and (("keep" in cfg) or ("reject" in cfg)) and (flag_col in z):
@@ -991,24 +902,29 @@ def extract_features(
                 return 6.112 * np.exp(x)
 
             def _apply_relational_qc():
-                # Input QC must also run during forecasts without observed targets.
-                batches = [(input_features_raw, input_metadata_raw, input_valid_ch)]
-                batches.extend(zip(target_features_raw_list, target_metadata_raw_list, target_valid_ch_list))
-                for arr, meta_arr, mask in batches:
-                    if arr.size == 0:
+                # Apply to input + ALL targets
+                for step in range(num_latent_steps):
+                    target_features_raw = target_features_raw_list[step]
+                    target_metadata_raw = target_metadata_raw_list[step]
+                    target_valid_ch = target_valid_ch_list[step]
+
+                    if target_features_raw.size == 0:
                         continue
 
                     # -- Td ≤ T (+0.5) and spread cap --
                     if rel.get("dewpoint_le_temp", False) and "airTemperature" in feat_pos and "dewPointTemperature" in feat_pos:
                         jT = feat_pos["airTemperature"]
                         jTd = feat_pos["dewPointTemperature"]
-                        T, Td = arr[:, jT], arr[:, jTd]
-                        m = np.isfinite(T) & np.isfinite(Td)
-                        bad_hi = m & (Td > T + 0.5)
-                        bad_spread = m & ((T - Td) > float(rel.get("max_temp_dewpoint_spread", 60.0)))
-                        bad = bad_hi | bad_spread
-                        if np.any(bad):
-                            mask[bad, jTd] = False
+                        for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
+                            if arr.shape[0] == 0:
+                                continue
+                            T, Td = arr[:, jT], arr[:, jTd]
+                            m = np.isfinite(T) & np.isfinite(Td)
+                            bad_hi = m & (Td > T + 0.5)
+                            bad_spread = m & ((T - Td) > float(rel.get("max_temp_dewpoint_spread", 60.0)))
+                            bad = bad_hi | bad_spread
+                            if np.any(bad):
+                                mask[bad, jTd] = False
 
                     # -- RH vs Td consistency --
                     if (
@@ -1018,9 +934,13 @@ def extract_features(
                         "dewPointTemperature" in feat_pos
                     ):
                         jRH, jT, jTd = feat_pos["relativeHumidity"], feat_pos["airTemperature"], feat_pos["dewPointTemperature"]
-                        RH, T, Td = arr[:, jRH], arr[:, jT], arr[:, jTd]
-                        m = np.isfinite(RH) & np.isfinite(T) & np.isfinite(Td)
-                        if m.any():
+                        for arr, mask in ((input_features_raw, input_valid_ch), (target_features_raw, target_valid_ch)):
+                            if arr.shape[0] == 0:
+                                continue
+                            RH, T, Td = arr[:, jRH], arr[:, jT], arr[:, jTd]
+                            m = np.isfinite(RH) & np.isfinite(T) & np.isfinite(Td)
+                            if not m.any():
+                                continue
                             RH_star = 100.0 * (_es_hpa(Td[m]) / _es_hpa(T[m]))
                             bad = np.zeros(RH.shape, dtype=bool)
                             bad[m] = np.abs(RH[m] - RH_star) > float(rel.get("rh_from_td_consistency_pct"))
@@ -1043,16 +963,22 @@ def extract_features(
                                 jH = j
                                 break
 
-                    if pvh.get("enable", False) and jP is not None and jH is not None and meta_arr.size:
+                    if pvh.get("enable", False) and jP is not None and jH is not None:
                         H, tol_hpa = float(pvh.get("scale_height_m", 8000.0)), float(pvh.get("tolerance_hpa", 100.0))
-                        z_h, p = meta_arr[:, jH], arr[:, jP]
-                        m = np.isfinite(p) & np.isfinite(z_h)
-                        if m.any():
-                            p_exp = 1013.25 * np.exp(-np.clip(z_h[m], -500.0, 9000.0) / H)
-                            bad = np.zeros_like(p, dtype=bool)
-                            bad[m] = np.abs(p[m] - p_exp) > tol_hpa
-                            if np.any(bad):
-                                mask[bad, jP] = False
+                        for feat_arr, meta_arr, vmask in (
+                            (input_features_raw, input_metadata_raw, input_valid_ch),
+                            (target_features_raw, target_metadata_raw, target_valid_ch)
+                        ):
+                            if feat_arr.shape[0] == 0 or meta_arr.size == 0:
+                                continue
+                            z_h, p = meta_arr[:, jH], feat_arr[:, jP]
+                            m = np.isfinite(p) & np.isfinite(z_h)
+                            if m.any():
+                                p_exp = 1013.25 * np.exp(-np.clip(z_h[m], -500.0, 9000.0) / H)
+                                bad = np.zeros_like(p, dtype=bool)
+                                bad[m] = np.abs(p[m] - p_exp) > tol_hpa
+                                if np.any(bad):
+                                    vmask[bad, jP] = False
 
             # Treat sentinel height (e.g. 9999 or int32 max) as missing for any height-like metadata key
             height_cols = [
@@ -1072,26 +998,8 @@ def extract_features(
             # -------------------- Continue with original processing pattern --------------------
             # The rest follows the original extract_features logic but handles multiple targets
 
-            # --- non-finite guard ---
-            # The valid ranges resolved above reject out-of-range sentinels whatever
-            # their magnitude; this covers NaN and +/-inf, which no range can express.
-            # Folding both into the channel validity is what matters: the values then
-            # become NaN, drop out of the column statistics, and are reported as
-            # missing by input_channel_mask. Without it a sentinel survived ~isnan and
-            # was not excluded by np.nanmean, so it destroyed the statistics - with
-            # AVHRR's 54% float32-max rows every genuine row normalised to the same
-            # constant and the channel carried no information at all.
-            def _observed(values):
-                return np.isfinite(values)
-
-            input_valid_ch &= _observed(input_features_raw)
-            for _step in range(num_latent_steps):
-                _tf = target_features_raw_list[_step]
-                if _tf.size:
-                    target_valid_ch_list[_step] &= _observed(_tf)
-
             # Row keeping for INPUTS (same as original)
-            observed_in = _observed(input_features_raw)
+            observed_in = ~np.isnan(input_features_raw)
             keep_inputs = (observed_in & input_valid_ch).any(axis=1)
 
             if not keep_inputs.any():

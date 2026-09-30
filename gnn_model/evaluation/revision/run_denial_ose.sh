@@ -34,6 +34,6 @@ IDX=${SLURM_ARRAY_TASK_ID:-0}
 (( IDX < ${#INITS[@]} )) || { echo "index ${IDX} out of range"; exit 0; }
 INIT="${INITS[$IDX]}"
 
-OUT_ROOT="${OUT_ROOT:-${DENIAL_ROOT:-predictions/denial_2025}/${DENY_GROUP}}"
+OUT_ROOT="${OUT_ROOT:-predictions/denial_2025/${DENY_GROUP}}"
 echo "Denial group=${DENY_GROUP} withheld=[${DENIED}] init=${INIT} -> ${OUT_ROOT}"
 run_one_init "${INIT}" "${OUT_ROOT}" 1 --deny_input_instruments "${DENIED}"

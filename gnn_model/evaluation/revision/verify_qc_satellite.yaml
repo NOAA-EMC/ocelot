@@ -1,0 +1,6 @@
+# Satellite-only verification QC (see verify_qc.yaml for the full rules and documentation).
+# Usable with prediction CSVs that do not yet carry qm_* flag columns.
+satellite:
+  value_range: [50, 400]          # K
+  range_exclude: [ascat]
+  outlier_k: 5
