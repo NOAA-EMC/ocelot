@@ -51,7 +51,7 @@ def _stat(d, ch):
 
 
 def by_year(args, stats) -> int:
-    """Per-year correlation and forecast spread, which dates a change in an observing system.
+    """Per-period correlation and forecast spread, which dates a change in an observing system.
 
     The model is identical across all of these years, so a correlation that drops in one year and
     stays low is a change in the observations rather than in the forecast.
@@ -65,9 +65,9 @@ def by_year(args, stats) -> int:
             continue
         by_y = {}
         for f in files:
-            m = re.search(r"_init_(\d{4})", os.path.basename(f))
+            m = re.search(r"_init_(\d{4,6})", os.path.basename(f))
             if m:
-                by_y.setdefault(m.group(1), []).append(f)
+                by_y.setdefault(m.group(1)[: 6 if args.period == "month" else 4], []).append(f)
         years = sorted(by_y)
         frames = {}
         for y in years:
@@ -77,9 +77,10 @@ def by_year(args, stats) -> int:
         chans = args.channels.split(",") if args.channels else [
             c[5:] for c in first.columns if c.startswith("true_") and f"pred_{c[5:]}" in first.columns]
         span = f"{min(len(v) for v in by_y.values())}-{max(len(v) for v in by_y.values())}"
-        print(f"\n### {inst}: correlation by year, forecast/observed spread in brackets "
-              f"({span} files sampled per year)")
+        print(f"\n### {inst}: correlation by {args.period}, forecast/observed spread in brackets "
+              f"({span} files sampled per {args.period})")
         print(f"{'channel':22s} " + " ".join(f"{y:>13s}" for y in years))
+        print(f"{'files':22s} " + " ".join(f"{len(by_y[y]):>13d}" for y in years))
         for ch in chans:
             cells = []
             for y in years:
@@ -89,8 +90,9 @@ def by_year(args, stats) -> int:
                 _, r, sr = _stat(frames[y], ch)
                 cells.append(f"{'n/a':>13s}" if not np.isfinite(r) else f"{r:7.2f} [{sr:4.2f}]")
             print(f"{ch:22s} " + " ".join(cells))
-    print("\nThe model is the same in every year shown, so a correlation that falls and stays low")
-    print("indicates a change in the observing system rather than in the forecast.")
+    print("\nThe model is the same in every period shown, so a correlation that falls and stays low")
+    print("indicates a change in the observing system rather than in the forecast. A fall in the")
+    print("file count as well as the correlation means observations were withdrawn, not degraded.")
     return 0
 
 
@@ -106,6 +108,8 @@ def main() -> int:
     ap.add_argument("--by_year", action="store_true",
                     help="report correlation and forecast spread per calendar year, to date when a channel changed")
     ap.add_argument("--channels", default=None, help="comma-separated subset of channels (by_year mode)")
+    ap.add_argument("--period", choices=["year", "month"], default="year",
+                    help="granularity of --by_year: calendar year, or month to date a change inside a year")
     args = ap.parse_args()
 
     stats = (yaml.safe_load(open(args.cfg_path, encoding="utf-8")) or {}).get("feature_stats", {})
