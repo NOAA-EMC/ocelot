@@ -65,7 +65,8 @@ def scorecard(a):
         if block.empty:
             ax.axis("off")
             continue
-        im = ax.imshow(block.to_numpy(), aspect="auto", cmap="RdBu",
+        im = ax.imshow(block.to_numpy(), aspect="auto",
+                       cmap="RdBu" if diverging else "YlGnBu",
                        vmin=-1.0 if diverging else 0.0, vmax=1.0)
         ax.set_yticks(range(len(block)), [r for *_, r in block.index], fontsize=5.5)
         ax.set_xticks(range(block.shape[1]), [f"+{int(c)}" for c in block.columns], fontsize=7)
@@ -82,23 +83,59 @@ def scorecard(a):
           f"{fig.get_size_inches()[0]:.1f} x {fig.get_size_inches()[1]:.1f} inches")
 
 
+COLORS = {"OCELOT": "#1f77b4", "GFS": "#d62728", "GraphCastGFS": "#9467bd",
+          "Climatology": "#2ca02c", "Persistence": "#ff7f0e"}
+
+
+def _methods(t):
+    return [c[5:] for c in t.columns if c.startswith("rmse_") and not c.endswith(("_lo", "_hi"))]
+
+
+def _series(ax, g, m):
+    lo, hi = g[f"rmse_{m}"] - g[f"rmse_{m}_lo"], g[f"rmse_{m}_hi"] - g[f"rmse_{m}"]
+    ax.errorbar(g["lead"], g[f"rmse_{m}"], yerr=[lo, hi], marker="o", ms=3.5, lw=1.4, capsize=2,
+                color=COLORS.get(m), label=m)
+
+
 def baselines(a):
     t = pd.read_csv(a.table)
-    methods = [c[5:] for c in t.columns if c.startswith("rmse_") and not c.endswith(("_lo", "_hi"))]
+    # A reference that is only available at some lead times (GraphCastGFS is 6-hourly) would
+    # otherwise force every method onto those leads, hiding the +3 h comparison entirely.
+    ov = pd.read_csv(a.overlay) if a.overlay else None
+    methods = _methods(t)
+    extra = [m for m in _methods(ov)] if ov is not None else []
+    extra = [m for m in extra if m not in methods]
+
     groups = list(t.groupby(["instrument", "variable"]))
-    fig, axes = plt.subplots(1, len(groups), figsize=(4 * len(groups), 3.4), squeeze=False)
-    for ax, ((inst, var), g) in zip(axes[0], groups):
+    # Four panels in a single row are too wide for a journal page, so wrap to two rows.
+    nrow = 1 if len(groups) <= 3 else 2
+    ncol = int(np.ceil(len(groups) / nrow))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.7 * ncol, 2.7 * nrow + 0.5), squeeze=False)
+    flat = axes.ravel()
+    for ax in flat[len(groups):]:
+        ax.axis("off")
+    for ax, ((inst, var), g) in zip(flat, groups):
         g = g.sort_values("lead")
         for m in methods:
-            ax.errorbar(g["lead"], g[f"rmse_{m}"], yerr=[g[f"rmse_{m}"] - g[f"rmse_{m}_lo"], g[f"rmse_{m}_hi"] - g[f"rmse_{m}"]],
-                        marker="o", ms=3, capsize=2, label=m)
-        ax.set_title(f"{LABEL.get(inst, inst)} {var}")
+            _series(ax, g, m)
+        if extra:
+            og = ov[(ov.instrument == inst) & (ov.variable == var)].sort_values("lead")
+            for m in extra:
+                if not og.empty:
+                    _series(ax, og, m)
+        ax.set_title(f"{LABEL.get(inst, inst)} {var}", fontsize=9)
         ax.set_xlabel("Lead time (h)")
-        ax.set_ylabel("RMSE")
         ax.set_xticks(sorted(g["lead"].unique()))
-    axes[0][0].legend(fontsize=7)
-    fig.tight_layout()
-    fig.savefig(a.out, dpi=300)
+        ax.grid(alpha=0.25, lw=0.5)
+    for r in range(nrow):
+        axes[r][0].set_ylabel("RMSE")
+    h, l = flat[0].get_legend_handles_labels()
+    fig.legend(h, l, loc="lower center", ncol=len(l), frameon=False, fontsize=8, bbox_to_anchor=(0.5, -0.02))
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
+    fig.savefig(a.out, dpi=300, bbox_inches="tight")
+    print(f"{a.out}: {len(groups)} panels in {nrow}x{ncol}, "
+          f"{fig.get_size_inches()[0]:.1f} x {fig.get_size_inches()[1]:.1f} inches, methods {methods}"
+          + (f" + {extra} on {sorted(ov.lead.unique())} h" if extra else ""))
 
 
 def denial(a):
@@ -156,6 +193,7 @@ def main() -> int:
     p = sub.add_parser("scorecard"); p.add_argument("--summary", required=True); p.add_argument("--metric", default="msess_clim"); p.add_argument("--out", required=True)
     p.add_argument("--columns", type=int, default=2, help="deal the target rows across this many panels")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
+    p.add_argument("--overlay", default=None, help="second table whose extra methods cover only some lead times")
     p = sub.add_parser("denial"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("rollout"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
     p.add_argument("--targets", default="surface_obs:airTemperature,surface_obs:wind_u,radiosonde:airTemperature,amsua:bt_channel_7,atms:bt_channel_7")
