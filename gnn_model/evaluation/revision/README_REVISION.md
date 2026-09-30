@@ -26,11 +26,15 @@ The Python analysis scripts in this directory were tested on synthetic CSVs in t
 | E3 | R2 (rollout > 4 steps) | Frozen v1 rolled to 48 h (16 steps) on 122 inits | 122 x 1-GPU tasks (<=3 h) | `run_extended_rollout.sh` |
 | E4 | R1 c5 (source ablation) | 9 observation-denial groups + matched control, 122 inits each | 1,220 x 1-GPU tasks (<=2 h) | `submit_denial_all.sh`, `summarize_denial.py` |
 | E5 | R1 c4, R2 (ML baseline) | NOAA GraphCastGFS verified at the same surface/radiosonde/aircraft obs as OCELOT, GFS, persistence, climatology | download + 730 CPU tasks | `stage_graphcastgfs.sh`, `run_graphcastgfs_compare.sh`, `baseline_table.py` |
-| E6 (optional) | R1 c4/c5 (design choices; training-time denial) | 5 retrainings at equal budget: v1, no spatial mixing, GraphCast-style interaction processor, satellite-denied, conventional-denied | 5 x (4 nodes x 8 H100) x budget | `run_train_ablation.sh` |
+| E6 (NOT RUN) | R1 c4/c5 (design choices; training-time denial) | 5 retrainings at equal budget: v1, no spatial mixing, GraphCast-style interaction processor, satellite-denied, conventional-denied | 5 x (4 nodes x 8 H100) x budget | `run_train_ablation.sh` |
 
-E0-E5 need no retraining and fit comfortably before the 28 Nov 2026 deadline. E6 is the only
-expensive item. Run it if the budget allows; otherwise the response already stands on E4.
-To size E6: `MAX_EPOCHS=1000` is ~1/3 of the v1 run. Estimate the wall time from the v1 logs.
+E0-E5 need no retraining and fit comfortably before the 28 Nov 2026 deadline. E6 was the only
+expensive item and was **not run** for this revision: the reviewers' ablation request (R1 c5) is
+answered by the E4 denial experiments, and the response states explicitly that they measure what the
+trained model relies on rather than what a model trained without a system could reach. All E6
+passages have been removed from the response and revision documents, and the preliminary processor
+comparison in Section 7 stands unchanged. `run_train_ablation.sh` is kept for v2.
+To size it later: `MAX_EPOCHS=1000` is ~1/3 of the v1 run; estimate wall time from the v1 logs.
 
 ## Commands
 
