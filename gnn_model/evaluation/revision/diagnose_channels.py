@@ -28,11 +28,70 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import sys
 
 import numpy as np
 import pandas as pd
 import yaml
+
+
+def _stat(d, ch):
+    """(n, correlation, forecast spread / observed spread) for one channel."""
+    m = d[f"mask_{ch}"]
+    m = m.astype(str).str.strip().str.lower().isin(["true", "1", "1.0"]) if m.dtype != bool else m
+    o, p = d[f"true_{ch}"].to_numpy(float), d[f"pred_{ch}"].to_numpy(float)
+    ok = m.to_numpy(bool) & np.isfinite(o) & np.isfinite(p)
+    if ok.sum() < 200:
+        return int(ok.sum()), np.nan, np.nan
+    oo, pp = o[ok], p[ok]
+    sd = oo.std()
+    corr = float(np.corrcoef(pp, oo)[0, 1]) if sd > 0 and pp.std() > 0 else np.nan
+    return int(ok.sum()), corr, (float(pp.std() / sd) if sd > 0 else np.nan)
+
+
+def by_year(args, stats) -> int:
+    """Per-year correlation and forecast spread, which dates a change in an observing system.
+
+    The model is identical across all of these years, so a correlation that drops in one year and
+    stays low is a change in the observations rather than in the forecast.
+    """
+    for inst in args.instruments.split(","):
+        pattern = (os.path.join(args.pred_dir, "**", f"pred_{inst}_target_init_*.csv") if args.recursive
+                   else os.path.join(args.pred_dir, f"pred_{inst}_target_init_*.csv"))
+        files = [f for f in sorted(glob.glob(pattern, recursive=args.recursive)) if "_vs_" not in f]
+        if not files:
+            print(f"\n### {inst}: no prediction files")
+            continue
+        by_y = {}
+        for f in files:
+            m = re.search(r"_init_(\d{4})", os.path.basename(f))
+            if m:
+                by_y.setdefault(m.group(1), []).append(f)
+        years = sorted(by_y)
+        frames = {}
+        for y in years:
+            sel = by_y[y][:: max(1, len(by_y[y]) // args.n_files)][: args.n_files]
+            frames[y] = pd.concat([pd.read_csv(f, low_memory=False) for f in sel], ignore_index=True)
+        first = frames[years[0]]
+        chans = args.channels.split(",") if args.channels else [
+            c[5:] for c in first.columns if c.startswith("true_") and f"pred_{c[5:]}" in first.columns]
+        span = f"{min(len(v) for v in by_y.values())}-{max(len(v) for v in by_y.values())}"
+        print(f"\n### {inst}: correlation by year, forecast/observed spread in brackets "
+              f"({span} files sampled per year)")
+        print(f"{'channel':22s} " + " ".join(f"{y:>13s}" for y in years))
+        for ch in chans:
+            cells = []
+            for y in years:
+                if f"true_{ch}" not in frames[y].columns:
+                    cells.append(f"{'-':>13s}")
+                    continue
+                _, r, sr = _stat(frames[y], ch)
+                cells.append(f"{'n/a':>13s}" if not np.isfinite(r) else f"{r:7.2f} [{sr:4.2f}]")
+            print(f"{ch:22s} " + " ".join(cells))
+    print("\nThe model is the same in every year shown, so a correlation that falls and stays low")
+    print("indicates a change in the observing system rather than in the forecast.")
+    return 0
 
 
 def main() -> int:
@@ -44,9 +103,15 @@ def main() -> int:
                     help="Search sub-directories too (the climatology dump stores one folder per date)")
     ap.add_argument("--cfg_path", default="configs/observation_config.yaml")
     ap.add_argument("--spike_pct", type=float, default=0.5, help="flag a repeated value above this share, in percent")
+    ap.add_argument("--by_year", action="store_true",
+                    help="report correlation and forecast spread per calendar year, to date when a channel changed")
+    ap.add_argument("--channels", default=None, help="comma-separated subset of channels (by_year mode)")
     args = ap.parse_args()
 
     stats = (yaml.safe_load(open(args.cfg_path, encoding="utf-8")) or {}).get("feature_stats", {})
+
+    if args.by_year:
+        return by_year(args, stats)
 
     for inst in args.instruments.split(","):
         pattern = (os.path.join(args.pred_dir, "**", f"pred_{inst}_target_init_*.csv") if args.recursive
