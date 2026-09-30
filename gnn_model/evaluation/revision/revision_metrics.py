@@ -65,8 +65,10 @@ class Climatology:
             else:
                 t = pd.read_csv(path)
                 t = t[t["count"] >= self.min_count]
+                # {level: {variable: table}} so each lookup merges against one variable's rows only.
                 self.cache[inst] = {
-                    lvl: t[t["level"] == lvl][["var"] + cols + ["mean"]].astype({c: "int64" for c in cols})
+                    lvl: {var: g[cols + ["mean"]].astype({c: "int64" for c in cols})
+                          for var, g in t[t["level"] == lvl].groupby("var")}
                     for lvl, cols in LEVELS.items()
                 }
         return self.cache[inst]
@@ -81,9 +83,8 @@ class Climatology:
             need = np.isnan(out)
             if not need.any():
                 break
-            t = tables[lvl]
-            t = t[t["var"] == var].drop(columns="var")
-            if t.empty:
+            t = tables[lvl].get(var)
+            if t is None or t.empty:
                 continue
             m = k.loc[need, cols].merge(t, on=cols, how="left")["mean"].to_numpy(float)
             out[need] = m
@@ -224,11 +225,29 @@ def main() -> int:
     ap.add_argument("--n_boot", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--reuse_stats", action="store_true", help="Reuse per_init_stats.csv if present")
+    ap.add_argument("--shard", default=None, metavar="I/N",
+                    help="Process only every N-th file starting at I (0-based) and write "
+                         "<out_dir>/shards/per_init_stats_III.csv; run as a Slurm array, then --merge_shards")
+    ap.add_argument("--merge_shards", action="store_true",
+                    help="Concatenate <out_dir>/shards/*.csv into per_init_stats.csv and write the summaries")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
     stats_path = os.path.join(args.out_dir, "per_init_stats.csv")
-    if args.reuse_stats and os.path.exists(stats_path):
+    shard_dir = os.path.join(args.out_dir, "shards")
+    if args.merge_shards:
+        import glob
+        parts = sorted(glob.glob(os.path.join(shard_dir, "per_init_stats_*.csv")))
+        done = sorted(glob.glob(os.path.join(shard_dir, "per_init_stats_*.done")))
+        if not parts:
+            raise SystemExit(f"No shard files under {shard_dir}")
+        n_expected = int(open(done[0]).read().split("/")[1]) if done else len(parts)
+        if len(done) != n_expected:
+            raise SystemExit(f"Only {len(done)} of {n_expected} shards finished; rerun the missing array tasks first.")
+        stats = pd.concat([pd.read_csv(p, dtype={"init": str}) for p in parts], ignore_index=True)
+        stats.to_csv(stats_path, index=False)
+        print(f"Merged {len(parts)} shards: {len(stats)} rows")
+    elif args.reuse_stats and os.path.exists(stats_path):
         stats = pd.read_csv(stats_path, dtype={"init": str})
     else:
         files = list_prediction_files(args.pred_dir, args.recursive)
@@ -238,6 +257,17 @@ def main() -> int:
             files = [f for f in files if f[2] <= args.init_end]
         if not files:
             raise SystemExit(f"No prediction CSVs found under {args.pred_dir}")
+        if args.shard:
+            i, n = (int(x) for x in args.shard.split("/"))
+            files = files[i::n]
+            os.makedirs(shard_dir, exist_ok=True)
+            print(f"Shard {i}/{n}: {len(files)} files", flush=True)
+            stats = per_init_stats(files, Climatology(args.clim_dir, args.min_clim_count), args.min_level_n)
+            stats.to_csv(os.path.join(shard_dir, f"per_init_stats_{i:03d}.csv"), index=False)
+            with open(os.path.join(shard_dir, f"per_init_stats_{i:03d}.done"), "w") as f:
+                f.write(f"{i}/{n}")
+            print(f"Shard {i}/{n} done: {len(stats)} rows")
+            return 0
         print(f"Computing per-init statistics for {len(files)} files ...")
         stats = per_init_stats(files, Climatology(args.clim_dir, args.min_clim_count), args.min_level_n)
         stats.to_csv(stats_path, index=False)
