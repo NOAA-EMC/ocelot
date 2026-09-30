@@ -275,9 +275,14 @@ def main() -> int:
     summary = summarize(stats, args.n_boot, args.seed, args.min_acc_n)
     summary.to_csv(os.path.join(args.out_dir, "metrics_summary.csv"), index=False)
     # Compact table (all-level rows only) for the manuscript/supplement.
-    cols = ["instrument", "variable", "lead", "n_obs", "bias", "rmse", "corr", "acc_centered_mean",
+    cols = ["instrument", "variable", "lead", "n_inits", "n_obs", "bias", "rmse", "corr", "acc_centered_mean",
             "rmse_clim", "msess_clim", "rmse_pers", "msess_pers", "error_coherence"]
-    compact = summary[summary["plev"] == "all"][[c for c in cols if c in summary.columns]]
+    compact = summary[summary["plev"] == "all"].copy()
+    # Same-location persistence is only meaningful where a prior observation at the same location
+    # usually exists (fixed networks). Blank it where < 20% of observations have a match (satellites).
+    sparse = compact["n_obs_pers"] < 0.2 * compact["n_obs"]
+    compact.loc[sparse, ["rmse_pers", "msess_pers"]] = np.nan
+    compact = compact[[c for c in cols if c in compact.columns]]
     compact.to_csv(os.path.join(args.out_dir, "metrics_compact_all_targets.csv"), index=False, float_format="%.4g")
     print(f"Wrote {len(summary)} rows to {args.out_dir}/metrics_summary.csv")
     return 0
