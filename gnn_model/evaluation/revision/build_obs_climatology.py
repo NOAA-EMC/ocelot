@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from revision_common import LEVELS, N_SCAN_BINS, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
+from revision_common import CONVENTIONAL, LEVELS, N_SCAN_BINS, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
 
 
 def _scan_edges(files_by_inst: dict[str, list[str]], max_files: int = 60) -> dict[str, list[float]]:
@@ -54,6 +54,10 @@ def main() -> int:
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--max_year", type=int, default=2023, help="Refuse files with init year > max_year (leakage guard)")
     ap.add_argument("--consolidate_every", type=int, default=40)
+    ap.add_argument("--sat_value_range", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="Only use satellite brightness temperatures within [LO, HI] K (e.g. 50 400); "
+                         "keep this consistent with verify_qc.yaml")
+    ap.add_argument("--range_exclude", default="ascat", help="Comma-separated satellite instruments exempt from the range")
     args = ap.parse_args()
 
     files = list_prediction_files(args.pred_dir, args.recursive)
@@ -88,6 +92,9 @@ def main() -> int:
             keys = strat_keys(df, inst, edges)
             for var in variables_in(df):
                 ok = valid_rows(df, var)
+                if args.sat_value_range and inst not in CONVENTIONAL and inst not in args.range_exclude.split(","):
+                    obs = df[f"true_{var}"].to_numpy(float)
+                    ok &= (obs >= args.sat_value_range[0]) & (obs <= args.sat_value_range[1])
                 if not ok.any():
                     continue
                 sub = keys[ok].copy()
