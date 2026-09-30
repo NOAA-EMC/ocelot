@@ -113,6 +113,25 @@ def main() -> int:
         print("   local hour :  " + "  ".join(f"{int(h):>5}" for h in b.index))
         print("   OCELOT bias:  " + "  ".join(f"{v:5.2f}" for v in b.r))
         print("   GFS bias   :  " + "  ".join(f"{v:5.2f}" for v in b.gr))
+    print()
+
+    print("6. ERROR AND BIAS AGAINST HOW ANOMALOUS THE OBSERVED PRESSURE IS   [tests amplitude damping]")
+    print("   A model that damps synoptic systems pulls its forecast toward the mean, so the bias should run")
+    print("   opposite to the anomaly and the error should grow with it. Bad reports are screened out here.")
+    a = o[keep] - np.median(o[keep])
+    dec = pd.qcut(a, 10, labels=False, duplicates="drop")
+    t = pd.DataFrame({"d": dec, "anom": a, "eo": p[keep] - o[keep], "eg": g[keep] - o[keep]}).groupby("d")
+    r = t.agg(anom=("anom", "mean"), n=("anom", "size"), bias_oc=("eo", "mean"), bias_gfs=("eg", "mean"),
+              rmse_oc=("eo", lambda x: float(np.sqrt((x ** 2).mean()))),
+              rmse_gfs=("eg", lambda x: float(np.sqrt((x ** 2).mean()))))
+    print("   anomaly (hPa):  " + "  ".join(f"{v:6.1f}" for v in r.anom))
+    print("   OCELOT bias  :  " + "  ".join(f"{v:6.2f}" for v in r.bias_oc))
+    print("   GFS bias     :  " + "  ".join(f"{v:6.2f}" for v in r.bias_gfs))
+    print("   OCELOT rmse  :  " + "  ".join(f"{v:6.2f}" for v in r.rmse_oc))
+    print("   GFS rmse     :  " + "  ".join(f"{v:6.2f}" for v in r.rmse_gfs))
+    slope = float(np.polyfit(r.anom, r.bias_oc, 1)[0])
+    print(f"   OCELOT bias-versus-anomaly slope: {slope:+.3f}"
+          f"  ({'damping: about ' + format(-100 * slope, '.0f') + '% of the anomaly is lost' if slope < -0.02 else 'no systematic damping'})")
     return 0
 
 
