@@ -53,6 +53,11 @@ fetch_subset() {  # $1=remote url  $2=local file
   mv "${tmp}" "${out}"
 }
 
+# Refuse to run twice: concurrent copies would write the same .part files and corrupt them.
+mkdir -p "${GC_ROOT}"
+exec 9>"${GC_ROOT}/.stage.lock"
+flock -n 9 || { echo "Another stage_graphcastgfs.sh is already running on ${GC_ROOT}; exiting."; exit 1; }
+
 n_ok=0; n_miss=0
 d="${START}"
 while [[ "${d}" -le "${END}" ]]; do
