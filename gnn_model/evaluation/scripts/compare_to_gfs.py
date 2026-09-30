@@ -398,7 +398,8 @@ def _compute_gfs_keys(
     bad = (df["_fhr"] < 0) | (~np.isfinite(df["_fhr"].astype(float)))
     if bad.any():
         print(f"[WARN] Dropping {int(bad.sum())} rows with invalid fhr")
-        df = df.loc[~bad].copy()
+        # Reset the index: the comparison functions index arrays by groupby row labels.
+        df = df.loc[~bad].copy().reset_index(drop=True)
 
     df["_init_dt"] = pd.to_datetime(df["_init_dt"], utc=True)
     return df
