@@ -7,9 +7,12 @@ filter (estimated from sampled blocks), the approximate number actually sampled 
 OCELOT pipeline (after the random subsampling stride), and optionally the archive size.
 It also prints the checkpoint epoch and trainable-parameter count.
 
-Split counts use binary search on the (sorted) Zarr time array, so the whole run takes
-minutes; unsorted arrays fall back to a chunked scan. Results are written after each
-instrument.
+Split counts use an exact chunked scan by default. The OCELOT v7 archives are stored in
+append order, NOT strictly sorted by time, so binary search gives wrong counts there even when a
+sampled monotonicity check passes; --assume_sorted enables it only for archives known to be
+sorted. A full scan of the largest archives (AVHRR: ~10^11 rows) takes many hours; for the
+manuscript's dataset-size statement use window_counts.py instead, which counts the observations
+the model actually sees after QC and subsampling. Results are written after each instrument.
 
 Usage (CPU, from gnn_model/):
     python evaluation/revision/data_inventory.py --data_path /scratch4/.../ocelot/data/v7 \
@@ -97,6 +100,9 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--du", action="store_true", help="Also report archive size with du (slow on large Zarr stores)")
     ap.add_argument("--chunk", type=int, default=20_000_000)
+    ap.add_argument("--assume_sorted", action="store_true",
+                    help="Use binary search for split counts (only valid if the time array is fully sorted)")
+    ap.add_argument("--instruments", default=None, help="Comma-separated subset of instruments to count")
     args = ap.parse_args()
 
     if args.ckpt:
@@ -118,14 +124,17 @@ def main() -> int:
     rng = np.random.default_rng(0)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     rows = []
+    only = set(args.instruments.split(",")) if args.instruments else None
     for obs_type, insts in cfg["observation_config"].items():
         for inst, icfg in insts.items():
+            if only is not None and inst not in only:
+                continue
             zpath, _ = _resolve_zarr_path(args.data_path, icfg.get("zarr_name", inst), "2015-01-01")
             z = zarr.open(zpath, mode="r")
             t = z["time"]
             sat_field = "satelliteId" if "satelliteId" in z else ("satelliteIdentifier" if "satelliteIdentifier" in z else None)
             sat_ids = np.asarray(icfg.get("sat_ids", [])) if obs_type == "satellite" and sat_field else None
-            rng_split = _split_bounds(t, bounds, args.chunk)
+            rng_split = _split_bounds(t, bounds, args.chunk) if args.assume_sorted else None
             if rng_split is not None:
                 counts = {k: hi - lo for k, (lo, hi) in rng_split.items()}
                 method = "bisect"
