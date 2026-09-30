@@ -1,41 +1,16 @@
-# Verification-time quality control for the AIES revision.
-# Applied ONLY to the verifying observations when scoring (revision_metrics.py, baseline_table.py).
-# The model inputs and forecasts are exactly those of OCELOT v1; nothing here changes the model.
+# Optional scoring-time checks for revision_metrics.py / baseline_table.py (--verify_qc).
 #
-# Flag values are read from the qm_<flag> columns of the prediction CSVs, which are written when
-# the instrument's `export_flag_cols` lists that flag column in configs/observation_config.yaml.
-
+# Observation QC itself lives in the data pipeline (configs/observation_config.yaml):
+# satellite value ranges, radiosonde quality marks and dew-point pressure cutoff, surface
+# quality marks, and cross-variable checks. Predictions made with that config already carry
+# the QC in their mask_* columns, so this file is normally NOT needed.
+#
+# It remains for an optional robust gross-error check on satellite observations:
+# reject an observation whose departure from the training-period climatology differs from the
+# median departure by more than outlier_k robust standard deviations (1.4826 x MAD), per channel
+# and initialization. 0 disables it. Note that for infrared window channels such a check can
+# also remove real extremes (e.g. cold deep-convective cloud tops).
 satellite:
-  # Brightness temperatures outside the physical range are rejected (ASCAT backscatter is in dB).
-  value_range: [50, 400]          # K
+  value_range: [50, 400]          # K (already enforced by the pipeline)
   range_exclude: [ascat]
-  # Robust gross-error check: reject an observation whose departure from the training-period
-  # climatology differs from the median departure by more than outlier_k robust standard
-  # deviations (1.4826 x MAD), per channel and initialization. Uses observations only.
-  outlier_k: 5
-
-conventional:
-  surface_obs:
-    # Keep only prepBUFR quality mark 2 ("good"); this rejects 9 (not checked) and all others.
-    airTemperature:
-      flag: airTemperatureQuality_event_1
-      keep: [2]
-    dewPointTemperature:
-      flag: dewPointTemperatureQuality_event_1
-      keep: [2]
-    # TODO(confirm column names in raw_surface_obs.zarr, then uncomment):
-    # pressureMeanSeaLevel_prepbufr:
-    #   flag: <MSLP quality column>
-    #   keep: [2]
-    # wind_u:
-    #   flag: <wind quality column>
-    #   keep: [2]
-    # wind_v:
-    #   flag: <wind quality column>
-    #   keep: [2]
-  radiosonde:
-    # Dew point: reject quality mark 9 and everything above 300 hPa (pressure < 300 hPa).
-    dewPointTemperature:
-      flag: dewPointTemperatureQuality
-      reject: [9]
-      min_pressure_hpa: 300
+  outlier_k: 0
