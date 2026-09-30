@@ -686,6 +686,12 @@ class GNNDataModule(pl.LightningDataModule):
                 pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
                 data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
 
+            # Raw QC flags for verification-time filtering (written to the prediction CSV as qm_* columns)
+            if "target_qc_flags_list" in inst_dict and step < len(inst_dict["target_qc_flags_list"]):
+                qc_flags = inst_dict["target_qc_flags_list"][step]
+                if qc_flags.ndim == 2 and qc_flags.shape[1] > 0:
+                    data[node_type_target].target_qc_flags = _t32(torch.tensor(qc_flags[keep_np], dtype=torch.float32))
+
             # Per-observation timestamps (unix seconds) for verifying within-window spread
             if "target_time_unix_list" in inst_dict and step < len(inst_dict["target_time_unix_list"]):
                 obs_unix = inst_dict["target_time_unix_list"][step]

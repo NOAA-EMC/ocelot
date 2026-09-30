@@ -198,6 +198,9 @@ observation_config:
     surface_obs:
       source: zarr
       zarr_name: raw_surface_obs
+      # Raw QC-flag columns written to the prediction CSVs (qm_*) for verification-time QC.
+      # Does not affect training, inputs, or forecasts.
+      export_flag_cols: [airTemperatureQuality_event_1, dewPointTemperatureQuality_event_1]
       # Surface obs use sea-level pressure.
       features: [pressureMeanSeaLevel_prepbufr, airTemperature, dewPointTemperature, wind_u, wind_v]
       metadata: [height_prepbufr_event_1]
@@ -237,6 +240,8 @@ observation_config:
     radiosonde:
       source: zarr
       zarr_name: raw_radiosonde
+      # Raw QC-flag columns written to the prediction CSVs (qm_*) for verification-time QC.
+      export_flag_cols: [airTemperatureQuality, dewPointTemperatureQuality, windQuality, airPressureQuality]
       # NOTE: airPressure removed from features - now used as vertical coordinate in metadata
       # Predicting: Temperature, Dewpoint, Wind components (4 variables)
       features: [airTemperature, dewPointTemperature, wind_u, wind_v]

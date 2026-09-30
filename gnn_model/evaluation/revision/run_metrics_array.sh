@@ -24,12 +24,16 @@ PRED_DIR=${PRED_DIR:-predictions/ocelot_v1_2025_gfs_eval/pred_csv/obs-space}
 OUT_DIR=${OUT_DIR:-evaluation/revision/results/v1_2025}
 CLIM_DIR=${CLIM_DIR-evaluation/revision/climatology}   # set CLIM_DIR= (empty) to skip climatology/ACC
 N_BOOT=${N_BOOT:-1000}
+VERIFY_QC=${VERIFY_QC-}                  # e.g. evaluation/revision/verify_qc.yaml
+FLAGS_FROM_DIR=${FLAGS_FROM_DIR-}        # borrow qm_* flags from another run's CSVs (same targets)
 CLIM_ARGS=()
 [[ -n "${CLIM_DIR}" ]] && CLIM_ARGS=(--clim_dir "${CLIM_DIR}")
+[[ -n "${VERIFY_QC}" ]] && CLIM_ARGS+=(--verify_qc "${VERIFY_QC}")
+[[ -n "${FLAGS_FROM_DIR}" ]] && CLIM_ARGS+=(--flags_from_dir "${FLAGS_FROM_DIR}")
 
 if [[ "${1:-}" == "submit" ]]; then
   mkdir -p logs
-  exp="ALL,N_SHARDS=${N_SHARDS},PRED_DIR=${PRED_DIR},OUT_DIR=${OUT_DIR},CLIM_DIR=${CLIM_DIR},N_BOOT=${N_BOOT}"
+  exp="ALL,N_SHARDS=${N_SHARDS},PRED_DIR=${PRED_DIR},OUT_DIR=${OUT_DIR},CLIM_DIR=${CLIM_DIR},N_BOOT=${N_BOOT},VERIFY_QC=${VERIFY_QC},FLAGS_FROM_DIR=${FLAGS_FROM_DIR}"
   jid=$(sbatch --parsable --array=0-$((N_SHARDS - 1)) --export="${exp}" "$0")
   mid=$(sbatch --parsable --dependency=afterok:"${jid}" --export="${exp},MERGE=1" -J e1_merge -t 01:00:00 \
         --output=logs/e1_merge_%j.out "$0")

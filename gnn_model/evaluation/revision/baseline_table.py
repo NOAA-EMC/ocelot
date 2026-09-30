@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from revision_common import list_prediction_files, strat_keys, valid_rows  # noqa: E402
+from revision_common import VerifyQC, list_prediction_files, strat_keys, valid_rows  # noqa: E402
 from revision_metrics import Climatology  # noqa: E402
 
 # OCELOT variable -> column written by compare_to_gfs.py, per instrument.
@@ -51,6 +51,7 @@ def main() -> int:
     ap.add_argument("--clim_dir", default=None)
     ap.add_argument("--instruments", default="surface_obs,radiosonde,aircraft")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--verify_qc", default=None, help="YAML of verification-time QC rules (verify_qc.yaml)")
     ap.add_argument("--n_boot", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=12345)
     args = ap.parse_args()
@@ -62,12 +63,15 @@ def main() -> int:
         refs.append((name, d, suffix))
     clim = Climatology(args.clim_dir, 10) if args.clim_dir else None
     insts = set(args.instruments.split(","))
+    qc = VerifyQC(args.verify_qc)
 
     recs = []  # one row per (init, inst, var, lead) with per-method SSE on the common subset
     for path, inst, init in list_prediction_files(args.pred_dir):
         if inst not in insts:
             continue
         df = pd.read_csv(path, low_memory=False)
+        if qc.active:
+            df = qc.attach_flags(df, path, inst)
         varmap = {v: c for v, c in REF_COLS[inst].items() if f"pred_{v}" in df.columns}
         true_cols = [f"true_{v}" for v in varmap]
         df["_key"] = _row_key(df, true_cols)
@@ -98,6 +102,8 @@ def main() -> int:
                 col = f"{name}::{rcol}"
                 meth[name] = df[col].to_numpy(float) if col in df.columns else np.full(len(df), np.nan)
             common = valid_rows(df, var)
+            if qc.active:
+                common, _ = qc.apply(df, inst, var, common, meth.get("Climatology"))
             for f in meth.values():
                 common &= np.isfinite(f)
             for ld in np.unique(lead[common]):

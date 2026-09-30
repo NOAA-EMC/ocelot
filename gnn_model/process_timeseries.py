@@ -1041,6 +1041,10 @@ def extract_features(
             # Filter ALL targets based on metadata validity
             target_data_cleaned = []
             target_pressure_hpa_list = []
+            # Optional: raw QC-flag columns exported alongside targets so verification can apply
+            # stricter QC after the fact (config key `export_flag_cols`; inputs are unaffected).
+            flag_cols = list(obs_cfg.get("export_flag_cols") or [])
+            target_qc_flags_list = []
 
             for step in range(num_latent_steps):
                 target_idx = target_indices_list[step]
@@ -1062,6 +1066,7 @@ def extract_features(
                         "valid_ch": np.empty((0, n_ch), dtype=bool),
                     })
                     target_pressure_hpa_list.append(np.array([], dtype=np.float32))
+                    target_qc_flags_list.append(np.empty((0, len(flag_cols)), dtype=np.float32))
                     continue
 
                 # IMPORTANT: valid_target_meta should be computed AFTER fill-values->NaN has happened.
@@ -1079,6 +1084,20 @@ def extract_features(
                     p_kept = np.full(np.count_nonzero(valid_target_meta), np.nan, dtype=np.float32)
 
                 target_pressure_hpa_list.append(p_kept)
+
+                # QC flags aligned to kept rows (NaN where the archive has no such column)
+                if flag_cols:
+                    fl = np.stack(
+                        [
+                            np.asarray(z[c][target_idx], dtype=np.float32) if c in z
+                            else np.full(target_idx.size, np.nan, dtype=np.float32)
+                            for c in flag_cols
+                        ],
+                        axis=1,
+                    )
+                    target_qc_flags_list.append(fl[valid_target_meta])
+                else:
+                    target_qc_flags_list.append(np.empty((np.count_nonzero(valid_target_meta), 0), dtype=np.float32))
 
                 target_data_cleaned.append({
                     "indices": target_idx[valid_target_meta],
@@ -1377,7 +1396,8 @@ def extract_features(
                 "target_lat_deg_list": target_lat_deg_list,
                 "target_lon_deg_list": target_lon_deg_list,
                 "target_time_unix_list": target_time_unix_list,
-                "target_pressure_hpa_list": target_pressure_hpa_list
+                "target_pressure_hpa_list": target_pressure_hpa_list,
+                "target_qc_flags_list": target_qc_flags_list,
             })
 
             # Add pressure level lists if we have them

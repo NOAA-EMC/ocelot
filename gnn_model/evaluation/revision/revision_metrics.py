@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from revision_common import LEVELS, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
+from revision_common import LEVELS, VerifyQC, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
 
 LS_BOX_DEG = 5.0
 STAT_COLS = [
@@ -105,12 +105,16 @@ def _ls_sse(err: np.ndarray, lat: np.ndarray, lon: np.ndarray) -> tuple[float, f
     return s_ls, min(s0, float((err * err).sum()))
 
 
-def per_init_stats(files, clim: Climatology, min_level_n: int) -> pd.DataFrame:
-    rows = []
+def per_init_stats(files, clim: Climatology, min_level_n: int, qc: VerifyQC | None = None):
+    """Return (per-init sufficient statistics, per-init QC removal counts)."""
+    qc = qc or VerifyQC(None)
+    rows, qc_rows = [], []
     for i, (path, inst, init) in enumerate(files):
         df = pd.read_csv(path, low_memory=False)
         if df.empty or "lead_hours_nominal" not in df.columns:
             continue
+        if qc.active:
+            df = qc.attach_flags(df, path, inst)
         keys = strat_keys(df, inst, clim.edges.get(inst))
         lead = pd.to_numeric(df["lead_hours_nominal"], errors="coerce").to_numpy(float)
         plev_lab = df["pressure_level_label"].astype(str).to_numpy() if "pressure_level_label" in df.columns else None
@@ -123,6 +127,12 @@ def per_init_stats(files, clim: Climatology, min_level_n: int) -> pd.DataFrame:
             f_all = df[f"pred_{var}"].to_numpy(float)
             o_all = df[f"true_{var}"].to_numpy(float)
             c_all = clim.lookup(inst, var, keys)
+            if qc.active:
+                n_before = int(ok.sum())
+                ok, removed = qc.apply(df, inst, var, ok, c_all)
+                qc_rows.append(dict(instrument=inst, variable=var, init=init, n_before=n_before, **removed))
+                if not ok.any():
+                    continue
             p_all = pd.to_numeric(df[f"persist_{var}"], errors="coerce").to_numpy(float) if f"persist_{var}" in df else np.full(len(df), np.nan)
             groups = [("all", np.ones(len(df), bool))]
             if plev_lab is not None:
@@ -149,7 +159,18 @@ def per_init_stats(files, clim: Climatology, min_level_n: int) -> pd.DataFrame:
                     rows.append(r)
         if (i + 1) % 100 == 0:
             print(f"  {i + 1}/{len(files)} files", flush=True)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), pd.DataFrame(qc_rows)
+
+
+def write_qc_summary(qc_counts: pd.DataFrame, out_dir: str) -> None:
+    """Fraction of verifying observations removed by each verification-QC rule, per target."""
+    if qc_counts is None or qc_counts.empty:
+        return
+    g = qc_counts.groupby(["instrument", "variable"])[["n_before", "range", "flag", "pressure", "outlier"]].sum()
+    for c in ("range", "flag", "pressure", "outlier"):
+        g[f"pct_{c}"] = 100.0 * g[c] / g["n_before"]
+    g["pct_removed_total"] = g[["pct_range", "pct_flag", "pct_pressure", "pct_outlier"]].sum(axis=1)
+    g.to_csv(os.path.join(out_dir, "qc_removal_summary.csv"), float_format="%.4g")
 
 
 def _acc_per_init(g: pd.DataFrame, centered: bool, min_n: int) -> np.ndarray:
@@ -230,6 +251,10 @@ def main() -> int:
                          "<out_dir>/shards/per_init_stats_III.csv; run as a Slurm array, then --merge_shards")
     ap.add_argument("--merge_shards", action="store_true",
                     help="Concatenate <out_dir>/shards/*.csv into per_init_stats.csv and write the summaries")
+    ap.add_argument("--verify_qc", default=None,
+                    help="YAML of verification-time QC rules applied to the verifying observations (verify_qc.yaml)")
+    ap.add_argument("--flags_from_dir", default=None,
+                    help="Directory of same-named prediction CSVs to borrow qm_* flag columns from (by row position)")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -246,6 +271,9 @@ def main() -> int:
             raise SystemExit(f"Only {len(done)} of {n_expected} shards finished; rerun the missing array tasks first.")
         stats = pd.concat([pd.read_csv(p, dtype={"init": str}) for p in parts], ignore_index=True)
         stats.to_csv(stats_path, index=False)
+        qparts = sorted(glob.glob(os.path.join(shard_dir, "qc_counts_*.csv")))
+        if qparts:
+            write_qc_summary(pd.concat([pd.read_csv(p, dtype={"init": str}) for p in qparts], ignore_index=True), args.out_dir)
         print(f"Merged {len(parts)} shards: {len(stats)} rows")
     elif args.reuse_stats and os.path.exists(stats_path):
         stats = pd.read_csv(stats_path, dtype={"init": str})
@@ -262,15 +290,20 @@ def main() -> int:
             files = files[i::n]
             os.makedirs(shard_dir, exist_ok=True)
             print(f"Shard {i}/{n}: {len(files)} files", flush=True)
-            stats = per_init_stats(files, Climatology(args.clim_dir, args.min_clim_count), args.min_level_n)
+            qc = VerifyQC(args.verify_qc, args.flags_from_dir)
+            stats, qc_counts = per_init_stats(files, Climatology(args.clim_dir, args.min_clim_count), args.min_level_n, qc)
             stats.to_csv(os.path.join(shard_dir, f"per_init_stats_{i:03d}.csv"), index=False)
+            if not qc_counts.empty:
+                qc_counts.to_csv(os.path.join(shard_dir, f"qc_counts_{i:03d}.csv"), index=False)
             with open(os.path.join(shard_dir, f"per_init_stats_{i:03d}.done"), "w") as f:
                 f.write(f"{i}/{n}")
             print(f"Shard {i}/{n} done: {len(stats)} rows")
             return 0
         print(f"Computing per-init statistics for {len(files)} files ...")
-        stats = per_init_stats(files, Climatology(args.clim_dir, args.min_clim_count), args.min_level_n)
+        qc = VerifyQC(args.verify_qc, args.flags_from_dir)
+        stats, qc_counts = per_init_stats(files, Climatology(args.clim_dir, args.min_clim_count), args.min_level_n, qc)
         stats.to_csv(stats_path, index=False)
+        write_qc_summary(qc_counts, args.out_dir)
 
     summary = summarize(stats, args.n_boot, args.seed, args.min_acc_n)
     summary.to_csv(os.path.join(args.out_dir, "metrics_summary.csv"), index=False)

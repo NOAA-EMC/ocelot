@@ -105,3 +105,107 @@ LEVELS = {
     "L2": ["cell", "month", "plev", "sab"],
     "L3": ["band", "month", "plev", "sab"],
 }
+
+
+# --------------------------------------------------------------------------------------
+# Verification-time quality control
+# --------------------------------------------------------------------------------------
+class VerifyQC:
+    """Extra QC applied to the VERIFYING observations only (model inputs and forecasts are untouched).
+
+    Rules come from a YAML file (see verify_qc.yaml):
+      satellite: {value_range: [lo, hi], range_exclude: [inst, ...], outlier_k: k}
+      conventional: {<inst>: {<variable>: {flag: <zarr flag column>, keep: [...] | reject: [...],
+                                           min_pressure_hpa: p}}}
+    Flag columns are read from the prediction CSV as ``qm_<flag column>`` (written when the
+    instrument's ``export_flag_cols`` is set in the observation config). A rule whose flag column is
+    missing raises, so a filter can never be skipped silently.
+    """
+
+    def __init__(self, path: str | None, flags_from_dir: str | None = None):
+        self.rules = {}
+        self.flags_from_dir = flags_from_dir
+        if path:
+            import yaml
+            with open(path) as f:
+                self.rules = yaml.safe_load(f) or {}
+        self.sat = self.rules.get("satellite") or {}
+        self.conv = self.rules.get("conventional") or {}
+
+    @property
+    def active(self) -> bool:
+        return bool(self.rules)
+
+    def needed_flag_cols(self, inst: str) -> list[str]:
+        return sorted({f"qm_{r['flag']}" for r in (self.conv.get(inst) or {}).values() if r.get("flag")})
+
+    def attach_flags(self, df: pd.DataFrame, path: str, inst: str) -> pd.DataFrame:
+        """Ensure the qm_* columns a rule needs are present; optionally take them, by row position,
+        from the same-named file in ``flags_from_dir`` (identical targets, e.g. a denial run)."""
+        need = [c for c in self.needed_flag_cols(inst) if c not in df.columns]
+        if not need:
+            return df
+        if not self.flags_from_dir:
+            raise SystemExit(
+                f"{os.path.basename(path)} lacks {need}. Re-run the predictions with `export_flag_cols` set for "
+                f"'{inst}' in the observation config, or pass --flags_from_dir pointing at such a run."
+            )
+        src = os.path.join(self.flags_from_dir, os.path.basename(path))
+        if not os.path.exists(src):
+            raise SystemExit(f"No flag source for {os.path.basename(path)} in {self.flags_from_dir}")
+        ref = pd.read_csv(src, usecols=["lat", "lon"] + need)
+        if len(ref) != len(df) or not np.allclose(ref["lat"].to_numpy(float), df["lat"].to_numpy(float), atol=1e-4,
+                                                  equal_nan=True):
+            raise SystemExit(f"Rows of {src} do not line up with {path}; cannot borrow QC flags.")
+        for c in need:
+            df[c] = ref[c].to_numpy()
+        return df
+
+    def apply(self, df: pd.DataFrame, inst: str, var: str, ok: np.ndarray, clim: np.ndarray | None = None):
+        """Return (ok_after_qc, n_removed_by_rule_dict)."""
+        removed = {"range": 0, "flag": 0, "pressure": 0, "outlier": 0}
+        if not self.active:
+            return ok, removed
+        ok = ok.copy()
+        obs = df[f"true_{var}"].to_numpy(float)
+        if inst not in CONVENTIONAL:
+            rng = self.sat.get("value_range")
+            if rng and inst not in set(self.sat.get("range_exclude") or []):
+                bad = ok & ~((obs >= float(rng[0])) & (obs <= float(rng[1])))
+                removed["range"] = int(bad.sum())
+                ok &= ~bad
+            k = self.sat.get("outlier_k")
+            if k and ok.sum() > 50:
+                # Robust gross-error check on the observation's departure from climatology
+                # (or from the sample median when no climatology is available). Uses observations only.
+                dep = obs - clim if clim is not None and np.isfinite(clim[ok]).mean() > 0.5 else obs.copy()
+                use = ok & np.isfinite(dep)
+                med = np.median(dep[use])
+                sig = 1.4826 * np.median(np.abs(dep[use] - med))
+                if sig > 0:
+                    bad = use & (np.abs(dep - med) > float(k) * sig)
+                    removed["outlier"] = int(bad.sum())
+                    ok &= ~bad
+        else:
+            rule = (self.conv.get(inst) or {}).get(var)
+            if rule:
+                if rule.get("flag"):
+                    flag = pd.to_numeric(df[f"qm_{rule['flag']}"], errors="coerce").to_numpy(float)
+                    if ok.any() and not np.isfinite(flag[ok]).any():
+                        raise SystemExit(
+                            f"QC flag column '{rule['flag']}' is empty for {inst}/{var}: check that this column "
+                            f"exists in the archive and is listed in export_flag_cols."
+                        )
+                    if "keep" in rule:
+                        good = np.isin(flag, [float(v) for v in rule["keep"]])
+                    else:
+                        good = ~np.isin(flag, [float(v) for v in rule.get("reject", [])])
+                    bad = ok & ~good
+                    removed["flag"] = int(bad.sum())
+                    ok &= ~bad
+                if rule.get("min_pressure_hpa") is not None:
+                    p = pd.to_numeric(df["pressure_hPa"], errors="coerce").to_numpy(float)
+                    bad = ok & ~(p >= float(rule["min_pressure_hpa"]))
+                    removed["pressure"] = int(bad.sum())
+                    ok &= ~bad
+        return ok, removed

@@ -2166,6 +2166,13 @@ class GNNLightning(pl.LightningModule):
         all_pressure_level = []  # Pressure level index (0-15) for stratified analysis
         all_persist = []
 
+        # Optional raw QC flags (config key `export_flag_cols`), written as qm_<column> so that
+        # verification can apply stricter QC than the training-time filters.
+        _inst_name = node_type.replace("_target", "")
+        _obs_type = "satellite" if _inst_name in self.observation_config.get("satellite", {}) else "conventional"
+        flag_names = list(self.observation_config.get(_obs_type, {}).get(_inst_name, {}).get("export_flag_cols") or [])
+        all_qc_flags = []
+
         # Persist scan-angle conditioning inputs for satellite-style targets.
         # For these node types, batch[step_node_type].x stores scan angle(s).
         scan_angle_expected_dim = 0
@@ -2342,6 +2349,17 @@ class GNNLightning(pl.LightningModule):
             all_pressure.extend(pressure_hpa)
             all_pressure_level.extend(pressure_level_idx)
 
+            if flag_names:
+                _n_rows = int(y_pred_unnorm.shape[0])
+                _fl = None
+                if node_type in step_mapping and step in step_mapping[node_type]:
+                    _store = batch[step_mapping[node_type][step]]
+                    if hasattr(_store, 'target_qc_flags'):
+                        _fl = _store.target_qc_flags.detach().cpu().numpy()
+                if _fl is None or _fl.shape != (_n_rows, len(flag_names)):
+                    _fl = np.full((_n_rows, len(flag_names)), np.nan)
+                all_qc_flags.append(_fl)
+
             persist = np.full(
                 y_true_unnorm.detach().cpu().numpy().shape,
                 np.nan,
@@ -2502,6 +2520,12 @@ class GNNLightning(pl.LightningModule):
             valid_levels = all_pressure_level_arr[all_pressure_level_arr >= 0]
             if len(valid_levels) > 0:
                 print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
+
+        if flag_names and all_qc_flags:
+            _q = np.vstack(all_qc_flags)
+            if _q.shape[0] == len(df):
+                for _j, _name in enumerate(flag_names):
+                    df[f"qm_{_name}"] = _q[:, _j]
 
         # Optional subsampling to bound I/O and file size (validation diagnostics)
         if mode != 'predict' and self.val_csv_max_rows is not None and len(df) > self.val_csv_max_rows:
