@@ -56,6 +56,15 @@ python evaluation/revision/revision_metrics.py --pred_dir predictions/rollout_48
 
 # E4  (prints the scoring commands when it submits)
 bash evaluation/revision/submit_denial_all.sh
+# Score each finished group as a CPU array, with the same verification QC as the manuscript run
+# so that the control stays comparable to results/v1_2025. Groups are independent; submit as
+# many as are finished.
+for g in control mw_sounders mw_imager ir_imagers scatterometer aircraft radiosonde surface all_satellite all_conventional; do
+  PRED_DIR=predictions/denial_2025/$g/pred_csv/obs-space   OUT_DIR=evaluation/revision/results/denial/$g   CLIM_DIR= N_BOOT=0 N_SHARDS=8 VERIFY_QC=evaluation/revision/verify_qc.yaml     bash evaluation/revision/run_metrics_array.sh submit
+done
+python evaluation/revision/check_denial_control.py   --control evaluation/revision/results/denial/control --reference evaluation/revision/results/v1_2025
+python evaluation/revision/summarize_denial.py   --control evaluation/revision/results/denial/control   $(for g in mw_sounders mw_imager ir_imagers scatterometer aircraft radiosonde surface all_satellite all_conventional; do
+      echo --exp $g=evaluation/revision/results/denial/$g; done)   --out evaluation/revision/results/denial/denial_summary.csv
 
 # E5
 bash evaluation/revision/stage_graphcastgfs.sh                 # on a node with internet
@@ -76,7 +85,11 @@ for v in v1_budget no_spatial_mix interaction deny_satellite deny_conventional; 
 1. **E1 sanity:** surface T2m and 10-m wind RMSE from `metrics_summary.csv` must reproduce Fig. 6
    (3.23 -> 3.64 K) when restricted to the persistence-valid rows (`rmse_model_on_pers`).
 2. **E4 control:** `denial_2025/control` must match the manuscript predictions for the same inits
-   (tiny FP16 differences only). If it doesn't, stop and check CKPT/config.
+   (tiny FP16 differences only). If it doesn't, stop and check CKPT/config. Run
+   `check_denial_control.py --control results/denial/control --reference results/v1_2025`: it
+   compares RMSE per target on the shared initializations, warns if the two runs were scored with
+   different `--verify_qc` (the sample sizes then differ and the comparison means nothing), and
+   exits non-zero if any target moves by more than 0.5%.
 3. **E5 GFS coverage:** `_vs_gfs.csv` files exist for surface_obs for all 730 inits. Radiosonde/aircraft
    GFS files exist only if they were built; build them with `INSTRUMENT=radiosonde|aircraft
    RUN_PREDICTION=0 CSV_ONLY=1` in `run_pred_eval_gfs_2025.sh` (CPU).
