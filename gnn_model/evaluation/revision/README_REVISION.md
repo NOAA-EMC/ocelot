@@ -91,9 +91,13 @@ for v in v1_budget no_spatial_mix interaction deny_satellite deny_conventional; 
 2. **E4 control:** `denial_2025/control` must match the manuscript predictions for the same inits
    (tiny FP16 differences only). If it doesn't, stop and check CKPT/config. Run
    `check_denial_control.py --control results/denial/control --reference results/v1_2025`: it
-   compares RMSE per target on the shared initializations, warns if the two runs were scored with
-   different `--verify_qc` (the sample sizes then differ and the comparison means nothing), and
-   exits non-zero if any target moves by more than 0.5%.
+   compares RMSE per target on the shared initializations. Targets whose sample sizes differ were
+   scored under different `--verify_qc` and are excluded, and the QC summary each run wrote is
+   printed so you can see which run applied what. The verdict is about systematic offsets, not
+   about any single target: a wrong checkpoint or config moves a whole instrument one way, while
+   reduced precision scatters in sign and looks largest, in relative terms, on low-variance
+   radiance channels whose RMSE is only a degree or two. It fails on a non-zero overall median,
+   on an instrument offset consistently one way, or on any target beyond 3%.
 3. **E5 GFS coverage:** `_vs_gfs.csv` files exist for surface_obs for all 730 inits. Radiosonde/aircraft
    GFS files exist only if they were built; build them with `INSTRUMENT=radiosonde|aircraft
    RUN_PREDICTION=0 CSV_ONLY=1` in `run_pred_eval_gfs_2025.sh` (CPU).
