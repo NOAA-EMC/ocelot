@@ -116,7 +116,8 @@ class VerifyQC:
     Rules come from a YAML file (see verify_qc.yaml):
       satellite: {value_range: [lo, hi], range_exclude: [inst, ...], outlier_k: k}
       conventional: {<inst>: {<variable>: {flag: <zarr flag column>, keep: [...] | reject: [...],
-                                           min_pressure_hpa: p}}}
+                                           min_pressure_hpa: p,
+                                           le_variable: <other variable>, le_margin: m, max_spread: s}}}
     Flag columns are read from the prediction CSV as ``qm_<flag column>`` (written when the
     instrument's ``export_flag_cols`` is set in the observation config). A rule whose flag column is
     missing raises, so a filter can never be skipped silently.
@@ -163,7 +164,7 @@ class VerifyQC:
 
     def apply(self, df: pd.DataFrame, inst: str, var: str, ok: np.ndarray, clim: np.ndarray | None = None):
         """Return (ok_after_qc, n_removed_by_rule_dict)."""
-        removed = {"range": 0, "flag": 0, "pressure": 0, "outlier": 0}
+        removed = {"range": 0, "flag": 0, "pressure": 0, "relation": 0, "outlier": 0}
         if not self.active:
             return ok, removed
         ok = ok.copy()
@@ -207,5 +208,15 @@ class VerifyQC:
                     p = pd.to_numeric(df["pressure_hPa"], errors="coerce").to_numpy(float)
                     bad = ok & ~(p >= float(rule["min_pressure_hpa"]))
                     removed["pressure"] = int(bad.sum())
+                    ok &= ~bad
+                if rule.get("le_variable"):
+                    # Cross-variable check, e.g. dew point <= air temperature (+ margin), and a cap on
+                    # their spread; both read from the observed values of the same report.
+                    other = pd.to_numeric(df[f"true_{rule['le_variable']}"], errors="coerce").to_numpy(float)
+                    both = np.isfinite(other) & np.isfinite(obs)
+                    bad = ok & both & (obs > other + float(rule.get("le_margin", 0.0)))
+                    if rule.get("max_spread") is not None:
+                        bad |= ok & both & ((other - obs) > float(rule["max_spread"]))
+                    removed["relation"] = int(bad.sum())
                     ok &= ~bad
         return ok, removed
