@@ -170,7 +170,9 @@ class VerifyQC:
         ok = ok.copy()
         obs = df[f"true_{var}"].to_numpy(float)
         if inst not in CONVENTIONAL:
-            rng = self.sat.get("value_range")
+            # A per-instrument range overrides the shared one (e.g. microwave imagers, whose
+            # brightness temperatures do not reach the 400 K bound used for sounders).
+            rng = (self.sat.get("per_instrument") or {}).get(inst, self.sat.get("value_range"))
             if rng and inst not in set(self.sat.get("range_exclude") or []):
                 bad = ok & ~((obs >= float(rng[0])) & (obs <= float(rng[1])))
                 removed["range"] = int(bad.sum())

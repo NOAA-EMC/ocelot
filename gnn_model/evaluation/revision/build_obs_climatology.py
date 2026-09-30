@@ -58,6 +58,10 @@ def main() -> int:
                     help="Only use satellite brightness temperatures within [LO, HI] K (e.g. 50 400); "
                          "keep this consistent with verify_qc.yaml")
     ap.add_argument("--range_exclude", default="ascat", help="Comma-separated satellite instruments exempt from the range")
+    ap.add_argument("--sat_range_per_instrument", default=None, metavar="INST=LO:HI,...",
+                    help="Per-instrument override of --sat_value_range, e.g. ssmis=50:330")
+    ap.add_argument("--instruments", default=None,
+                    help="Comma-separated subset to (re)build; the others are left untouched")
     args = ap.parse_args()
 
     files = list_prediction_files(args.pred_dir, args.recursive)
@@ -67,9 +71,17 @@ def main() -> int:
     if not files:
         raise SystemExit(f"No prediction CSVs under {args.pred_dir}")
 
+    per_inst = {}
+    if args.sat_range_per_instrument:
+        for item in args.sat_range_per_instrument.split(","):
+            name, rng = item.split("=")
+            per_inst[name.strip()] = [float(x) for x in rng.split(":")]
+    only = set(args.instruments.split(",")) if args.instruments else None
+
     by_inst: dict[str, list[str]] = defaultdict(list)
     for path, inst, _ in files:
-        by_inst[inst].append(path)
+        if only is None or inst in only:
+            by_inst[inst].append(path)
     os.makedirs(args.out_dir, exist_ok=True)
 
     scan_edges = _scan_edges(by_inst)
@@ -92,9 +104,10 @@ def main() -> int:
             keys = strat_keys(df, inst, edges)
             for var in variables_in(df):
                 ok = valid_rows(df, var)
-                if args.sat_value_range and inst not in CONVENTIONAL and inst not in args.range_exclude.split(","):
+                rng = per_inst.get(inst, args.sat_value_range)
+                if rng and inst not in CONVENTIONAL and inst not in args.range_exclude.split(","):
                     obs = df[f"true_{var}"].to_numpy(float)
-                    ok &= (obs >= args.sat_value_range[0]) & (obs <= args.sat_value_range[1])
+                    ok &= (obs >= rng[0]) & (obs <= rng[1])
                 if not ok.any():
                     continue
                 sub = keys[ok].copy()

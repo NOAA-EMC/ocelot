@@ -1,6 +1,6 @@
 # Verification-time quality control for the AIES revision (--verify_qc).
 # Applied ONLY to the verifying observations when scoring (revision_metrics.py, baseline_table.py,
-# and, with the range option, build_obs_climatology.py). The model, its inputs and its forecasts
+# and, with the range options, build_obs_climatology.py). The model, its inputs and its forecasts
 # are exactly those of OCELOT v1, so results shown in the original figures do not change.
 
 satellite:
@@ -8,6 +8,10 @@ satellite:
   # values) and are excluded. ASCAT backscatter is in dB and is exempt.
   value_range: [50, 400]          # K
   range_exclude: [ascat]
+  per_instrument:
+    # Microwave imager brightness temperatures do not exceed about 310 K; values at the shared
+    # 400 K bound were leaving corrupt data in the SSMIS channels.
+    ssmis: [50, 330]              # K
   outlier_k: 0                    # optional robust gross-error check; 0 = off
 
 conventional:
