@@ -40,6 +40,8 @@ def main() -> int:
     ap.add_argument("--pred_dir", required=True)
     ap.add_argument("--instruments", default="ssmis,amsua,atms,avhrr,seviri_asr,ascat")
     ap.add_argument("--n_files", type=int, default=12)
+    ap.add_argument("--recursive", action="store_true",
+                    help="Search sub-directories too (the climatology dump stores one folder per date)")
     ap.add_argument("--cfg_path", default="configs/observation_config.yaml")
     ap.add_argument("--spike_pct", type=float, default=0.5, help="flag a repeated value above this share, in percent")
     args = ap.parse_args()
@@ -47,7 +49,9 @@ def main() -> int:
     stats = (yaml.safe_load(open(args.cfg_path, encoding="utf-8")) or {}).get("feature_stats", {})
 
     for inst in args.instruments.split(","):
-        files = sorted(glob.glob(os.path.join(args.pred_dir, f"pred_{inst}_target_init_*.csv")))
+        pattern = (os.path.join(args.pred_dir, "**", f"pred_{inst}_target_init_*.csv") if args.recursive
+                   else os.path.join(args.pred_dir, f"pred_{inst}_target_init_*.csv"))
+        files = sorted(glob.glob(pattern, recursive=args.recursive))
         files = [f for f in files if "_vs_" not in f]
         if not files:
             print(f"\n### {inst}: no prediction files\n")
