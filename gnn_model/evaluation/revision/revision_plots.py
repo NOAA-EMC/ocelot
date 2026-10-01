@@ -45,6 +45,11 @@ SHORT_VAR = {"airTemperature": "T", "dewPointTemperature": "Td", "windU": "u", "
 SURFACE_VAR = {"airTemperature": "T2m", "dewPointTemperature": "Td2m", "wind_u": "u10", "wind_v": "v10",
                "pressureMeanSeaLevel_prepbufr": "MSLP"}
 CONVENTIONAL_INST = ("aircraft", "radiosonde", "surface_obs")
+# Real channel names for instruments whose archive uses code numbers. The AVHRR Zarr holds codes
+# 48-52 (BUFR */AVCSEQ/INCN), i.e. AVHRR channels 1-5 in this feed: 48/49 carry albedo only, and
+# 50 is the 3.7 um channel (daytime brightness temperature ~17 K above night-time, while 51/52
+# show no solar signal), so 50/51/52 = 3B (3.7 um), 4 (10.8 um), 5 (12.0 um). Checked 2026-10-01.
+DEFAULT_CHANNEL_LABELS = {"avhrr": {"50": "3B", "51": "4", "52": "5"}}
 
 
 def _short_var(inst, var):
@@ -140,11 +145,11 @@ def scorecard(a):
     leads = list(piv.columns)
 
     # optional relabelling of internal channel numbers, e.g. avhrr:50=3B,51=4,52=5
-    relabel = {}
+    relabel = {k: dict(v) for k, v in DEFAULT_CHANNEL_LABELS.items()}
     for item in (a.channel_labels or "").split(";"):
         if ":" in item:
             inst, pairs = item.split(":", 1)
-            relabel[inst.strip()] = dict(p.split("=") for p in pairs.split(",") if "=" in p)
+            relabel.setdefault(inst.strip(), {}).update(dict(p.split("=") for p in pairs.split(",") if "=" in p))
     items = []  # ("H", title, None) for an instrument header, ("R", label, values) for a target
     for inst, g in piv.groupby(level="instrument", sort=False):
         items.append(("H", _group_title(inst), None))
