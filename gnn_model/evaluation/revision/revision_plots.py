@@ -210,7 +210,13 @@ def _series(ax, g, m):
                 color=COLORS.get(m), label=m)
 
 
+PANEL_TITLE = {("surface_obs", "airTemperature"): "T2m (K)", ("surface_obs", "dewPointTemperature"): "Td2m (K)",
+               ("surface_obs", "wind_u"): "u10 (m s$^{-1}$)", ("surface_obs", "wind_v"): "v10 (m s$^{-1}$)",
+               ("surface_obs", "pressureMeanSeaLevel_prepbufr"): "MSLP (hPa)"}
+
+
 def baselines(a):
+    plt.rcParams.update({"font.size": MIN_FONT_PT})
     t = pd.read_csv(a.table)
     # A reference that is only available at some lead times (GraphCastGFS is 6-hourly) would
     # otherwise force every method onto those leads, hiding the +3 h comparison entirely.
@@ -219,11 +225,17 @@ def baselines(a):
     extra = [m for m in _methods(ov)] if ov is not None else []
     extra = [m for m in extra if m not in methods]
 
-    groups = list(t.groupby(["instrument", "variable"]))
-    # Four panels in a single row are too wide for a journal page, so wrap to two rows.
+    # Only the requested variables, in the requested order (default: the variables of Fig. 6).
+    want = [tuple(x.split(":")) for x in a.variables.split(",")]
+    byvar = dict(list(t.groupby(["instrument", "variable"])))
+    groups = [(k, byvar[k]) for k in want if k in byvar]
+    missing = [k for k in want if k not in byvar]
+    if missing:
+        raise SystemExit(f"not in {a.table}: {missing}")
     nrow = 1 if len(groups) <= 3 else 2
     ncol = int(np.ceil(len(groups) / nrow))
-    fig, axes = plt.subplots(nrow, ncol, figsize=(2.7 * ncol, 2.7 * nrow + 0.5), squeeze=False)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(PRINT_WIDTH_IN, 2.55 * nrow + 0.9), squeeze=False,
+                             constrained_layout=True)
     flat = axes.ravel()
     for ax in flat[len(groups):]:
         ax.axis("off")
@@ -236,19 +248,23 @@ def baselines(a):
             for m in extra:
                 if not og.empty:
                     _series(ax, og, m)
-        ax.set_title(f"{LABEL.get(inst, inst)} {var}", fontsize=9)
+        ax.set_title(PANEL_TITLE.get((inst, var), f"{LABEL.get(inst, inst)} {var}"))
         ax.set_xlabel("Lead time (h)")
         ax.set_xticks(sorted(g["lead"].unique()))
         ax.grid(alpha=0.25, lw=0.5)
     for r in range(nrow):
         axes[r][0].set_ylabel("RMSE")
     h, l = flat[0].get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", ncol=len(l), frameon=False, fontsize=8, bbox_to_anchor=(0.5, -0.02))
-    fig.tight_layout(rect=(0, 0.06, 1, 1))
-    fig.savefig(a.out, dpi=300, bbox_inches="tight")
-    print(f"{a.out}: {len(groups)} panels in {nrow}x{ncol}, "
-          f"{fig.get_size_inches()[0]:.1f} x {fig.get_size_inches()[1]:.1f} inches, methods {methods}"
+    fig.legend(h, l, loc="outside lower center", ncol=3, frameon=False)
+    problems = print_check(fig)
+    fig.canvas.draw()
+    leg = fig.legends[0].get_window_extent(fig.canvas.get_renderer())
+    if leg.x0 < 0 or leg.x1 > fig.bbox.x1:
+        problems.append("legend wider than the figure")
+    fig.savefig(a.out, dpi=300)
+    print(f"{a.out}: {len(groups)} panels in {nrow}x{ncol}, methods {methods}"
           + (f" + {extra} on {sorted(ov.lead.unique())} h" if extra else ""))
+    _report(a.out, fig, problems)
 
 
 def denial(a):
@@ -333,6 +349,8 @@ def main() -> int:
     p.add_argument("--columns", type=int, default=3, help="deal the target rows across this many panels")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
     p.add_argument("--overlay", default=None, help="second table whose extra methods cover only some lead times")
+    p.add_argument("--variables", default="surface_obs:airTemperature,surface_obs:wind_u,surface_obs:wind_v",
+                   help="instrument:variable panels, in order (default: T2m, u10, v10, the variables of Fig. 6)")
     p = sub.add_parser("denial"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("rollout"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
     p.add_argument("--targets", default="surface_obs:airTemperature,surface_obs:wind_u,radiosonde:airTemperature,amsua:bt_channel_7,atms:bt_channel_7")
