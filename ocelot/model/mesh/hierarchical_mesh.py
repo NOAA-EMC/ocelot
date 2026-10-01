@@ -1,4 +1,5 @@
 import numpy as np
+import scipy
 import torch
 
 from ocelot.model.mesh.mesh import Mesh, GC_SPATIAL_FEATURES_KWARGS, DEFAULT_DTYPE
