@@ -73,19 +73,22 @@ def analyse(d: pd.DataFrame, var: str) -> pd.DataFrame:
     if ok.sum() < 1000:
         return pd.DataFrame()
     lev = LEVELS[li[ok].astype(int)]
+    lat = pd.to_numeric(d["lat"], errors="coerce").to_numpy(float)[ok]
+    lon = pd.to_numeric(d["lon"], errors="coerce").to_numpy(float)[ok]
     g = pd.DataFrame({
         "level": lev,
         "x": np.log(p[ok] / lev),
         "f": f[ok], "o": o[ok],
-        "grp": (d["init"].to_numpy()[ok].astype(str) + "|"
-                + pd.to_numeric(d["lead_hours_nominal"], errors="coerce").to_numpy()[ok].astype(str) + "|"
-                + lev.astype(int).astype(str) + "|"
-                + np.floor((pd.to_numeric(d["lat"], errors="coerce").to_numpy()[ok] + 90) / BOX_DEG).astype(int).astype(str) + "|"
-                + np.floor(np.mod(pd.to_numeric(d["lon"], errors="coerce").to_numpy()[ok] + 180, 360) / BOX_DEG).astype(int).astype(str)),
+        # group keys kept as separate numeric columns (string concatenation is slow and fails on older numpy)
+        "k_init": pd.factorize(d["init"].to_numpy()[ok])[0],
+        "k_lead": pd.to_numeric(d["lead_hours_nominal"], errors="coerce").to_numpy(float)[ok],
+        "k_by": np.floor((lat + 90.0) / BOX_DEG),
+        "k_bx": np.floor(np.mod(lon + 180.0, 360.0) / BOX_DEG),
     })
     g["e"] = g["f"] - g["o"]
+    means = g.groupby(["k_init", "k_lead", "level", "k_by", "k_bx"], sort=False)[["x", "f", "o", "e"]].transform("mean")
     for c in ("x", "f", "o", "e"):
-        g[f"d{c}"] = g[c] - g.groupby("grp")[c].transform("mean")
+        g[f"d{c}"] = g[c] - means[c]
 
     rows = []
     for lvl, h in list(g.groupby("level")) + [("all", g)]:
