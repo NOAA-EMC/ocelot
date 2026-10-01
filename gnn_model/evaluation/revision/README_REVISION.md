@@ -84,6 +84,21 @@ for v in v1_budget no_spatial_mix interaction deny_satellite deny_conventional; 
   sbatch -J abl_$v --export=ALL,VARIANT=$v evaluation/revision/run_train_ablation.sh; done
 ```
 
+## Known limitations of the revision tooling
+
+* **qm_* flag columns are unreliable.** `export_flag_cols` writes raw QC flags into the
+  prediction CSVs as `qm_*`, but the writer fills NaN whenever a batch's flag array does not
+  match the decoded rows; in the 2025 denial-control radiosonde CSVs, `qm_airPressureQuality` is
+  NaN on 99.2% of rows. No reported number uses these columns. Do not key verification rules on
+  them.
+* **airPressure QC is never applied (v1 and main).** The configured `airPressure` range/flag
+  filters are keyed on a variable that is neither a feature nor a listed metadata key (the model
+  uses the derived `log_pressure_height`), so they do nothing. `diagnose_pressure.py` measures
+  the effect: pressure is always present and physical; reports with a bad pressure flag are
+  0.51% / 0.25% (radiosonde, training / 2025) and 0.046% / 0.052% (aircraft). Training and test
+  are treated identically. The fix (apply the airPressure QC to `log_pressure_height` and drop
+  input rows without valid height) belongs in main for v2.
+
 ## Checks before trusting the numbers
 
 1. **E1 sanity:** surface T2m and 10-m wind RMSE from `metrics_summary.csv` must reproduce Fig. 6

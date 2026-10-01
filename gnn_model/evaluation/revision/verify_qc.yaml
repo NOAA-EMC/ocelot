@@ -21,8 +21,11 @@ conventional:
       le_variable: airTemperature # dew point cannot exceed air temperature (+0.5 C margin)
       le_margin: 0.5
       max_spread: 60              # C; reject if T - Td > 60
-      # Rejecting quality mark 9 additionally needs the qm_* flag columns in the prediction CSVs
-      # (export_flag_cols is set in the observation config; regenerate the predictions, then uncomment):
+      # Rejecting quality mark 9 would need the qm_* flag columns in the prediction CSVs. DO NOT
+      # enable this: the qm_* export (export_flag_cols) is unreliable. In the 2025 denial-control
+      # radiosonde CSVs, qm_airPressureQuality is NaN on 99.2% of rows, because the CSV writer
+      # fills NaN whenever a batch's flag array does not match the decoded rows. A rule keyed on
+      # these columns would act on <1% of the data while appearing to work.
       # flag: dewPointTemperatureQuality
       # reject: [9]
   # Surface rules (quality mark 2 only) are intentionally not applied: surface T2m and 10-m wind
