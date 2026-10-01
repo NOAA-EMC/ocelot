@@ -78,6 +78,15 @@ python evaluation/revision/baseline_table.py \
   --ref GFS=predictions/ocelot_v1_2025_gfs_eval/pred_csv/obs-space:vs_gfs \
   --ref GraphCastGFS=predictions/ocelot_v1_2025_graphcastgfs/obs-space:vs_graphcastgfs \
   --clim_dir evaluation/revision/climatology --out evaluation/revision/results/baselines.csv
+# revised Fig. 6: the published Fig. 6 sample (OCELOT, GFS, persistence), with GraphCastGFS
+# and climatology each scored where available on it; OCELOT/GFS/persistence match Fig. 6
+python evaluation/revision/baseline_table.py --base OCELOT,GFS,Persistence \
+  --pred_dir predictions/ocelot_v1_2025_gfs_eval/pred_csv/obs-space \
+  --ref GFS=predictions/ocelot_v1_2025_gfs_eval/pred_csv/obs-space:vs_gfs \
+  --ref GraphCastGFS=predictions/ocelot_v1_2025_graphcastgfs/obs-space:vs_graphcastgfs \
+  --clim_dir evaluation/revision/climatology --out evaluation/revision/results/baselines_fig6.csv
+python evaluation/revision/revision_plots.py baselines \
+  --table evaluation/revision/results/baselines_fig6.csv --out fig6_baselines.png
 
 # E6 (optional)
 for v in v1_budget no_spatial_mix interaction deny_satellite deny_conventional; do

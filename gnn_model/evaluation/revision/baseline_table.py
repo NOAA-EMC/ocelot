@@ -7,6 +7,11 @@ training-period observation-space climatology. For each (instrument, variable, l
 RMSE of every method is computed on the rows where ALL methods are available, with 95%
 bootstrap CIs over initializations, and the paired RMSE difference OCELOT - reference.
 
+With ``--base OCELOT,GFS,Persistence`` the methods named there define the verified sample
+(reproducing a published comparison such as Fig. 6), and every other method is scored on
+the part of that sample where it is available; its paired difference uses OCELOT on the
+same rows. The ``n_obs_<method>`` columns give each method's sample size.
+
 Usage:
     python evaluation/revision/baseline_table.py \
       --pred_dir predictions/ocelot_v1_2025_gfs_eval/pred_csv/obs-space \
@@ -54,7 +59,10 @@ def main() -> int:
     ap.add_argument("--verify_qc", default=None, help="YAML of verification-time QC rules (verify_qc.yaml)")
     ap.add_argument("--n_boot", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=12345)
+    ap.add_argument("--base", default=None,
+                    help="comma list of methods defining the sample; others are scored where available on it")
     args = ap.parse_args()
+    base = set(args.base.split(",")) if args.base else None
 
     refs = []
     for spec in args.ref:
@@ -80,6 +88,8 @@ def main() -> int:
         for name, d, suffix in refs:
             rpath = os.path.join(d, f"pred_{inst}_target_init_{init}_{suffix}.csv")
             if not os.path.exists(rpath):
+                if base is not None and name not in base:
+                    continue  # scored as missing for this init
                 ok_refs = False
                 break
             r = pd.read_csv(rpath, low_memory=False)
@@ -104,13 +114,20 @@ def main() -> int:
             common = valid_rows(df, var)
             if qc.active:
                 common, _ = qc.apply(df, inst, var, common, meth.get("Climatology"))
-            for f in meth.values():
-                common &= np.isfinite(f)
+            if base is not None and not base <= set(meth):
+                raise SystemExit(f"--base names unknown methods: {sorted(base - set(meth))}")
+            for m, f in meth.items():
+                if base is None or m in base:
+                    common &= np.isfinite(f)
+            po = (meth["OCELOT"] - o) ** 2
             for ld in np.unique(lead[common]):
                 sel = common & (lead == ld)
                 rec = dict(instrument=inst, variable=var, lead=ld, init=init, n=int(sel.sum()))
                 for m, f in meth.items():
-                    rec[f"sse::{m}"] = float(((f[sel] - o[sel]) ** 2).sum())
+                    s = sel & np.isfinite(f)
+                    rec[f"sse::{m}"] = float(((f[s] - o[s]) ** 2).sum())
+                    rec[f"n::{m}"] = int(s.sum())
+                    rec[f"sseO::{m}"] = float(po[s].sum())  # OCELOT on the same rows
                 recs.append(rec)
 
     st = pd.DataFrame(recs)
@@ -124,19 +141,21 @@ def main() -> int:
         n = g["n"].to_numpy(float)
         W = rng.multinomial(len(g), np.full(len(g), 1 / len(g)), size=args.n_boot).astype(float)
         rec = dict(zip(["instrument", "variable", "lead"], key), n_inits=len(g), n_obs=int(n.sum()))
-        nb = W @ n
         for m in methods:
-            s = g[f"sse::{m}"].to_numpy(float)
-            rec[f"rmse_{m}"] = np.sqrt(s.sum() / n.sum())
-            b = np.sqrt((W @ s) / nb)
-            rec[f"rmse_{m}_lo"], rec[f"rmse_{m}_hi"] = np.percentile(b, [2.5, 97.5])
-        so = g["sse::OCELOT"].to_numpy(float)
-        for m in methods:
-            if m == "OCELOT":
+            nm = g[f"n::{m}"].to_numpy(float)
+            rec[f"n_obs_{m}"] = int(nm.sum())
+            if nm.sum() == 0:  # e.g. a 6-hourly reference at +3 h
+                rec[f"rmse_{m}"] = rec[f"rmse_{m}_lo"] = rec[f"rmse_{m}_hi"] = np.nan
                 continue
             s = g[f"sse::{m}"].to_numpy(float)
+            nb = np.maximum(W @ nm, 1)
+            rec[f"rmse_{m}"] = np.sqrt(s.sum() / nm.sum())
+            rec[f"rmse_{m}_lo"], rec[f"rmse_{m}_hi"] = np.percentile(np.sqrt((W @ s) / nb), [2.5, 97.5])
+            if m == "OCELOT":
+                continue
+            so = g[f"sseO::{m}"].to_numpy(float)
             d = np.sqrt((W @ so) / nb) - np.sqrt((W @ s) / nb)
-            rec[f"dRMSE_OCELOT_minus_{m}"] = rec["rmse_OCELOT"] - rec[f"rmse_{m}"]
+            rec[f"dRMSE_OCELOT_minus_{m}"] = np.sqrt(so.sum() / nm.sum()) - rec[f"rmse_{m}"]
             rec[f"dRMSE_OCELOT_minus_{m}_lo"], rec[f"dRMSE_OCELOT_minus_{m}_hi"] = np.percentile(d, [2.5, 97.5])
         rows.append(rec)
     out = pd.DataFrame(rows)

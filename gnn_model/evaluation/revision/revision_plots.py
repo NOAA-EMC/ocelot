@@ -231,6 +231,9 @@ def _methods(t):
 
 
 def _series(ax, g, m):
+    g = g[np.isfinite(g[f"rmse_{m}"])]  # leads where the method has no sample (6-hourly references)
+    if g.empty:
+        return
     lo, hi = g[f"rmse_{m}"] - g[f"rmse_{m}_lo"], g[f"rmse_{m}_hi"] - g[f"rmse_{m}"]
     ax.errorbar(g["lead"], g[f"rmse_{m}"], yerr=[lo, hi], marker="o", ms=3.5, lw=1.4, capsize=2,
                 color=COLORS.get(m), label=m)
