@@ -1482,14 +1482,23 @@ class GNNLightning(pl.LightningModule):
                             break
 
                     if step_edge_type is None or step_edge_index is None:
-                        self.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
+#                        self.debug(f"[LATENT] Warning: No edge found for {step_node_type}")
+#                        continue
+                        n_tgt = data[step_node_type].num_nodes or 0
+                        if n_tgt > 0:
+                            raise RuntimeError(f"[LATENT] {step_node_type} has {n_tgt} targets but no decoder edge")
+                        y_ref = data[step_node_type].y
+                        predictions[base_type].append(
+                            y_ref.new_zeros((0, y_ref.shape[1]), dtype=mesh_features_processed.dtype)
+                        )
                         continue
 
                     # Get the decoder (mapped to base instrument)
                     decoder_key = edge_mapping.get(step_edge_type)
                     if decoder_key not in self.observation_decoders:
-                        self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
-                        continue
+                        raise RuntimeError(f"[LATENT] No decoder '{decoder_key}' for {step_node_type}")
+                        # self.debug(f"[LATENT] Warning: No decoder found for {decoder_key}")
+                        # continue
 
                     decoder = self.observation_decoders[decoder_key]
                     decoder.edge_index = step_edge_index
@@ -1614,7 +1623,8 @@ class GNNLightning(pl.LightningModule):
         for base_type, pred_list in predictions.items():
             expected_steps = len(step_mapping[base_type])
             if len(pred_list) != expected_steps:
-                self.debug(f"[LATENT] Warning: {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
+                # self.debug(f"[LATENT] Warning: {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
+                raise RuntimeError(f"[LATENT] {base_type} has {len(pred_list)} predictions, expected {expected_steps}")
 
         self.debug(f"[LATENT] Completed {num_latent_steps} sequential processor steps")
         return predictions, mesh_features_per_step
@@ -1799,6 +1809,10 @@ class GNNLightning(pl.LightningModule):
             gts_list = gt_data["gts_list"]
             instrument_ids_list = gt_data["instrument_ids_list"]
             valid_mask_list = gt_data["valid_mask_list"]
+            if len(preds_list) != len(gts_list):
+                raise RuntimeError(
+                    f"{node_type}: {len(preds_list)} prediction steps vs {len(gts_list)} target steps"
+                )
 
             for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                 zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
@@ -1819,11 +1833,14 @@ class GNNLightning(pl.LightningModule):
 
                 # Shape validation before loss calculation
                 if y_pred.shape[0] != y_true.shape[0]:
-                    print(f"[ERROR] Shape mismatch for {node_type} step {step}:")
-                    print(f"  y_pred: {y_pred.shape} ({y_pred.shape[0]} obs)")
-                    print(f"  y_true: {y_true.shape} ({y_true.shape[0]} obs)")
-                    print(f"  Skipping this prediction to avoid crash")
-                    continue
+#                     print(f"[ERROR] Shape mismatch for {node_type} step {step}:")
+#                     print(f"  y_pred: {y_pred.shape} ({y_pred.shape[0]} obs)")
+#                     print(f"  y_true: {y_true.shape} ({y_true.shape[0]} obs)")
+#                     print(f"  Skipping this prediction to avoid crash")
+#                     continue
+                    raise RuntimeError(
+                        f"Row mismatch for {node_type} step {step}: y_pred {tuple(y_pred.shape)} vs y_true {tuple(y_true.shape)}"
+                    )
 
                 channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
 
@@ -1925,6 +1942,11 @@ class GNNLightning(pl.LightningModule):
             gts_list = gt_data["gts_list"]
             instrument_ids_list = gt_data["instrument_ids_list"]
             valid_mask_list = gt_data["valid_mask_list"]
+            if len(preds_list) != len(gts_list):
+                raise RuntimeError(
+                    f"{node_type}: {len(preds_list)} prediction steps vs {len(gts_list)} target steps"
+                )
+
 
             n_steps = min(len(preds_list), len(gts_list))
 
@@ -1936,7 +1958,10 @@ class GNNLightning(pl.LightningModule):
                 if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                     continue
                 if y_pred.shape != y_true.shape:
-                    continue
+                    # continue
+                    raise RuntimeError(
+                        f"Row mismatch for {node_type} step {step}: y_pred {tuple(y_pred.shape)} vs y_true {tuple(y_true.shape)}"
+                    )
 
                 if not torch.isfinite(y_pred).all():
                     y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)

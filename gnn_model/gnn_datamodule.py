@@ -627,15 +627,24 @@ class GNNDataModule(pl.LightningDataModule):
             else:
                 keep_t = torch.ones((target_features.shape[0],), dtype=torch.bool)
 
+            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+            scan_angle_cols = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+
             # Handle empty case
             if keep_t.sum() == 0:
                 data[node_type_target].y = torch.empty((0, target_features.shape[1]), dtype=torch.float32)
-                data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
+#                 data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
+                data[node_type_target].x = torch.empty((0, scan_angle_cols), dtype=torch.float32)
                 data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
                 data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
                 data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
                 data[node_type_target].obs_time_unix = torch.empty((0,), dtype=torch.long)
+                data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
+                data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
+                # Explicit empty decoder edge so the forward pass keeps this step's slot
+                data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
+                data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float16)
                 continue
 
             keep_np = keep_t.cpu().numpy()
@@ -653,10 +662,10 @@ class GNNDataModule(pl.LightningDataModule):
                 tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
                 data[node_type_target].target_metadata = _t32(tgt_meta)
 
-            # Scan angle handling per-instrument (config-driven)
-            # Determine observation type to look up config
-            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
-            scan_angle_cols = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
+#            # Scan angle handling per-instrument (config-driven)
+#            # Determine observation type to look up config
+#            obs_type = "satellite" if inst_name in self.hparams.observation_config.get("satellite", {}) else "conventional"
+#            scan_angle_cols = self.hparams.observation_config[obs_type][inst_name].get("scan_angle_channels", 1)
 
             if "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
                 x_aux = inst_dict["scan_angle_list"][step][keep_t]
@@ -709,7 +718,12 @@ class GNNDataModule(pl.LightningDataModule):
                 print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_target}! Data may not be preprocessed with new code.")
 
             # Edges - filter lat/lon too
-            if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
+#            if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
+            if "target_lat_deg_list" not in inst_dict or "target_lon_deg_list" not in inst_dict:
+                raise RuntimeError(
+                    f"{node_type_target}: {int(keep_t.sum())} valid targets but no target lat/lon; cannot build decoder edge"
+                )
+            else:
                 target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
                 target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
 
@@ -717,17 +731,18 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].lat = _t32(target_lat_deg)
                 data[node_type_target].lon = _t32(target_lon_deg)
 
-                if len(target_lat_deg) > 0:
-                    edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
-                        target_lat_deg,
-                        target_lon_deg,
-                        self.mesh_structure["m2m_graphs"],
-                        self.mesh_structure["mesh_lat_lon_list"],
-                        self.mesh_structure["mesh_list"],
-                        o2m=False,
-                    )
-                    data["mesh", "to", node_type_target].edge_index = edge_index_decoder
-                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
+#                if len(target_lat_deg) > 0:
+#                    edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                    target_lat_deg,
+                    target_lon_deg,
+                    self.mesh_structure["m2m_graphs"],
+                    self.mesh_structure["mesh_lat_lon_list"],
+                    self.mesh_structure["mesh_list"],
+                    o2m=False,
+                )
+                data["mesh", "to", node_type_target].edge_index = edge_index_decoder
+                data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
 
     def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
         """Create empty nodes for missing instrument in latent mode."""
