@@ -51,10 +51,17 @@ batch while retaining rows, metadata, and graph links. This tests sensitivity to
 value absence under the trained graph structure, not the operational effect of
 deleting an observing system and its edges.
 
-Two caveats govern the mask modes. The model never reads ``input_channel_mask``,
-so missingness reaches it only through the value written into ``x``; for
-satellites that value is normalized zero, i.e. the climatological mean, so a
-masked satellite channel is a mean-valued observation rather than an absent one.
+Two caveats govern the mask modes. A model trained without
+``channel_validity_features`` never reads ``input_channel_mask``, so missingness
+reaches it only through the value written into ``x``; for satellites that value
+is normalized zero, i.e. the climatological mean, so a masked satellite channel
+is a mean-valued observation rather than an absent one. This is the case for the
+v1.0 checkpoint behind the published results, and it is why ``drop_nodes`` is
+the mode to use when the intent is to remove an instrument. A model trained with
+``channel_validity_features`` on does read the mask, and because
+``_sync_input_channel_mask_from_values`` clears it for masked entries, missingness
+is visible to that model. The response to it is learned; these modes still retain
+the observation nodes, metadata, satellite identity, and graph links.
 And preprocessing keeps an input row only when at least one channel is valid, so
 masking every channel of an instrument produces rows that never occur in
 training. ``ose_all_missing_row_fraction`` reports how many denied rows end up in

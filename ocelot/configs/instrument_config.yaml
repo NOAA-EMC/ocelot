@@ -9,6 +9,7 @@ instruments:
     model:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+    feature_range: [50, 400]      # K; brightness temperature
     features:
       - name: bt_channel_1
         weight: 1.0
@@ -108,6 +109,7 @@ instruments:
     model:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+    feature_range: [50, 400]      # K; brightness temperature
     features:
       - name: bt_channel_1
         weight: 1.0
@@ -173,12 +175,13 @@ instruments:
   ssmis:
     kind: satellite
     weight: 1.0
-    satellite_ids: [285]
+    satellite_ids: [249, 285, 286, 287]
     scan_angle_channels: 2  # Number of scan angle dimensions
     metadata: [sensorScanPosition, satelliteAscendingFlag]
     model:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+    feature_range: [50, 400]      # K; brightness temperature
     features:
       - name: bt_ch_1
         weight: 1.0
@@ -280,12 +283,13 @@ instruments:
   seviri_asr:
     kind: satellite
     weight: 1.0
-    satellite_ids: [56, 57]  # Meteosat-11
+    satellite_ids: [55, 56, 57, 70, 71]
     scan_angle_channels: 1  # Number of scan angle dimensions
     metadata: [satelliteZenithAngle, solarZenithAngle]
     model:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+    feature_range: [50, 400]      # K; brightness temperature
     features:
       - name: bt_ch_4
         weight: 1.0
@@ -323,12 +327,13 @@ instruments:
   seviri_csr:
     kind: satellite
     weight: 1.0
-    satellite_ids: [56, 57]  # Meteosat-11
+    satellite_ids: [55, 56, 57, 70]  # Meteosat-11
     scan_angle_channels: 1  # Number of scan angle dimensions
     metadata: [satelliteZenithAngle, solarZenithAngle]
     model:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+    feature_range: [50, 400]      # K; brightness temperature
     features:
       - name: bt_ch_4
         weight: 1.0
@@ -372,6 +377,7 @@ instruments:
     model:
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2
+    feature_range: [50, 400]      # K; brightness temperature
     features:
       - name: brightnessTemperature_ch_50
         weight: 1.0
@@ -488,6 +494,7 @@ instruments:
         units: degrees
         range: [0.0, 360.0]
         clip: true
+    feature_range: [-60, 10]      # dB; backscatter
     features:
       - name: backscatter_ch_1
         weight: 1.0
@@ -591,12 +598,13 @@ instruments:
         units: degC
         range: [-90, 50]  # Celsius; physically reasonable atmospheric range
         qm_flag_col: airTemperatureQuality
-        reject: [13, 14, 15]  # Reject bad flags
+        reject: [9, 13, 14, 15]  # Reject bad flags
       dewPointTemperature:
         units: degC
         range: [-120, 50]  # Celsius; physically reasonable (very dry stratosphere to humid surface)
         qm_flag_col: dewPointTemperatureQuality
-        reject: [13, 14, 15]  # Reject bad flags
+        reject: [9, 13, 14, 15]
+        min_pressure_hpa: 300 
       windSpeed:
         units: m/s
         range: [0, 150]  # m/s; physically reasonable (jet stream can exceed 100 m/s)
@@ -607,6 +615,11 @@ instruments:
         range: [0, 6.2832]  # radians; full circle 0-2*pi
         qm_flag_col: windQuality
         keep: [2]  # Keep only good flag 2
+
+    qc_relations:                   # cross-variable checks, as for surface_obs
+      dewpoint_le_temp: true        # Td <= T (+0.5 °C margin)
+      max_temp_dewpoint_spread: 60  # °C; invalid if T - Td > 60
+
     auxiliary_variables:
       airPressure:
         units: hPa

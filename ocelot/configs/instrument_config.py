@@ -51,6 +51,7 @@ class QualityFilterConfig(ConfigBase):
     keep = Optional(ListField(IntField()))
     reject = Optional(ListField(IntField()))
     require_flag_column = Optional(BoolField(), default=False)
+    min_pressure_hpa = Optional(FloatField())
 
     def load(self, config_dict: dict) -> None:
         super().load(config_dict)
@@ -70,6 +71,7 @@ class QualityRelationsConfig(ConfigBase):
     dewpoint_le_temp = Optional(BoolField(), default=False)
     max_temp_dewpoint_spread = Optional(FloatField())
     rh_from_td_consistency_pct = Optional(FloatField())
+    max_temp_dewpoint_spread = Optional(IntField())
     pressure_vs_height = Optional(PressureHeightRelationConfig())
 
 
@@ -96,6 +98,7 @@ class InstrumentConfig(ConfigBase):
     scan_angle_channels = Optional(IntField(), default=1)
     metadata = Optional(ListField(StrField()), default=[])
     model = InstrumentModelConfig()
+    feature_range = Optional(ListField(FloatField()))
     features = ListField(FeatureConfig())
     require_all_flag_columns = Optional(BoolField(), default=False)
     qc_filters = Optional(MapField(QualityFilterConfig()), default={})

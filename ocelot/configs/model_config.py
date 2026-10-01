@@ -119,6 +119,7 @@ class ModelConfig(ConfigBase):
     target_window_hours = Optional(IntField(), default=12)
     latent_step_hours = Optional(IntField(), default=3)
     processor_window = Optional(IntField())
+    channel_validity_features = Optional(BoolField(), default=True)
 
     mesh = Choices({
         'fixed': FixedMeshConfig(),
