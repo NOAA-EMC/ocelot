@@ -126,11 +126,18 @@ def scorecard(a):
     piv = s.pivot_table(index=["o", "instrument", "c", "variable"], columns="lead", values=a.metric).sort_index()
     leads = list(piv.columns)
 
+    # optional relabelling of internal channel numbers, e.g. avhrr:50=3B,51=4,52=5
+    relabel = {}
+    for item in (a.channel_labels or "").split(";"):
+        if ":" in item:
+            inst, pairs = item.split(":", 1)
+            relabel[inst.strip()] = dict(p.split("=") for p in pairs.split(",") if "=" in p)
     items = []  # ("H", title, None) for an instrument header, ("R", label, values) for a target
     for inst, g in piv.groupby(level="instrument", sort=False):
         items.append(("H", _group_title(inst), None))
         for idx, row in g.iterrows():
-            items.append(("R", _short_var(inst, idx[3]), row.to_numpy(float)))
+            lab = _short_var(inst, idx[3])
+            items.append(("R", relabel.get(inst, {}).get(lab, lab), row.to_numpy(float)))
 
     ncol = max(1, int(a.columns))
     per = int(np.ceil(len(items) / ncol))
@@ -347,6 +354,8 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("scorecard"); p.add_argument("--summary", required=True); p.add_argument("--metric", default="msess_clim"); p.add_argument("--out", required=True)
     p.add_argument("--columns", type=int, default=3, help="deal the target rows across this many panels")
+    p.add_argument("--channel_labels", default=None,
+                   help="relabel internal channel numbers, e.g. 'avhrr:50=3B,51=4,52=5' (';' between instruments)")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
     p.add_argument("--overlay", default=None, help="second table whose extra methods cover only some lead times")
     p.add_argument("--variables", default="surface_obs:airTemperature,surface_obs:wind_u,surface_obs:wind_v",
