@@ -176,7 +176,8 @@ def scorecard(a):
     cmap = plt.get_cmap("RdBu" if diverging else "YlGnBu").copy()
     cmap.set_bad("white")
     vmin, vmax = (-1.0, 1.0) if diverging else (0.0, 1.0)
-    fig, axes = plt.subplots(1, len(panels), figsize=(PRINT_WIDTH_IN, 0.205 * nrows + 1.45),
+    k = MIN_FONT_PT / 10.5
+    fig, axes = plt.subplots(1, len(panels), figsize=(PRINT_WIDTH_IN, 0.205 * k * nrows + 1.45 * k),
                              squeeze=False, constrained_layout=True)
     cells, headers, im = [], [], None
     for ax, panel in zip(axes[0], panels):
@@ -197,7 +198,7 @@ def scorecard(a):
             if kind == "H":
                 headers.append(ax.text(-0.45, i, text, ha="left", va="center", fontweight="bold"))
                 continue
-            for j, v in enumerate(vals):
+            for j, v in enumerate(vals if not a.no_values else []):
                 if np.isfinite(v):
                     dark = abs(v) > 0.6 if diverging else v > 0.65
                     cells.append(ax.text(j, i, f"{v:.2f}".replace("-", MINUS), ha="center", va="center",
@@ -297,7 +298,8 @@ def denial(a):
     rows = [r for r in DENIAL_ORDER if r in piv.index] + [r for r in piv.index if r not in DENIAL_ORDER]
     piv = piv.loc[rows]
     lim = np.nanmax(np.abs(piv.to_numpy()))
-    fig, ax = plt.subplots(figsize=(PRINT_WIDTH_IN, 0.40 * len(piv) + 2.25), constrained_layout=True)
+    k = MIN_FONT_PT / 10.5
+    fig, ax = plt.subplots(figsize=(PRINT_WIDTH_IN, (0.40 * len(piv) + 2.25) * k), constrained_layout=True)
     # Impacts span four orders of magnitude (about 1% to over 1000%), so a linear scale would leave
     # every cross-system cell white. A symmetric-log scale keeps 1, 10, 100 and 1000% distinguishable.
     from matplotlib.colors import SymLogNorm
@@ -364,9 +366,13 @@ def rollout(a):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--font", type=float, default=None,
+                    help="text size in points at the printed size (default 10.5); every text element uses it")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("scorecard"); p.add_argument("--summary", required=True); p.add_argument("--metric", default="msess_clim"); p.add_argument("--out", required=True)
     p.add_argument("--columns", type=int, default=3, help="deal the target rows across this many panels")
+    p.add_argument("--no_values", action="store_true",
+                   help="colour only, no numbers in the cells (lets the text be larger; values are in Table S2)")
     p.add_argument("--channel_labels", default=None,
                    help="relabel internal channel numbers, e.g. 'avhrr:50=3B,51=4,52=5' (';' between instruments)")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
@@ -377,6 +383,9 @@ def main() -> int:
     p = sub.add_parser("rollout"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
     p.add_argument("--targets", default="surface_obs:airTemperature,surface_obs:wind_u,radiosonde:airTemperature,amsua:bt_channel_7,atms:bt_channel_7")
     a = ap.parse_args()
+    global MIN_FONT_PT
+    if getattr(a, "font", None):
+        MIN_FONT_PT = float(a.font)
     {"scorecard": scorecard, "baselines": baselines, "denial": denial, "rollout": rollout}[a.cmd](a)
     return 0
 
