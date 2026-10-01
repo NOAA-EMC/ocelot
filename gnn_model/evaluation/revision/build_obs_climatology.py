@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from revision_common import CONVENTIONAL, LEVELS, N_SCAN_BINS, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
+from revision_common import CONVENTIONAL, LEVELS, N_SCAN_BINS, VerifyQC, list_prediction_files, strat_keys, valid_rows, variables_in  # noqa: E402
 
 
 def _scan_edges(files_by_inst: dict[str, list[str]], max_files: int = 60) -> dict[str, list[float]]:
@@ -61,7 +61,11 @@ def main() -> int:
     ap.add_argument("--sat_range_per_instrument", default=None, metavar="INST=LO:HI,...",
                     help="Per-instrument override of --sat_value_range, e.g. ssmis=50:330")
     ap.add_argument("--instruments", default=None,
-                    help="Comma-separated subset to (re)build; the others are left untouched")
+                    help="Comma-separated subset to (re)build. NOTE: scan_edges.json in out_dir is rewritten "
+                         "for this subset only, so build a subset into a separate out_dir and copy its clim files")
+    ap.add_argument("--verify_qc", default=None,
+                    help="Apply the conventional rules of this verify_qc.yaml (e.g. max_level_offset) to the "
+                         "climatology, so the reference uses the same sample as verification")
     args = ap.parse_args()
 
     files = list_prediction_files(args.pred_dir, args.recursive)
@@ -77,6 +81,7 @@ def main() -> int:
             name, rng = item.split("=")
             per_inst[name.strip()] = [float(x) for x in rng.split(":")]
     only = set(args.instruments.split(",")) if args.instruments else None
+    qc = VerifyQC(args.verify_qc) if args.verify_qc else None
 
     by_inst: dict[str, list[str]] = defaultdict(list)
     for path, inst, _ in files:
@@ -108,6 +113,8 @@ def main() -> int:
                 if rng and inst not in CONVENTIONAL and inst not in args.range_exclude.split(","):
                     obs = df[f"true_{var}"].to_numpy(float)
                     ok &= (obs >= rng[0]) & (obs <= rng[1])
+                if qc is not None and inst in CONVENTIONAL:
+                    ok, _ = qc.apply(df, inst, var, ok)
                 if not ok.any():
                     continue
                 sub = keys[ok].copy()

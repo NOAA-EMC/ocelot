@@ -167,7 +167,7 @@ def write_qc_summary(qc_counts: pd.DataFrame, out_dir: str) -> None:
     """Fraction of verifying observations removed by each verification-QC rule, per target."""
     if qc_counts is None or qc_counts.empty:
         return
-    rules = [c for c in ("range", "flag", "pressure", "relation", "outlier") if c in qc_counts.columns]
+    rules = [c for c in ("range", "flag", "pressure", "relation", "outlier", "level") if c in qc_counts.columns]
     g = qc_counts.groupby(["instrument", "variable"])[["n_before"] + rules].sum()
     for c in rules:
         g[f"pct_{c}"] = 100.0 * g[c] / g["n_before"]

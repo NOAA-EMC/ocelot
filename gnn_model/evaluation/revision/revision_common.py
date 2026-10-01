@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 CONVENTIONAL = {"surface_obs", "radiosonde", "aircraft"}
+# The 16 standard pressure levels of the model's level embedding (process_timeseries.STANDARD_PRESSURE_LEVELS).
+STANDARD_PRESSURE_HPA = np.array([1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10], float)
 FILE_RE = re.compile(r"pred_(?P<inst>.+)_target_init_(?P<init>\d{10})\.csv$")
 LAT_BAND_DEG = 5.0
 N_SCAN_BINS = 8
@@ -115,9 +117,12 @@ class VerifyQC:
 
     Rules come from a YAML file (see verify_qc.yaml):
       satellite: {value_range: [lo, hi], range_exclude: [inst, ...], outlier_k: k}
-      conventional: {<inst>: {<variable>: {flag: <zarr flag column>, keep: [...] | reject: [...],
+      conventional: {<inst>: {all_variables: {max_level_offset: d},
+                              <variable>: {flag: <zarr flag column>, keep: [...] | reject: [...],
                                            min_pressure_hpa: p,
                                            le_variable: <other variable>, le_margin: m, max_spread: s}}}
+    ``max_level_offset`` keeps only reports whose pressure lies within |ln(p / p_level)| <= d of their
+    standard pressure level (d = 0.01 is about 1%), i.e. verification at the standard levels.
     Flag columns are read from the prediction CSV as ``qm_<flag column>`` (written when the
     instrument's ``export_flag_cols`` is set in the observation config). A rule whose flag column is
     missing raises, so a filter can never be skipped silently.
@@ -138,7 +143,8 @@ class VerifyQC:
         return bool(self.rules)
 
     def needed_flag_cols(self, inst: str) -> list[str]:
-        return sorted({f"qm_{r['flag']}" for r in (self.conv.get(inst) or {}).values() if r.get("flag")})
+        return sorted({f"qm_{r['flag']}" for r in (self.conv.get(inst) or {}).values()
+                       if isinstance(r, dict) and r.get("flag")})
 
     def attach_flags(self, df: pd.DataFrame, path: str, inst: str) -> pd.DataFrame:
         """Ensure the qm_* columns a rule needs are present; optionally take them, by row position,
@@ -164,7 +170,7 @@ class VerifyQC:
 
     def apply(self, df: pd.DataFrame, inst: str, var: str, ok: np.ndarray, clim: np.ndarray | None = None):
         """Return (ok_after_qc, n_removed_by_rule_dict)."""
-        removed = {"range": 0, "flag": 0, "pressure": 0, "relation": 0, "outlier": 0}
+        removed = {"range": 0, "flag": 0, "pressure": 0, "relation": 0, "outlier": 0, "level": 0}
         if not self.active:
             return ok, removed
         ok = ok.copy()
@@ -190,6 +196,20 @@ class VerifyQC:
                     removed["outlier"] = int(bad.sum())
                     ok &= ~bad
         else:
+            inst_rule = (self.conv.get(inst) or {}).get("all_variables") or {}
+            if inst_rule.get("max_level_offset") is not None:
+                missing = [c for c in ("pressure_hPa", "pressure_level_idx") if c not in df.columns]
+                if missing:
+                    raise SystemExit(f"max_level_offset for {inst} needs columns {missing} in the prediction CSVs.")
+                p = pd.to_numeric(df["pressure_hPa"], errors="coerce").to_numpy(float)
+                li = pd.to_numeric(df["pressure_level_idx"], errors="coerce").to_numpy(float)
+                valid = np.isfinite(li) & (li >= 0) & (li < len(STANDARD_PRESSURE_HPA)) & np.isfinite(p) & (p > 0)
+                at_level = np.zeros(len(df), dtype=bool)
+                std = STANDARD_PRESSURE_HPA[np.where(valid, li, 0).astype(int)]
+                at_level[valid] = np.abs(np.log(p[valid] / std[valid])) <= float(inst_rule["max_level_offset"])
+                bad = ok & ~at_level
+                removed["level"] = int(bad.sum())
+                ok &= ~bad
             rule = (self.conv.get(inst) or {}).get(var)
             if rule:
                 if rule.get("flag"):

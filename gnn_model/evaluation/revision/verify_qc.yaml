@@ -15,7 +15,15 @@ satellite:
   outlier_k: 0                    # optional robust gross-error check; 0 = off
 
 conventional:
+  # Upper-air reports are verified at the 16 standard pressure levels: only reports within
+  # |ln(p / p_level)| <= 0.01 (about 1%) of their level are scored. For radiosondes these are the
+  # mandatory levels. The climatology is built with the same rule (build_obs_climatology --verify_qc).
+  aircraft:
+    all_variables:
+      max_level_offset: 0.01
   radiosonde:
+    all_variables:
+      max_level_offset: 0.01
     dewPointTemperature:
       min_pressure_hpa: 300       # humidity sensors are unreliable above 300 hPa
       le_variable: airTemperature # dew point cannot exceed air temperature (+0.5 C margin)
