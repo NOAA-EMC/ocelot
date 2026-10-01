@@ -142,24 +142,44 @@ def denial(a):
     d = pd.read_csv(a.summary)
     piv = d.pivot_table(index="experiment", columns="target_instrument", values="mse_change_pct")
     piv = piv[[c for c in ORDER if c in piv.columns]]
+    # Rows in the same order as the target columns, so each group's own targets lie on a block
+    # diagonal; the two combined groups go last, below a separator.
+    rows = [r for r in DENIAL_ORDER if r in piv.index] + [r for r in piv.index if r not in DENIAL_ORDER]
+    piv = piv.loc[rows]
     lim = np.nanmax(np.abs(piv.to_numpy()))
     fig, ax = plt.subplots(figsize=(3.0 + 0.75 * piv.shape[1], 0.45 * len(piv) + 2.0))
-    im = ax.imshow(piv.to_numpy(), cmap="RdBu_r", vmin=-lim, vmax=lim, aspect="auto")
+    # Impacts span four orders of magnitude (about 1% to over 1000%), so a linear scale would leave
+    # every cross-system cell white. A symmetric-log scale keeps 1, 10, 100 and 1000% distinguishable.
+    from matplotlib.colors import SymLogNorm
+    norm = SymLogNorm(linthresh=1.0, linscale=0.5, vmin=-lim, vmax=lim, base=10)
+    im = ax.imshow(piv.to_numpy(), cmap="RdBu_r", norm=norm, aspect="auto")
     ax.set_xticks(range(piv.shape[1]), [LABEL.get(c, c) for c in piv.columns], rotation=45, ha="right")
-    ax.set_yticks(range(len(piv)), [f"withhold {e.replace('_', ' ')}" for e in piv.index])
+    ax.set_yticks(range(len(piv)), [DENIAL_LABEL.get(e, e.replace("_", " ")) for e in piv.index])
+    n_single = sum(1 for e in piv.index if not e.startswith("all_"))
+    if 0 < n_single < len(piv):
+        ax.axhline(n_single - 0.5, color="k", lw=1.2)
     ns = d.assign(ns=(d["ci_lo"] <= 0) & (d["ci_hi"] >= 0)).pivot_table(
         index="experiment", columns="target_instrument", values="ns", aggfunc="max").reindex_like(piv)
     for i in range(piv.shape[0]):
         for j in range(piv.shape[1]):
             v = piv.iat[i, j]
             if np.isfinite(v):
-                ax.text(j, i, f"{v:+.1f}", ha="center", va="center", fontsize=7)
+                ax.text(j, i, f"{v:+.0f}" if abs(v) >= 100 else f"{v:+.1f}", ha="center", va="center",
+                        fontsize=7, color="white" if abs(v) >= 0.5 * lim else "black")
                 if bool(ns.iat[i, j]):  # 95% CI includes zero
                     ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, hatch="///", lw=0, alpha=0.4))
     fig.colorbar(im, ax=ax, label="Change in target MSE (%)")
     ax.set_xlabel("Verified target")
+    ax.set_ylabel("Withheld inputs")
     fig.tight_layout()
     fig.savefig(a.out, dpi=300)
+
+
+DENIAL_ORDER = ["mw_sounders", "mw_imager", "ir_imagers", "scatterometer", "aircraft", "radiosonde", "surface",
+                "all_satellite", "all_conventional"]
+DENIAL_LABEL = {"mw_sounders": "MW sounders", "mw_imager": "MW imager", "ir_imagers": "IR imagers",
+                "scatterometer": "Scatterometer", "aircraft": "Aircraft", "radiosonde": "Radiosondes",
+                "surface": "Surface stations", "all_satellite": "All satellite", "all_conventional": "All conventional"}
 
 
 def rollout(a):
