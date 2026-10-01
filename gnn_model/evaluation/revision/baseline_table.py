@@ -59,6 +59,8 @@ def main() -> int:
     ap.add_argument("--verify_qc", default=None, help="YAML of verification-time QC rules (verify_qc.yaml)")
     ap.add_argument("--n_boot", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=12345)
+    ap.add_argument("--no_dedup", action="store_true",
+                    help="keep repeated prediction rows, as the original evaluation scripts did")
     ap.add_argument("--base", default=None,
                     help="comma list of methods defining the sample; others are scored where available on it")
     args = ap.parse_args()
@@ -83,7 +85,8 @@ def main() -> int:
         varmap = {v: c for v, c in REF_COLS[inst].items() if f"pred_{v}" in df.columns}
         true_cols = [f"true_{v}" for v in varmap]
         df["_key"] = _row_key(df, true_cols)
-        df = df.drop_duplicates("_key")
+        if not args.no_dedup:
+            df = df.drop_duplicates("_key")
         ok_refs = True
         for name, d, suffix in refs:
             rpath = os.path.join(d, f"pred_{inst}_target_init_{init}_{suffix}.csv")
