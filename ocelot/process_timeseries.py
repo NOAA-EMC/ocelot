@@ -984,7 +984,7 @@ def extract_features(
                         T, Td = arr[:, jT], arr[:, jTd]
                         m = np.isfinite(T) & np.isfinite(Td)
                         bad_hi = m & (Td > T + 0.5)
-                        bad_spread = m & ((T - Td) >  rel.max_temp_dewpoint_spread)
+                        bad_spread = m & ((T - Td) > rel.max_temp_dewpoint_spread)
                         bad = bad_hi | bad_spread
                         if np.any(bad):
                             mask[bad, jTd] = False
