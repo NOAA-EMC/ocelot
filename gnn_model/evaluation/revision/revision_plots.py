@@ -64,6 +64,19 @@ def _group_title(inst):
     return f"{lab} beam" if inst == "ascat" else f"{lab} channel"
 
 
+def _print_style():
+    """Fixed text sizes for the print figures, independent of any site matplotlibrc or style.
+
+    Setting only font.size is not enough: tick labels, axis labels, titles and legends use relative
+    sizes ('small', 'x-small', ...) that a site configuration can shrink below it. Start from the
+    matplotlib defaults and set every text size to MIN_FONT_PT explicitly.
+    """
+    plt.rcdefaults()
+    plt.rcParams.update({k: MIN_FONT_PT for k in (
+        "font.size", "axes.titlesize", "axes.labelsize", "xtick.labelsize", "ytick.labelsize",
+        "legend.fontsize", "legend.title_fontsize", "figure.titlesize", "figure.labelsize")})
+
+
 def print_check(fig, cell_texts=(), header_texts=()):
     """Problems that would show in print: text below MIN_FONT_PT, figure larger than the page,
     a cell value wider than its cell, or a header running past its panel."""
@@ -115,7 +128,7 @@ def scorecard(a):
     Rows are grouped under bold instrument headers and labelled only by channel number or a short
     variable name, so the labels stay narrow; the blocks are dealt across `columns` panels.
     """
-    plt.rcParams.update({"font.size": MIN_FONT_PT})
+    _print_style()
     s = pd.read_csv(a.summary)
     s = s[s["plev"] == "all"].copy()
     label = {"msess_clim": "MSESS vs climatology", "acc_centered_mean": "ACC",
@@ -223,7 +236,7 @@ PANEL_TITLE = {("surface_obs", "airTemperature"): "T2m (K)", ("surface_obs", "de
 
 
 def baselines(a):
-    plt.rcParams.update({"font.size": MIN_FONT_PT})
+    _print_style()
     t = pd.read_csv(a.table)
     # A reference that is only available at some lead times (GraphCastGFS is 6-hourly) would
     # otherwise force every method onto those leads, hiding the +3 h comparison entirely.
@@ -275,7 +288,7 @@ def baselines(a):
 
 
 def denial(a):
-    plt.rcParams.update({"font.size": MIN_FONT_PT})
+    _print_style()
     d = pd.read_csv(a.summary)
     piv = d.pivot_table(index="experiment", columns="target_instrument", values="mse_change_pct")
     piv = piv[[c for c in ORDER if c in piv.columns]]
