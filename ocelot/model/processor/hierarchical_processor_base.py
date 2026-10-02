@@ -6,8 +6,8 @@ Author: Azadeh Gholoubi
 """
 
 import torch.nn as nn
-from ocelot.model.processor.processor_config import ProcessorConfig
-from ocelot.model.graph.graph_schema import GraphSchema
+from ocelot.configs.model_config import ProcessorConfig
+from ocelot.model.graph_schema import GraphSchema
 
 from ocelot.model.processor.processor_base import ProcessorBase
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh

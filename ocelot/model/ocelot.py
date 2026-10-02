@@ -661,7 +661,6 @@ class Ocelot(nn.Module):
         processor_context = ProcessorContext(
             num_steps=num_latent_steps,
             node_features={nt: f for nt, f in encoded_features.items() if nt != GraphSchema.MESH},
-            # Filter in batch order so message summation order matches the pre-refactor model.
             edge_index_dict={et: ei for et, ei in data.edge_index_dict.items() if et in processor_edge_types},
         )
 

@@ -17,7 +17,7 @@ import torch.nn as nn
 from ocelot.logger import log
 from ocelot.configs.model_config import HierarchicalSlidingWindowProcessorConfig
 from ocelot.model.graph_schema import GraphSchema
-from ocelot.model.processor.processor_base import HierarchicalProcessorBase
+from ocelot.model.processor.hierarchical_processor_base import HierarchicalProcessorBase
 from ocelot.model.processor.processor_base import ProcessorContext
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
