@@ -246,6 +246,8 @@ PANEL_TITLE = {("surface_obs", "airTemperature"): "T2m (K)", ("surface_obs", "de
 
 def baselines(a):
     _print_style()
+    if a.title_pt:  # larger panel titles, as in the first Fig. S1 draft
+        plt.rcParams["axes.titlesize"] = a.title_pt
     t = pd.read_csv(a.table)
     # A reference that is only available at some lead times (GraphCastGFS is 6-hourly) would
     # otherwise force every method onto those leads, hiding the +3 h comparison entirely.
@@ -385,6 +387,7 @@ def main() -> int:
                    help="relabel internal channel numbers, e.g. 'avhrr:50=3B,51=4,52=5' (';' between instruments)")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
     p.add_argument("--overlay", default=None, help="second table whose extra methods cover only some lead times")
+    p.add_argument("--title_pt", type=float, default=None, help="panel title size (pt); default MIN_FONT_PT")
     p.add_argument("--variables", default="surface_obs:airTemperature,surface_obs:wind_u,surface_obs:wind_v",
                    help="instrument:variable panels, in order (default: T2m, u10, v10, the variables of Fig. 6)")
     p = sub.add_parser("denial"); p.add_argument("--summary", required=True); p.add_argument("--out", required=True)
