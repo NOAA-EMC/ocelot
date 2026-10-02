@@ -3,19 +3,16 @@
 Author: Azadeh Gholoubi
 """
 
-from typing import Dict, List, Tuple
-
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
-from torch_geometric.data import HeteroData
 
-from ocelot.logger import log
 from ocelot.model.mesh.fixed_mesh import FixedMesh
-from ocelot.configs.model_config import ProcessorConfig
+from ocelot.configs.model_config import InteractionProcessorConfig
 from ocelot.model.graph_schema import GraphSchema
 from ocelot.model.processor.interaction_network import InteractionNetwork
 from ocelot.model.processor.flat_processor_base import FlatProcessorBase
+from ocelot.model.processor.processor_base import ProcessorContext
 
 
 class InteractionProcessor(FlatProcessorBase):
@@ -28,7 +25,7 @@ class InteractionProcessor(FlatProcessorBase):
 
     def __init__(self,
                  mesh: FixedMesh,
-                 processor_config: ProcessorConfig,
+                 processor_config: InteractionProcessorConfig,
                  graph_schema: GraphSchema):
         super().__init__(mesh)
 
@@ -58,38 +55,22 @@ class InteractionProcessor(FlatProcessorBase):
                 )
             )
 
-    def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, step: int, encoded_mesh_features: torch.Tensor, context: ProcessorContext) -> torch.Tensor:
         """
-        Forward pass through the interaction processor.
+        Evolve the mesh state one latent step.
 
-        Args:
-            step: Current step index
-            step_info: Dictionary containing information about latent steps and step mapping
-            encoded_mesh_features: tensor of encoded features for the finest level (level 0)
+        Input nodes are re-injected unchanged each step and evolve only within it;
+        only the mesh state is carried to the next step.
 
         Returns:
-            List of [N_level, H] updated mesh states per level
+            [num_graphs * N_mesh, H] updated mesh state
         """
+        x_dict = dict(context.node_features)
+        x_dict[GraphSchema.MESH] = encoded_mesh_features
 
-        """
-        Processes the graph through multiple message-passing steps.
-        """
+        for layer, norms in zip(self.layers, self.norms):
+            residual_x_dict = x_dict
+            x_dict = checkpoint.checkpoint(layer, x_dict, context.edge_index_dict, use_reentrant=False)
+            x_dict = {nt: norms[nt](x_dict[nt] + residual_x_dict[nt]) for nt in x_dict}
 
-        processor_edges = {et: ei for et, ei in data.edge_index_dict.items() if "_target" not in et[2]}
-
-        processed_x_dict = encoded_mesh_features
-        for i in range(self.num_message_passing_steps):
-            residual_x_dict = processed_x_dict
-
-            # Apply one step of message passing using gradient checkpointing
-            processed_x_dict = checkpoint.checkpoint(
-                self.layers[i], processed_x_dict, step_info["edge_index_dict"], use_reentrant=False
-            )
-
-            # Add residual connection and apply layer norm
-            for node_type in processed_x_dict:
-                processed_x_dict[node_type] = self.norms[i][node_type](
-                    processed_x_dict[node_type] + residual_x_dict[node_type]
-                )
-
-        return processed_x_dict
+        return x_dict[GraphSchema.MESH]

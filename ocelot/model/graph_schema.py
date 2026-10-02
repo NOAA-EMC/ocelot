@@ -28,6 +28,14 @@ class GraphSchema:
         return (self.MESH, "to", self.target_node(inst_name))
 
     @property
+    def mesh_edge(self) -> EdgeType:
+        return (self.MESH, "to", self.MESH)
+
+    @property
+    def processor_edge_types(self) -> List[EdgeType]:
+        return [self.mesh_edge] + [self.encoder_edge(inst_name) for inst_name in self.instrument_names]
+
+    @property
     def node_types(self) -> List[str]:
         types = [self.MESH]
         for inst_name in self.instrument_names:
@@ -36,7 +44,7 @@ class GraphSchema:
 
     @property
     def edge_types(self) -> List[EdgeType]:
-        types = [(self.MESH, "to", self.MESH)]
+        types = [self.mesh_edge]
         for inst_name in self.instrument_names:
             types.extend([self.encoder_edge(inst_name), self.decoder_edge(inst_name)])
         return types

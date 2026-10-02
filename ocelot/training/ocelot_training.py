@@ -350,7 +350,7 @@ class OcelotTrainingModule(pl.LightningModule):
                     and (self.current_epoch % max(1, self.training_config.validation.csv.every_n_epochs) == 0)
                 ):
                     # --- CSV save block ---
-                    out_dir = self.training_config.validation.csv.out_dir
+                    out_dir = self.training_config.validation.csv.output_dir
                     os.makedirs(out_dir, exist_ok=True)
 
                     # LATENT ROLLOUT: Concatenate all steps into standard format

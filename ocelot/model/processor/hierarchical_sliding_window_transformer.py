@@ -17,7 +17,8 @@ import torch.nn as nn
 from ocelot.logger import log
 from ocelot.configs.model_config import HierarchicalSlidingWindowProcessorConfig
 from ocelot.model.graph_schema import GraphSchema
-from ocelot.model.processor.processor_base import ProcessorBase
+from ocelot.model.processor.processor_base import HierarchicalProcessorBase
+from ocelot.model.processor.processor_base import ProcessorContext
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 
 
@@ -163,7 +164,7 @@ class SpatialMixBlock(nn.Module):
         return self.norm(x + self.drop(msg))
 
 
-class HierarchicalSlidingWindowTransformer(ProcessorBase):
+class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
     """
     Hierarchical temporal transformer that processes multiple mesh resolution levels.
 
@@ -187,7 +188,7 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
             mesh: HierarchicalMesh instance representing the mesh hierarchy
             processor_config: HierarchicalSlidingWindowProcessorConfig instance containing model hyperparameters
         """
-        super().__init__(mesh)
+        super().__init__(mesh, processor_config, graph_schema)
 
         self.hidden_dim = processor_config.hidden_dim
         self.num_levels = processor_config.num_levels
@@ -360,19 +361,20 @@ class HierarchicalSlidingWindowTransformer(ProcessorBase):
 
         return fine_features
 
-    def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> list[torch.Tensor]:
+    def forward(self, step: int, encoded_mesh_features: torch.Tensor, context: ProcessorContext) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
         Args:
-            step_info: Dictionary containing information about latent steps and step mapping
+            step: current latent step index
             encoded_mesh_features: tensor of encoded features for the finest level (level 0)
+            context: per-batch processor inputs
 
         Returns:
             List of [N_level, H] updated mesh states per level
         """
 
-        meshData = self._prep_mesh_data(step, step_info["num_steps"], encoded_mesh_features)
+        meshData = self._prep_mesh_data(step, context.num_steps, encoded_mesh_features)
 
         device = meshData.mesh_features_list[0].device
         dtype = meshData.mesh_features_list[0].dtype

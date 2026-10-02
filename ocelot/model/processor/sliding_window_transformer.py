@@ -16,6 +16,7 @@ from ocelot.configs.model_config import SlidingWindowProcessorConfig
 from ocelot.model.graph_schema import GraphSchema
 from ocelot.model.mesh.fixed_mesh import FixedMesh
 from ocelot.model.processor.flat_processor_base import FlatProcessorBase
+from ocelot.model.processor.processor_base import ProcessorContext
 
 
 class TemporalPositionalEncoding(nn.Module):
@@ -188,12 +189,12 @@ class SlidingWindowTransformer(FlatProcessorBase):
         for s in states[-self.window:]:
             self.cache.append(s.detach())
 
-    def forward(self, step: int, step_info: dict, encoded_mesh_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, step: int, encoded_mesh_features: torch.Tensor, context: ProcessorContext) -> torch.Tensor:
         """
         Args:
             step: int representing the current step in the sequence
-            step_info: dict containing latent step information (step mapping and number of steps)
-            encoded_mesh_features: dict of encoded features for the finest level (level 0)
+            encoded_mesh_features: [N_mesh, H] mesh state from the previous step
+            context: per-batch processor inputs (unused by this processor)
         Returns:
             List of [N_mesh, H] updated mesh states per latent step
         """

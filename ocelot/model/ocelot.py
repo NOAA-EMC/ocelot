@@ -24,6 +24,7 @@ from ocelot.model import processor
 from ocelot.model import mesh
 from ocelot.model import mlp_block
 from ocelot.model.graph_schema import GraphSchema
+from ocelot.model.processor.processor_base import ProcessorContext
 from ocelot.process_timeseries import _encode_target_time_features
 
 
@@ -656,13 +657,21 @@ class Ocelot(nn.Module):
 
         self.processor.reset()  # Ensure processor state is reset before rollout
 
+        processor_edge_types = set(self.graph_schema.processor_edge_types)
+        processor_context = ProcessorContext(
+            num_steps=num_latent_steps,
+            node_features={nt: f for nt, f in encoded_features.items() if nt != GraphSchema.MESH},
+            # Filter in batch order so message summation order matches the pre-refactor model.
+            edge_index_dict={et: ei for et, ei in data.edge_index_dict.items() if et in processor_edge_types},
+        )
+
         # Initialize predictions dict with lists for each base instrument
         predictions = {}
         for base_type in step_mapping.keys():
             predictions[base_type] = []
 
         for step in range(num_latent_steps):
-            encoded_features['mesh'] = self.processor(step, step_info, encoded_features['mesh'])
+            encoded_features['mesh'] = self.processor(step, encoded_features['mesh'], processor_context)
             self._generate_predictions(data, step, step_info['step_mapping'], edge_mapping, encoded_features['mesh'], predictions)
 
         return predictions, None  # mesh_features_per_step

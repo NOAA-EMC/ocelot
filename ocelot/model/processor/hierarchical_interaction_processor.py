@@ -46,35 +46,32 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
     For Production Use: Use processor_transformer_hierarchical.py instead
     """
 
-    def __init__(
-        self,
-        mesh: HierarchicalMesh,
-        hidden_dim: int,
-        num_levels: int,
-        num_message_passing_steps: int = 4,
-    ):
+    def __init__(self,
+                 mesh: HierarchicalMesh,
+                 processor_config: ProcessorConfig,
+                 graph_schema: GraphSchema):
         """
         Args:
             hidden_dim: Dimension of hidden features
             num_levels: Number of mesh hierarchy levels
             num_message_passing_steps: Number of message passing steps per level
         """
-        super().__init__(mesh, hidden_dim, num_levels, num_message_passing_steps)
+        super().__init__(mesh, processor_config, graph_schema)
 
-        self.hidden_dim = hidden_dim
-        self.num_levels = num_levels
-        self.num_message_passing_steps = num_message_passing_steps
+        self.hidden_dim = processor_config.hidden_dim
+        self.num_levels = processor_config.num_levels
+        self.num_message_passing_steps = processor_config.num_message_passing_steps
 
         # Intra-level message passing (within each mesh level)
         self.intra_level_layers = nn.ModuleList()
-        for level in range(num_levels):
+        for level in range(self.num_levels):
             level_layers = nn.ModuleList()
-            for _ in range(num_message_passing_steps):
+            for _ in range(self.num_message_passing_steps):
                 level_layers.append(
                     InteractionNet(
                         edge_index=None,
-                        send_dim=hidden_dim,
-                        rec_dim=hidden_dim,
+                        send_dim=self.hidden_dim,
+                        rec_dim=self.hidden_dim,
                         hidden_layers=2,
                         update_edges=False,
                     )
@@ -83,12 +80,12 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
         # Up connections (fine → coarse)
         self.up_layers = nn.ModuleList()
-        for level in range(num_levels - 1):
+        for level in range(self.num_levels - 1):
             self.up_layers.append(
                 InteractionNet(
                     edge_index=None,
-                    send_dim=hidden_dim,
-                    rec_dim=hidden_dim,
+                    send_dim=self.hidden_dim,
+                    rec_dim=self.hidden_dim,
                     hidden_layers=2,
                     update_edges=False,
                 )
@@ -96,12 +93,12 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
         # Down connections (coarse → fine)
         self.down_layers = nn.ModuleList()
-        for level in range(num_levels - 1):
+        for level in range(self.num_levels - 1):
             self.down_layers.append(
                 InteractionNet(
                     edge_index=None,
-                    send_dim=hidden_dim,
-                    rec_dim=hidden_dim,
+                    send_dim=self.hidden_dim,
+                    rec_dim=self.hidden_dim,
                     hidden_layers=2,
                     update_edges=False,
                 )
@@ -109,8 +106,8 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
         # Layer normalization for each level
         self.level_norms = nn.ModuleList()
-        for level in range(num_levels):
-            self.level_norms.append(nn.LayerNorm(hidden_dim))
+        for level in range(self.num_levels):
+            self.level_norms.append(nn.LayerNorm(self.hidden_dim))
 
     def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
         """
