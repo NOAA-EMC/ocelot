@@ -45,12 +45,12 @@ from ocelot.configs.instrument_config import InstrumentCatalogConfig  # noqa: E4
 from ocelot.configs.model_config import ModelConfig  # noqa: E402
 from ocelot.configs.pipeline_config import PipelineConfig  # noqa: E402
 from ocelot.gnn_datamodule import GNNDataModule, BinDataset  # noqa: E402
-from ocelot.fsoi_dataset import (  # noqa: E402
+from ocelot.FSOI.fsoi_dataset import (  # noqa: E402
     FSOIDataset,
     create_fsoi_bin_list,
     verify_sequential_consistency,
 )
-from ocelot.fsoi_utils import (  # noqa: E402
+from ocelot.FSOI.fsoi_utils import (  # noqa: E402
     get_fsoi_inputs,
     get_fsoi_input_masks,
     get_fsoi_metadata,
@@ -74,7 +74,7 @@ from ocelot.fsoi_utils import (  # noqa: E402
     SENTINEL_OBS,
     SENTINEL_OBS_ATOL,
 )
-from ocelot.fsoi_model_extensions import (  # noqa: E402
+from ocelot.FSOI.fsoi_model_extensions import (  # noqa: E402
     predict_at_targets,  # Use the CORRECT graph construction method
     freeze_model_for_fsoi,
 )
@@ -1937,7 +1937,7 @@ def main():
         end_date=fsoi_config['data']['end_date'],
         instrument_catalog=instrument_catalog,
         pipeline_config=pipeline_config,
-        mesh_structure=model.mesh_structure,
+        mesh_structure=model.mesh.mesh_structure,
         batch_size=1,  # Must be 1 for FSOI
         num_neighbors=3,
         window_size="12h",

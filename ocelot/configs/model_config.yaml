@@ -20,14 +20,14 @@ encoder:
   dropout: 0.0
 
 processor:
-  type: sliding_window  # sliding_window | interaction | hierarchical_interaction | hierarchical_sliding_window
-  # num_message_passing_steps: 4
+  type: interaction  # sliding_window | interaction | hierarchical_interaction | hierarchical_sliding_window
+  num_message_passing_steps: 4
   hidden_dim: *hidden_dim
-  depth: 4
-  num_heads: 4
-  window: 4
-  dropout: 0.1
-  spatial_mixing_steps: 1
+  # depth: 4
+  # num_heads: 4
+  # window: 4
+  # dropout: 0.1
+  # spatial_mixing_steps: 1
 
 decoder:
   type: gat  # gat | interaction

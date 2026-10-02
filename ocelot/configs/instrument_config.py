@@ -71,7 +71,6 @@ class QualityRelationsConfig(ConfigBase):
     dewpoint_le_temp = Optional(BoolField(), default=False)
     max_temp_dewpoint_spread = Optional(FloatField())
     rh_from_td_consistency_pct = Optional(FloatField())
-    max_temp_dewpoint_spread = Optional(IntField())
     pressure_vs_height = Optional(PressureHeightRelationConfig())
 
 

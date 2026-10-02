@@ -124,7 +124,7 @@ def predict_at_targets(
         strata, and inclusion probabilities for design-weighted population totals.
     """
     from torch_geometric.data import HeteroData
-    from create_mesh_graph_global import obs_mesh_conn
+    from ocelot.model.mesh.mesh import obs_mesh_conn
 
     device = next(model.parameters()).device
     if max_decoder_nodes is None:
@@ -181,9 +181,9 @@ def predict_at_targets(
                 edge_index_enc, edge_attr_enc = obs_mesh_conn(
                     prev_lat,
                     prev_lon,
-                    model.mesh_structure["m2m_graphs"],
-                    model.mesh_structure["mesh_lat_lon_list"],
-                    model.mesh_structure["mesh_list"],
+                    model.mesh.m2m_graphs,
+                    model.mesh.mesh_lat_lon_list
+                    model.mesh.mesh_list,
                     o2m=True,  # obs to mesh
                 )
 
@@ -361,9 +361,9 @@ def predict_at_targets(
                 edge_index_dec, edge_attr_dec = obs_mesh_conn(
                     curr_lat,
                     curr_lon,
-                    model.mesh_structure["m2m_graphs"],
-                    model.mesh_structure["mesh_lat_lon_list"],
-                    model.mesh_structure["mesh_list"],
+                    model.mesh.m2m_graphs,
+                    model.mesh.mesh_lat_lon_list,
+                    model.mesh.mesh_list,
                     o2m=False,  # mesh to obs (decoder)
                 )
 
