@@ -1,0 +1,53 @@
+# Selects the instrument definitions and output products used by a run.
+enabled_instruments:
+  # Satellite instruments
+  # - atms
+  # - amsua
+  # - ssmis
+  # - seviri_asr
+  # - seviri_csr
+  - avhrr
+  # - cris_pca
+  # - ascat
+  # Conventional instruments
+  - aircraft
+  - radiosonde
+  - surface_obs
+
+subsampling:
+  seed: 12345
+  # Factor N keeps every Nth sample in stride mode or approximately 1/N in random mode.
+  satellite:
+    _default: {factor: 30, mode: random}
+    atms: {factor: 6}
+    amsua: {factor: 3}
+    avhrr: {factor: 100}
+    ascat: {factor: 2}
+    cris_pca: {factor: 1}
+    seviri_asr: {factor: 60}
+    seviri_csr: {factor: 60}
+    ssmis: {factor: 20}
+
+  conventional:
+    _default: {factor: 1, mode: random}
+
+outputs:
+  mesh_prediction:
+    enabled: true
+    # Pressure level used to condition pressure-dependent mesh decoders.
+    pressure_level: 1000  # hPa
+    variables:
+      surface_obs:
+        - pressureMeanSeaLevel_prepbufr
+        - airTemperature
+        - dewPointTemperature
+        - wind_u
+        - wind_v
+      radiosonde:
+        - airTemperature
+        - dewPointTemperature
+        - wind_u
+        - wind_v
+
+  
+

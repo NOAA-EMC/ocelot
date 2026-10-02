@@ -1,0 +1,17 @@
+experiment_name: baseline_v1_inference
+checkpoint: checkpoints/baseline_v1/last.ckpt
+instrument_config_path: configs/instrument_config.yaml
+pipeline_config_path: configs/pipeline_config.yaml
+output_dir: predictions/baseline_v1
+
+data:
+  path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7
+  start_date: 2025-01-01
+  end_date: 2025-01-02
+  batch_size: 1
+
+resources:
+  devices: 1
+  num_nodes: 1
+
+eval_mode: false
