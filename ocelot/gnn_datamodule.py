@@ -1,0 +1,900 @@
+"""Lightning data loading and graph-building utilities for Ocelot GNN training.
+
+This module prepares time-binned observation samples, converts them into
+heterogeneous graph inputs, and manages train, validation, and prediction data
+pipelines through a PyTorch Lightning data module.
+
+Author: Azadeh Gholoubi
+"""
+
+import glob
+import os
+import json
+import hashlib
+import time
+import importlib
+import lightning.pytorch as pl
+import numpy as np
+import pandas as pd
+import torch
+import torch.distributed as dist
+import zarr
+from zarr.storage import LRUStoreCache
+from torch.utils.data import Dataset
+from torch_geometric.data import HeteroData
+from torch_geometric.loader import DataLoader as PyGDataLoader
+
+from ocelot.process_timeseries import extract_features, organize_bins_times
+from ocelot.model.mesh.mesh import obs_mesh_conn
+
+# Number of columns for latitude and longitude in metadata
+LAT_LON_COLUMNS = 2
+
+
+def _resolve_zarr_path(data_path: str, zname: str, start_date: str) -> tuple[str, bool]:
+    base_name = zname[:-5] if zname.endswith(".zarr") else zname
+    direct_candidates = [os.path.join(data_path, zname if zname.endswith(".zarr") else f"{zname}.zarr")]
+
+    year = str(start_date).split("-")[0]
+    year_tagged_path = os.path.join(data_path, f"{base_name}_{year}.zarr")
+    direct_candidates.append(year_tagged_path)
+
+    for candidate in direct_candidates:
+        if os.path.isdir(candidate):
+            return candidate, False
+
+    matches = sorted(glob.glob(os.path.join(data_path, f"{base_name}_*.zarr")))
+    available_matches = [path for path in matches if os.path.isdir(path)]
+    if len(available_matches) == 1:
+        return available_matches[0], True
+
+    available_match_names = sorted(os.path.basename(path) for path in available_matches)
+    raise FileNotFoundError(
+        f"Zarr not found for '{zname}' under {data_path}. "
+        f"Available matches: {available_match_names or 'none'}"
+    )
+
+
+def _to_unix_seconds(t):
+    """Best-effort conversion of a pandas/py datetime-like to unix seconds (UTC)."""
+    if t is None:
+        return None
+    try:
+        ts = pd.Timestamp(t)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return int(ts.timestamp())
+    except Exception:
+        try:
+            return int(t)
+        except Exception:
+            return None
+
+
+def _t32(x):
+    return x.float() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.float32)
+
+
+def _t64(x):
+    return x.long() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.long)
+
+
+# -------------------------
+# Dataset per bin
+# -------------------------
+class BinDataset(Dataset):
+    def __init__(
+        self,
+        bin_names,
+        data_summary,
+        zarr_store,
+        create_graph_fn,
+        instrument_catalog,
+        pipeline_config,
+        require_targets=True,
+        include_persistence_inputs=False,
+        tag="TRAIN",
+        verbose: bool = False,
+    ):
+        self.bin_names = list(bin_names) if bin_names is not None else []
+        self.data_summary = data_summary
+        self.z = zarr_store
+        self.create_graph_fn = create_graph_fn
+        self.instrument_catalog = instrument_catalog
+        self.pipeline_config = pipeline_config
+        self.require_targets = require_targets
+        self.include_persistence_inputs = bool(include_persistence_inputs)
+        self.tag = tag
+        self.verbose = bool(verbose)
+
+    def __len__(self):
+        return len(self.bin_names)
+
+    def __getitem__(self, idx):
+        bin_name = self.bin_names[idx]
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        if self.verbose and rank == 0 and idx == 0:
+            print(f"[Rank {rank}] [{self.tag}] fetching {bin_name} ... ds_id={id(self)} sum_id={id(self.data_summary)}")
+        try:
+            out = extract_features(
+                self.z,
+                self.data_summary,
+                bin_name,
+                self.instrument_catalog,
+                self.pipeline_config,
+                require_targets=self.require_targets,
+                include_persistence_inputs=self.include_persistence_inputs,
+            )
+            bin_data = out[bin_name]
+            graph_data = self.create_graph_fn(bin_data)
+            graph_data.bin_name = bin_name
+
+            # Attach bin-level timing metadata for downstream diagnostics (e.g., val_csv outputs).
+            # - init_time: start of the target window (forecast init / cycle time)
+            # - input_time: start of the input window
+            init_time_unix = None
+            input_time_unix = None
+            try:
+                for _obs_type, inst_dict in (bin_data or {}).items():
+                    if not isinstance(inst_dict, dict):
+                        continue
+                    for _inst_name, data_summary_bin in inst_dict.items():
+                        if not isinstance(data_summary_bin, dict):
+                            continue
+
+                        if input_time_unix is None and "input_time" in data_summary_bin:
+                            input_time_unix = _to_unix_seconds(data_summary_bin.get("input_time"))
+
+                        if init_time_unix is None:
+                            target_times = data_summary_bin.get("target_times")
+                            if isinstance(target_times, (list, tuple)) and len(target_times) > 0:
+                                init_time_unix = _to_unix_seconds(target_times[0])
+
+                        if init_time_unix is not None and input_time_unix is not None:
+                            raise StopIteration
+            except StopIteration:
+                pass
+            except Exception:
+                init_time_unix = None
+                input_time_unix = None
+
+            graph_data.init_time = _t64(int(init_time_unix) if init_time_unix is not None else -1)
+            graph_data.input_time = _t64(int(input_time_unix) if input_time_unix is not None else -1)
+
+            return graph_data
+        except Exception as e:
+            print(f"[Rank {rank}] [{self.tag}] ERROR processing {bin_name}: {e}")
+            raise
+
+
+# -------------------------
+# DataModule
+# -------------------------
+class GNNDataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        data_path,
+        start_date,
+        end_date,
+        instrument_catalog,
+        pipeline_config,
+        mesh_structure,
+        batch_size=1,
+        num_neighbors=3,
+        input_window_hours=12,      # binning input window
+        target_window_hours=12,     # binning target window
+        latent_step_hours=3,        # sub-target-window size for latent-space rollout
+        train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
+        cache_val_windows: bool = False,
+        val_cache_max_entries: int = 16,
+        prediction_mode=False,
+        require_targets=None,
+        verbose: bool = False,
+        **kwargs,
+    ):
+        super().__init__()
+
+        # Normalize to int so Lightning hparams merge is stable across module/datamodule.
+        latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
+        self.save_hyperparameters(ignore=["instrument_catalog", "pipeline_config", "mesh_structure"])
+        self.instrument_catalog = instrument_catalog
+        self.pipeline_config = pipeline_config
+        self.prediction_mode = bool(prediction_mode)
+        self.include_persistence_inputs = bool(prediction_mode)
+
+        # If require_targets not specified, default based on prediction_mode
+        # prediction_mode=True → require_targets=False (inference)
+        # prediction_mode=False → require_targets=True (training/validation)
+        if require_targets is None:
+            self.require_targets = not prediction_mode
+        else:
+            self.require_targets = require_targets
+        print(f"[DataModule] prediction_mode={prediction_mode}, require_targets={self.require_targets}")
+
+        # Optional cache for validation summaries keyed by (val_start,val_end)
+        self._cache_val_windows = bool(cache_val_windows)
+        self._val_cache_max_entries = int(val_cache_max_entries)
+        self._val_cache: dict[tuple[pd.Timestamp, pd.Timestamp], tuple[dict, list[str]]] = {}
+        self._val_cache_lru: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+
+        # On-disk cache for expensive summary builds (DDP-safe)
+        submit_dir = os.environ.get("SLURM_SUBMIT_DIR") or os.getcwd()
+        job_id = os.environ.get("SLURM_JOB_ID")
+        self._summary_cache_dir = os.path.join(submit_dir, ".summary_cache", job_id or "local")
+
+        # Keep as hparam for downstream access
+        self.hparams.verbose = bool(verbose)
+
+        self.mesh_structure = mesh_structure
+        # Zarr handles (stable across window changes)
+        self.z = None
+
+        # Separate train/val summaries + bin name lists
+        self.train_data_summary = None
+        self.val_data_summary = None
+        self.train_bin_names = []
+        self.val_bin_names = []
+
+        # Version counters (for debugging staleness)
+        self._train_version = 0
+        self._val_version = 0
+
+        # If callbacks want separate windows, they will set these:
+        # Default: create non-overlapping train/val split to prevent data leakage
+        # Use split ratio passed from training script for consistency
+        total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        train_days = int(total_days * train_val_split_ratio)
+
+        default_train_start = pd.to_datetime(start_date)
+        default_train_end = default_train_start + pd.Timedelta(days=train_days)
+        default_val_start = default_train_end  # Validation starts where training ends
+        default_val_end = pd.to_datetime(end_date)
+
+        self.hparams.train_start = pd.to_datetime(kwargs.get("train_start", default_train_start))
+        self.hparams.train_end = pd.to_datetime(kwargs.get("train_end", default_train_end))
+        self.hparams.val_start = pd.to_datetime(kwargs.get("val_start", default_val_start))
+        self.hparams.val_end = pd.to_datetime(kwargs.get("val_end", default_val_end))
+
+        # In prediction mode, use all data (no split)
+        if prediction_mode:
+            self.hparams.train_start = pd.to_datetime(start_date)
+            self.hparams.train_end = pd.to_datetime(end_date)
+            self.hparams.val_start = pd.to_datetime(start_date)
+            self.hparams.val_end = pd.to_datetime(end_date)
+            print(f"[DataModule] Prediction mode: Using entire date range {start_date} to {end_date}")
+
+        # Validate no overlap between train and validation windows to prevent data leakage (training mode only)
+        if not prediction_mode and self.hparams.train_end > self.hparams.val_start:
+            raise ValueError(
+                f"Data leakage detected! Training window ({self.hparams.train_start} to {self.hparams.train_end}) "
+                f"overlaps with validation window ({self.hparams.val_start} to {self.hparams.val_end}). "
+                f"Ensure train_end <= val_start for proper temporal split."
+            )
+
+        # Log the train/val split for transparency
+        train_days = (self.hparams.train_end - self.hparams.train_start).days
+        val_days = (self.hparams.val_end - self.hparams.val_start).days
+        total_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days
+        denom_days = total_days if total_days != 0 else 1
+        print(
+            f"[DataModule] Train/Val Split - Train: {train_days} days ({train_days / denom_days * 100:.1f}%), "
+            f"Val: {val_days} days ({val_days / denom_days * 100:.1f}%)"
+        )
+        print(f"[DataModule] Train window: {self.hparams.train_start.date()} to {self.hparams.train_end.date()}")
+        print(f"[DataModule] Val window:   {self.hparams.val_start.date()} to {self.hparams.val_end.date()}")
+
+        # Ensure latent_step_hours has a valid value
+        if self.hparams.latent_step_hours is None:
+            self.hparams.latent_step_hours = int(self.hparams.target_window_hours)
+
+    def _ddp_info(self) -> tuple[bool, int]:
+        is_ddp = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
+        rank = dist.get_rank() if is_ddp else 0
+        return is_ddp, int(rank)
+
+    def _is_verbose(self) -> bool:
+        return bool(getattr(self.hparams, "verbose", False))
+
+    def _summary_cache_path(self, kind: str, start_dt, end_dt, require_targets: bool) -> str:
+        payload = {
+            # Increment when binning semantics / summary structure changes.
+            # This forces rebuild instead of reusing an incompatible cached summary.
+            "summary_version": 3,
+            "kind": kind,
+            "start": str(pd.to_datetime(start_dt)),
+            "end": str(pd.to_datetime(end_dt)),
+            "input_window_hours": int(getattr(self.hparams, "input_window_hours", 0) or 0),
+            "target_window_hours": int(getattr(self.hparams, "target_window_hours", 0) or 0),
+            "latent_step_hours": int(getattr(self.hparams, "latent_step_hours", 0) or 0),
+            "require_targets": bool(require_targets),
+            "enabled_instruments": list(self.pipeline_config.enabled_instruments),
+            "subsampling": {
+                "seed": self.pipeline_config.subsampling.seed,
+                "policies": {
+                    name: vars(self.pipeline_config.subsampling.resolve(name, instrument.kind))
+                    for name, instrument in self.pipeline_config.enabled(self.instrument_catalog)
+                },
+            },
+        }
+        s = json.dumps(payload, sort_keys=True, default=str)
+        h = hashlib.blake2b(s.encode("utf-8"), digest_size=16).hexdigest()
+        os.makedirs(self._summary_cache_dir, exist_ok=True)
+        return os.path.join(self._summary_cache_dir, f"{kind}_{h}.pt")
+
+    def _load_or_build_summary(self, kind: str, start_dt, end_dt, require_targets: bool) -> tuple[dict, list[str]]:
+        is_ddp, rank = self._ddp_info()
+        cache_path = self._summary_cache_path(kind, start_dt, end_dt, require_targets=require_targets)
+        verbose = self._is_verbose()
+
+        def _build() -> tuple[dict, list[str]]:
+            data_summary = organize_bins_times(
+                self.z,
+                start_dt,
+                end_dt,
+                self.instrument_catalog,
+                pipeline_config=self.pipeline_config,
+                input_window_hours=self.hparams.input_window_hours,
+                target_window_hours=self.hparams.target_window_hours,
+                latent_step_hours=self.hparams.latent_step_hours,
+                require_targets=require_targets,
+                verbose=False,
+            )
+            # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
+            # Fall back to lexicographic ordering if parsing fails.
+
+            def _bin_sort_key(name: str):
+                try:
+                    if name.startswith('bin'):
+                        return int(name[3:])
+                    return int(name)
+                except Exception:
+                    return name
+
+            bin_names = sorted(data_summary.keys(), key=_bin_sort_key)
+            return data_summary, bin_names
+
+        if not is_ddp:
+            if os.path.exists(cache_path):
+                try:
+                    obj = torch.load(cache_path)
+                    return obj["data_summary"], obj["bin_names"]
+                except Exception as e:
+                    if verbose:
+                        print(f"[DM.cache] WARNING: failed to load cache {cache_path}: {e}; rebuilding")
+                    try:
+                        os.remove(cache_path)
+                    except OSError:
+                        pass
+            data_summary, bin_names = _build()
+            built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+            tmp = f"{cache_path}.tmp.{os.getpid()}"
+            torch.save(built_obj, tmp)
+            os.replace(tmp, cache_path)
+            return data_summary, bin_names
+
+        built_obj = None
+        if rank == 0:
+            if os.path.exists(cache_path):
+                built_obj = torch.load(cache_path)
+            else:
+                if verbose:
+                    print(f"[DM.cache] building {kind} summary -> {cache_path}")
+                data_summary, bin_names = _build()
+                built_obj = {"data_summary": data_summary, "bin_names": bin_names}
+                tmp = f"{cache_path}.tmp.{os.getpid()}"
+                torch.save(built_obj, tmp)
+                os.replace(tmp, cache_path)
+
+        dist.barrier()
+
+        if rank == 0:
+            return built_obj["data_summary"], built_obj["bin_names"]
+
+        for _ in range(120):
+            if os.path.exists(cache_path):
+                break
+            time.sleep(0.25)
+        obj = torch.load(cache_path)
+        return obj["data_summary"], obj["bin_names"]
+
+    # ------------- Setup / Zarr open -------------
+
+    def setup(self, stage=None):
+        _, rank = self._ddp_info()
+
+        # Open Zarrs once
+        if self.z is None:
+            self.z = {}
+            for inst_name, inst_cfg in self.pipeline_config.enabled(self.instrument_catalog):
+                obs_type = inst_cfg.kind
+                self.z.setdefault(obs_type, {})
+                src = inst_cfg.source or "zarr"
+
+                if src == "zarr":
+                    zname = inst_cfg.zarr_name or inst_name
+                    zarr_path, used_fallback = _resolve_zarr_path(
+                        self.hparams.data_path,
+                        zname,
+                        self.hparams.start_date,
+                    )
+                    if used_fallback and rank == 0:
+                        print(
+                            f"[ZARR] {obs_type}/{inst_name} requested year {self.hparams.start_date} "
+                            f"not found; using available store {zarr_path}"
+                        )
+
+                    if not os.path.isdir(zarr_path):
+                        raise FileNotFoundError(f"Zarr not found: {zarr_path}")
+
+                    # Use LRU cache; ensure int for max_size
+                    store = LRUStoreCache(zarr.DirectoryStore(zarr_path), max_size=int(2e9))
+                    self.z[obs_type][inst_name] = zarr.open(store, mode="r")
+
+                    if rank == 0:
+                        print(f"[ZARR] {obs_type}/{inst_name} -> {zarr_path}")
+                        try:
+                            print("       keys:", list(self.z[obs_type][inst_name].keys())[:12])
+                        except Exception:
+                            pass
+
+                    if obs_type == "conventional" and inst_name == "surface_obs":
+                        if not os.path.basename(zarr_path).startswith("raw_surface_obs"):
+                            print(f"[WARN] surface_obs expected raw_surface_obs*.zarr but got: {zarr_path}")
+
+                else:
+                    raise ValueError(
+                        f"Unknown source '{src}' for {inst_name}. "
+                        "NNJA support has been removed from this repo; use src='zarr'."
+                    )
+
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+
+        # Build TRAIN and VAL summaries for current windows
+        print(
+            f"[Rank {rank}] [DM.setup stage={stage}] "
+            f"train_window={self.hparams.train_start}..{self.hparams.train_end} | "
+            f"val_window={self.hparams.val_start}..{self.hparams.val_end}"
+        )
+
+        self._rebuild_train_summary()
+        self._rebuild_val_summary()
+
+        if stage in (None, "fit"):
+            # For now we use the full lists produced by organize_bins_times;
+            # callbacks can narrow them by changing windows and triggering reload.
+            pass
+
+    # ------------- Summary (re)builders -------------
+    def _rebuild_train_summary(self):
+        _, rank = self._ddp_info()
+        self.train_data_summary, self.train_bin_names = self._load_or_build_summary(
+            "train",
+            self.hparams.train_start,
+            self.hparams.train_end,
+            require_targets=True,
+        )
+        print(
+            f"[Rank {rank}] [DM.train_summary] v{self._train_version} sum_id={id(self.train_data_summary)} "
+            f"bins={len(self.train_bin_names)} first={self.train_bin_names[0] if self.train_bin_names else None}"
+        )
+
+    def _rebuild_val_summary(self):
+        _, rank = self._ddp_info()
+        key = (pd.to_datetime(self.hparams.val_start), pd.to_datetime(self.hparams.val_end))
+        if self._cache_val_windows and key in self._val_cache:
+            self.val_data_summary, self.val_bin_names = self._val_cache[key]
+        else:
+            self.val_data_summary, self.val_bin_names = self._load_or_build_summary(
+                "val",
+                self.hparams.val_start,
+                self.hparams.val_end,
+                require_targets=self.require_targets,
+            )
+            if self._cache_val_windows:
+                self._val_cache[key] = (self.val_data_summary, self.val_bin_names)
+                self._val_cache_lru.append(key)
+                while len(self._val_cache_lru) > self._val_cache_max_entries:
+                    old = self._val_cache_lru.pop(0)
+                    self._val_cache.pop(old, None)
+        print(
+            f"[Rank {rank}] [DM.val_summary]   v{self._val_version} sum_id={id(self.val_data_summary)} "
+            f"bins={len(self.val_bin_names)} first={self.val_bin_names[0] if self.val_bin_names else None}"
+        )
+
+    # ------------- Window setters for callbacks -------------
+    def set_train_window(self, start_dt, end_dt):
+        self.hparams.train_start = pd.to_datetime(start_dt)
+        self.hparams.train_end = pd.to_datetime(end_dt)
+        self._train_version += 1
+        print(f"[DM.set_train_window] v{self._train_version} -> {self.hparams.train_start} .. {self.hparams.train_end}")
+        # Rebuild summary/bin names immediately so the *next* dataloader reload sees fresh objects
+        self._rebuild_train_summary()
+
+    def set_val_window(self, start_dt, end_dt):
+        self.hparams.val_start = pd.to_datetime(start_dt)
+        self.hparams.val_end = pd.to_datetime(end_dt)
+        self._val_version += 1
+        print(f"[DM.set_val_window]   v{self._val_version} -> {self.hparams.val_start} .. {self.hparams.val_end}")
+        self._rebuild_val_summary()
+
+    # ------------- Graph builder -------------
+
+    def _create_graph_structure(self, bin_data):
+        data = HeteroData()
+
+        # 1) Mesh nodes and edges
+        data["mesh"].x = _t32(self.mesh_structure["mesh_features_torch"][0])
+        data["mesh"].pos = _t32(self.mesh_structure["mesh_lat_lon_list"][0])
+
+        m2m_edge_index = self.mesh_structure["m2m_edge_index_torch"][0]
+        # Keep mesh edge_attr in fp16 to reduce device memory footprint under AMP.
+        m2m_edge_attr = self.mesh_structure["m2m_features_torch"][0].to(torch.float16)
+        reverse_edges = torch.stack([m2m_edge_index[1], m2m_edge_index[0]], dim=0)
+        data["mesh", "to", "mesh"].edge_index = torch.cat([m2m_edge_index, reverse_edges], dim=1)
+        data["mesh", "to", "mesh"].edge_attr = torch.cat([m2m_edge_attr, m2m_edge_attr], dim=0)
+
+        target_window_hours = int(self.hparams.target_window_hours)
+
+        # Sanity check: ensure target_window_hours is divisible by latent_step_hours
+        if target_window_hours % self.hparams.latent_step_hours != 0:
+            raise ValueError(
+                f"target_window_hours ({target_window_hours}h) must be divisible by "
+                f"latent_step_hours ({self.hparams.latent_step_hours}h)"
+            )
+
+        num_latent_steps = target_window_hours // self.hparams.latent_step_hours
+
+        # 3) Observation data and mesh connections
+        # ALL instruments get the same node structure based on detected batch mode
+        for inst_name, inst_cfg in self.pipeline_config.enabled(self.instrument_catalog):
+            obs_type = inst_cfg.kind
+
+            # Check if this instrument has data for this time bin
+            if obs_type in bin_data and inst_name in bin_data[obs_type]:
+                inst_dict = bin_data[obs_type][inst_name]
+                self._create_latent_nodes(data, inst_name, inst_dict, num_latent_steps)
+            else:
+                # MISSING INSTRUMENT: Create empty nodes with same structure as present instruments
+                self._create_empty_latent_nodes(data, inst_name, inst_cfg, num_latent_steps)
+
+        return data
+
+    def _create_latent_nodes(self, data, inst_name, inst_dict, num_latent_steps):
+        """Create nodes for instrument with data in latent mode."""
+        # Input features (same for all steps)
+        node_type_input = f"{inst_name}_input"
+        if "input_features_final" in inst_dict:
+            data[node_type_input].x = _t32(inst_dict["input_features_final"])
+
+            if "input_features_raw" in inst_dict:
+                data[node_type_input].input_features_raw = _t32(inst_dict["input_features_raw"])
+            if "input_channel_mask" in inst_dict:
+                data[node_type_input].input_channel_mask = torch.as_tensor(
+                    inst_dict["input_channel_mask"], dtype=torch.bool
+                )
+            if "input_time_unix" in inst_dict:
+                data[node_type_input].input_times = _t64(inst_dict["input_time_unix"])
+
+            # Store pressure level index for radiosonde and aircraft (if available)
+            if "input_pressure_level" in inst_dict:
+                data[node_type_input].pressure_level = inst_dict["input_pressure_level"].long()
+                print(
+                    f"[DATAMODULE] Stored pressure_level for {node_type_input}: "
+                    f"shape={data[node_type_input].pressure_level.shape}, "
+                    f"range=[{data[node_type_input].pressure_level.min()}, {data[node_type_input].pressure_level.max()}]"
+                )
+            elif inst_name in ["radiosonde", "aircraft"]:
+                print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_input}! Data may not be preprocessed with new code.")
+
+            # Create encoder edges (observation to mesh)
+            if "input_lat_deg" in inst_dict and "input_lon_deg" in inst_dict:
+                grid_lat_deg = inst_dict["input_lat_deg"]
+                grid_lon_deg = inst_dict["input_lon_deg"]
+
+                # Keep lat/lon on the observation nodes (used by FSOI matching)
+                data[node_type_input].lat = _t32(grid_lat_deg)
+                data[node_type_input].lon = _t32(grid_lon_deg)
+
+                edge_index_encoder, edge_attr_encoder = obs_mesh_conn(
+                    grid_lat_deg,
+                    grid_lon_deg,
+                    self.mesh_structure["m2m_graphs"],
+                    self.mesh_structure["mesh_lat_lon_list"],
+                    self.mesh_structure["mesh_list"],
+                    o2m=True,
+                )
+                data[node_type_input, "to", "mesh"].edge_index = edge_index_encoder
+                data[node_type_input, "to", "mesh"].edge_attr = edge_attr_encoder.to(torch.float16)
+
+        # Handle target features for each latent step
+        if "target_features_final_list" not in inst_dict:
+            return
+
+        for step in range(num_latent_steps):
+            if step >= len(inst_dict["target_features_final_list"]):
+                continue
+
+            node_type_target = f"{inst_name}_target_step{step}"
+            target_features = inst_dict["target_features_final_list"][step]
+
+            # Get channel mask and check validity
+            target_channel_mask = inst_dict.get("target_channel_mask_list", [None])[step] if step < len(
+                inst_dict.get("target_channel_mask_list", [])) else None
+
+            if target_channel_mask is not None:
+                target_channel_mask = target_channel_mask.to(torch.bool)
+                keep_t = target_channel_mask.any(dim=1)  # Keep rows with ANY valid channel
+            else:
+                keep_t = torch.ones((target_features.shape[0],), dtype=torch.bool)
+
+            # Handle empty case
+            if keep_t.sum() == 0:
+                data[node_type_target].y = torch.empty((0, target_features.shape[1]), dtype=torch.float32)
+                data[node_type_target].x = torch.empty((0, 1), dtype=torch.float32)
+                data[node_type_target].target_metadata = torch.empty((0, 3), dtype=torch.float32)
+                data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
+                data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
+                data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
+                data[node_type_target].obs_time_unix = torch.empty((0,), dtype=torch.long)
+                continue
+
+            keep_np = keep_t.cpu().numpy()
+
+            # Filter all data
+            y_t = target_features[keep_t]
+            mask_t = target_channel_mask[keep_t] if target_channel_mask is not None else torch.ones_like(y_t, dtype=torch.bool)
+
+            data[node_type_target].y = _t32(y_t)
+            # IMPORTANT: keep as bool to avoid massive memory blow-ups for satellite targets.
+            data[node_type_target].target_channel_mask = mask_t.to(torch.bool)
+
+            # Metadata
+            if "target_metadata_list" in inst_dict and step < len(inst_dict["target_metadata_list"]):
+                tgt_meta = inst_dict["target_metadata_list"][step][keep_t]
+                data[node_type_target].target_metadata = _t32(tgt_meta)
+
+            # Scan angle handling per-instrument (config-driven)
+            # Determine observation type to look up config
+            scan_angle_cols = self.instrument_catalog.get(inst_name).scan_angle_channels
+
+            if "scan_angle_list" in inst_dict and step < len(inst_dict["scan_angle_list"]):
+                x_aux = inst_dict["scan_angle_list"][step][keep_t]
+
+                # Validate and pad/truncate to expected dimensions
+                if x_aux.shape[-1] != scan_angle_cols:
+                    if x_aux.shape[-1] > scan_angle_cols:
+                        x_aux = x_aux[:, :scan_angle_cols]
+                    else:
+                        pad_cols = scan_angle_cols - x_aux.shape[-1]
+                        padding = torch.zeros((x_aux.shape[0], pad_cols), dtype=x_aux.dtype, device=x_aux.device)
+                        x_aux = torch.cat([x_aux, padding], dim=-1)
+            else:
+                x_aux = torch.zeros((y_t.shape[0], scan_angle_cols), dtype=torch.float32)
+            data[node_type_target].x = _t32(x_aux)
+
+            # Instrument ID
+            if "instrument_id" in inst_dict:
+                data[node_type_target].instrument_ids = torch.full(
+                    (y_t.shape[0],),
+                    inst_dict["instrument_id"],
+                    dtype=torch.long
+                )
+
+            # Pressure data for radiosonde and aircraft (used for evaluation CSV)
+            if "target_pressure_hpa_list" in inst_dict and step < len(inst_dict["target_pressure_hpa_list"]):
+                pressure_hpa = inst_dict["target_pressure_hpa_list"][step][keep_np]
+                data[node_type_target].target_pressure_hpa = _t32(torch.tensor(pressure_hpa, dtype=torch.float32))
+
+            # Per-observation timestamps (unix seconds) for verifying within-window spread
+            if "target_time_unix_list" in inst_dict and step < len(inst_dict["target_time_unix_list"]):
+                obs_unix = inst_dict["target_time_unix_list"][step]
+                obs_unix = np.asarray(obs_unix, dtype=np.int64)
+                if obs_unix.size:
+                    obs_unix = obs_unix[keep_np]
+                data[node_type_target].obs_time_unix = _t64(torch.tensor(obs_unix, dtype=torch.long))
+            else:
+                data[node_type_target].obs_time_unix = torch.full((y_t.shape[0],), -1, dtype=torch.long)
+
+            # Store pressure level index for radiosonde and aircraft (if available)
+            if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
+                pressure_level_idx = inst_dict["target_pressure_level_list"][step][keep_t]
+                data[node_type_target].pressure_level = pressure_level_idx.long()
+                print(
+                    f"[DATAMODULE] Stored pressure_level for {node_type_target}: "
+                    f"shape={data[node_type_target].pressure_level.shape}, "
+                    f"range=[{data[node_type_target].pressure_level.min()}, {data[node_type_target].pressure_level.max()}]"
+                )
+            elif inst_name in ["radiosonde", "aircraft"]:
+                print(f"[DATAMODULE] WARNING: No pressure_level found for {node_type_target}! Data may not be preprocessed with new code.")
+
+            # Edges - filter lat/lon too
+            if ("target_lat_deg_list" in inst_dict and "target_lon_deg_list" in inst_dict):
+                target_lat_deg = inst_dict["target_lat_deg_list"][step][keep_np]
+                target_lon_deg = inst_dict["target_lon_deg_list"][step][keep_np]
+
+                # Keep lat/lon on the target nodes (used by FSOI matching)
+                data[node_type_target].lat = _t32(target_lat_deg)
+                data[node_type_target].lon = _t32(target_lon_deg)
+
+                if len(target_lat_deg) > 0:
+                    edge_index_decoder, edge_attr_decoder = obs_mesh_conn(
+                        target_lat_deg,
+                        target_lon_deg,
+                        self.mesh_structure["m2m_graphs"],
+                        self.mesh_structure["mesh_lat_lon_list"],
+                        self.mesh_structure["mesh_list"],
+                        o2m=False,
+                    )
+                    data["mesh", "to", node_type_target].edge_index = edge_index_decoder
+                    data["mesh", "to", node_type_target].edge_attr = edge_attr_decoder.to(torch.float16)
+
+    def _create_empty_latent_nodes(self, data, inst_name, inst_cfg, num_latent_steps):
+        """Create empty nodes for missing instrument in latent mode."""
+        # Create empty input node
+        node_type_input = f"{inst_name}_input"
+        data[node_type_input].x = torch.empty((0, inst_cfg.input_dim), dtype=torch.float32)
+        data[node_type_input].input_channel_mask = torch.empty((0, len(inst_cfg.features)), dtype=torch.bool)
+        data[node_type_input].lat = torch.empty((0,), dtype=torch.float32)
+        data[node_type_input].lon = torch.empty((0,), dtype=torch.float32)
+        data[node_type_input, "to", "mesh"].edge_index = torch.empty((2, 0), dtype=torch.long)
+        data[node_type_input, "to", "mesh"].edge_attr = torch.empty((0, 4), dtype=torch.float32)
+
+        # Create empty target nodes for all latent steps
+        for step in range(num_latent_steps):
+            node_type_target = f"{inst_name}_target_step{step}"
+            data[node_type_target].y = torch.empty((0, inst_cfg.target_dim), dtype=torch.float32)
+            # Get scan angle dimension from config
+            scan_angle_dim = self.instrument_catalog.get(inst_name).scan_angle_channels
+            data[node_type_target].x = torch.empty((0, scan_angle_dim), dtype=torch.float32)
+            # lat/lon + instrument metadata + appended target time features
+            metadata_dim = len(inst_cfg.metadata) + LAT_LON_COLUMNS + 5
+            data[node_type_target].target_metadata = torch.empty((0, metadata_dim), dtype=torch.float32)
+            data[node_type_target].instrument_ids = torch.empty((0,), dtype=torch.long)
+            data[node_type_target].target_channel_mask = torch.empty((0, inst_cfg.target_dim), dtype=torch.bool)
+            data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
+            data["mesh", "to", node_type_target].edge_index = torch.empty((2, 0), dtype=torch.long)
+            data["mesh", "to", node_type_target].edge_attr = torch.empty((0, 4), dtype=torch.float32)
+            data[node_type_target].pos = torch.empty((0, LAT_LON_COLUMNS), dtype=torch.float32)  # from standard mode, seems unused
+            data[node_type_target].num_nodes = 0  # from standard mode, seems unused
+            data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
+            data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
+
+    # ------------- DataLoaders -------------
+    def _worker_init(self, worker_id):
+        import numpy as np
+        base_seed = int(torch.initial_seed()) % 2**31
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        print(
+            f"[WorkerInit] rank={rank} worker={worker_id} pid={os.getpid()} seed={base_seed} "
+            f"train_sum_id={id(self.train_data_summary)} val_sum_id={id(self.val_data_summary)}"
+        )
+
+    def train_dataloader(self):
+        ds = BinDataset(
+            self.train_bin_names,
+            self.train_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.instrument_catalog,
+            self.pipeline_config,
+            require_targets=True,  # Training always requires targets
+            include_persistence_inputs=False,
+            tag="TRAIN",
+        )
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=False,   # safer while debugging stale refs
+            worker_init_fn=self._worker_init,
+        )
+        print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
+              f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
+        return loader
+
+    def val_dataloader(self):
+        if not self.val_bin_names:
+            return None
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.instrument_catalog,
+            self.pipeline_config,
+            require_targets=True,  # Validation requires targets for comparison
+            include_persistence_inputs=self.include_persistence_inputs,
+            tag="VAL",
+        )
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
+        print(f"[DL] VAL   v{self._val_version} loader_id={id(loader)} ds_id={id(ds)} "
+              f"sum_id={id(self.val_data_summary)} bins={len(self.val_bin_names)}")
+        return loader
+
+    def predict_dataloader(self):
+        """Create dataloader for prediction/inference mode."""
+        print("\n[PREDICT] Setting up prediction dataloader")
+
+        # Use val_data_summary for prediction
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            print("[PREDICT] Building prediction data summary...")
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            print("[WARN] No bins found for prediction!")
+            return None
+
+        # Create dataset
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.instrument_catalog,
+            self.pipeline_config,
+            require_targets=self.require_targets,  # Use datamodule's require_targets setting
+            include_persistence_inputs=self.include_persistence_inputs,
+            tag="PREDICT",
+        )
+
+        # Create dataloader
+        loader = PyGDataLoader(
+            ds,
+            batch_size=self.hparams.batch_size,
+            shuffle=False,
+            num_workers=1,  # Single worker for sequential processing
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )
+
+        print(f"[PREDICT] Dataloader created: {len(self.val_bin_names)} bins")
+        print(f"[PREDICT] require_targets={self.require_targets}")
+
+        return loader
+
+    def fsoi_dataloader(self):
+        """Deterministic dataloader for FSOI.
+
+        Uses the same bin ordering as prediction, but enforces batch_size=1.
+        """
+        if not hasattr(self, 'val_data_summary') or not self.val_data_summary:
+            self._rebuild_val_summary()
+
+        if not self.val_bin_names:
+            return None
+
+        ds = BinDataset(
+            self.val_bin_names,
+            self.val_data_summary,
+            self.z,
+            self._create_graph_structure,
+            self.instrument_catalog,
+            self.pipeline_config,
+            require_targets=self.require_targets,
+            include_persistence_inputs=self.include_persistence_inputs,
+            tag="FSOI",
+        )
+
+        return PyGDataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            pin_memory=True,
+            persistent_workers=False,
+            worker_init_fn=self._worker_init,
+        )

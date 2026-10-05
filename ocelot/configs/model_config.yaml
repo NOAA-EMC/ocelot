@@ -1,0 +1,48 @@
+hidden_dim: &hidden_dim 192
+input_window_hours: 12
+target_window_hours: 12
+latent_step_hours: 3
+channel_validity_features: true
+
+mesh:
+  type: fixed  # fixed | hierarchical
+  resolution: 6
+  levels: 4
+
+encoder:
+  type: gat  # gat | interaction
+  rec_dim: *hidden_dim
+  send_dim: *hidden_dim
+  hidden_dim: *hidden_dim
+  edge_dim: 4
+  layers: 2
+  heads: 4
+  dropout: 0.0
+
+processor:
+  type: interaction  # sliding_window | interaction | hierarchical_interaction | hierarchical_sliding_window
+  num_message_passing_steps: 4
+  hidden_dim: *hidden_dim
+  # depth: 4
+  # num_heads: 4
+  # window: 4
+  # dropout: 0.1
+  # spatial_mixing_steps: 1
+
+decoder:
+  type: gat  # gat | interaction
+  rec_dim: *hidden_dim
+  send_dim: *hidden_dim
+  hidden_dim: *hidden_dim
+  edge_dim: 4
+  layers: 2
+  heads: 4
+  dropout: 0.0
+
+embeddings:
+  scan_angle_dim: 8
+  pressure_level_dim: 8
+  target_time_dim: 8
+  num_pressure_levels: 16
+  scan_angle_conditioning: project
+  pressure_level_conditioning: project
