@@ -214,37 +214,18 @@ def _normalize_denial_mode(denial_mode: Optional[str]) -> str:
     return mode
 
 
-def _input_channel_bounds(observation_config: dict, inst_name: str) -> Tuple[int, int]:
+def _input_channel_bounds(instrument_catalog, inst_name: str) -> Tuple[int, int]:
     """Return start/end column indices for observation channels in input .x."""
-    for instruments in observation_config.values():
-        if inst_name not in instruments:
-            continue
-        cfg = instruments[inst_name] or {}
-        n_channels = len(cfg.get("features", []))
-        if n_channels <= 0:
-            raise ValueError(f"{inst_name}: no configured observation features")
-        n_meta = len(cfg.get("metadata", []))
-        start = 7 + n_meta
-        return start, start + n_channels
-    raise KeyError(f"{inst_name} not found in observation_config")
+    instrument = instrument_catalog.get(inst_name)
+    if instrument.target_dim <= 0:
+        raise ValueError(f"{inst_name}: no configured observation features")
+    start = 7 + len(instrument.metadata)
+    return start, start + instrument.target_dim
 
 
-def _instrument_config_entry(observation_config: dict, inst_name: str) -> Tuple[str, dict]:
-    """Return (observation group, instrument config) for one instrument."""
-    for obs_type, instruments in observation_config.items():
-        if inst_name in instruments:
-            return str(obs_type).lower(), instruments[inst_name] or {}
-    raise KeyError(f"{inst_name} not found in observation_config")
-
-
-def _mask_fill_value_for_instrument(observation_config: dict, inst_name: str) -> Tuple[float, str]:
+def _mask_fill_value_for_instrument(instrument_catalog, inst_name: str) -> Tuple[float, str]:
     """Return the training-time missing-value representation for source inputs."""
-    obs_type, cfg = _instrument_config_entry(observation_config, inst_name)
-    if "mask_fill_value" in cfg:
-        return float(cfg["mask_fill_value"]), "config:mask_fill_value"
-    if "missing_input_fill_value" in cfg:
-        return float(cfg["missing_input_fill_value"]), "config:missing_input_fill_value"
-    if obs_type == "satellite":
+    if instrument_catalog.get(inst_name).kind == "satellite":
         from fsoi_utils import SATELLITE_MISSING_OBS
         return float(SATELLITE_MISSING_OBS), "normalized_zero_satellite_training_imputation"
     from fsoi_utils import SENTINEL_OBS
@@ -252,7 +233,7 @@ def _mask_fill_value_for_instrument(observation_config: dict, inst_name: str) ->
 
 
 def _mask_fill_columns(
-    observation_config: dict,
+    instrument_catalog,
     present_denied: List[str],
     denial_mode: str,
 ) -> Dict[str, str]:
@@ -266,7 +247,7 @@ def _mask_fill_columns(
     values = []
     conventions = []
     for inst in sorted(present_denied):
-        value, convention = _mask_fill_value_for_instrument(observation_config, inst)
+        value, convention = _mask_fill_value_for_instrument(instrument_catalog, inst)
         values.append(f"{inst}:{value:.8g}")
         conventions.append(f"{inst}:{convention}")
     return {
@@ -275,12 +256,9 @@ def _mask_fill_columns(
     }
 
 
-def _instrument_features(observation_config: dict, inst_name: str) -> List[str]:
+def _instrument_features(instrument_catalog, inst_name: str) -> List[str]:
     """Return configured observation-channel feature names for one instrument."""
-    for instruments in observation_config.values():
-        if inst_name in instruments:
-            return list((instruments[inst_name] or {}).get("features", []))
-    raise KeyError(f"{inst_name} not found in observation_config")
+    return list(instrument_catalog.get(inst_name).feature_names)
 
 
 def _channel_number_from_name(name: str) -> Optional[int]:
@@ -292,7 +270,7 @@ def _channel_number_from_name(name: str) -> Optional[int]:
 def _resolve_channel_index(
     inst_name: str,
     token: str,
-    observation_config: dict,
+    instrument_catalog,
 ) -> int:
     """Resolve a channel token to a zero-based column index.
 
@@ -300,7 +278,7 @@ def _resolve_channel_index(
     ``21`` maps to ``bt_ch_21`` for SSMIS and therefore column index 20.
     Use ``idx:20`` only when a zero-based column index is intended.
     """
-    features = _instrument_features(observation_config, inst_name)
+    features = _instrument_features(instrument_catalog, inst_name)
     if not features:
         raise ValueError(f"{inst_name}: no configured channels")
 
@@ -342,7 +320,7 @@ def _resolve_channel_index(
 
 def parse_denied_channel_specs(
     specs: Optional[List[str]],
-    observation_config: dict,
+    instrument_catalog,
     denied_instruments: Optional[List[str]] = None,
 ) -> Dict[str, List[int]]:
     """Parse OSE channel selectors into zero-based channel-index lists.
@@ -380,10 +358,10 @@ def parse_denied_channel_specs(
                 raise ValueError(f"{inst_name}: empty OSE channel list in {spec!r}")
 
             if len(channel_tokens) == 1 and channel_tokens[0].lower() in {"all", "*"}:
-                indices = list(range(len(_instrument_features(observation_config, inst_name))))
+                indices = list(range(len(_instrument_features(instrument_catalog, inst_name))))
             else:
                 indices = [
-                    _resolve_channel_index(inst_name, tok, observation_config)
+                    _resolve_channel_index(inst_name, tok, instrument_catalog)
                     for tok in channel_tokens
                 ]
             parsed.setdefault(inst_name, []).extend(indices)
@@ -397,14 +375,14 @@ def parse_denied_channel_specs(
 
 def format_denied_channel_specs(
     denied_channels: Optional[Dict[str, List[int]]],
-    observation_config: dict,
+    instrument_catalog,
 ) -> str:
     """Human-readable description of selected OSE channels."""
     if not denied_channels:
         return ""
     parts = []
     for inst in sorted(denied_channels):
-        features = _instrument_features(observation_config, inst)
+        features = _instrument_features(instrument_catalog, inst)
         labels = []
         for idx in denied_channels[inst]:
             if idx < 0 or idx >= len(features):
@@ -414,7 +392,7 @@ def format_denied_channel_specs(
     return ";".join(parts)
 
 
-def _batch_input_channels(curr_batch, observation_config: dict, inst_name: str, device) -> torch.Tensor:
+def _batch_input_channels(curr_batch, instrument_catalog, inst_name: str, device) -> torch.Tensor:
     """Extract full current input observation-channel tensor for one instrument."""
     node_type = f"{inst_name}_input"
     if node_type not in curr_batch.node_types:
@@ -422,7 +400,7 @@ def _batch_input_channels(curr_batch, observation_config: dict, inst_name: str, 
     x_orig = getattr(curr_batch[node_type], "x", None)
     if x_orig is None or x_orig.numel() == 0:
         raise ValueError(f"{node_type}.x is missing or empty")
-    start, end = _input_channel_bounds(observation_config, inst_name)
+    start, end = _input_channel_bounds(instrument_catalog, inst_name)
     if end > x_orig.shape[1]:
         raise ValueError(
             f"{inst_name}: configured channel slice {start}:{end} exceeds "
@@ -433,7 +411,7 @@ def _batch_input_channels(curr_batch, observation_config: dict, inst_name: str, 
 
 def _batch_input_channel_mask(
     curr_batch,
-    observation_config: dict,
+    instrument_catalog,
     inst_name: str,
     device,
     row_indices: Optional[torch.Tensor] = None,
@@ -450,7 +428,7 @@ def _batch_input_channel_mask(
     if mask is None or mask.numel() == 0:
         return None
 
-    expected_channels = len(_instrument_features(observation_config, inst_name))
+    expected_channels = len(_instrument_features(instrument_catalog, inst_name))
     if mask.dim() != 2 or mask.shape[1] != expected_channels:
         raise ValueError(
             f"{inst_name}: input_channel_mask shape {tuple(mask.shape)} does not "
@@ -552,7 +530,7 @@ def _make_denied_channels(
     control_tensor: torch.Tensor,
     background_tensor: Optional[torch.Tensor],
     denial_mode: str,
-    observation_config: dict,
+    instrument_catalog,
     inst_name: str,
     channel_indices: Optional[List[int]] = None,
     valid_mask: Optional[torch.Tensor] = None,
@@ -579,8 +557,7 @@ def _make_denied_channels(
             )
         valid_base = valid_mask.to(device=control_tensor.device, dtype=torch.bool)
     else:
-        obs_type, _ = _instrument_config_entry(observation_config, inst_name)
-        if obs_type == "satellite":
+        if instrument_catalog.get(inst_name).kind == "satellite":
             # Satellite training uses normalized zero imputation for missing
             # values, so zeros cannot be interpreted as missing without the
             # stored input_channel_mask. Treat finite values as valid.
@@ -595,14 +572,14 @@ def _make_denied_channels(
             raise ValueError("background_replacement requires xb for the denied instrument")
         return torch.where(valid_selected, background_tensor, control_tensor)
 
-    fill_value, _ = _mask_fill_value_for_instrument(observation_config, inst_name)
+    fill_value, _ = _mask_fill_value_for_instrument(instrument_catalog, inst_name)
     missing_value = torch.full_like(control_tensor, fill_value)
     return torch.where(valid_selected, missing_value, control_tensor)
 
 
 def _sync_input_channel_mask_from_values(
     batch,
-    observation_config: dict,
+    instrument_catalog,
     denied_instruments: List[str],
     denied_channels: Optional[Dict[str, List[int]]],
     denial_mode: str,
@@ -624,7 +601,7 @@ def _sync_input_channel_mask_from_values(
         if x is None or x.numel() == 0:
             continue
 
-        start, end = _input_channel_bounds(observation_config, inst)
+        start, end = _input_channel_bounds(instrument_catalog, inst)
         channel_values = x[:, start:end]
         existing_mask = getattr(batch[node_type], "input_channel_mask", None)
         if (
@@ -634,8 +611,7 @@ def _sync_input_channel_mask_from_values(
         ):
             mask = existing_mask.detach().clone().to(device=channel_values.device, dtype=torch.bool)
         else:
-            obs_type, _ = _instrument_config_entry(observation_config, inst)
-            if obs_type == "satellite":
+            if instrument_catalog.get(inst).kind == "satellite":
                 mask = torch.isfinite(channel_values).detach().to(torch.bool)
             else:
                 mask = observation_valid_mask(channel_values).detach().to(torch.bool)
@@ -690,7 +666,7 @@ def _comparison_mode_for(denial_mode: str, channel_scope: bool) -> str:
 
 def _denied_channel_columns(
     denied_channels: Optional[Dict[str, List[int]]],
-    observation_config: dict,
+    instrument_catalog,
     present_denied: List[str],
 ) -> Dict[str, str]:
     """Serialize selected channel metadata for CSV records."""
@@ -709,7 +685,7 @@ def _denied_channel_columns(
         indices = (denied_channels or {}).get(inst)
         if not indices:
             continue
-        features = _instrument_features(observation_config, inst)
+        features = _instrument_features(instrument_catalog, inst)
         names = [features[i] for i in indices]
         numbers = [
             str(_channel_number_from_name(name) or (idx + 1))
@@ -889,7 +865,7 @@ def compute_ose_for_pair(
     xb: Dict[str, torch.Tensor],
     denied_instruments: List[str],
     ea_control: float,
-    observation_config: dict,
+    instrument_catalog,
     subsample_indices: Dict[str, Optional[torch.Tensor]],
     target_instruments: Optional[List[str]],
     target_variables: Optional[List[str]],
@@ -1020,7 +996,7 @@ def compute_ose_for_pair(
 
         for inst, tensor in xa.items():
             if inst in present_denied and denial_mode == "full_mask":
-                control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+                control_tensor = _batch_input_channels(curr_batch, instrument_catalog, inst, device)
                 replace_idx[inst] = None
             else:
                 control_tensor = tensor.detach().clone().to(device)
@@ -1030,7 +1006,7 @@ def compute_ose_for_pair(
                 row_indices = replace_idx.get(inst) if replace_idx and inst in replace_idx else None
                 valid_mask = _batch_input_channel_mask(
                     curr_batch,
-                    observation_config,
+                    instrument_catalog,
                     inst,
                     device,
                     row_indices,
@@ -1039,7 +1015,7 @@ def compute_ose_for_pair(
                     control_tensor,
                     background_tensor,
                     denial_mode,
-                    observation_config,
+                    instrument_catalog,
                     inst,
                     denied_channels.get(inst),
                     valid_mask,
@@ -1050,17 +1026,17 @@ def compute_ose_for_pair(
         for inst in present_denied:
             if inst in inputs:
                 continue
-            control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+            control_tensor = _batch_input_channels(curr_batch, instrument_catalog, inst, device)
             replace_idx[inst] = None
             inputs[inst] = (
                 _make_denied_channels(
                     control_tensor,
                     None,
                     denial_mode,
-                    observation_config,
+                    instrument_catalog,
                     inst,
                     denied_channels.get(inst),
-                    _batch_input_channel_mask(curr_batch, observation_config, inst, device),
+                    _batch_input_channel_mask(curr_batch, instrument_catalog, inst, device),
                 )
                 if denied else control_tensor
             )
@@ -1071,7 +1047,7 @@ def compute_ose_for_pair(
     curr_batch_ctrl = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(curr_batch_ctrl, target_instruments, forecast_lead_step)
-    replace_batch_inputs(curr_batch_ctrl, control_inputs, observation_config,
+    replace_batch_inputs(curr_batch_ctrl, control_inputs, instrument_catalog,
                          replace_indices=control_replace_idx)
     with torch.no_grad():
         ea_control_fresh, control_diag = _compute_error(
@@ -1092,11 +1068,11 @@ def compute_ose_for_pair(
     curr_batch_ose = curr_batch.clone()
     if target_instruments is not None:
         prune_batch_targets_inplace(curr_batch_ose, target_instruments, forecast_lead_step)
-    replace_batch_inputs(curr_batch_ose, denied_inputs, observation_config,
+    replace_batch_inputs(curr_batch_ose, denied_inputs, instrument_catalog,
                          replace_indices=denied_replace_idx)
     input_mask_synced, input_mask_counts = _sync_input_channel_mask_from_values(
         curr_batch_ose,
-        observation_config,
+        instrument_catalog,
         present_denied,
         denied_channels,
         denial_mode,
@@ -1142,10 +1118,10 @@ def compute_ose_for_pair(
         'curr_bin': curr_bin,
         'lead_step': forecast_lead_step,
         'denied_instruments': ','.join(sorted(present_denied)),
-        **_denied_channel_columns(denied_channels, observation_config, present_denied),
+        **_denied_channel_columns(denied_channels, instrument_catalog, present_denied),
         'ose_denial_mode': denial_mode,
         'ose_denial_description': DENIAL_MODE_DESCRIPTIONS[denial_mode],
-        **_mask_fill_columns(observation_config, present_denied, denial_mode),
+        **_mask_fill_columns(instrument_catalog, present_denied, denial_mode),
         'ea_control': ea_control_fresh,
         'ea_denied': ea_denied,
         'ose_impact': ose_impact,
@@ -1172,7 +1148,7 @@ def compute_matched_conditional_fsoi_for_pair(
     xa: Dict[str, torch.Tensor],
     xb: Dict[str, torch.Tensor],
     denied_instruments: List[str],
-    observation_config: dict,
+    instrument_catalog,
     subsample_indices: Dict[str, Optional[torch.Tensor]],
     target_instruments: Optional[List[str]],
     target_variables: Optional[List[str]],
@@ -1291,7 +1267,7 @@ def compute_matched_conditional_fsoi_for_pair(
         for inst, tensor in xa.items():
             if inst in present_denied:
                 if denial_mode in {"full_mask", "drop_nodes"}:
-                    control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+                    control_tensor = _batch_input_channels(curr_batch, instrument_catalog, inst, device)
                     replace_idx[inst] = None
                 else:
                     control_tensor = tensor.detach().clone().to(device)
@@ -1302,7 +1278,7 @@ def compute_matched_conditional_fsoi_for_pair(
                     row_indices = replace_idx.get(inst) if replace_idx and inst in replace_idx else None
                     valid_mask = _batch_input_channel_mask(
                         curr_batch,
-                        observation_config,
+                        instrument_catalog,
                         inst,
                         device,
                         row_indices,
@@ -1315,7 +1291,7 @@ def compute_matched_conditional_fsoi_for_pair(
                         control_tensor,
                         background_tensor,
                         denial_mode,
-                        observation_config,
+                        instrument_catalog,
                         inst,
                         denied_channels.get(inst),
                         valid_mask,
@@ -1328,17 +1304,17 @@ def compute_matched_conditional_fsoi_for_pair(
         for inst in present_denied:
             if inst in inputs or (denied and structural):
                 continue
-            control_tensor = _batch_input_channels(curr_batch, observation_config, inst, device)
+            control_tensor = _batch_input_channels(curr_batch, instrument_catalog, inst, device)
             replace_idx[inst] = None
             src = (
                 _make_denied_channels(
                     control_tensor,
                     None,
                     denial_mode,
-                    observation_config,
+                    instrument_catalog,
                     inst,
                     denied_channels.get(inst),
-                    _batch_input_channel_mask(curr_batch, observation_config, inst, device),
+                    _batch_input_channel_mask(curr_batch, instrument_catalog, inst, device),
                 )
                 if denied else control_tensor
             )
@@ -1354,13 +1330,13 @@ def compute_matched_conditional_fsoi_for_pair(
         batch_for_error = curr_batch.clone()
         if target_instruments is not None:
             prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
-        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        replace_batch_inputs(batch_for_error, inputs, instrument_catalog, replace_indices=replace_idx)
         input_mask_synced = False
         input_mask_counts = ""
         if sync_denied_input_mask:
             input_mask_synced, input_mask_counts = _sync_input_channel_mask_from_values(
                 batch_for_error,
-                observation_config,
+                instrument_catalog,
                 present_denied,
                 denied_channels,
                 denial_mode,
@@ -1394,7 +1370,7 @@ def compute_matched_conditional_fsoi_for_pair(
         batch_for_error = curr_batch.clone()
         if target_instruments is not None:
             prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
-        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        replace_batch_inputs(batch_for_error, inputs, instrument_catalog, replace_indices=replace_idx)
         with torch.no_grad():
             loss = compute_forecast_error(model, batch_for_error, **shared_kwargs)
         return float(loss.detach().item())
@@ -1407,7 +1383,7 @@ def compute_matched_conditional_fsoi_for_pair(
         batch_for_error = curr_batch.clone()
         if target_instruments is not None:
             prune_batch_targets_inplace(batch_for_error, target_instruments, forecast_lead_step)
-        replace_batch_inputs(batch_for_error, inputs, observation_config, replace_indices=replace_idx)
+        replace_batch_inputs(batch_for_error, inputs, instrument_catalog, replace_indices=replace_idx)
         removed = []
         for inst in sorted(present_denied):
             dropped, n_rows = _empty_instrument_inputs(batch_for_error, inst)
@@ -1610,10 +1586,10 @@ def compute_matched_conditional_fsoi_for_pair(
         'curr_bin': curr_bin,
         'lead_step': forecast_lead_step,
         'denied_instruments': ','.join(sorted(present_denied)),
-        **_denied_channel_columns(denied_channels, observation_config, present_denied),
+        **_denied_channel_columns(denied_channels, instrument_catalog, present_denied),
         'ose_denial_mode': denial_mode,
         'ose_denial_description': DENIAL_MODE_DESCRIPTIONS[denial_mode],
-        **_mask_fill_columns(observation_config, present_denied, denial_mode),
+        **_mask_fill_columns(instrument_catalog, present_denied, denial_mode),
         'ea_control': j_control_value,
         'ea_denied': j_denied_value,
         'ose_impact': ose_impact,

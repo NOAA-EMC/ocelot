@@ -79,7 +79,6 @@ from ocelot.FSOI.fsoi_model_extensions import (  # noqa: E402
     freeze_model_for_fsoi,
 )
 
-from weight_utils import load_weights_from_yaml  # noqa: E402
 from fsoi_target_metric import (  # noqa: E402
     SparseTargetError, begin_target_cycle, get_target_plan, metric_provenance, save_target_plans,
     configure_observation_verification,
@@ -276,7 +275,7 @@ def _run_ose_check(
     subsample_indices: dict,
     model,
     curr_batch,
-    observation_config: dict,
+    instrument_catalog,
     ose_instruments: list,
     target_instruments,
     target_variables,
@@ -339,7 +338,7 @@ def _run_ose_check(
                 xa=xa,
                 xb=xb,
                 denied_instruments=ose_instruments,
-                observation_config=observation_config,
+                instrument_catalog=instrument_catalog,
                 subsample_indices=subsample_indices,
                 target_instruments=target_instruments,
                 target_variables=target_variables,
@@ -367,7 +366,7 @@ def _run_ose_check(
                 xb=xb,
                 denied_instruments=ose_instruments,
                 ea_control=ea_control,
-                observation_config=observation_config,
+                instrument_catalog=instrument_catalog,
                 subsample_indices=subsample_indices,
                 target_instruments=target_instruments,
                 target_variables=target_variables,
@@ -681,7 +680,7 @@ def compute_fsoi_for_pair(
         # scaled total-impact columns for instruments capped by max_decoder_nodes.
         sampling_info = {}
         full_valid_masks = get_fsoi_input_masks(
-            curr_batch, observation_config, device=device,
+            curr_batch, instrument_catalog, pipeline_config, device=device,
         )
         for inst_name, tensor in xa.items():
             raw_n = int(tensor.shape[0])
@@ -695,7 +694,7 @@ def compute_fsoi_for_pair(
                 'is_subsampled': idx is not None,
             }
             sampling_info[inst_name].update(sampling_designs.get(inst_name, {}))
-            if inst_name in observation_config.get('satellite', {}):
+            if instrument_catalog.get(inst_name).kind == 'satellite':
                 stored_mask = getattr(curr_batch[f'{inst_name}_input'], 'input_channel_mask', None)
                 if stored_mask is None or tuple(stored_mask.shape) != tuple(tensor.shape):
                     raise RuntimeError(
@@ -741,7 +740,8 @@ def compute_fsoi_for_pair(
 
         valid_masks = get_fsoi_input_masks(
             curr_batch,
-            observation_config,
+            instrument_catalog,
+            pipeline_config,
             replace_indices=subsample_indices,
             device=device,
         )
@@ -767,7 +767,7 @@ def compute_fsoi_for_pair(
             obs_coords[inst_name] = (lat_np, lon_np)
 
         # Optionally zero specific channels by feature name at inference time
-        zero_feature_columns(xa, observation_config, feature_mask_map)
+        zero_feature_columns(xa, instrument_catalog, feature_mask_map)
 
         # Enable gradients for xb
         # NOTE: xb is treated as an independent variable for computing ∂e/∂xb
@@ -898,7 +898,7 @@ def compute_fsoi_for_pair(
 
             # Accumulate per-sample FD records keyed by pair and bin
             try:
-                fd_xa = get_fsoi_inputs(curr_batch, observation_config,
+                fd_xa = get_fsoi_inputs(curr_batch, instrument_catalog, pipeline_config,
                                         model.instrument_name_to_id)
                 rng_fd = np.random.default_rng(pair_idx * 7919 + 42)
                 inst_list = [k for k in fd_xa if fd_xa[k].shape[0] > 0]
@@ -945,7 +945,8 @@ def compute_fsoi_for_pair(
                 eps_list = fsoi_config['validation'].get('directional_epsilons') or [eps_default]
                 eps_list = [float(e) for e in eps_list]
                 valid_only = bool(fsoi_config['validation'].get('directional_valid_only', False))
-                _xa_dir = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
+                _xa_dir = _get_inputs(curr_batch, instrument_catalog, pipeline_config,
+                                      model.instrument_name_to_id)
                 for inst in sorted(_xa_dir.keys()):
                     if inst not in _dir_insts:
                         continue
@@ -993,7 +994,8 @@ def compute_fsoi_for_pair(
                 _HIGH_N = {'atms', 'avhrr', 'ssmis', 'ascat', 'amsua', 'seviri_asr', 'seviri_csr'}
                 n_f64 = fsoi_config['validation'].get('float64_num_samples', 3)
                 eps_f64 = fsoi_config['validation'].get('float64_epsilon', 1e-4)
-                _xa_f64 = _get_inputs(curr_batch, observation_config, model.instrument_name_to_id)
+                _xa_f64 = _get_inputs(curr_batch, instrument_catalog, pipeline_config,
+                                      model.instrument_name_to_id)
                 rng_f64 = np.random.default_rng(pair_idx * 1009 + 13)
                 for inst in sorted(_xa_f64.keys()):
                     if inst not in _HIGH_N:
@@ -1214,7 +1216,7 @@ def compute_fsoi_for_pair(
                         combined_fsoi, obs_coords, sampling_info)
             if metric_config and run_repro_check:
                 repeat_batch = curr_batch.clone()
-                replace_batch_inputs(repeat_batch, xa, observation_config, replace_indices=subsample_indices)
+                replace_batch_inputs(repeat_batch, xa, instrument_catalog, replace_indices=subsample_indices)
                 with torch.no_grad():
                     repeated = compute_forecast_error(model, repeat_batch, **model.fsoi_verification_loss_kwargs)
                 difference = abs(repeated.item() - ea_total)
@@ -1226,7 +1228,7 @@ def compute_fsoi_for_pair(
             if ose_instruments:
                 _run_ose_check(
                     results, xa, xb, ea_total, subsample_indices,
-                    model, curr_batch, observation_config, ose_instruments,
+                    model, curr_batch, instrument_catalog, ose_instruments,
                     target_instruments, target_variables, target_pressure_levels,
                     instrument_weights, channel_weights, use_area_weights,
                     loss_reduction, impact_factor, lead_step, pair_idx,
@@ -1416,7 +1418,7 @@ def compute_fsoi_for_pair(
                     xa_r = {k: v.clone().detach().requires_grad_(True)
                             for k, v in xa.items()}
                     bat_r = curr_batch.clone()
-                    replace_batch_inputs(bat_r, xa_r, observation_config,
+                    replace_batch_inputs(bat_r, xa_r, instrument_catalog,
                                          replace_indices=subsample_indices)
                     ea_r = compute_forecast_error(
                         model, bat_r,
@@ -1460,7 +1462,7 @@ def compute_fsoi_for_pair(
             if ose_instruments:
                 _run_ose_check(
                     results, xa, xb, ea.item(), subsample_indices,
-                    model, curr_batch, observation_config, ose_instruments,
+                    model, curr_batch, instrument_catalog, ose_instruments,
                     target_instruments, target_variables, target_pressure_levels,
                     instrument_weights, channel_weights, use_area_weights,
                     loss_reduction, impact_factor, lead_step, pair_idx,
@@ -1754,8 +1756,15 @@ def main():
     fsoi_config = load_fsoi_config(args.config)
     if args.verification_target == 'obs':
         configure_observation_verification(fsoi_config['forecast'])
-    observation_config, feature_stats, instrument_weights, channel_weights, name_to_id = \
-        load_weights_from_yaml(args.obs_config)
+    instrument_catalog = InstrumentCatalogConfig(args.instrument_config)
+    pipeline_config = PipelineConfig(args.pipeline_config)
+    feature_stats = pipeline_config.feature_stats(instrument_catalog)
+    instrument_weights = pipeline_config.instrument_weights(instrument_catalog)
+    channel_weights = {
+        inst_id: torch.tensor(weights, dtype=torch.float32)
+        for inst_id, weights in pipeline_config.channel_weights(instrument_catalog).items()
+    }
+    name_to_id = pipeline_config.instrument_name_to_id(instrument_catalog)
 
     # ── Honor use_instrument_weights / use_channel_weights config flags ───────
     # These flags were defined in all YAML configs but were never read — weights
@@ -1912,8 +1921,8 @@ def main():
     print(f"[ID MAPPING] Weights: {len(weights_name_to_id)} instruments")
 
     print(f"Model loaded and frozen for FSOI")
-    print(f"  Hidden dim: {model.hidden_dim}")
-    print(f"  Mesh type: {model.mesh_type}")
+    print(f"  Hidden dim: {model.model_config.hidden_dim}")
+    print(f"  Mesh type: {model.model_config.mesh.type}")
     print(f"  Instruments: {list(model.instrument_name_to_id.keys())}")
 
     # Create datamodule
@@ -2105,7 +2114,7 @@ def main():
 
             ose_channels = parse_denied_channel_specs(
                 args.ose_channels,
-                observation_config,
+                instrument_catalog,
                 denied_instruments=ose_instruments,
             )
             unknown_channel_instruments = sorted(set(ose_channels) - set(ose_instruments))
@@ -2116,7 +2125,7 @@ def main():
                 )
             print(
                 "[OSE] Channel intervention: "
-                f"{format_denied_channel_specs(ose_channels, observation_config)}"
+                f"{format_denied_channel_specs(ose_channels, instrument_catalog)}"
             )
         print(
             "[OSE] Matched validation uses two gradient-enabled endpoint "

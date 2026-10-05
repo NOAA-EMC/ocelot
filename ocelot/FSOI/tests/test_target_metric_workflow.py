@@ -42,7 +42,7 @@ class WorkflowTests(unittest.TestCase):
                   verification_metric=dict(CONFIG, audit_only=True))
         with redirect_stdout(io.StringIO()):
             result = namespace['compute_fsoi_for_pair'](
-                model, batch, batch, {'forecast': fc}, {}, {}, {}, 5,
+                model, batch, batch, {'forecast': fc}, None, None, {}, {}, 5,
                 verbose=False, verification_target='obs')
         self.assertEqual(model.calls, 0)
         self.assertFalse(model.training)

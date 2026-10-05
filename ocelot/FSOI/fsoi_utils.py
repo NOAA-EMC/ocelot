@@ -1013,7 +1013,7 @@ def get_fsoi_inputs(
 
         # x_input layout: [7 geo/time | n_meta instrument-metadata | n_channels obs | optional trailing]
         # Skip the leading geo/time + metadata columns to reach actual observation channels.
-        n_meta = len(cfg.get('metadata', []))
+        n_meta = len(instrument.metadata)
         bt_start = 7 + n_meta
         x_channels = x_input[:, bt_start:bt_start + n_channels]
 
@@ -1037,7 +1037,8 @@ def get_fsoi_inputs(
 
 def get_fsoi_input_masks(
     batch,
-    observation_config: dict,
+    instrument_catalog,
+    pipeline_config,
     replace_indices: Optional[Dict[str, torch.Tensor]] = None,
     device: Optional[torch.device] = None,
 ) -> Dict[str, torch.Tensor]:
@@ -1051,49 +1052,46 @@ def get_fsoi_input_masks(
     """
     masks: Dict[str, torch.Tensor] = {}
 
-    for obs_type, instruments in observation_config.items():
-        obs_type_key = str(obs_type).lower()
-        for inst_name, cfg in instruments.items():
-            node_type_input = f"{inst_name}_input"
-            if node_type_input not in batch.node_types:
-                continue
+    for inst_name, instrument in pipeline_config.enabled(instrument_catalog):
+        node_type_input = f"{inst_name}_input"
+        if node_type_input not in batch.node_types:
+            continue
 
-            node_data = batch[node_type_input]
-            x_input = getattr(node_data, "x", None)
-            if x_input is None or x_input.numel() == 0:
-                continue
+        node_data = batch[node_type_input]
+        x_input = getattr(node_data, "x", None)
+        if x_input is None or x_input.numel() == 0:
+            continue
 
-            n_channels = len(cfg.get("features", []))
-            if n_channels == 0:
-                continue
-            n_meta = len(cfg.get("metadata", []))
-            bt_start = 7 + n_meta
-            x_channels = x_input[:, bt_start:bt_start + n_channels]
+        n_channels = instrument.target_dim
+        if n_channels == 0:
+            continue
+        bt_start = 7 + len(instrument.metadata)
+        x_channels = x_input[:, bt_start:bt_start + n_channels]
 
-            stored_mask = getattr(node_data, "input_channel_mask", None)
-            if (
-                stored_mask is not None
-                and stored_mask.numel() > 0
-                and tuple(stored_mask.shape) == tuple(x_channels.shape)
-            ):
-                mask = stored_mask.detach().clone().to(dtype=torch.bool)
-            elif obs_type_key == "satellite":
-                print(
-                    f"[FSOI Mask WARNING] {inst_name}: input_channel_mask missing; "
-                    "using finite-value fallback for zero-imputed satellite inputs"
-                )
-                mask = torch.isfinite(x_channels).detach().to(torch.bool)
-            else:
-                mask = observation_valid_mask(x_channels).detach().to(torch.bool)
+        stored_mask = getattr(node_data, "input_channel_mask", None)
+        if (
+            stored_mask is not None
+            and stored_mask.numel() > 0
+            and tuple(stored_mask.shape) == tuple(x_channels.shape)
+        ):
+            mask = stored_mask.detach().clone().to(dtype=torch.bool)
+        elif instrument.kind == "satellite":
+            print(
+                f"[FSOI Mask WARNING] {inst_name}: input_channel_mask missing; "
+                "using finite-value fallback for zero-imputed satellite inputs"
+            )
+            mask = torch.isfinite(x_channels).detach().to(torch.bool)
+        else:
+            mask = observation_valid_mask(x_channels).detach().to(torch.bool)
 
-            idx = (replace_indices or {}).get(inst_name)
-            if idx is not None:
-                idx = idx.to(device=mask.device, dtype=torch.long)
-                mask = mask[idx]
+        idx = (replace_indices or {}).get(inst_name)
+        if idx is not None:
+            idx = idx.to(device=mask.device, dtype=torch.long)
+            mask = mask[idx]
 
-            if device is not None:
-                mask = mask.to(device=device)
-            masks[inst_name] = mask
+        if device is not None:
+            mask = mask.to(device=device)
+        masks[inst_name] = mask
 
     return masks
 
@@ -1233,7 +1231,7 @@ def replace_batch_inputs(
             continue
 
         # x_input layout: [7 geo/time | n_meta | n_channels obs | optional trailing]
-        n_meta = len(cfg.get('metadata', []))
+        n_meta = len(instrument.metadata)
         bt_start = 7 + n_meta
 
         # Get new channels (xa or xb)

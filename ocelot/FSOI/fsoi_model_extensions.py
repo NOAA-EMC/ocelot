@@ -182,7 +182,7 @@ def predict_at_targets(
                     prev_lat,
                     prev_lon,
                     model.mesh.m2m_graphs,
-                    model.mesh.mesh_lat_lon_list
+                    model.mesh.mesh_lat_lon_list,
                     model.mesh.mesh_list,
                     o2m=True,  # obs to mesh
                 )
@@ -282,7 +282,7 @@ def predict_at_targets(
 
                 # x_input layout: [7 geo/time | n_meta inst-metadata | n_channels obs | trailing]
                 # Instrument metadata (cols 7..7+n_meta) holds scan/solar angles for satellites.
-                n_meta = len(inst_cfg.get('metadata', []))
+                n_meta = len(instrument.metadata)
                 bt_start = 7 + n_meta
 
                 if n_meta > 0:

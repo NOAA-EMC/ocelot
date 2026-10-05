@@ -27,6 +27,23 @@ CONFIG = dict(spatial_weighting='equal_area', n_sin_lat=2, n_lon=4,
               min_observations_per_group=1, min_observations_per_cell=1)
 
 
+class Catalog:
+    """Test double for the parts of InstrumentCatalogConfig used by FSOI."""
+
+    def __init__(self, **instruments):
+        self._instruments = instruments
+
+    def get(self, name):
+        return self._instruments[name]
+
+    def items(self):
+        return self._instruments.items()
+
+
+ATMS_CATALOG = Catalog(atms=SimpleNamespace(
+    kind='satellite', metadata=[], feature_names=['bt'], target_dim=1))
+
+
 class Batch(dict):
     @property
     def node_types(self):
@@ -247,7 +264,7 @@ class TargetMetricTests(unittest.TestCase):
             xb = {'atms': torch.zeros((1, 1), dtype=torch.float64, requires_grad=True)}
             fn = compute_per_level_fsoi_by_variable if by_variable else compute_per_level_fsoi
             with redirect_stdout(io.StringIO()):
-                results = fn(model, batch, xa, xb, {'satellite': {'atms': {'features': ['bt']}}},
+                results = fn(model, batch, xa, xb, ATMS_CATALOG,
                              0, {}, {}, target_instruments=['radiosonde'], loss_reduction='mean',
                              valid_masks={'atms': torch.ones(1, 1, dtype=torch.bool)})
             self.assertEqual(model.calls, 2)
@@ -267,7 +284,7 @@ class TargetMetricTests(unittest.TestCase):
                 result = compute_matched_conditional_fsoi_for_pair(
                     model, batch, {'atms': torch.ones(1, 1, dtype=torch.float64)},
                     {'atms': torch.zeros(1, 1, dtype=torch.float64)}, ['atms'],
-                    {'satellite': {'atms': {'features': ['bt']}}}, {}, ['radiosonde'], None, None,
+                    ATMS_CATALOG, {}, ['radiosonde'], None, None,
                     {}, {}, False, 'mean', 0, 0, '20250701_12', '20250701_00',
                     denial_mode=mode, run_control_repro_check=True,
                     path_integration_t_values=[0., .25, .5, .75, 1.] if mode == 'background_replacement' else None)

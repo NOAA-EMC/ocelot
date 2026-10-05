@@ -124,7 +124,7 @@ def finite_difference_check(
     # Replace batch inputs
     from fsoi_utils import replace_batch_inputs
     batch_grad = batch.clone()
-    replace_batch_inputs(batch_grad, xa, model.observation_config)
+    replace_batch_inputs(batch_grad, xa, model.instrument_catalog)
 
     # Compute error — use 'mean' so scale ~O(1) and float32 FD is numerically stable
     shared_kwargs = _validation_loss_kwargs(model, inst_name, forecast_step)
@@ -149,7 +149,7 @@ def finite_difference_check(
     xa_plus[inst_name] = x_plus
 
     batch_plus = batch.clone()
-    replace_batch_inputs(batch_plus, xa_plus, model.observation_config)
+    replace_batch_inputs(batch_plus, xa_plus, model.instrument_catalog)
 
     # Compute error with perturbation
     with torch.no_grad():
@@ -169,7 +169,7 @@ def finite_difference_check(
     xa_minus[inst_name] = x_minus
 
     batch_minus = batch.clone()
-    replace_batch_inputs(batch_minus, xa_minus, model.observation_config)
+    replace_batch_inputs(batch_minus, xa_minus, model.instrument_catalog)
 
     with torch.no_grad():
         error_minus = compute_forecast_error(model, batch_minus, **shared_kwargs).item()
@@ -383,7 +383,7 @@ def directional_derivative_check(
     print(f"  Epsilon    : {epsilon}")
     print(f"{'=' * 80}")
 
-    xa_original = get_fsoi_inputs(batch, model.observation_config,
+    xa_original = get_fsoi_inputs(batch, model.instrument_catalog, model.pipeline_config,
                                   model.instrument_name_to_id)
     if inst_name not in xa_original:
         print(f"[ERROR] {inst_name} not in batch")
@@ -397,7 +397,7 @@ def directional_derivative_check(
     support = None
     if valid_only:
         from fsoi_utils import get_fsoi_input_masks
-        masks = get_fsoi_input_masks(batch, model.observation_config, device=device)
+        masks = get_fsoi_input_masks(batch, model.instrument_catalog, model.pipeline_config, device=device)
         if inst_name not in masks or masks[inst_name].shape != x_orig.shape:
             raise RuntimeError(f"{inst_name}: no aligned validity mask for a valid-only direction")
         support = masks[inst_name].to(device=device, dtype=x_orig.dtype)
@@ -414,7 +414,7 @@ def directional_derivative_check(
     xa_grad = xa_original.copy()
     xa_grad[inst_name] = x_orig.clone().requires_grad_(True)
     batch_grad = batch.clone()
-    replace_batch_inputs(batch_grad, xa_grad, model.observation_config)
+    replace_batch_inputs(batch_grad, xa_grad, model.instrument_catalog)
     e0 = compute_forecast_error(model, batch_grad, **shared_kwargs)
     g = torch.autograd.grad(e0, xa_grad[inst_name])[0].detach()  # (N_obs, N_ch)
     e0_val = e0.item()
@@ -449,7 +449,7 @@ def directional_derivative_check(
         xa_plus = xa_original.copy()
         xa_plus[inst_name] = (x_orig + epsilon * v).detach()
         batch_p = batch.clone()
-        replace_batch_inputs(batch_p, xa_plus, model.observation_config)
+        replace_batch_inputs(batch_p, xa_plus, model.instrument_catalog)
         with torch.no_grad():
             e_plus = compute_forecast_error(model, batch_p, **shared_kwargs).item()
         torch.cuda.empty_cache()
@@ -457,7 +457,7 @@ def directional_derivative_check(
         xa_minus = xa_original.copy()
         xa_minus[inst_name] = (x_orig - epsilon * v).detach()
         batch_m = batch.clone()
-        replace_batch_inputs(batch_m, xa_minus, model.observation_config)
+        replace_batch_inputs(batch_m, xa_minus, model.instrument_catalog)
         with torch.no_grad():
             e_minus = compute_forecast_error(model, batch_m, **shared_kwargs).item()
         torch.cuda.empty_cache()
@@ -601,7 +601,7 @@ def finite_difference_check_float64(
 
         _cast_batch_f64(batch64)
 
-        xa_original = get_fsoi_inputs(batch64, model.observation_config,
+        xa_original = get_fsoi_inputs(batch64, model.instrument_catalog, model.pipeline_config,
                                       model.instrument_name_to_id)
         if inst_name not in xa_original:
             print(f"[ERROR] {inst_name} not in batch")
@@ -621,7 +621,7 @@ def finite_difference_check_float64(
         xa_grad = xa_original.copy()
         xa_grad[inst_name] = x_orig.clone().detach().requires_grad_(True)
         batch_a = batch64.clone()
-        replace_batch_inputs(batch_a, xa_grad, model.observation_config)
+        replace_batch_inputs(batch_a, xa_grad, model.instrument_catalog)
         e0 = compute_forecast_error(model, batch_a, **shared_kwargs)
         g = torch.autograd.grad(e0, xa_grad[inst_name])[0]
         grad_val = g[obs_idx, channel_idx].item()
@@ -635,7 +635,7 @@ def finite_difference_check_float64(
         xp[obs_idx, channel_idx] += epsilon
         xa_p[inst_name] = xp
         batch_p = batch64.clone()
-        replace_batch_inputs(batch_p, xa_p, model.observation_config)
+        replace_batch_inputs(batch_p, xa_p, model.instrument_catalog)
         with torch.no_grad():
             e_plus = compute_forecast_error(model, batch_p, **shared_kwargs).item()
 
@@ -645,7 +645,7 @@ def finite_difference_check_float64(
         xm[obs_idx, channel_idx] -= epsilon
         xa_m[inst_name] = xm
         batch_m = batch64.clone()
-        replace_batch_inputs(batch_m, xa_m, model.observation_config)
+        replace_batch_inputs(batch_m, xa_m, model.instrument_catalog)
         with torch.no_grad():
             e_minus = compute_forecast_error(model, batch_m, **shared_kwargs).item()
 
@@ -734,7 +734,7 @@ def validate_fsoi_gradients_all(
     device = next(model.parameters()).device
     batch = batch.to(device)
 
-    xa = get_fsoi_inputs(batch, model.observation_config, model.instrument_name_to_id)
+    xa = get_fsoi_inputs(batch, model.instrument_catalog, model.pipeline_config, model.instrument_name_to_id)
     all_insts = sorted(xa.keys())
 
     # High-N satellite instruments that typically SKIP scalar FD
@@ -864,7 +864,7 @@ def validate_fsoi_gradients(
     print(f"Testing {num_samples} random observations")
     print("=" * 80 + "\n")
 
-    xa = get_fsoi_inputs(curr_batch, model.observation_config,
+    xa = get_fsoi_inputs(curr_batch, model.instrument_catalog, model.pipeline_config,
                          model.instrument_name_to_id)
     if not xa:
         print("[ERROR] No inputs found in batch")
