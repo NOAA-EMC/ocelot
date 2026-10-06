@@ -13,17 +13,8 @@ bufr:
     observationSubTypeNum:
       query: "*/T29"
 
-        #temperatureEventCode:
-        #query: "*/T___INFO/T__EVENT/TPC"
-
-    temperatureEventCode1:
-      query: "*/T___INFO/T__EVENT{1}/TPC"
-
-    temperatureEventCode2:
-      query: "*/T___INFO/T__EVENT{2}/TPC"
-
-    temperatureEventCode3:
-      query: "*/T___INFO/T__EVENT{3}/TPC"
+    temperatureEventCode:
+      query: "*/T___INFO/T__EVENT/TPC"
 
     specificHumidityEventCode:
       query: "*/Q___INFO/Q__EVENT/QPC"
@@ -117,20 +108,16 @@ encoder:
       source: variables/prepbufrDataLevelCategory
       longName: "prepbufrDataLevelCategory"
 
-        #    - name: "temperatureEventCode"
-        #source: variables/temperatureEventCode
-        #longName: "temperature Event Code"
+    - name: "obsType"
+      source: variables/obsType
+      longName: "ObsType"
 
-    - name: "temperatureEventCode1"
-      source: variables/temperatureEventCode1
-      longName: "temperature Event Code"
+    - name: "observationSubTypeNum"
+      source: variables/observationSubTypeNum
+      longName: "Observation SubType Number"
 
-    - name: "temperatureEventCode2"
-      source: variables/temperatureEventCode2
-      longName: "temperature Event Code"
-
-    - name: "temperatureEventCode3"
-      source: variables/temperatureEventCode3
+    - name: "temperatureEventCode"
+      source: variables/temperatureEventCode
       longName: "temperature Event Code"
 
     - name: "specificHumidityEventCode"
@@ -190,10 +177,3 @@ encoder:
       source: variables/heightQuality
       longName: "Height Quality Marker"
 
-    - name: "obsType"
-      source: variables/obsType
-      longName: "ObsType"
-
-    - name: "observationSubTypeNum"
-      source: variables/observationSubTypeNum
-      longName: "Observation SubType Number"

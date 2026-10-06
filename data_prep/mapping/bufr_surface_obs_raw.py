@@ -8,6 +8,7 @@ import numpy as np
 import numpy.ma as ma
 import re
 import math
+import time
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict, deque
@@ -34,11 +35,171 @@ class RawAdpsfcBuilder(ObsBuilder):
                           AdpsfcKey: AdpsfcMapPath,
                           SfcshpKey: SfcshpMapPath}, log_name=os.path.basename(__file__))
 
+    def _deduplicate_and_merge_container(self, container: bufr.DataContainer) -> bufr.DataContainer:
+            """Finds duplicate records in container matching on (timestamp, latitude, longitude, stationIdentification_prepbufr),
+    
+            merges non-missing variables, splits specified variables into _mass and _wind variants based on obsType,
+            and logs warnings if conflicting non-missing values are found.
+            """
+            time = container.get('timestamp').filled()
+            lat = container.get('latitude').filled()
+            lon = container.get('longitude').filled()
+            sid = container.get('stationIdentification_prepbufr').filled()
+    
+            print("timeNE deduplicate tstart: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+            # Fast vectorized coordinate rounding (avoiding Decimal/str overhead)
+            latr = np.round(lat, 5)
+            lonr = np.round(lon, 5)
+    
+            # Convert station IDs to string array for structured array keying
+            sid_str = np.asanyarray(sid, dtype=str)
+    
+            # Create structured array key for fast sorting and grouping
+            key_dtype = [('t', time.dtype), ('lat', latr.dtype), ('lon', lonr.dtype), ('sid', sid_str.dtype)]
+            keys = np.empty(len(time), dtype=key_dtype)
+            keys['t'] = time
+            keys['lat'] = latr
+            keys['lon'] = lonr
+            keys['sid'] = sid_str
+    
+            # Identify unique keys and retrieve group inverse mapping
+            unique_keys, inverse_indices = np.unique(keys, return_inverse=True)
+            num_unique = len(unique_keys)
+    
+            # Variables to split into _mass and _wind
+            split_vars = {'obsType', 'observationSubTypeNum', 'prepbufrDataLevelCategory'}
+    
+            new_container = bufr.DataContainer()
+    
+            # Get all variable fields currently in the container
+            fields = container.list()
+            print("timeNE deduplicate t1: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+            # Pre-extract obsType array for mass/wind identification
+            obs_type_data = None
+            if 'obsType' in fields:
+                obs_obj = container.get('obsType')
+                obs_type_data = obs_obj.filled() if hasattr(obs_obj, 'filled') else np.array(obs_obj)
+            print("timeNE deduplicate t2: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+            for field in fields:
+                print("NE field is ", field)
+                data_obj = container.get(field)
+                data = data_obj.filled() if hasattr(data_obj, 'filled') else np.array(data_obj)
+                dtype = data.dtype
+                missing_val = bufr.get_missing_value(dtype)
+                paths = container.get_paths(field)
+    
+                # Vectorized validity mask
+                if np.issubdtype(dtype, np.floating):
+                    valid_mask = ~np.isnan(data) & (data != missing_val)
+                else:
+                    valid_mask = (data != missing_val)
+    
+                # ============================================================
+                # SPECIAL HANDLING: Split variables into _mass and _wind
+                # ============================================================
+                if field in split_vars and obs_type_data is not None:
+                    merged_mass = np.full(num_unique, missing_val, dtype=dtype)
+                    merged_wind = np.full(num_unique, missing_val, dtype=dtype)
+    
+                    # Vectorized leading digit check (1xx -> Mass, 2xx -> Wind)
+                    obs_valid = (obs_type_data != bufr.get_missing_value(obs_type_data.dtype)) & ~np.isnan(obs_type_data)
+                    leading_digits = np.zeros(len(obs_type_data), dtype=int)
+                    leading_digits[obs_valid] = (obs_type_data[obs_valid] // 100).astype(int)
+    
+                    is_mass = valid_mask & (leading_digits == 1)
+                    is_wind = valid_mask & (leading_digits == 2)
+    
+                    merged_mass[inverse_indices[is_mass]] = data[is_mass]
+                    merged_wind[inverse_indices[is_wind]] = data[is_wind]
+    
+                    # Register the two newly split variables into the container
+                    new_container.add(f"{field}_mass", merged_mass, paths)
+                    new_container.add(f"{field}_wind", merged_wind, paths)
+                    print("timeNE deduplicate t3: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    continue  # Done processing this split field
+    
+                print("timeNE deduplicate t4: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                # ============================================================
+                # STANDARD HANDLING: All other standard variables
+                # ============================================================
+                if data.ndim == 1:
+                    merged_array = np.full(num_unique, missing_val, dtype=dtype)
+                else:
+                    merged_shape = (num_unique,) + data.shape[1:]
+                    merged_array = np.full(merged_shape, missing_val, dtype=dtype)
+    
+                print("timeNE deduplicate t5: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+                if data.ndim == 1:
+                    # Vectorized reduction: float valid entries to the top per group using lexsort
+                    sort_order = np.lexsort((~valid_mask, inverse_indices))
+    
+                    sorted_inverse = inverse_indices[sort_order]
+                    sorted_data = data[sort_order]
+                    sorted_valid = valid_mask[sort_order]
+    
+                    # Grab the first valid value for each group
+                    _, first_unique_idx = np.unique(sorted_inverse, return_index=True)
+    
+                    best_candidates = sorted_data[first_unique_idx]
+                    best_valid = sorted_valid[first_unique_idx]
+    
+                    merged_array[best_valid] = best_candidates[best_valid]
+    
+                    # Commented-out conflict check preserved logically:
+                    # if len(valid_vals) > 1 and not all(...):
+                    #     print(f"[DUPLICATE CONFLICT] Variable '{field}' has conflicting values for key {key}: values={valid_vals}")
+    
+                else:
+                    # Multi-dimensional (2D+) event array grouping
+                    sort_order = np.argsort(inverse_indices)
+                    sorted_inverse = inverse_indices[sort_order]
+                    sorted_data = data[sort_order]
+    
+                    split_points = np.where(sorted_inverse[:-1] != sorted_inverse[1:])[0] + 1
+                    group_slices = np.split(sorted_data, split_points)
+                    unique_ids = np.split(sorted_inverse, split_points)
+    
+                    for u_slice, u_id in zip(group_slices, unique_ids):
+                        target_idx = u_id[0]
+                        combined = u_slice[0].copy()
+    
+                        for dup in u_slice[1:]:
+                            if np.issubdtype(dtype, np.floating):
+                                mask = ~np.isnan(dup) & (dup != missing_val)
+                            else:
+                                mask = (dup != missing_val)
+    
+                            # Commented-out conflict check preserved logically:
+                            # existing_mask = is_valid(combined)
+                            # overlap_mask = mask & existing_mask
+                            # if np.any(overlap_mask):
+                            #     ...
+                            #     if has_conflict:
+                            #         print(f"[DUPLICATE CONFLICT] Variable '{field}' has conflicting multi-dim values...")
+    
+                            combined[mask] = dup[mask]
+    
+                        merged_array[target_idx] = combined
+    
+                print("timeNE deduplicate t6: ", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                new_container.add(field, merged_array, paths)
+    
+            print("timeNE deduplicate time end:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+            return new_container
+
+
     def _elevation_check_sfcshp(self, container_late, container_lone, container_eleve, container_t29e):
         lat = container_late
         lon = container_lone
         eleve = container_eleve
         t29 = container_t29e
+
+        print("timeNE elevcheck time start:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         eleve_missing = bufr.get_missing_value(eleve.dtype)
         sfland = np.isin(t29, [511, 512, 514, 540])
@@ -55,6 +216,8 @@ class RawAdpsfcBuilder(ObsBuilder):
         ##mask where eleve=9999.0 meters
         eleve = ma.masked_equal(eleve, 9999.0)
         eleve.set_fill_value(eleve_missing)
+
+        print("timeNE elevetime end:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         return eleve
 
@@ -180,6 +343,8 @@ class RawAdpsfcBuilder(ObsBuilder):
            SfcshpKey not in input_dict:
             return bufr.DataContainer()
 
+        print("timeNE make_obs time start:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        
         prepbufr_container = bufr.Parser(input_dict[PrepbufrKey], self.map_dict[PrepbufrKey]).parse(comm)
         adpsfc_container = bufr.Parser(input_dict[AdpsfcKey], self.map_dict[AdpsfcKey]).parse(comm)
         sfcshp_container = bufr.Parser(input_dict[SfcshpKey], self.map_dict[SfcshpKey]).parse(comm)
@@ -192,6 +357,12 @@ class RawAdpsfcBuilder(ObsBuilder):
         # Add timestamps to the prepbufr container
         reference_time = self._get_reference_time(input_dict[PrepbufrKey])
         self._add_timestamp(prepbufr_container, reference_time)
+
+        # ============================================================
+        # Deduplicate and merge PREPBUFR records
+        # ============================================================
+        prepbufr_container = self._deduplicate_and_merge_container(prepbufr_container)
+
 
         # Create output container
         container = bufr.DataContainer()
@@ -230,7 +401,7 @@ class RawAdpsfcBuilder(ObsBuilder):
         print("NE container lengths pb", len(prepbufr_time), "bufr", len(container_time))
 
 
-
+        print("timeNE dictmatch time start:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         # ============================================================
         # Build PREPBUFR lookup
         # ============================================================
@@ -546,6 +717,7 @@ class RawAdpsfcBuilder(ObsBuilder):
             ]
         )
 
+        print("timeNE dict time end:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         # ============================================================
         # Sanity check.
@@ -583,6 +755,13 @@ class RawAdpsfcBuilder(ObsBuilder):
         # ============================================================
 
         for var in [
+            'stationIdentification_prepbufr',
+            'observationSubTypeNum_wind',
+            'observationSubTypeNum_mass',
+            'obsType_mass',
+            'obsType_wind',
+            'prepbufrDataLevelCategory_wind',
+            'prepbufrDataLevelCategory_mass',
             'airPressure_prepbufr',
             'pressureMeanSeaLevel_prepbufr',
             'height_prepbufr',
@@ -598,15 +777,8 @@ class RawAdpsfcBuilder(ObsBuilder):
             'dewPointTemperatureQuality',
             'specificHumidityQuality',
             'windQuality',
-            'stationIdentification_prepbufr',
-            'prepbufrDataLevelCategory',
-            #'temperatureEventCode',
-            'temperatureEventCode1',
-            'temperatureEventCode2',
-            'temperatureEventCode3',
+            'temperatureEventCode',
             'specificHumidityEventCode',
-            'observationSubTypeNum',
-            'obsType'
         ]:
 
             quality_flags = (
@@ -631,11 +803,7 @@ class RawAdpsfcBuilder(ObsBuilder):
         print("PREPBUFR FIELDS")
 
         for field in [
-            'observationSubTypeNum',
-            #'temperatureEventCode',
-            'temperatureEventCode1',
-            'temperatureEventCode2',
-            'temperatureEventCode3',
+            'temperatureEventCode',
             'specificHumidityEventCode',
             'airPressureQuality',
             'airTemperature',
@@ -665,7 +833,7 @@ class RawAdpsfcBuilder(ObsBuilder):
         #
         container_t29e = (
             prepbufr_container
-            .get('observationSubTypeNum')[prepbufr_indices]
+            .get('observationSubTypeNum_mass')[prepbufr_indices]
         )
 
         if container_t29e.ndim > 1:
@@ -775,7 +943,7 @@ class RawAdpsfcBuilder(ObsBuilder):
         #container.add('specificHumidity_new2', q2.filled(missing_q2), ['*', '*/EVENT']) 
         container.add('specificHumidity_new', q2.filled(missing_value), ['*', '*/EVENT'])
 
-
+        print("timeNE make_obs time end:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         return container
 
@@ -785,22 +953,39 @@ class RawAdpsfcBuilder(ObsBuilder):
         # Add the quality flag variables
         description.add_variables([
             {
-                'name': "specificHumidity_new",
-                'source': 'specificHumidity_new',
-                'longName': "specificHumidity_new",
-                'units': "kg/kg",
+                'name': "stationIdentification_prepbufr",
+                'source': "stationIdentification_prepbufr",
+                'longName': "stationIdentification_prepbufr",
             },
             {
-                'name': 'height_prepbufr',
-                'source': 'height_prepbufr',
-                'longName': 'height_prepbufr',
-                'units': 'm',
+                'name': "prepbufrDataLevelCategory_wind",
+                'source': "variables/prepbufrDataLevelCategory_wind",
+                'longName': "prepbufrDataLevelCategory_wind",
             },
             {
-                'name': 'stationElevation_prepbufr',
-                'source': 'stationElevation_prepbufr',
-                'longName': 'stationElevation_prepbufr',
-                'units': 'm',
+                'name': "prepbufrDataLevelCategory_mass",
+                'source': "variables/prepbufrDataLevelCategory_mass",
+                'longName': "prepbufrDataLevelCategory_mass",
+            },
+            {
+                'name': "obsType_wind",
+                'source': 'obsType_wind',
+                'longName': "ObsType_wind",
+            },
+            {
+                'name': "obsType_mass",
+                'source': 'obsType_mass',
+                'longName': "ObsType_mass",
+            },
+            {
+                'name': "observationSubTypeNum_wind",
+                'source': "observationSubTypeNum_wind",
+                'longName': "Observation SubType Number_wind",
+            },
+            {
+                'name': "observationSubTypeNum_mass",
+                'source': "observationSubTypeNum_mass",
+                'longName': "Observation SubType Number_mass",
             },
             {
                 'name': 'airPressure_prepbufr',
@@ -825,6 +1010,24 @@ class RawAdpsfcBuilder(ObsBuilder):
                 'source': 'specificHumidity',
                 'longName': "Specific Humidity",
                 'units': "kg/kg"
+            },
+            {
+                'name': "specificHumidity_new",
+                'source': 'specificHumidity_new',
+                'longName': "specificHumidity_new",
+                'units': "kg/kg",
+            },
+            {
+                'name': 'height_prepbufr',
+                'source': 'height_prepbufr',
+                'longName': 'height_prepbufr',
+                'units': 'm',
+            },
+            {
+                'name': 'stationElevation_prepbufr',
+                'source': 'stationElevation_prepbufr',
+                'longName': 'stationElevation_prepbufr',
+                'units': 'm',
             },
             {
                 'name': "eastwardWind",
@@ -874,43 +1077,8 @@ class RawAdpsfcBuilder(ObsBuilder):
                 'longName': "Wind Quality Marker",
             },
             {
-                'name': "prepbufrDataLevelCategory",
-                'source': "variables/prepbufrDataLevelCategory",
-                'longName': "prepbufrDataLevelCategory",
-            },
-            {
-                'name': "obsType",
-                'source': 'obsType',
-                'longName': "ObsType",
-            },
-            {
-                'name': "observationSubTypeNum",
-                'source': "observationSubTypeNum",
-                'longName': "Observation SubType Number",
-            },
-            {
-                'name': "stationIdentification_prepbufr",
-                'source': "stationIdentification_prepbufr",
-                'longName': "stationIdentification_prepbufr",
-            },
-#            {
-#                'name': "temperatureEventCode",
-#                'source': 'temperatureEventCode',
-#                'longName': 'temperatureEventCode',
-#            },
-            {
-                'name': "temperatureEventCode1",
-                'source': 'temperatureEventCode1',
-                'longName': 'temperatureEventCode',
-            },
-            {
-                'name': "temperatureEventCode2",
-                'source': 'temperatureEventCode2',
-                'longName': 'temperatureEventCode',
-            },
-            {
-                'name': "temperatureEventCode3",
-                'source': 'temperatureEventCode3',
+                'name': "temperatureEventCode",
+                'source': 'temperatureEventCode',
                 'longName': 'temperatureEventCode',
             },
             {
