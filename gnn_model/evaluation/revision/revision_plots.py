@@ -136,6 +136,12 @@ def scorecard(a):
     _print_style()
     s = pd.read_csv(a.summary)
     s = s[s["plev"] == "all"].copy()
+    # targets left out of the verification (e.g. channels with documented instrument noise), "inst:1,2,3;inst2:4"
+    for item in (a.exclude or "").split(";"):
+        if ":" in item:
+            inst, chans = item.split(":", 1)
+            drop = {int(c) for c in chans.split(",") if c.strip()}
+            s = s[~((s["instrument"] == inst.strip()) & s["variable"].map(_chan_num).isin(drop))]
     label = {"msess_clim": "MSESS vs climatology", "acc_centered_mean": "ACC",
              "msess_pers": "MSESS vs persistence"}.get(a.metric, a.metric)
     diverging = a.metric.startswith("msess")
@@ -385,6 +391,8 @@ def main() -> int:
                    help="colour only, no numbers in the cells (lets the text be larger; values are in Table S2)")
     p.add_argument("--channel_labels", default=None,
                    help="relabel internal channel numbers, e.g. 'avhrr:50=3B,51=4,52=5' (';' between instruments)")
+    p.add_argument("--exclude", default=None,
+                   help="targets left out of the verification, e.g. 'ssmis:1,2,3' (';' between instruments)")
     p = sub.add_parser("baselines"); p.add_argument("--table", required=True); p.add_argument("--out", required=True)
     p.add_argument("--overlay", default=None, help="second table whose extra methods cover only some lead times")
     p.add_argument("--title_pt", type=float, default=None, help="panel title size (pt); default MIN_FONT_PT")
