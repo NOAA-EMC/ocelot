@@ -411,13 +411,23 @@ class RawAdpsfcBuilder(ObsBuilder):
         for i, (t, lat, lon, sid) in enumerate(
                 zip(prepbufr_time, prepbufr_lat, prepbufr_lon, prepbufr_sid)):
         
-            places = abs(Decimal(str(lat)).as_tuple().exponent)
+            #places = abs(Decimal(str(lat)).as_tuple().exponent)
         
-            latr = np.round(lat, places)
-            lonr = np.round(lon, places)
-        
-            key = (t, latr, lonr, sid)
-        
+            #latr = np.round(lat, places)
+            latr = np.round(lat, 4)
+            #lonr = np.round(lon, places)
+            lonr = np.round(lon, 4)
+            sid_str = str(sid).strip()
+
+            key = (t, latr, lonr, sid_str)
+
+            #if (t == 1640984400) and (sid_str=='88883'):
+            #    print("NE888p ", latr, lonr)
+            #if (sid_str=='02964'):
+            #    print("NE029p-1 ", t, latr, lonr)
+            #if (latr == 60.71) and (lonr == 21.01):
+            #    print("NE029p-2 ", sid_str, t)
+
             prepbufr_dict[key].append(i)
         
         
@@ -426,18 +436,33 @@ class RawAdpsfcBuilder(ObsBuilder):
         # ============================================================
         
         container_dict = defaultdict(list)
-        
+        anotherkey=0 
         for i, (t, lat, lon, sid) in enumerate(
                 zip(container_time, container_lat, container_lon, container_sid)):
         
-            places = abs(Decimal(str(lat)).as_tuple().exponent)
+            #places = abs(Decimal(str(lat)).as_tuple().exponent)
         
-            latr = np.round(lat, places)
-            lonr = np.round(lon, places)
-        
-            key = (t, latr, lonr, sid)
-        
-            container_dict[key].append(i)
+            #latr = np.round(lat, places)
+            latr = np.round(lat, 4)
+            #lonr = np.round(lon, places)
+            lonr = np.round(lon, 4)
+            sid_str = str(sid).strip()
+
+            key = (t, latr, lonr, sid_str)
+
+            #if (t == 1640984400) and (sid_str=='88883'):
+            #    print("NE888b ", latr, lonr)
+            #if (sid_str=='02964'):
+            #    print("NE029b-1 ", t, latr, lonr)
+            #if (latr == 60.71) and (lonr == 21.01):
+            #    print("NE029b-2 ", sid_str, t)
+
+            if key not in container_dict:
+                container_dict[key].append(i) 
+            else:
+                #print("ANOTHER KEY", key)
+                anotherkey += 1
+            #container_dict[key].append(i)
         
 
 
@@ -461,11 +486,14 @@ class RawAdpsfcBuilder(ObsBuilder):
 
         container_to_prepbufr = {}
 
+        noprepindices=0
         for key, container_indices in container_dict.items():
 
             prep_indices = prepbufr_dict.get(key, [])
 
             if not prep_indices:
+                noprepindices+=1
+                #print("NO INDICES ??", key, "bufr ", container_dict.get(key, []), "pb: ", prepbufr_dict.get(key, []))
                 continue
 
             num_bufr = len(container_indices)
@@ -542,6 +570,8 @@ class RawAdpsfcBuilder(ObsBuilder):
         #
         # final = slot0 + slot1
         # ============================================================
+
+        print(f"No prep indices for {noprepindices} locations")
 
         num_container_obs = len(container_time)
 
