@@ -28,7 +28,8 @@ elif [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/predict_gnn.py" ]]
 elif [[ -f "${SOURCE_SCRIPT_DIR}/../../predict_gnn.py" ]]; then
   GNN_MODEL_DIR="$(cd "${SOURCE_SCRIPT_DIR}/../.." && pwd)"
 else
-  GNN_MODEL_DIR="/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model"
+  echo "ERROR: cannot locate gnn_model/ (predict_gnn.py). Submit from gnn_model/ or set GNN_MODEL_DIR." >&2
+  exit 1
 fi
 OCELOT_DIR="$(cd "${GNN_MODEL_DIR}/.." && pwd)"
 
@@ -51,7 +52,7 @@ EXP_NAME=${EXP_NAME:-ocelot_v1_gfs_eval}
 # If you want a specific epoch, set CKPT=/path/to/file.ckpt when submitting.
 # Example:
 #   sbatch --export=ALL,CKPT=/full/path/to/model.ckpt evaluation/scripts/run_pred_eval_gfs.sh
-CKPT=${CKPT:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/mainBranch/ocelot/gnn_model/checkpoints/Rand_TenYear_nl16_fixedBugs/last.ckpt}
+CKPT=${CKPT:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}
 
 if [ -z "${CKPT}" ]; then
   echo "ERROR: CKPT is not set. Provide a full checkpoint path."

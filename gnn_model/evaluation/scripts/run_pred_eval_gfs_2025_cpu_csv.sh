@@ -26,7 +26,8 @@ elif [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/predict_gnn.py" ]]
 elif [[ -f "${SOURCE_SCRIPT_DIR}/../../predict_gnn.py" ]]; then
   GNN_MODEL_DIR="$(cd "${SOURCE_SCRIPT_DIR}/../.." && pwd)"
 else
-  GNN_MODEL_DIR="/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model"
+  echo "ERROR: cannot locate gnn_model/ (predict_gnn.py). Submit from gnn_model/ or set GNN_MODEL_DIR." >&2
+  exit 1
 fi
 SCRIPT_DIR="${GNN_MODEL_DIR}/evaluation/scripts"
 cd "${GNN_MODEL_DIR}"

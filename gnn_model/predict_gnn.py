@@ -61,6 +61,10 @@ def main():
                         help="Evaluation mode: expects target observations to exist."
                              "Default: False (inference mode - no targets required)")
 
+    parser.add_argument("--deny_input_instruments", type=str, default="",
+                        help="Comma-separated instruments whose inputs are withheld from the encoder "
+                             "(observation-denial experiment); their targets are still verified.")
+
     args = parser.parse_args()
 
     has_cuda = torch.cuda.is_available()
@@ -189,6 +193,10 @@ def main():
     print(f"\nSetting up data module:")
     print(f"  Window size: {data_window_hours}h")
     print(f"  Latent step hours: {latent_step_hours}h")
+
+    model.denied_input_instruments = [s.strip() for s in args.deny_input_instruments.split(",") if s.strip()]
+    if model.denied_input_instruments:
+        print(f"  [DENIAL] Inputs withheld from encoder: {model.denied_input_instruments}")
 
     # Create data module
     data_module = GNNDataModule(

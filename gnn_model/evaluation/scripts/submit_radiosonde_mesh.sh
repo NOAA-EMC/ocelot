@@ -29,7 +29,7 @@ INIT_TIME=${INIT_TIME:-2025030100}
 FHR_LIST=${FHR_LIST:-"3 6 9 12"}
 
 # IMPORTANT: set this to your checkpoint if different.
-CKPT=${CKPT:-"${GNN_MODEL_DIR}/checkpoints/Rand_MSELoss_Con/last.ckpt"}
+CKPT=${CKPT:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}
 
 # Pressure-level selection.
 RADIOSONDE_LEVELS=${RADIOSONDE_LEVELS:-850}

@@ -7,8 +7,9 @@ prediction in weather applications. The repository includes data preparation,
 GNN training/inference, mesh-grid prediction, and evaluation utilities for
 OCELOT, persistence, truth, and GFS comparisons.
 
-The `ocelot-v1.0` tag is the reference code snapshot for the OCELOT v1 AIES
-submission.
+The `ocelot-v1.1` tag is the reference code snapshot for the OCELOT v1 AIES
+manuscript. It contains the OCELOT v1.0 code and the evaluation scripts in
+`gnn_model/evaluation/revision`.
 
 ## Repository Layout
 
@@ -18,7 +19,7 @@ submission.
 - `gnn_model/evaluation/`: OCELOT-vs-truth, persistence, and GFS comparison
   documentation and plotting utilities.
 
-## v1.0 Highlights
+## v1 Highlights
 
 - Heterogeneous graph neural network for multi-instrument observation prediction.
 - Obs-space and mesh-space prediction outputs.

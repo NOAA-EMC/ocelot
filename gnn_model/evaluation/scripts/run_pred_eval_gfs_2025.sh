@@ -29,7 +29,8 @@ elif [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "${SLURM_SUBMIT_DIR}/predict_gnn.py" ]]
 elif [[ -f "${SOURCE_SCRIPT_DIR}/../../predict_gnn.py" ]]; then
   GNN_MODEL_DIR="$(cd "${SOURCE_SCRIPT_DIR}/../.." && pwd)"
 else
-  GNN_MODEL_DIR="/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model"
+  echo "ERROR: cannot locate gnn_model/ (predict_gnn.py). Submit from gnn_model/ or set GNN_MODEL_DIR." >&2
+  exit 1
 fi
 SCRIPT_DIR="${GNN_MODEL_DIR}/evaluation/scripts"
 cd "${GNN_MODEL_DIR}"
@@ -100,7 +101,7 @@ export INIT_TIME="${INIT_TIMES[${ARRAY_IDX}]}"
 
 # Manuscript checkpoint/current experiment defaults. Override at sbatch time if needed.
 export EXP_NAME=${EXP_NAME:-ocelot_v1_2025_gfs_eval}
-export CKPT=${CKPT:-/scratch4/NAGAPE/gpu-ai4wp/Azadeh.Gholoubi/main_PR/ocelot/gnn_model/checkpoints/PR_Test/Epoch3079_fixedval.ckpt}
+export CKPT=${CKPT:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/PaperCheckpoint/Epoch3079.ckpt}
 export INSTRUMENT=${INSTRUMENT:-surface_obs}
 export GFS_ROOT
 export GFS_TIME_MODE=${GFS_TIME_MODE:-obs_interp}

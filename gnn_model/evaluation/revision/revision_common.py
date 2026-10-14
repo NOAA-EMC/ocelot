@@ -1,0 +1,199 @@
+"""Shared helpers for the OCELOT v1 observation-space evaluation scripts.
+
+Reads OCELOT obs-space prediction CSVs (``pred_<inst>_target_init_<YYYYMMDDHH>.csv``)
+and defines the stratification keys used by the observation-space climatology.
+
+Climatology keys (coarsest fallback last):
+    L1: instrument, variable, grid cell, month, 3-h UTC bin, pressure level, scan-angle bin
+    L2: instrument, variable, grid cell, month,              pressure level, scan-angle bin
+    L3: instrument, variable, 5-degree latitude band, month, pressure level, scan-angle bin
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+import re
+
+import numpy as np
+import pandas as pd
+
+CONVENTIONAL = {"surface_obs", "radiosonde", "aircraft"}
+# The 16 standard pressure levels of the model's level embedding (process_timeseries.STANDARD_PRESSURE_LEVELS).
+STANDARD_PRESSURE_HPA = np.array([1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10], float)
+FILE_RE = re.compile(r"pred_(?P<inst>.+)_target_init_(?P<init>\d{10})\.csv$")
+LAT_BAND_DEG = 5.0
+N_SCAN_BINS = 8
+
+
+def cell_deg_for(inst: str) -> float:
+    """Grid-cell size: 1 deg for conventional networks, 2 deg for satellites."""
+    return 1.0 if inst in CONVENTIONAL else 2.0
+
+
+def list_prediction_files(pred_dir: str, recursive: bool = False) -> list[tuple[str, str, str]]:
+    """Return (path, instrument, init) for every obs-space prediction CSV."""
+    pattern = os.path.join(pred_dir, "**", "pred_*_target_init_*.csv") if recursive else os.path.join(
+        pred_dir, "pred_*_target_init_*.csv"
+    )
+    out = []
+    for path in sorted(glob.glob(pattern, recursive=recursive)):
+        m = FILE_RE.search(os.path.basename(path))
+        if m:  # excludes *_vs_gfs.csv and other derived files
+            out.append((path, m.group("inst"), m.group("init")))
+    return out
+
+
+def variables_in(df: pd.DataFrame) -> list[str]:
+    return [c[len("true_"):] for c in df.columns if c.startswith("true_") and f"pred_{c[len('true_'):]}" in df.columns]
+
+
+def valid_rows(df: pd.DataFrame, var: str) -> np.ndarray:
+    ok = np.isfinite(df[f"pred_{var}"].to_numpy(float)) & np.isfinite(df[f"true_{var}"].to_numpy(float))
+    mcol = f"mask_{var}"
+    if mcol in df.columns:
+        m = df[mcol]
+        if m.dtype != bool:
+            m = m.astype(str).str.strip().str.lower().isin({"true", "1", "1.0"})
+        ok &= m.to_numpy(bool)
+    return ok
+
+
+def _time_unix(df: pd.DataFrame) -> np.ndarray:
+    t = np.full(len(df), -1, dtype=np.int64)
+    for col in ("obs_time_unix", "valid_time_unix"):
+        if col in df.columns:
+            v = pd.to_numeric(df[col], errors="coerce").fillna(-1).to_numpy(np.int64)
+            t = np.where(t >= 0, t, v)
+    return t
+
+
+def scan_bin(df: pd.DataFrame, edges: np.ndarray | None) -> np.ndarray:
+    if edges is None or "scan_angle_0" not in df.columns:
+        return np.full(len(df), -1, dtype=np.int16)
+    sa = np.abs(pd.to_numeric(df["scan_angle_0"], errors="coerce").to_numpy(float))
+    b = np.clip(np.searchsorted(edges, sa, side="right") - 1, 0, len(edges) - 2)
+    return np.where(np.isfinite(sa), b, -1).astype(np.int16)
+
+
+def strat_keys(df: pd.DataFrame, inst: str, scan_edges: np.ndarray | None) -> pd.DataFrame:
+    """Per-row climatology keys for one prediction CSV."""
+    lat = pd.to_numeric(df["lat"], errors="coerce").to_numpy(float)
+    lon = np.mod(pd.to_numeric(df["lon"], errors="coerce").to_numpy(float) + 180.0, 360.0)
+    d = cell_deg_for(inst)
+    nlon = int(round(360.0 / d))
+    lat_i = np.clip(np.floor((lat + 90.0) / d), 0, int(round(180.0 / d)) - 1)
+    lon_i = np.clip(np.floor(lon / d), 0, nlon - 1)
+    t = pd.to_datetime(_time_unix(df), unit="s", utc=True)
+    plev = (
+        pd.to_numeric(df["pressure_level_idx"], errors="coerce").fillna(-1).to_numpy(np.int16)
+        if "pressure_level_idx" in df.columns
+        else np.full(len(df), -1, dtype=np.int16)
+    )
+    return pd.DataFrame(
+        {
+            "cell": (lat_i * nlon + lon_i).astype(np.int32),
+            "band": np.clip(np.floor((lat + 90.0) / LAT_BAND_DEG), 0, 180 / LAT_BAND_DEG - 1).astype(np.int16),
+            "month": t.month.to_numpy(np.int8),
+            "hour3": (t.hour.to_numpy() // 3).astype(np.int8),
+            "plev": plev,
+            "sab": scan_bin(df, scan_edges),
+        }
+    )
+
+
+LEVELS = {
+    "L1": ["cell", "month", "hour3", "plev", "sab"],
+    "L2": ["cell", "month", "plev", "sab"],
+    "L3": ["band", "month", "plev", "sab"],
+}
+
+
+# --------------------------------------------------------------------------------------
+# Verification-time quality control
+# --------------------------------------------------------------------------------------
+class VerifyQC:
+    """Extra QC applied to the VERIFYING observations only (model inputs and forecasts are untouched).
+
+    Rules come from a YAML file (see verify_qc.yaml):
+      satellite: {value_range: [lo, hi], range_exclude: [inst, ...], outlier_k: k}
+      conventional: {<inst>: {all_variables: {max_level_offset: d},
+                              <variable>: {min_pressure_hpa: p,
+                                           le_variable: <other variable>, le_margin: m, max_spread: s}}}
+    ``max_level_offset`` keeps only reports whose pressure lies within |ln(p / p_level)| <= d of their
+    standard pressure level (d = 0.01 is about 1%), i.e. verification at the standard levels.
+    """
+
+    def __init__(self, path: str | None):
+        self.rules = {}
+        if path:
+            import yaml
+            with open(path) as f:
+                self.rules = yaml.safe_load(f) or {}
+        self.sat = self.rules.get("satellite") or {}
+        self.conv = self.rules.get("conventional") or {}
+
+    @property
+    def active(self) -> bool:
+        return bool(self.rules)
+
+    def apply(self, df: pd.DataFrame, inst: str, var: str, ok: np.ndarray, clim: np.ndarray | None = None):
+        """Return (ok_after_qc, n_removed_by_rule_dict)."""
+        removed = {"range": 0, "pressure": 0, "relation": 0, "outlier": 0, "level": 0}
+        if not self.active:
+            return ok, removed
+        ok = ok.copy()
+        obs = df[f"true_{var}"].to_numpy(float)
+        if inst not in CONVENTIONAL:
+            # A per-instrument range overrides the shared one (e.g. microwave imagers, whose
+            # brightness temperatures do not reach the 400 K bound used for sounders).
+            rng = (self.sat.get("per_instrument") or {}).get(inst, self.sat.get("value_range"))
+            if rng and inst not in set(self.sat.get("range_exclude") or []):
+                bad = ok & ~((obs >= float(rng[0])) & (obs <= float(rng[1])))
+                removed["range"] = int(bad.sum())
+                ok &= ~bad
+            k = self.sat.get("outlier_k")
+            if k and ok.sum() > 50:
+                # Robust gross-error check on the observation's departure from climatology
+                # (or from the sample median when no climatology is available). Uses observations only.
+                dep = obs - clim if clim is not None and np.isfinite(clim[ok]).mean() > 0.5 else obs.copy()
+                use = ok & np.isfinite(dep)
+                med = np.median(dep[use])
+                sig = 1.4826 * np.median(np.abs(dep[use] - med))
+                if sig > 0:
+                    bad = use & (np.abs(dep - med) > float(k) * sig)
+                    removed["outlier"] = int(bad.sum())
+                    ok &= ~bad
+        else:
+            inst_rule = (self.conv.get(inst) or {}).get("all_variables") or {}
+            if inst_rule.get("max_level_offset") is not None:
+                missing = [c for c in ("pressure_hPa", "pressure_level_idx") if c not in df.columns]
+                if missing:
+                    raise SystemExit(f"max_level_offset for {inst} needs columns {missing} in the prediction CSVs.")
+                p = pd.to_numeric(df["pressure_hPa"], errors="coerce").to_numpy(float)
+                li = pd.to_numeric(df["pressure_level_idx"], errors="coerce").to_numpy(float)
+                valid = np.isfinite(li) & (li >= 0) & (li < len(STANDARD_PRESSURE_HPA)) & np.isfinite(p) & (p > 0)
+                at_level = np.zeros(len(df), dtype=bool)
+                std = STANDARD_PRESSURE_HPA[np.where(valid, li, 0).astype(int)]
+                at_level[valid] = np.abs(np.log(p[valid] / std[valid])) <= float(inst_rule["max_level_offset"])
+                bad = ok & ~at_level
+                removed["level"] = int(bad.sum())
+                ok &= ~bad
+            rule = (self.conv.get(inst) or {}).get(var)
+            if rule:
+                if rule.get("min_pressure_hpa") is not None:
+                    p = pd.to_numeric(df["pressure_hPa"], errors="coerce").to_numpy(float)
+                    bad = ok & ~(p >= float(rule["min_pressure_hpa"]))
+                    removed["pressure"] = int(bad.sum())
+                    ok &= ~bad
+                if rule.get("le_variable"):
+                    # Cross-variable check, e.g. dew point <= air temperature (+ margin), and a cap on
+                    # their spread; both read from the observed values of the same report.
+                    other = pd.to_numeric(df[f"true_{rule['le_variable']}"], errors="coerce").to_numpy(float)
+                    both = np.isfinite(other) & np.isfinite(obs)
+                    bad = ok & both & (obs > other + float(rule.get("le_margin", 0.0)))
+                    if rule.get("max_spread") is not None:
+                        bad |= ok & both & ((other - obs) > float(rule["max_spread"]))
+                    removed["relation"] = int(bad.sum())
+                    ok &= ~bad
+        return ok, removed
