@@ -22,7 +22,7 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback
+from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback, RolloutCurriculumCallback
 from ckpt_utils import find_latest_checkpoint
 from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning
@@ -327,6 +327,39 @@ def main():
     parser.add_argument("--es_start_epoch", type=int, default=0)
     parser.add_argument("--disable_early_stopping", action="store_true")
 
+    # AR rollout curriculum
+    parser.add_argument(
+        "--ar_curriculum",
+        action="store_true",
+        help=(
+            "Enable the RolloutCurriculumCallback, which gradually increases the "
+            "number of AR training windows following the model's rollout_schedule."
+        ),
+    )
+    parser.add_argument(
+        "--ar_max_steps",
+        type=int,
+        default=4,
+        help="Maximum number of AR windows when --ar_curriculum is enabled.",
+    )
+    parser.add_argument(
+        "--rollout_schedule",
+        type=str,
+        default="fixed",
+        choices=["fixed", "step", "linear", "graphcast"],
+        help=(
+            "Schedule for get_current_rollout_steps() used by RolloutCurriculumCallback. "
+            "'graphcast': 1 step for first 300 k gradient updates, +1 per 1000 thereafter. "
+            "'fixed': always returns max_rollout_steps."
+        ),
+    )
+    parser.add_argument(
+        "--max_rollout_steps",
+        type=int,
+        default=2,
+        help="Maximum rollout steps passed to GNNLightning (used by curriculum schedule).",
+    )
+
     args = parser.parse_args()
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
@@ -441,8 +474,8 @@ def main():
     batch_size = 1
 
     # Rollout settings
-    max_rollout_steps = 1
-    rollout_schedule = "fixed"
+    max_rollout_steps = int(args.max_rollout_steps)
+    rollout_schedule = str(args.rollout_schedule)
 
     input_window_hours = int(args.input_window_hours)
     target_window_hours = int(args.target_window_hours)
@@ -716,6 +749,20 @@ def main():
                 update_every_n_epochs=int(args.val_update_every_n_epochs),
             )
         )
+
+    # Optional AR rollout curriculum
+    if args.ar_curriculum:
+        callbacks.append(
+            RolloutCurriculumCallback(
+                max_ar_steps=max_rollout_steps,
+                log_on_change=True,
+            )
+        )
+        if is_global_zero:
+            print(
+                f"[AR Curriculum] Enabled: rollout_schedule={rollout_schedule} "
+                f"max_rollout_steps={max_rollout_steps} ar_max_steps={args.ar_max_steps}"
+            )
 
     trainer_kwargs["callbacks"] = callbacks
     trainer = pl.Trainer(**trainer_kwargs)

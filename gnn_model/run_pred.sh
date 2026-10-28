@@ -10,7 +10,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 01:00:00
+#SBATCH -t 03:00:00
 #SBATCH --output=gnn_pred_%j.out
 #SBATCH --error=gnn_pred_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -40,16 +40,17 @@ echo "Visible GPUs on this node:"
 nvidia-smi
 
 # Prediction mode:
-EXPT="ocelot_v1_prediction_example"
-CKPT="checkpoints/$EXPT/ep181.ckpt"
-OUT_DIR="predictions/$EXPT"
+EXPT="test12_small_3binloss/"
+CKPT="checkpoints/$EXPT/ep300.ckpt"
+OUT_DIR="test_inference/$EXPT/ep300_ar10"
 
 srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python predict_gnn.py \
     --checkpoint $CKPT \
     --start_date 2025-02-28 \
-    --end_date 2025-03-03 \
+    --end_date 2025-03-04 \
     --output_dir $OUT_DIR \
-    --eval-mode  # comment out to run in inference mode
+    --ar_steps 10 \
+    # --eval-mode  # comment out to run in inference mode
     # Evaluation mode: Predict on obs-space for all instruments (AMSUA, aircraft, etc.) with ground truth comparisons.
     #                  The last timebin is held as the target bin, consistent with training.
     # Inference mode: Predict on mesh-grid for the instruments specified in configs/mesh_config.yaml.

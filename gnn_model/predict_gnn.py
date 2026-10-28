@@ -60,6 +60,12 @@ def main():
     parser.add_argument("--eval-mode", action="store_true",
                         help="Evaluation mode: expects target observations to exist."
                              "Default: False (inference mode - no targets required)")
+    parser.add_argument(
+    "--ar_steps",
+    type=int,
+    default=1,
+    help="Number of AR windows to chain (1 = single-step, default).",
+    )
 
     args = parser.parse_args()
 
@@ -91,6 +97,9 @@ def main():
     else:
         print("  → Inference mode: No targets required (operational forecasting)")
     print("="*80 + "\n")
+
+    if args.ar_steps > 1:
+        print(f"  → AR inference: chaining {args.ar_steps} windows")
 
     if not os.path.exists(args.checkpoint):
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
@@ -181,6 +190,7 @@ def main():
 
     model.eval()
     model.prediction_output_dir = args.output_dir
+    model._ar_inference_steps = args.ar_steps
 
     # Get model hyperparameters
     latent_step_hours = int(model.hparams.get('latent_step_hours', 3))
@@ -267,6 +277,12 @@ def main():
         torch.cuda.set_device(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+
+    # Wire ar_steps into the datamodule so predict_dataloader can use ARWindowDataset
+    # in eval-mode. Must be called before trainer.predict().
+    if args.ar_steps > 1:
+        data_module.set_ar_steps(args.ar_steps)
+        print(f"[PREDICT] AR steps set on datamodule: {args.ar_steps}")
 
     predictions = trainer.predict(model, datamodule=data_module)
 

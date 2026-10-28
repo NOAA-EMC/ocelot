@@ -11,7 +11,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 12:00:00
+#SBATCH -t 4:00:00
 #SBATCH --output=gnn_train_Random_%j.out
 #SBATCH --error=gnn_train_Random_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -98,13 +98,13 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-ocelot_v1_random_window}"
+RUN_NAME="${RUN_NAME:-test12_small_3binloss}"
 echo "RUN_NAME=$RUN_NAME"
 
 # Loss/optimizer settings
 LOSS_TYPE="${LOSS_TYPE:-mse}"
 
-LR="${LR:-1.5e-4}"
+LR="${LR:-5e-4}"  # 1.5e-4 for 10 years
 
 # LR schedule (must match train_gnn.py choices: plateau | cosine_warmup)
 LR_SCHEDULE="${LR_SCHEDULE:-cosine_warmup}"
@@ -170,21 +170,21 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--sampling_mode random \
 	--cfg_path configs/observation_config.yaml \
 	--data_path /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7 \
-	--train_start_date 2015-01-01 \
-	--train_end_date 2024-01-01 \
-	--val_start_date 2024-01-01 \
+	--train_start_date 2022-01-01 \
+	--train_end_date 2024-11-01 \
+	--val_start_date 2024-11-01 \
 	--val_end_date 2025-01-01 \
 	--train_window_days 12 \
-	--val_window_days 12 \
+	--val_window_days 8 \
 	--val_mode sequential \
-	--val_stride_days 12 \
-	--val_update_every_n_epochs 100 \
+	--val_stride_days 8 \
+	--val_update_every_n_epochs 600 \
 	--lr "$LR" \
 	--lr_schedule "$LR_SCHEDULE" \
 	--warmup_pct "$WARMUP_PCT" \
 	--warmup_start_factor "$WARMUP_START_FACTOR" \
 	--min_lr "$MIN_LR" \
-	--weight_decay 1e-4 \
+	--weight_decay 1e-5 \
 	--processor_dropout 0.1 \
 	--node_dropout 0.05 \
 	--encoder_dropout 0.1 \
@@ -192,7 +192,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--loss_type "$LOSS_TYPE" \
 	--huber_delta 0.5 \
 	--seed 12345 \
-	--max_epochs 3280 \
+	--max_epochs 451 \
 	--cache_val_windows \
 	--val_cache_max_entries 16 \
 	--disable_early_stopping \
@@ -200,7 +200,11 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--val_csv_num_batches 3 \
 	--val_csv_every_n_epochs 10 \
 	--val_csv_max_rows 50000 \
-	--val_csv_sample_seed 12345
+	--val_csv_sample_seed 12345 \
+	--hidden_dim 128 \
+	--ar_curriculum \
+	--max_rollout_steps 6 \
+	--rollout_schedule step
 
 # Resume from specific checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt

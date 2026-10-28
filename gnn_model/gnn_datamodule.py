@@ -20,6 +20,7 @@ import torch
 import torch.distributed as dist
 import zarr
 from zarr.storage import LRUStoreCache
+from typing import List
 from torch.utils.data import Dataset
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -79,6 +80,20 @@ def _t32(x):
 def _t64(x):
     return x.long() if torch.is_tensor(x) else torch.as_tensor(x, dtype=torch.long)
 
+
+def _ar_collate_fn(batch):
+    """Collate for ARWindowDataset.
+ 
+    DataLoader wraps each __getitem__ result in an outer list when batch_size=1.
+    batch is therefore [ [window_0, window_1, ..., window_N] ].
+    We unwrap to return the inner list directly so training_step receives:
+        List[HeteroData]  of length ar_steps+1.
+    """
+    assert len(batch) == 1, (
+        "AR training requires batch_size=1; got batch of length "
+        f"{len(batch)}.  Set batch_size=1 in the datamodule."
+    )
+    return batch[0]  # List[HeteroData]
 
 # -------------------------
 # Dataset per bin
@@ -169,6 +184,78 @@ class BinDataset(Dataset):
 
 
 # -------------------------
+# Autoregressive
+# -------------------------
+class ARWindowDataset(Dataset):
+    """Wraps BinDataset to return self-contained AR sequences.
+
+    __getitem__(idx) returns a list of `ar_steps` consecutive HeteroData
+    objects, one per AR rollout step:
+        [window_0, window_1, ..., window_{ar_steps-1}]
+
+    Each window holds both the input observations and its own target
+    observations for one time bin, so window_k serves as the ground truth
+    for AR step k. The encoder input for each step is:
+        step 0   : window_0's real observations.
+        step k>0 : the previous step's predictions (synthetic feedback),
+                   placed on window_k's target node positions; window_k's
+                   real targets are used only for scoring, never as input.
+    This keeps training and inference consistent (no real observations are
+    consumed past the first window).
+
+    Each window is independently loadable because BinDataset.__getitem__
+    fetches a complete HeteroData (inputs + targets) for a single time bin.
+    The sequence is therefore self-contained: no inter-sequence coordination
+    is required, and DistributedSampler works without modification.
+
+    Args:
+        base_dataset : BinDataset instance (already built with the correct
+                       data_summary and bin_names for the current epoch).
+        ar_steps     : Number of AR rollout steps == number of windows per
+                       sequence (>= 1). ar_steps=1 → 1 window (single step,
+                       no synthetic feedback).
+    """
+ 
+    def __init__(self, base_dataset: "BinDataset", ar_steps: int = 1):
+        if ar_steps < 1:
+            raise ValueError(f"ar_steps must be >= 1, got {ar_steps}")
+ 
+        self.base_dataset = base_dataset
+        self.ar_steps = ar_steps
+        self._seq_len = ar_steps  # total windows per sequence
+ 
+        n_bins = len(base_dataset)
+        if n_bins < self._seq_len:
+            raise ValueError(
+                f"ARWindowDataset needs at least {self._seq_len} bins "
+                f"(ar_steps={ar_steps}), but base_dataset has {n_bins}."
+            )
+ 
+        # Number of valid starting positions
+        self._n_sequences = n_bins - ar_steps + 1
+        print(
+            f"[ARWindowDataset] ar_steps={ar_steps} seq_len={self._seq_len} "
+            f"n_bins={n_bins} n_sequences={self._n_sequences}"
+        )
+ 
+    def __len__(self) -> int:
+        return self._n_sequences
+ 
+    def __getitem__(self, idx: int) -> List:
+        """Return list of ar_steps consecutive HeteroData objects."""
+        if idx >= self._n_sequences:
+            raise IndexError(
+                f"Index {idx} out of range for {self._n_sequences} sequences"
+            )
+
+        bins = getattr(self.base_dataset, "bin_names", None)
+        if bins is not None and idx < 3:
+            print(f"[ARWindowDataset.getitem] idx={idx} seq={bins[idx: idx + self._seq_len]}")
+
+        return [self.base_dataset[idx + i] for i in range(self._seq_len)]
+
+
+# -------------------------
 # DataModule
 # -------------------------
 class GNNDataModule(pl.LightningDataModule):
@@ -185,6 +272,7 @@ class GNNDataModule(pl.LightningDataModule):
         input_window_hours=12,      # binning input window
         target_window_hours=12,     # binning target window
         latent_step_hours=3,        # sub-target-window size for latent-space rollout
+        ar_steps=1,
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         cache_val_windows: bool = False,
         val_cache_max_entries: int = 16,
@@ -240,6 +328,9 @@ class GNNDataModule(pl.LightningDataModule):
         self._train_version = 0
         self._val_version = 0
 
+        # Autoregressive setups
+        self._ar_steps: int = 1  # default: single-step
+
         # If callbacks want separate windows, they will set these:
         # Default: create non-overlapping train/val split to prevent data leakage
         # Use split ratio passed from training script for consistency
@@ -287,6 +378,26 @@ class GNNDataModule(pl.LightningDataModule):
         # Ensure latent_step_hours has a valid value
         if self.hparams.latent_step_hours is None:
             self.hparams.latent_step_hours = int(self.hparams.target_window_hours)
+
+    def set_ar_steps(self, n: int):
+        """Set the number of AR windows for the next training epoch.
+     
+        Analogous to set_train_window(): updates internal state and triggers
+        a summary rebuild so the next dataloader reload picks up the change.
+     
+        Args:
+            n: Number of AR windows beyond the first (>= 1).
+               n=1 is equivalent to the current single-step behaviour when
+               training_step is updated to unpack the sequence list.
+        """
+        if n < 1:
+            raise ValueError(f"ar_steps must be >= 1, got {n}")
+        self._ar_steps = n
+        self._train_version += 1
+        print(f"[DM.set_ar_steps] ar_steps={n} train_version={self._train_version}")
+        # Summary does not change with ar_steps (bins are the same); only the
+        # dataset wrapper changes.  Rebuild is triggered so PL reloads the loader.
+        # _rebuild_train_summary() is NOT needed here — bin list is unchanged.
 
     def _ddp_info(self) -> tuple[bool, int]:
         is_ddp = bool(dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1)
@@ -636,6 +747,9 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].target_channel_mask = torch.empty((0, target_features.shape[1]), dtype=torch.bool)
                 data[node_type_target].target_pressure_hpa = torch.empty((0,), dtype=torch.float32)
                 data[node_type_target].obs_time_unix = torch.empty((0,), dtype=torch.long)
+                data[node_type_target].lat = torch.empty((0,), dtype=torch.float32)
+                data[node_type_target].lon = torch.empty((0,), dtype=torch.float32)
+                data[node_type_target].sat_ids = torch.empty((0,), dtype=torch.long)
                 continue
 
             keep_np = keep_t.cpu().numpy()
@@ -695,6 +809,13 @@ class GNNDataModule(pl.LightningDataModule):
                 data[node_type_target].obs_time_unix = _t64(torch.tensor(obs_unix, dtype=torch.long))
             else:
                 data[node_type_target].obs_time_unix = torch.full((y_t.shape[0],), -1, dtype=torch.long)
+
+            # Satellite ID per target row (used to build AR synthetic input one-hot)
+            if "target_sat_ids_list" in inst_dict and step < len(inst_dict["target_sat_ids_list"]):
+                sids = np.asarray(inst_dict["target_sat_ids_list"][step], dtype=np.int64)
+                if sids.size:
+                    sids = sids[keep_np]
+                data[node_type_target].sat_ids = torch.as_tensor(sids, dtype=torch.long)
 
             # Store pressure level index for radiosonde and aircraft (if available)
             if "target_pressure_level_list" in inst_dict and step < len(inst_dict["target_pressure_level_list"]):
@@ -772,7 +893,7 @@ class GNNDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
-        ds = BinDataset(
+        base_ds = BinDataset(
             self.train_bin_names,
             self.train_data_summary,
             self.z,
@@ -783,17 +904,46 @@ class GNNDataModule(pl.LightningDataModule):
             include_persistence_inputs=False,
             tag="TRAIN",
         )
+        ar_steps = getattr(self, "_ar_steps", 1)
+
+        if ar_steps > 1:
+            from torch.utils.data import DataLoader as TorchDataLoader
+            ar_ds = ARWindowDataset(base_ds, ar_steps=ar_steps)
+            # ARWindowDataset returns lists, not plain HeteroData; PyG's collate
+            # cannot handle a list of HeteroData directly.  Use batch_size=1 and
+            # a no-op collate_fn to pass the raw list to training_step.
+            loader = TorchDataLoader(
+                ar_ds,
+                batch_size=1,
+                shuffle=True,
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=False,
+                worker_init_fn=self._worker_init,
+                collate_fn=_ar_collate_fn,
+            )
+            print(
+                f"[DL] TRAIN v{self._train_version} AR ar_steps={ar_steps} "
+                f"loader_id={id(loader)} ds_id={id(ar_ds)} "
+                f"sequences={len(ar_ds)}"
+            )
+            return loader
+
+        # Existing single-step path — unchanged.
         loader = PyGDataLoader(
-            ds,
+            base_ds,
             batch_size=self.hparams.batch_size,
             shuffle=True,
             num_workers=4,
             pin_memory=True,
-            persistent_workers=False,   # safer while debugging stale refs
+            persistent_workers=False,
             worker_init_fn=self._worker_init,
         )
-        print(f"[DL] TRAIN v{self._train_version} loader_id={id(loader)} ds_id={id(ds)} "
-              f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}")
+        print(
+            f"[DL] TRAIN v{self._train_version} single-step "
+            f"loader_id={id(loader)} ds_id={id(base_ds)} "
+            f"sum_id={id(self.train_data_summary)} bins={len(self.train_bin_names)}"
+        )
         return loader
 
     def val_dataloader(self):
@@ -810,6 +960,27 @@ class GNNDataModule(pl.LightningDataModule):
             include_persistence_inputs=self.include_persistence_inputs,
             tag="VAL",
         )
+
+        # AR-mode validation: wrap in ARWindowDataset so each batch is a real
+        # sequence, identical structure to training. Mirrors predict_dataloader.
+        ar_steps = getattr(self, "_ar_steps", 1)
+        if ar_steps > 1:
+            from torch.utils.data import DataLoader as TorchDataLoader
+            ar_ds = ARWindowDataset(ds, ar_steps=ar_steps)
+            loader = TorchDataLoader(
+                ar_ds,
+                batch_size=1,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=False,
+                worker_init_fn=self._worker_init,
+                collate_fn=_ar_collate_fn,
+            )
+            print(f"[DL] VAL-AR ar_steps={ar_steps} sequences={len(ar_ds)} "
+                  f"bins={len(self.val_bin_names)}")
+            return loader
+
         loader = PyGDataLoader(
             ds,
             batch_size=self.hparams.batch_size,
@@ -837,7 +1008,7 @@ class GNNDataModule(pl.LightningDataModule):
             return None
 
         # Create dataset
-        ds = BinDataset(
+        base_ds = BinDataset(
             self.val_bin_names,
             self.val_data_summary,
             self.z,
@@ -849,9 +1020,34 @@ class GNNDataModule(pl.LightningDataModule):
             tag="PREDICT",
         )
 
+        ar_steps = getattr(self, "_ar_steps", 1)
+
+        # Eval-mode AR: wrap in ARWindowDataset so each batch is a real sequence,
+        # identical structure to training mode.
+        if ar_steps > 1 and self.require_targets:
+            from torch.utils.data import DataLoader as TorchDataLoader
+            ar_ds = ARWindowDataset(base_ds, ar_steps=ar_steps)
+            loader = TorchDataLoader(
+                ar_ds,
+                batch_size=1,
+                shuffle=False,
+                num_workers=1,
+                pin_memory=True,
+                persistent_workers=False,
+                worker_init_fn=self._worker_init,
+                collate_fn=_ar_collate_fn,
+            )
+            print(
+                f"[PREDICT] Eval-mode AR dataloader: ar_steps={ar_steps} "
+                f"sequences={len(ar_ds)}"
+            )
+            print(f"[PREDICT] require_targets={self.require_targets}")
+            return loader
+
+        # Single-step or inference-mode: plain BinDataset as before.
         # Create dataloader
         loader = PyGDataLoader(
-            ds,
+            base_ds,
             batch_size=self.hparams.batch_size,
             shuffle=False,
             num_workers=1,  # Single worker for sequential processing

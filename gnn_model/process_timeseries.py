@@ -1245,6 +1245,7 @@ def extract_features(
                 means[~np.isfinite(means)] = 0.0
 
             # -------------------- Process based on observation type --------------------
+            target_sat_ids_list = []   # per-step satellite IDs of kept target rows (satellite with sat_ids only)
             if obs_type == "satellite":
                 # Input normalization
                 input_features_norm = (input_features_raw_clean - means) / stds
@@ -1316,6 +1317,8 @@ def extract_features(
 
                     if target_data['features'].shape[0] == 0:
                         scan_cols = obs_cfg.get("scan_angle_channels", 1)
+                        if sat_id_field is not None:
+                            target_sat_ids_list.append(np.array([], dtype=np.int64))
                         target_features_final_list.append(torch.empty(0, n_ch, dtype=torch.float32))
                         target_metadata_list.append(torch.empty(0, len(meta_keys) + 2 + TARGET_TIME_FEATURE_DIM, dtype=torch.float32))
                         scan_angle_list.append(torch.empty(0, scan_cols, dtype=torch.float32))
@@ -1327,6 +1330,10 @@ def extract_features(
 
                     # Target normalization
                     target_features_norm = (target_data['features'] - means) / stds
+
+                    # Satellite ID of each kept target row (rows aligned with target_data['features'])
+                    if sat_id_field is not None:
+                        target_sat_ids_list.append(np.asarray(z[sat_id_field][target_data['indices']], dtype=np.int64))
 
                     # Target metadata handling
                     lat_rad_target = np.radians(target_data['lat'])[:, None]
@@ -1500,6 +1507,9 @@ def extract_features(
             # Add pressure level lists if we have them
             if inst_name in ['radiosonde', 'aircraft'] and target_pressure_level_list_filtered:
                 data_summary_bin["target_pressure_level_list"] = target_pressure_level_list_filtered
+
+            if target_sat_ids_list:
+                data_summary_bin["target_sat_ids_list"] = target_sat_ids_list
 
             NAME2ID = _name2id(observation_config)
             data_summary_bin["instrument_id"] = NAME2ID[inst_name]

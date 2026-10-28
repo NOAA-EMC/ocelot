@@ -12,14 +12,14 @@ io:
   # those keys are used as-is and ignore base_dir. null falls back to the
   # directory the run was launched from.
   # [Recommended] base_dir: /PATH/TO/ocelot/gnn_model
-  base_dir: null
+  base_dir: /scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/autoregressive/ocelot/gnn_model
 
   # Root to search, relative to base_dir. May be a single directory or a list.
   # Directories named obs-space-ar<N> anywhere under this root have their AR
   # step parsed automatically from the directory name.
-  data_dir: val_csv/EXPT
+  data_dir: val_csv/merged11-retrain-1ssmis
 
-  plot_dir: evaluation/figures/EXPT/val_obs
+  plot_dir: evaluation/figures/merged11-retrain-1ssmis/val_obs_ep200
 
   # auto  -> detect per file by looking for true_* columns in the header
   # true  -> force comparison plots
@@ -50,7 +50,7 @@ select:
   # A bare list is always a list, so [12, 120] means those two and not the 109
   # in between. Ranges must say so.
   #   dates: {range: [2025030100, 2025030512]}
-  dates: 2024110500
+  dates: [2024110100, 2024110500]
   date_step_hours: 12
 
   # Same grammar as dates, plus "latest", which keeps only the highest epoch
@@ -60,7 +60,7 @@ select:
   #   epochs: [12, 120]           # exactly these two
   #   epochs: {range: [300, 350]}
   #   epochs: latest
-  epochs: latest
+  epochs: 350
   batches: null       # same grammar as dates
   fhrs: null          # mesh-grid forecast hours from the filename, same grammar
   ar_steps: null      # same grammar; null takes every AR step found
@@ -109,7 +109,7 @@ instruments:
   defaults:
     units: null
     error_metric: percent
-    figures: [diff, error_map]
+    figures: [diff]  # , error_map]
     drop_small_truth: false
     profile_min_samples: null
 

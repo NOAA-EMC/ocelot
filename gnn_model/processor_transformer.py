@@ -176,6 +176,12 @@ class SlidingWindowTransformerProcessor(nn.Module):
     def reset(self):
         self.cache.clear()
 
+    # MK
+    def detach_cache(self):
+        """Detach cached latents so AR cross-window gradients don't chain.
+        Preserves values (temporal continuity) while cutting the graph."""
+        self.cache = deque((c.detach() for c in self.cache), maxlen=self.window)
+
     @torch.no_grad()
     def warm_start(self, states: List[torch.Tensor]):
         """Optionally pre-fill with historical mesh states

@@ -580,6 +580,9 @@ class GNNLightning(pl.LightningModule):
         return getattr(trainer, "is_global_zero", True)
 
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        # AR training delivers List[HeteroData]; move each window to device.
+        if isinstance(batch, list):
+            return [item.to(device) if hasattr(item, "to") else item for item in batch]
         # PyG Data/HeteroData implements .to()
         if hasattr(batch, "to"):
             return batch.to(device)
@@ -1047,9 +1050,10 @@ class GNNLightning(pl.LightningModule):
                 )
         return torch.cat([x, validity], dim=-1)
 
-    def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
+    def forward(self, data: HeteroData, step_data_list=None, is_first_ar_window: bool = True):  # -> Dict[str, torch.Tensor]:
 
-        num_graphs = data.num_graphs
+        # num_graphs = data.num_graphs
+        num_graphs = getattr(data, "num_graphs", 1)
         num_mesh_nodes = self.mesh_x.shape[0]
 
         # Inject and batch static mesh data
@@ -1166,14 +1170,16 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
         # --------------------------------------------------------------------
-        predictions, mesh_features_per_step = self._forward_latent_rollout(data, encoded_features)
+        predictions, mesh_features_per_step = self._forward_latent_rollout(
+                data, encoded_features, is_first_ar_window=is_first_ar_window
+        )
 
         if not self.training:
             return predictions, mesh_features_per_step
 
         return predictions
 
-    def _forward_latent_rollout(self, data: HeteroData, encoded_features: dict) -> Dict[str, List[torch.Tensor]]:
+    def _forward_latent_rollout(self, data: HeteroData, encoded_features: dict, is_first_ar_window: bool = True) -> Dict[str, List[torch.Tensor]]:
         """
         Latent rollout forward pass: Sequential processor → decoder → next processor
 
@@ -1209,7 +1215,9 @@ class GNNLightning(pl.LightningModule):
         # --------------------------------------------------------------------
         # LATENT ROLLOUT LOOP: Sequential processor → decoder steps
         # --------------------------------------------------------------------
-        if self.processor_type == "sliding_transformer":
+        if self.processor_type == "sliding_transformer" and is_first_ar_window:
+            # Only reset the deque cache at the start of a new AR sequence.
+            # For subsequent AR windows, the cache carries cross-window continuity.
             self.swt.reset()
 
         # Local list for mesh features
@@ -1655,13 +1663,11 @@ class GNNLightning(pl.LightningModule):
             return current_steps
 
         elif self.rollout_schedule == "step":
-            # Step-wise increase (GraphCast style)
-            if current_epoch < 10:
+            start = getattr(self, "ar_start_epoch", 200)
+            every = getattr(self, "ar_increment_epochs", 50)
+            if current_epoch < start:
                 return 1
-            elif current_epoch < 20:
-                return 2
-            else:
-                return min(self.max_rollout_steps, 3 + (current_epoch - 20) // 10)
+            return min(self.max_rollout_steps, 2 + (current_epoch - start) // every)
 
         else:
             # "fixed"
@@ -1763,6 +1769,10 @@ class GNNLightning(pl.LightningModule):
             gpu_id = torch.cuda.current_device()
             allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
             print(f"[GPU {gpu_id}] Step {batch_idx} - Memory allocated: {allocated:.2f} GB")
+
+        # AR mode: batch is List[HeteroData] from ARWindowDataset
+        if isinstance(batch, list):
+            return self._ar_training_step(batch, batch_idx)
 
         # Print first-batch info for window validation
         if not getattr(self, "_printed_first_train_batch", False):
@@ -1867,7 +1877,186 @@ class GNNLightning(pl.LightningModule):
 
         return avg_loss
 
+    # ------------------------------------------------------------------
+    # AR training step (Phase 4)
+    # ------------------------------------------------------------------
+    def _ar_training_step(self, sequence: List[HeteroData], batch_idx: int):
+        """Autoregressive multi-window training step with truncated BPTT.
+
+        Args:
+            sequence: List[HeteroData] of length (ar_steps + 1) from ARWindowDataset.
+                      sequence[0] = first encoder input (real obs).
+                      sequence[k] = ground truth targets for AR step k, AND metadata
+                                    template for building the synthetic encoder input
+                                    at step k+1.
+            batch_idx: Batch index within the epoch.
+
+        Loss strategy: last-K truncated BPTT (K=2).  Only the final K AR windows
+        accumulate loss and receive gradients.  Earlier windows are run with
+        torch.no_grad() so their predictions can seed synthetic feedback without
+        storing a full computational graph.
+        """
+        from ar_utils import build_synthetic_window
+
+        ar_steps = len(sequence)  # number of AR rollout steps
+
+        # Truncated BPTT
+        # K = getattr(self, "ar_loss_last_k", 2)   # trailing windows in loss (truncated BPTT)
+        # K = max(1, min(K, ar_steps))             # clamp to valid range
+        # start_loss_from = max(0, ar_steps - K)   # first window index (0-indexed) to include
+
+        # front-tail BPTT
+        if ar_steps <= 2:  # 2 for full config; 3 for small config; set to 100 to by pass this to get all windows. 
+            loss_windows = set(range(ar_steps))          # both windows
+        else:
+            loss_windows = {0, ar_steps - 1}             # first + last
+            # loss_windows = {0, ar_steps-2, ar_steps - 1}   # for small config, it holds 3 steps
+
+        if batch_idx == 0:
+            seq_bins = [getattr(w, "bin_name", "?") for w in sequence]
+            # Truncated BPTT
+            # print(f"[TRAIN-AR] epoch={self.current_epoch} ar_steps={ar_steps} "
+            #       f"K={K} loss_windows={list(range(start_loss_from, ar_steps))} seq={seq_bins}")
+            # front-tail BPTT
+            print(f"[TRAIN-AR] epoch={self.current_epoch} ar_steps={ar_steps} "
+                  f"loss_windows={sorted(loss_windows)} seq={seq_bins}")
+
+        total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+        num_loss_terms = 0
+        prev_predictions: Optional[Dict[str, List[torch.Tensor]]] = None
+
+        # [MK DEBUG] for K=2 wihle AR=3. wrapping loss lope within autocast loop, disable cache
+        with torch.autocast(device_type="cuda", dtype=torch.float16, cache_enabled=False):
+            for i in range(ar_steps):
+                # Build encoder input for this step
+                if i == 0:
+                    current_input = sequence[0]   # real observations
+                    is_first = True
+                else:
+                    # Synthetic feedback: replace input features/positions with prior predictions.
+                    # prev_window=sequence[i-1] provides target node positions/edges for the
+                    # spatial-mismatch path (ungridded satellite instruments).
+                    current_input = build_synthetic_window(
+                        prev_predictions,
+                        prev_window=sequence[i - 1],
+                        template_window=sequence[i],
+                        observation_config=self.observation_config,
+                    )
+                    is_first = False
+
+                # Forward pass — no grad for windows before the truncation boundary
+                # Truncated BPTT
+                # if i < start_loss_from:
+                # front-tail BPTT
+                if i not in loss_windows:
+                    with torch.no_grad():
+                        result = self(current_input, is_first_ar_window=is_first)
+                        if isinstance(result, tuple):
+                            prev_predictions, _ = result
+                        else:
+                            prev_predictions = result
+                    # Detach so the synthetic window built from these predictions
+                    # has no gradient path into the earlier graph.
+                    prev_predictions = {
+                        k: [p.detach() for p in v]
+                        for k, v in prev_predictions.items()
+                    }
+                    if hasattr(self.swt, "detach_cache"): self.swt.detach_cache()
+                    continue
+
+                # Within-gradient window
+                result = self(current_input, is_first_ar_window=is_first)
+                if isinstance(result, tuple):
+                    prev_predictions, _ = result
+                else:
+                    prev_predictions = result
+
+                # Ground truth comes from sequence[i+1]
+                # target_window = sequence[i + 1]
+                # ground_truth_data = self._extract_ground_truths_and_metadata(target_window, prev_predictions)
+                # CORRECT — sequence[i]'s own targets match prediction locations exactly
+                ground_truth_data = self._extract_ground_truths_and_metadata(current_input, prev_predictions)
+
+                for node_type, preds_list in prev_predictions.items():
+                    if node_type not in ground_truth_data:
+                        continue
+
+                    inst_name = (
+                        node_type.split("_target_step")[0]
+                        if "_target_step" in node_type
+                        else node_type.replace("_target", "")
+                    )
+                    inst_id = self.instrument_name_to_id.get(inst_name, None)
+                    instrument_weight = (
+                        self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
+                    )
+
+                    gt_data = ground_truth_data[node_type]
+                    for y_pred, y_true, instrument_ids, valid_mask in zip(
+                        preds_list,
+                        gt_data["gts_list"],
+                        gt_data["instrument_ids_list"],
+                        gt_data["valid_mask_list"],
+                    ):
+                        if y_pred is None or y_true is None:
+                            continue
+                        if y_pred.numel() == 0 or y_true.numel() == 0:
+                            continue
+                        if y_pred.shape[0] != y_true.shape[0]:
+                            continue
+                        if not torch.isfinite(y_pred).all():
+                            y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
+                        if not torch.isfinite(y_true).all():
+                            y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
+                        if valid_mask is not None and valid_mask.sum() == 0:
+                            continue
+
+                        channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
+                        if not torch.isfinite(channel_loss):
+                            continue
+
+                        total_loss = total_loss + channel_loss * instrument_weight
+                        num_loss_terms += 1
+
+                # detach feedback + cache at end of grad window to prevent later AR step brings smoothing effect to the earlier AR steps
+                # maybe help for longer chains. 
+                prev_predictions = {
+                    k: [p.detach() for p in v]
+                    for k, v in prev_predictions.items()
+                }
+                if hasattr(self.swt, "detach_cache"):
+                    self.swt.detach_cache()
+
+        # Anchor zero-loss to all parameters to keep DDP happy
+        dummy_loss = sum(p.sum() * 0.0 for p in self.parameters())
+        avg_loss = (
+            total_loss / num_loss_terms
+            if num_loss_terms > 0
+            else torch.tensor(0.0, device=self.device)
+        )
+        avg_loss = avg_loss + dummy_loss
+
+        self.log(
+            "train_loss",
+            avg_loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=1,
+        )
+        self.log("ar_steps", float(ar_steps), on_step=True, sync_dist=False)
+        if self.trainer.is_global_zero and batch_idx == 0:
+            print(
+                f"[TRAIN][AR] Epoch {self.current_epoch} ar_steps={ar_steps} "
+                f"loss_terms={num_loss_terms} train_loss={avg_loss.detach().cpu().item():.6f}"
+            )
+        return avg_loss
+
     def validation_step(self, batch, batch_idx):
+        if isinstance(batch, list):                       # AR mode: list of windows
+            return self._ar_validation_step(batch, batch_idx)
+
         print(f"VALIDATION STEP batch: {batch.bin_name}")
 
         # Build decoder names from config (all possible node_types with targets)
@@ -2126,13 +2315,224 @@ class GNNLightning(pl.LightningModule):
 
         return avg_loss
 
+    def _ar_validation_step(self, sequence, batch_idx):
+            """AR-mode validation. Mirrors validation_step but rolls the window
+            sequence forward with synthetic feedback (no grad). Each AR step is
+            scored against its own target window; logs per-node loss, per-AR-step
+            loss (rollout degradation), masked RMSE/MAE/bias, and overall val_loss.
+            CSVs are written per AR step with pinned init and AR lead offset,
+            consistent with eval-mode prediction.
+            """
+            from ar_utils import build_synthetic_window
+
+            ar_steps = len(sequence)
+            if batch_idx < 3:
+                seq_bins = [getattr(w, "bin_name", "?") for w in sequence]
+                print(f"[VAL-AR] epoch={self.current_epoch} batch={batch_idx} "
+                      f"ar_steps={ar_steps} seq={seq_bins}")
+
+            decoder_names = [f"{inst_name}_target"
+                             for obs_type, instruments in self.observation_config.items()
+                             for inst_name in instruments]
+
+            # metric storage: node_type -> list over (ar_step x latent_step)
+            all_step_rmse = {name: [] for name in decoder_names}
+            all_step_mae  = {name: [] for name in decoder_names}
+            all_step_bias = {name: [] for name in decoder_names}
+
+            total_loss = torch.tensor(0.0, device=self.device)
+            num_predictions = 0
+
+            # init pinned to first window (matches eval-mode CSV naming)
+            rollout_init_str = self._extract_init_time_str(sequence[0])
+
+            prev_predictions = None
+            ar_mesh_features = []   # one entry per AR step, for multi-step mesh output
+            first_mesh_features = []
+            first_predictions = None         # for verbose histograms (AR step 0)
+            first_ground_truth = None
+
+            with torch.no_grad():
+                for ar_i in range(ar_steps):
+                    if ar_i == 0:
+                        current_input, is_first = sequence[0], True
+                    else:
+                        current_input = build_synthetic_window(
+                            prev_predictions,
+                            prev_window=sequence[ar_i - 1],
+                            template_window=sequence[ar_i],
+                            observation_config=self.observation_config,
+                        )
+                        is_first = False
+
+                    result = self(current_input, is_first_ar_window=is_first)
+                    if isinstance(result, tuple):
+                        all_predictions, mesh_features_per_step = result
+                    else:
+                        all_predictions, mesh_features_per_step = result, []
+
+                    prev_predictions = all_predictions          # feedback uses predictions only
+                    ground_truth_data = self._extract_ground_truths_and_metadata(current_input, all_predictions)
+
+                    if ar_i == 0:
+                        # first_mesh_features = mesh_features_per_step
+                        first_predictions = all_predictions
+                        first_ground_truth = ground_truth_data
+                    ar_mesh_features.append(mesh_features_per_step)
+                    print(f"[MESHDIAG] ar_i={ar_i} is_first={is_first} "
+                          f"n_mesh_feats={len(mesh_features_per_step) if mesh_features_per_step else 0}")
+
+
+                    ar_loss = torch.tensor(0.0, device=self.device)
+                    ar_terms = 0
+
+                    for node_type, preds_list in all_predictions.items():
+                        if node_type not in ground_truth_data:
+                            continue
+                        if "_target_step" in node_type:
+                            inst_name = node_type.split("_target_step")[0]
+                        else:
+                            inst_name = node_type.replace("_target", "")
+                        inst_id = self.instrument_name_to_id.get(inst_name, None)
+                        instrument_weight = self.instrument_weights.get(inst_id, 1.0) if inst_id is not None else 1.0
+
+                        gt_data = ground_truth_data[node_type]
+                        gts_list = gt_data["gts_list"]
+                        instrument_ids_list = gt_data["instrument_ids_list"]
+                        valid_mask_list = gt_data["valid_mask_list"]
+
+                        for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
+                            zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
+                        ):
+                            if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
+                                continue
+                            if y_pred.shape != y_true.shape:
+                                continue
+                            if not torch.isfinite(y_pred).all():
+                                y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
+                            if not torch.isfinite(y_true).all():
+                                y_true = torch.nan_to_num(y_true, nan=0.0, posinf=0.0, neginf=0.0)
+                            if valid_mask is not None:
+                                valid_mask = valid_mask.to(dtype=torch.bool, device=y_pred.device)
+                                if valid_mask.numel() == 0 or valid_mask.sum() == 0:
+                                    continue
+
+                            channel_loss = self._compute_channel_loss(y_pred, y_true, instrument_ids, valid_mask)
+                            if not torch.isfinite(channel_loss):
+                                if self.trainer.is_global_zero:
+                                    print(f"[WARN] Non-finite channel_loss {node_type} ar{ar_i} step{step}; skipping.")
+                                continue
+
+                            weighted_loss = channel_loss * instrument_weight
+                            total_loss = total_loss + weighted_loss
+                            ar_loss = ar_loss + weighted_loss
+                            num_predictions += 1
+                            ar_terms += 1
+
+                            self.log(
+                                f"val_loss_{node_type}", weighted_loss.detach(),
+                                sync_dist=False, on_epoch=True, batch_size=1,
+                                prog_bar=False, logger=True, rank_zero_only=True,
+                            )
+
+                            # --- masked per-channel metrics ---
+                            y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
+                            y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
+                            if valid_mask is not None:
+                                vm_f = valid_mask.float()
+                                denom_ch = vm_f.sum(dim=0).clamp_min(1.0)
+                                mse_elems = (y_pred_unnorm - y_true_unnorm).pow(2)
+                                rmse_ch = torch.sqrt((mse_elems * vm_f).sum(dim=0) / denom_ch + 1e-12)
+                                mae_ch = ((y_pred_unnorm - y_true_unnorm).abs() * vm_f).sum(dim=0) / denom_ch
+                                bias_ch = ((y_pred_unnorm - y_true_unnorm) * vm_f).sum(dim=0) / denom_ch
+                            else:
+                                rmse_ch = torch.sqrt(F.mse_loss(y_pred_unnorm, y_true_unnorm, reduction="none")).mean(dim=0)
+                                mae_ch = F.l1_loss(y_pred_unnorm, y_true_unnorm, reduction="none").mean(dim=0)
+                                bias_ch = (y_pred_unnorm - y_true_unnorm).mean(dim=0)
+
+                            all_step_rmse[node_type].append(rmse_ch)
+                            all_step_mae[node_type].append(mae_ch)
+                            all_step_bias[node_type].append(bias_ch)
+
+                            # --- val CSV (AR-aware: per-AR dir, pinned init, AR lead offset) ---
+                            if (
+                                self.trainer.is_global_zero
+                                and step == 0
+                                and self.val_csv_enabled
+                                and batch_idx < max(1, self.val_csv_num_batches)
+                                and (self.current_epoch % max(1, self.val_csv_every_n_epochs) == 0)
+                            ):
+                                out_dir = os.path.join(self.val_csv_out_dir, f"ar{ar_i}")
+                                os.makedirs(out_dir, exist_ok=True)
+                                self._save_latent_concatenated_csv(
+                                    current_input, node_type, preds_list, gts_list,
+                                    valid_mask_list, out_dir, batch_idx,
+                                    mode="val", ar_step=ar_i,
+                                    init_time_str_override=rollout_init_str,
+                                    persistence_source_batch=sequence[0],  # [MK] Persistence
+                                )
+
+                    if ar_terms > 0:
+                        self.log(f"val_loss_ar{ar_i}", (ar_loss / ar_terms).detach(),
+                                 on_epoch=True, sync_dist=True, batch_size=1, prog_bar=False)
+
+            # --- per-node RMSE summary print (rank 0, first batch) ---
+            if self.trainer.is_global_zero and batch_idx == 0:
+                for node_type in decoder_names:
+                    if all_step_rmse[node_type]:
+                        print(f"[AR-VAL] {node_type} RMSE (avg over rollout): "
+                              f"{torch.stack(all_step_rmse[node_type]).mean().item():.4f}")
+
+            # --- verbose histograms (AR step 0 only, mirrors single-step) ---
+            if self.verbose and self.trainer.is_global_zero and batch_idx == 0 and first_predictions:
+                for node_type in decoder_names:
+                    if node_type not in first_predictions or not first_predictions[node_type]:
+                        continue
+                    y_pred = first_predictions[node_type][0]
+                    y_true = first_ground_truth[node_type]["gts_list"][0]
+                    y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
+                    y_true_unnorm = self.unnormalize_standardscaler(y_true, node_type)
+                    n_channels = y_pred_unnorm.shape[1]
+                    for i in range(min(5, n_channels)):
+                        try:
+                            plt.figure()
+                            yt = y_true_unnorm[:, i].cpu().numpy(); yp = y_pred_unnorm[:, i].cpu().numpy()
+                            yt = yt[np.isfinite(yt)]; yp = yp[np.isfinite(yp)]
+                            if len(yt) == 0 or len(yp) == 0:
+                                plt.close(); continue
+                            n_bins = min(50, max(10, len(yt) // 20))
+                            plt.hist(yt, bins=n_bins, alpha=0.6, color="blue", label="y_true")
+                            plt.hist(yp, bins=n_bins, alpha=0.6, color="orange", label="y_pred")
+                            plt.xlabel(f"{node_type} - Channel {i+1}"); plt.ylabel("Frequency")
+                            plt.title(f"Histogram - {node_type} Channel {i+1} (Epoch {self.current_epoch}, AR0)")
+                            plt.legend(); plt.tight_layout()
+                        except Exception as e:
+                            print(f"Warning: histogram failed for {node_type} ch {i+1}: {e}")
+                            plt.close(); continue
+                        plt.savefig(f"hist_{node_type}_ch_{i+1}_epoch{self.current_epoch}.png")
+                        plt.close()
+
+            # --- overall val_loss ---
+            avg_loss = total_loss / num_predictions if num_predictions > 0 else torch.tensor(0.0, device=self.device)
+            self.log("val_loss", avg_loss, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=1)
+            if self.trainer.is_global_zero:
+                print(f"--- Epoch {self.current_epoch} AR Validation --- val_loss: {avg_loss.item():.6f}")
+
+            if batch_idx == 0 and self.enable_mesh_pred:
+                self._last_val_ar_mesh = ar_mesh_features      # list, one per AR step
+                self._last_val_batch = sequence[0]             # pinned rollout init
+
+            return avg_loss
+
     def on_validation_epoch_end(self):
         """Generate mesh predictions at END of validation epoch."""
         if not self.enable_mesh_pred or not self.trainer.is_global_zero:
             return
 
         # Check if we saved mesh features during validation
-        if not hasattr(self, '_last_val_mesh_features') or self._last_val_mesh_features is None:
+        has_single = getattr(self, '_last_val_mesh_features', None) is not None
+        has_ar = getattr(self, '_last_val_ar_mesh', None) is not None
+        if not (has_single or has_ar):
             print("[MESH PRED] No mesh features from validation, skipping")
             return
 
@@ -2140,21 +2540,30 @@ class GNNLightning(pl.LightningModule):
             with torch.no_grad():
                 temp_mesh_pred_edges = self._get_mesh_pred_edges()
                 init_time_unix = self._extract_init_time_unix(self._last_val_batch)
-                mesh_predictions = self._decode_all_steps_to_mesh(
-                    self._last_val_mesh_features,
-                    temp_mesh_pred_edges,
-                    init_time_unix
-                )
-                if mesh_predictions:
-                    self._save_mesh_predictions(
-                        mesh_predictions,
-                        temp_mesh_pred_edges,
-                        batch_idx=0,
-                        epoch=self.current_epoch,
-                        mode='val',
-                        batch=self._last_val_batch,
-                        output_dir='val_mesh_csv'
+                num_latent = self.max_latent_steps if hasattr(self, "max_latent_steps") else 4
+                ar_list = getattr(self, "_last_val_ar_mesh", None) or [self._last_val_mesh_features]
+                print(f"[MESHDIAG] ar_list len={len(ar_list)} "
+                      f"sizes={[len(f) if f else 0 for f in ar_list]}")
+                for ar_i, feats in enumerate(ar_list):
+                    if feats is None:
+                        print(f"[MESHDIAG] ar_i={ar_i} skipped (empty feats)")
+                        continue
+                    ar_offset_hours = float(ar_i) * float(num_latent) * float(self.latent_step_hours)
+                    mesh_predictions = self._decode_all_steps_to_mesh(
+                        feats, temp_mesh_pred_edges, init_time_unix,
+                        ar_offset_hours=ar_offset_hours,
                     )
+                    print(f"[MESHDIAG] ar_i={ar_i} offset={ar_offset_hours} "
+                          f"decoded={bool(mesh_predictions)} n={len(mesh_predictions) if mesh_predictions else 0}")
+                    if mesh_predictions:
+                        self._save_mesh_predictions(
+                            mesh_predictions, temp_mesh_pred_edges,
+                            batch_idx=0, epoch=self.current_epoch, mode='val',
+                            batch=self._last_val_batch,
+                            output_dir=os.path.join("val_mesh_csv", os.path.basename(self.val_csv_out_dir.rstrip("/"))),
+                            ar_offset_hours=ar_offset_hours,
+                        )
+
         except Exception as e:
             print(f"[MESH PRED] Failed (non-critical): {e}")
             import traceback
@@ -2162,6 +2571,7 @@ class GNNLightning(pl.LightningModule):
         finally:
             # Clean up
             self._last_val_mesh_features = None
+            self._last_val_ar_mesh = None
             self._last_val_batch = None
 
     def _resolve_init_ts(self, batch):
@@ -2263,13 +2673,20 @@ class GNNLightning(pl.LightningModule):
         return int(float(ts))
 
     def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
-                                      valid_mask_list, out_dir, batch_idx, mode='val'):
+                                      valid_mask_list, out_dir, batch_idx, mode='val',
+                                      ar_step=0, init_time_str_override=None,
+                                      persistence_source_batch=None):
         """
         Save latent rollout as concatenated observations.
 
         Args:
             mode: 'val' or 'predict' - determines output filename format
         """
+
+        # [MK] Persistence, save the original input for persistence values
+        # otherwise, it's overwritten for every AR step
+        if persistence_source_batch is None:
+            persistence_source_batch = batch
 
         step_info = self._get_latent_step_info(batch)
         step_mapping = step_info["step_mapping"]
@@ -2308,13 +2725,18 @@ class GNNLightning(pl.LightningModule):
 
         def _build_persistence_lookup():
             input_node = node_type.replace("_target", "_input")
-            if input_node not in batch.node_types:
+            # [MK] use the saved persistence batch
+            # if input_node not in batch.node_types:
+            if input_node not in persistence_source_batch.node_types:
+                print(f"[PERSIST-DIAG] {input_node}: not in persistence_source_batch.node_types")
                 return None
-            store = batch[input_node]
+            # store = batch[input_node]
+            store = persistence_source_batch[input_node]
             required = ("input_features_raw", "input_times", "lat", "lon")
-            if not all(hasattr(store, name) for name in required):
+            missing = [name for name in required if not hasattr(store, name)]
+            if missing:
+                print(f"[PERSIST-DIAG] {input_node}: missing attrs {missing}")
                 return None
-
             vals = store.input_features_raw.detach().cpu().numpy()
             times = store.input_times.detach().cpu().numpy().astype(np.int64)
             lat = store.lat.detach().cpu().numpy()
@@ -2327,6 +2749,11 @@ class GNNLightning(pl.LightningModule):
                 pressure = store.pressure_level.detach().cpu().numpy().astype(np.int64)
 
             if vals.size == 0 or times.size != vals.shape[0]:
+                print(f"[PERSIST-DIAG] {input_node}: vals.shape={vals.shape} times.shape={times.shape}")
+                return None
+
+            if lat.shape[0] != times.shape[0]:   # safety net; anchor window should always be real/consistent
+                print(f"[PERSIST-DIAG] {input_node}: lat.shape={lat.shape} times.shape={times.shape}")
                 return None
 
             cutoff = init_unix if init_unix >= 0 else None
@@ -2340,10 +2767,13 @@ class GNNLightning(pl.LightningModule):
                     if mask is not None and mask.shape == vals.shape:
                         v[~mask[row]] = np.nan
                     latest[key] = (int(times[row]), v)
+            print(f"[PERSIST-DIAG] {input_node}: built lookup with {len(latest)} entries "
+                  f"(from {lat.shape[0]} input rows, cutoff={cutoff})")
             return latest, pressure is not None
 
         # Init time columns (constant per file/batch when available)
-        init_time_str = self._extract_init_time_str(batch)
+        init_time_str = init_time_str_override or self._extract_init_time_str(batch)
+
         init_dt_str = ""
         init_unix = -1
         if init_time_str not in (None, '', 'unknown'):
@@ -2365,8 +2795,15 @@ class GNNLightning(pl.LightningModule):
             y_true = gts_list[step]
             valid_mask = valid_mask_list[step] if step < len(valid_mask_list) else None
 
-            if y_pred is None or y_true is None:
+            # Autoregressive AR: y true can be empty
+            # if y_pred is None or y_true is None:
+            #     continue
+
+            if y_pred is None:
                 continue
+            # In AR inference y_true may be absent; carry forward as NaN placeholder.
+            if y_true is None:
+                y_true = torch.full_like(y_pred, float("nan"))
 
             # Unnormalize
             y_pred_unnorm = self.unnormalize_standardscaler(y_pred, node_type)
@@ -2375,7 +2812,16 @@ class GNNLightning(pl.LightningModule):
             # Get metadata for this step
             if node_type in step_mapping and step in step_mapping[node_type]:
                 step_node_type = step_mapping[node_type][step]
-                if hasattr(batch[step_node_type], 'target_metadata'):
+                # [MK] commented for persistence testing
+                # if hasattr(batch[step_node_type], 'target_metadata'):
+                if hasattr(batch[step_node_type], 'lat') and batch[step_node_type].lat is not None \
+                        and batch[step_node_type].lat.numel() > 0:
+                    # Direct degrees-native source — same convention _build_persistence_lookup
+                    # uses for the input side (store.lat/.lon), so location keys actually match.
+                    lat_deg = batch[step_node_type].lat.detach().cpu().numpy()
+                    lon_deg = batch[step_node_type].lon.detach().cpu().numpy()
+                elif hasattr(batch[step_node_type], 'target_metadata'):
+                # [MK] edit till here ^
                     target_metadata = batch[step_node_type].target_metadata
                     lat = target_metadata[:, 0].cpu().numpy()
                     lon = target_metadata[:, 1].cpu().numpy()
@@ -2454,10 +2900,14 @@ class GNNLightning(pl.LightningModule):
             all_obs_ts.extend(obs_ts.tolist())
             all_latent_step.extend([int(step)] * int(len(ts)))
             lead_nom = np.nan
+
             try:
-                lead_nom = float(step + 1) * float(self.latent_step_hours)
-            except Exception:
+                num_latent_steps = len(preds_list) if preds_list else 4
+                ar_offset_hours = float(ar_step) * float(num_latent_steps) * float(self.latent_step_hours)
+                lead_nom = ar_offset_hours + float(step + 1) * float(self.latent_step_hours)
+            except Exception as e:
                 lead_nom = np.nan
+
             all_lead_hours_nominal.extend([lead_nom] * int(len(ts)))
             all_pred.append(y_pred_unnorm.detach().cpu().numpy())
             all_true.append(y_true_unnorm.detach().cpu().numpy())
@@ -2494,23 +2944,38 @@ class GNNLightning(pl.LightningModule):
             return
 
         # Concatenate all steps
-        # If there is no ground truth at all, treat this as inference mode and skip saving
-        if not all_true:
-            print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
-            return
+        # # If there is no ground truth at all, treat this as inference mode and skip saving
+        # if not all_true:
+        #     print(f"[PREDICT] latent csv: Skipping {node_type} - no ground truth data (inference mode)")
+        #     return
 
+        # all_pred_concat = np.vstack(all_pred)
+        # all_true_concat = np.vstack(all_true)
+        # all_mask_concat = np.vstack(all_mask)
+        # all_persist_concat = np.vstack(all_persist) if all_persist else np.full_like(all_true_concat, np.nan, dtype=np.float64)
+
+        # # Skip saving if no real ground truth data
+        # if all_true_concat.size == 0:
+        #     print(f"[PREDICT] latent csv: Skipping {node_type} - empty ground truth array")
+        #     return
+
+        # AR MODE: there's no ground truth but we still would want to see what was predicted
         all_pred_concat = np.vstack(all_pred)
-        all_true_concat = np.vstack(all_true)
-        all_mask_concat = np.vstack(all_mask)
+        if not all_true:
+            all_true_concat = np.full_like(all_pred_concat, np.nan, dtype=np.float64)
+            all_mask_concat = np.zeros(all_pred_concat.shape, dtype=bool)
+        else:
+            all_true_concat = np.vstack(all_true)
+            if all_true_concat.size == 0:
+                all_true_concat = np.full_like(all_pred_concat, np.nan, dtype=np.float64)
+                all_mask_concat = np.zeros(all_pred_concat.shape, dtype=bool)
+            else:
+                all_mask_concat = np.vstack(all_mask)
         all_persist_concat = np.vstack(all_persist) if all_persist else np.full_like(all_true_concat, np.nan, dtype=np.float64)
-
-        # Skip saving if no real ground truth data
-        if all_true_concat.size == 0:
-            print(f"[PREDICT] latent csv: Skipping {node_type} - empty ground truth array")
-            return
 
         n = all_pred_concat.shape[0]
         n_ch = all_pred_concat.shape[1]
+
 
         # Get feature names
         feats = self._feature_names_for_node(node_type)
@@ -2655,7 +3120,8 @@ class GNNLightning(pl.LightningModule):
         print(f"  Total observations from all steps: {len(df)}")
         print(f"  Steps combined: {len(all_pred)}")
 
-    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
+    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv', 
+                               ar_offset_hours=0.0, init_time_str_override=None):
         """
         Save predictions on mesh grid - one file per forecast hour.
 
@@ -2671,14 +3137,15 @@ class GNNLightning(pl.LightningModule):
         os.makedirs(output_dir, exist_ok=True)
 
         # Extract init time for logging
-        init_time_str = self._extract_init_time_str(batch)
+        init_time_str = init_time_str_override or self._extract_init_time_str(batch)
 
         # Calculate forecast hours
         num_steps = len(next(iter(predictions.values())))
         latent_step_hours = self.latent_step_hours
-        forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
+        forecast_hours = [int(ar_offset_hours) + (i + 1) * int(latent_step_hours) for i in range(num_steps)]
 
-        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
+        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours}"
+              f"(ar_offset_hours = {ar_offset_hours}, latent_step={latent_step_hours}h, steps={num_steps})")
 
         for inst_name, pred_list in predictions.items():
             edges = mesh_pred_edges[inst_name]
@@ -2736,7 +3203,8 @@ class GNNLightning(pl.LightningModule):
                 df.to_csv(filepath, index=False)
                 print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
 
-    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
+    # def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix):
+    def _decode_all_steps_to_mesh(self, mesh_features_per_step, mesh_pred_edges, init_time_unix, ar_offset_hours=0.0):
         """Decode all forecast steps to mesh grid."""
 
         if not mesh_features_per_step:  # Check if the list is empty
@@ -2759,13 +3227,14 @@ class GNNLightning(pl.LightningModule):
                 for step_idx, mesh_feat in enumerate(mesh_features_per_step):
                     pred = self._decode_one_step_to_mesh(mesh_feat, inst_name, mesh_pred_edges[inst_name],
                                                          step_idx=step_idx,
-                                                         init_time_unix=init_time_unix
+                                                         init_time_unix=init_time_unix,
+                                                         ar_offset_hours=ar_offset_hours,
                                                          )
                     predictions[inst_name].append(pred)
 
         return predictions
 
-    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, step_idx, init_time_unix=None):
+    def _decode_one_step_to_mesh(self, mesh_features, inst_name, edges, step_idx, init_time_unix=None, ar_offset_hours=0.0):
         """Decode one step's mesh features to mesh grid."""
         # Get decoder
         decoder_key = f"mesh__to__{inst_name}_target"
@@ -2815,8 +3284,9 @@ class GNNLightning(pl.LightningModule):
                 f"Pass the analysis time as a Unix timestamp when calling mesh prediction."
             )
 
-        # Compute valid time = init + lead
-        lead_seconds = int(round((step_idx + 0.5) * self.latent_step_hours * 3600))
+        # MK (original) Compute valid time = init + lead
+        # AR: Compute valid time = init + ar_offset (hours elapsed before this AR window) + lead
+        lead_seconds = int(round((float(ar_offset_hours) + (step_idx + 0.5) * self.latent_step_hours) * 3600))
         target_time_unix = int(int(init_time_unix) + lead_seconds)
 
         # Build time features using the same convention as _encode_target_time_features()
@@ -2890,6 +3360,10 @@ class GNNLightning(pl.LightningModule):
         Returns:
             dict: Predictions for all node types
         """
+        ar_steps = getattr(self, "_ar_inference_steps", 1)
+        if ar_steps > 1:
+            return self._ar_predict_step(batch, batch_idx, ar_steps)
+
         print(f"[PREDICT] Processing batch {batch_idx}: {batch.bin_name}")
 
         target_init_filter = os.environ.get("PREDICT_INIT_TIME_FILTER", "").strip()
@@ -2982,6 +3456,210 @@ class GNNLightning(pl.LightningModule):
 
         return all_predictions
 
+    def _ar_predict_step(self, batch, batch_idx: int, n_windows: int):
+        """AR prediction: eval-mode uses real sequences, inference-mode chains synthetically."""
+        from ar_utils import build_synthetic_window
+
+        is_eval_mode = isinstance(batch, list)  # ARWindowDataset returns List[HeteroData]
+
+        if is_eval_mode:
+            return self._ar_predict_step_eval(batch, batch_idx)
+        else:
+            return self._ar_predict_step_inference(batch, batch_idx, n_windows)
+
+
+    def _ar_predict_step_eval(self, sequence: List[HeteroData], batch_idx: int):
+        """Eval-mode AR prediction.
+
+        Structurally identical to _ar_training_step:
+          - sequence[0]   = real encoder input
+          - sequence[i]   = real template_window for AR step i (real target nodes)
+          - sequence[i-1] = real prev_window for build_synthetic_window
+        No gradients. No loss. CSV output per AR step.
+        """
+        from ar_utils import build_synthetic_window
+
+        ar_steps = len(sequence)
+        print(f"[PREDICT][EVAL-AR] batch {batch_idx}: ar_steps={ar_steps}")
+
+        all_window_preds = []
+        prev_predictions = None
+
+        # Init time is pinned to the FIRST window for the whole rollout
+        # Valid times still advance via each step's target_times.
+        rollout_init_str = self._extract_init_time_str(sequence[0])
+
+        with torch.no_grad():
+            for i in range(ar_steps):
+
+                print(f"[DIAG] i={i} target window bin_name={getattr(sequence[i], 'bin_name', 'unknown')} "
+                      f"init_time={getattr(sequence[i], 'init_time', None)}")
+
+                if i == 0:
+                    current_input = sequence[0]
+                    is_first = True
+                else:
+                    # Identical to _ar_training_step:
+                    # template_window=sequence[i] provides REAL target nodes for this step.
+                    current_input = build_synthetic_window(
+                        prev_predictions,
+                        prev_window=sequence[i - 1],
+                        template_window=sequence[i],
+                        observation_config=self.observation_config,
+                    )
+                    is_first = False
+                print(f"[DIAG] i={i} current_input.bin_name={getattr(current_input, 'bin_name', 'unknown')}")
+                print(f"[DIAG] i={i} current_input.init_time={getattr(current_input, 'init_time', 'MISSING')}")
+                print(f"[DIAG] i={i} resolved_init_ts={self._resolve_init_ts(current_input)}")
+                print(f"[DIAG] i={i} extracted_init_time_str={self._extract_init_time_str(current_input)}")
+
+                result = self(current_input, is_first_ar_window=is_first)
+                if isinstance(result, tuple):
+                    prev_predictions, mesh_features_per_step = result
+                else:
+                    prev_predictions, mesh_features_per_step = result, None
+
+                all_window_preds.append(prev_predictions)
+
+                # Save predictions for this AR step.
+                # Ground truth comes from sequence[i+1] (same as training).
+                # target_window = sequence[i + 1]
+                # Extract ground truth from current_input's own target nodes,
+                ground_truth_data = self._extract_ground_truths_and_metadata(
+                    current_input, prev_predictions
+                )
+
+                _nt = "surface_obs_target_step0"
+                if _nt in current_input.node_types:
+                    _y = current_input[_nt].y
+                    print(f"[YDIAG] i={i} current_input[{_nt}].y[0]={_y[0] if _y is not None and _y.numel()>0 else None} id={id(current_input[_nt].y)}")
+
+                out_dir = os.path.join(
+                    self._prediction_output_dir, "pred_csv", f"obs-space-ar{i}"
+                )
+                os.makedirs(out_dir, exist_ok=True)
+
+                for node_type, preds_list in prev_predictions.items():
+                    if not preds_list:
+                        continue
+                    if node_type not in ground_truth_data:
+                        continue
+                    gt_data = ground_truth_data[node_type]
+
+                    print(f"[DIAG] prev_predictions keys: {list(prev_predictions.keys())}")
+#                    print(f"[DIAG] target_window node_types: {target_window.node_types}")
+                    print(f"[DIAG] current_input node_types: {current_input.node_types}")
+                    print(f"[DIAG] ground_truth_data keys: {list(ground_truth_data.keys())}")
+                    for k, v in ground_truth_data.items():
+                        print(f"[DIAG]   {k}: gts_list len={len(v['gts_list'])}, types={[type(g).__name__ if g is not None else 'None' for g in v['gts_list']]}")
+                    self._save_latent_concatenated_csv(
+                        batch=current_input,
+                        node_type=node_type,
+                        preds_list=preds_list,
+                        gts_list=gt_data["gts_list"],
+                        valid_mask_list=gt_data["valid_mask_list"],
+                        out_dir=out_dir,
+                        batch_idx=batch_idx,
+                        mode="predict",
+                        ar_step=i,
+                        init_time_str_override=rollout_init_str,
+                        persistence_source_batch=sequence[0],  # [MK] Persistence
+                    )
+
+                # --- mesh-grid predictions for this AR step ---
+                if self.enable_mesh_pred:
+                    try:
+                        with torch.no_grad():
+                            if not mesh_features_per_step:
+                                print(f"[PREDICT][EVAL-AR] i={i} no mesh features available")
+                            else:
+                                mesh_pred_edges = self._get_mesh_pred_edges()
+                                # init pinned to rollout start (matches obs-space CSV naming)
+                                init_time_unix = self._extract_init_time_unix(sequence[0])
+                                num_latent_steps = len(mesh_features_per_step)
+                                ar_offset_hours = float(i) * float(num_latent_steps) * float(self.latent_step_hours)
+                                mesh_predictions = self._decode_all_steps_to_mesh(
+                                    mesh_features_per_step, mesh_pred_edges, init_time_unix,
+                                    ar_offset_hours=ar_offset_hours,
+                                )
+                                if mesh_predictions:
+                                    mesh_out_dir = os.path.join(
+                                        self._prediction_output_dir, "pred_csv", f"mesh-grid-ar{i}"
+                                    )
+                                    self._save_mesh_predictions(
+                                        mesh_predictions, mesh_pred_edges,
+                                        batch_idx=batch_idx, epoch=0, mode="predict",
+                                        batch=current_input,
+                                        output_dir=mesh_out_dir,
+                                        ar_offset_hours=ar_offset_hours,
+                                        init_time_str_override=rollout_init_str,
+                                    )
+                    except Exception as e:
+                        print(f"[PREDICT][EVAL-AR] i={i} mesh prediction failed (non-critical): {e}")
+                        import traceback
+                        traceback.print_exc()
+
+        return all_window_preds
+
+
+    def _ar_predict_step_inference(self, batch, batch_idx: int, n_windows: int):
+        """Inference-mode AR prediction.
+
+        No real future windows exist. Chains synthetically via ar_inference.
+        Target node conditioning is synthesized (see ar_inference / build_synthetic_window).
+        """
+        from ar_utils import build_synthetic_window
+
+        print(f"[PREDICT][INFER-AR] batch {batch_idx}: n_windows={n_windows}")
+
+        all_window_preds, all_window_mesh = self.ar_inference(batch, n_windows=n_windows, device=self.device)
+
+        current_window = batch
+        for win_idx, preds in enumerate(all_window_preds):
+            # --- mesh-grid predictions for this AR window ---
+            if self.enable_mesh_pred:
+                try:
+                    with torch.no_grad():
+                        mesh_features_per_step = all_window_mesh[win_idx]
+                        if not mesh_features_per_step:
+                            print(f"[PREDICT][INFER-AR] win={win_idx} no mesh features available")
+                        else:
+                            mesh_pred_edges = self._get_mesh_pred_edges()
+                            # init pinned to the real initial window, not the synthetic current_window
+                            init_time_unix = self._extract_init_time_unix(batch)
+                            num_latent_steps = len(mesh_features_per_step)
+                            ar_offset_hours = float(win_idx) * float(num_latent_steps) * float(self.latent_step_hours)
+                            mesh_predictions = self._decode_all_steps_to_mesh(
+                                mesh_features_per_step, mesh_pred_edges, init_time_unix,
+                                ar_offset_hours=ar_offset_hours,
+                            )
+                            if mesh_predictions:
+                                mesh_out_dir = os.path.join(
+                                    self._prediction_output_dir, "pred_csv", f"mesh-grid-ar{win_idx}"
+                                )
+                                self._save_mesh_predictions(
+                                    mesh_predictions, mesh_pred_edges,
+                                    batch_idx=batch_idx, epoch=0, mode="predict",
+                                    batch=current_window,
+                                    output_dir=mesh_out_dir,
+                                    ar_offset_hours=ar_offset_hours,
+                                    init_time_str_override=self._extract_init_time_str(batch),
+                                )
+                except Exception as e:
+                    print(f"[PREDICT][INFER-AR] win={win_idx} mesh prediction failed (non-critical): {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            if win_idx < n_windows - 1:
+                current_window = build_synthetic_window(
+                    preds,
+                    prev_window=current_window,
+                    template_window=current_window,
+                    observation_config=self.observation_config,
+                )
+
+        return all_window_preds
+
     def on_predict_epoch_start(self):
         """Setup before prediction epoch starts."""
         print("[PREDICT] Starting prediction epoch")
@@ -3019,6 +3697,92 @@ class GNNLightning(pl.LightningModule):
             if os.path.exists(mesh_dir):
                 mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
                 print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
+
+    # ------------------------------------------------------------------
+    # AR inference (Phase 6)
+    # ------------------------------------------------------------------
+    def ar_inference(
+        self,
+        initial_window: HeteroData,
+        n_windows: int,
+        device: Optional[torch.device] = None,
+    ) -> List[Dict[str, List[torch.Tensor]]]:
+        """Run autoregressive inference for n_windows beyond the initial window.
+
+        AR inference strategy (GraphDOP-style):
+          Window 1: real obs → encode → decode → predictions_1
+          Window k: build_synthetic_window(predictions_{k-1}) → encode → decode → predictions_k
+
+        After the first window no real observations are available, so metadata
+        (positions, edges, masks) is reused from the previous synthetic window
+        while feature values are replaced by the decoded predictions.
+
+        Args:
+            initial_window: HeteroData containing the first real observation window.
+            n_windows: Total number of windows to predict (including the initial one).
+            device: Target device; defaults to the model's current device.
+
+        Returns:
+            List of prediction dicts, one entry per window (length == n_windows).
+            Each entry is ``Dict[base_type, List[Tensor]]`` as returned by forward().
+        """
+        from ar_utils import build_synthetic_window
+
+        if device is None:
+            device = self.device
+
+        was_training = self.training
+        self.eval()
+
+        all_predictions: List[Dict[str, List[torch.Tensor]]] = []
+        all_mesh_features: List[Optional[List[torch.Tensor]]] = []
+        current_input = initial_window.to(device)
+        rollout_init_time_unix = self._extract_init_time_unix(initial_window)
+
+        try:
+            with torch.no_grad():
+                for i in range(n_windows):
+                    result = self(current_input, is_first_ar_window=(i == 0))
+                    if isinstance(result, tuple):
+                        preds, mesh_features_per_step = result
+                    else:
+                        preds, mesh_features_per_step = result, None
+                    all_predictions.append(preds)
+                    all_mesh_features.append(mesh_features_per_step)
+
+                    if i < n_windows - 1:
+                        # Build synthetic template for the next window.  We have no
+                        # future ground-truth window, so the current window serves as
+                        # both prev_window (target positions/edges) and template_window.
+                        prev_input = current_input
+                        num_latent_steps_i = (
+                            len(mesh_features_per_step) if mesh_features_per_step
+                            else getattr(self, "max_latent_steps", 4)
+                        )
+                        next_ar_offset_hours = float(i + 1) * float(num_latent_steps_i) * float(self.latent_step_hours)
+
+                        print(f"[AR-META] === building window {i+1}: "
+                              f"init_unix={rollout_init_time_unix} "
+                              f"ar_offset={next_ar_offset_hours:.1f}h "
+                              f"num_latent_steps={num_latent_steps_i} ===")
+
+                        current_input = build_synthetic_window(
+                            preds,
+                            prev_window=prev_input,
+                            template_window=prev_input,
+                            observation_config=self.observation_config,
+                            recompute_target_metadata=True,
+                            ar_offset_hours=next_ar_offset_hours,
+                            latent_step_hours=self.latent_step_hours,
+                            init_time_unix=rollout_init_time_unix,
+                            verbose=True,
+                        )
+
+        finally:
+            if was_training:
+                self.train()
+
+        return all_predictions, all_mesh_features
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)

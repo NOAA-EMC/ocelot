@@ -98,7 +98,7 @@ observation_config:
 
     ssmis:
       feature_range: [50, 400]      # K; brightness temperature
-      sat_ids: [249, 285, 286, 287]
+      sat_ids: [285]  # [249, 285, 286, 287]
       scan_angle_channels: 2  # Number of scan angle dimensions
       features: [bt_ch_1, bt_ch_2, bt_ch_3, bt_ch_4, bt_ch_5,
                  bt_ch_6, bt_ch_7, bt_ch_8, bt_ch_9, bt_ch_10,
@@ -106,7 +106,7 @@ observation_config:
                  bt_ch_16, bt_ch_17, bt_ch_18, bt_ch_19, bt_ch_20,
                  bt_ch_21, bt_ch_22, bt_ch_23, bt_ch_24]
       metadata: [sensorScanPosition, satelliteAscendingFlag]
-      input_dim: 37   # 33 core (24 channels + 2 metadata + 7 geo/time) + 4 sat_id one-hot
+      input_dim: 34  # 37   # 33 core (24 channels + 2 metadata + 7 geo/time) + 4 sat_id one-hot
       target_dim: 24
       encoder_hidden_layers: 2
       decoder_hidden_layers: 2

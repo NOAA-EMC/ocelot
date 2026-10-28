@@ -39,7 +39,7 @@ set -uo pipefail
 # script from /var/spool/slurmd/job<N>/slurm_script, so $0 points at the spool
 # directory rather than the repo. An explicit path is the only reliable option.
 # ---------------------------------------------------------------------------
-EVAL_DIR="${OCELOT_EVAL_DIR:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/window_hour_fix/ocelot/gnn_model/evaluation/refactored_scripts}"
+EVAL_DIR="${OCELOT_EVAL_DIR:-/scratch3/NCEPDEV/da/Mu-Chieh.Ko/OCELOT/DEV/autoregressive/ocelot/gnn_model/evaluation/scripts}"
 
 CONDA_SH="${OCELOT_CONDA_SH:-/scratch3/NCEPDEV/da/Azadeh.Gholoubi/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${OCELOT_CONDA_ENV:-gnn-env}"

@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH -t 35:00:00
+#SBATCH -t 14:00:00
 #SBATCH --output=gnn_train_Random_%j.out
 #SBATCH --error=gnn_train_Random_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -96,7 +96,7 @@ nvidia-smi
 # New experiment name (override on submit if desired).
 # Example:
 #   sbatch --export=ALL,RUN_NAME=seq_convfocus_nl16 run_gnn_modified_sequential.sh
-RUN_NAME="${RUN_NAME:-test2-12-12-3-lrfix}"
+RUN_NAME="${RUN_NAME:-merged11-retrain-1ssmis}"
 echo "RUN_NAME=$RUN_NAME"
 
 # Loss/optimizer settings
@@ -191,7 +191,7 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--loss_type "$LOSS_TYPE" \
 	--huber_delta 0.5 \
 	--seed 12345 \
-	--max_epochs 301 \
+	--max_epochs 401 \
 	--cache_val_windows \
 	--val_cache_max_entries 16 \
 	--disable_early_stopping \
@@ -202,7 +202,11 @@ srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
 	--val_csv_sample_seed 12345 \
 	--hidden_dim 128 \
 	--input_window_hours 12 \
-	--target_window_hours 12
+	--target_window_hours 12 \
+	--ar_curriculum \
+	--max_rollout_steps 6 \
+	--rollout_schedule step
+	# --no-channel_validity_features
 
 # Resume from specific checkpoint
 # srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt

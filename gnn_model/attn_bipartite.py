@@ -35,7 +35,7 @@ class BipartiteGAT(nn.Module):
         edge_dim: Optional[int] = None,
         dst_chunk_size: Optional[int] = None,
         dst_chunk_threshold: int = 20_000,
-        use_activation_checkpointing: bool = True,
+        use_activation_checkpointing: bool = True,  # [MK DEBUG] tested False for K=2 while AR=3 -> OOM
     ):
         super().__init__()
         self.layers = nn.ModuleList()
@@ -192,20 +192,22 @@ class BipartiteGAT(nn.Module):
                 if self.training and self.use_activation_checkpointing:
                     # `checkpoint.checkpoint` only accepts Tensor inputs; `edge_attr` may be None.
                     if ea is None:
-                        def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor) -> torch.Tensor:
-                            return conv((xs, xd), eix, None)
+                        def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, _conv=conv) -> torch.Tensor:
+                        # [MK DEBUG] def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor) -> torch.Tensor:
+                            return _conv((xs, xd), eix, None)
 
                         out_chunk = checkpoint.checkpoint(
-                            _f, x_src, x_dst_chunk, ei, use_reentrant=False
+                            _f, x_src, x_dst_chunk, ei, use_reentrant=False  # [MK DEBUG] tested True, testing true for K=2 while AR=3; failed
                         )
                     else:
-                        def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, ear: torch.Tensor) -> torch.Tensor:
-                            return conv((xs, xd), eix, ear)
+                        def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, ear: torch.Tensor, _conv=conv) -> torch.Tensor:
+                        # [MK DEBUG] def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, ear: torch.Tensor) -> torch.Tensor:
+                            return _conv((xs, xd), eix, ear)
 
                         # use_reentrant=False supports non-reentrant checkpointing and plays better
                         # with complex modules; edge_index/edge_attr are treated as tensor inputs.
                         out_chunk = checkpoint.checkpoint(
-                            _f, x_src, x_dst_chunk, ei, ea, use_reentrant=False
+                            _f, x_src, x_dst_chunk, ei, ea, use_reentrant=False  # [MK DEBUG] tested True, testing true for K=2 while AR=3; failed 
                         )
                 else:
                     out_chunk = conv((x_src, x_dst_chunk), ei, ea)
