@@ -331,10 +331,11 @@ def build_synthetic_window(
 
             n_tgt = int(tgt.y.shape[0]) if hasattr(tgt, "y") and tgt.y is not None else -1
             if n_tgt != N_step or not hasattr(tgt, "lat"):
-                print(f"[ROWDIAG] {step_nt}: pred rows={N_step} target rows={n_tgt} "
-                      f"has_lat={hasattr(tgt, 'lat')} n_preds={len(pred_list)} "
-                      f"steps={[s for s, _ in target_steps]}; skipping step", flush=True)
-                continue
+                raise RuntimeError(
+                    f"{step_nt}: pred rows={N_step} target rows={n_tgt} "
+                    f"has_lat={hasattr(tgt, 'lat')} n_preds={len(pred_list)} "
+                    f"steps={[s for s, _ in target_steps]}"
+                )
 
             # Channel validity of each prediction row, from the matching target node
             tmask = getattr(tgt, "target_channel_mask", None)

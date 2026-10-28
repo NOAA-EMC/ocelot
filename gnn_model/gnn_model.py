@@ -2009,18 +2009,26 @@ class GNNLightning(pl.LightningModule):
                     )
 
                     gt_data = ground_truth_data[node_type]
-                    for y_pred, y_true, instrument_ids, valid_mask in zip(
+                    if len(preds_list) != len(gt_data["gts_list"]):
+                        raise RuntimeError(
+                            f"{node_type} ar{i}: {len(preds_list)} prediction steps vs "
+                            f"{len(gt_data['gts_list'])} target steps"
+                        )
+                    for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(zip(
                         preds_list,
                         gt_data["gts_list"],
                         gt_data["instrument_ids_list"],
                         gt_data["valid_mask_list"],
-                    ):
+                    )):
                         if y_pred is None or y_true is None:
                             continue
                         if y_pred.numel() == 0 or y_true.numel() == 0:
                             continue
                         if y_pred.shape[0] != y_true.shape[0]:
-                            continue
+                            raise RuntimeError(
+                                f"Row mismatch for {node_type} ar{i} step {step}: "
+                                f"y_pred {tuple(y_pred.shape)} vs y_true {tuple(y_true.shape)}"
+                            )
                         if not torch.isfinite(y_pred).all():
                             y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
                         if not torch.isfinite(y_true).all():
@@ -2425,6 +2433,11 @@ class GNNLightning(pl.LightningModule):
                         gts_list = gt_data["gts_list"]
                         instrument_ids_list = gt_data["instrument_ids_list"]
                         valid_mask_list = gt_data["valid_mask_list"]
+                        if len(preds_list) != len(gts_list):
+                            raise RuntimeError(
+                                f"{node_type} ar{ar_i}: {len(preds_list)} prediction steps vs "
+                                f"{len(gts_list)} target steps"
+                            )
 
                         for step, (y_pred, y_true, instrument_ids, valid_mask) in enumerate(
                             zip(preds_list, gts_list, instrument_ids_list, valid_mask_list)
@@ -2432,7 +2445,10 @@ class GNNLightning(pl.LightningModule):
                             if y_pred is None or y_true is None or y_pred.numel() == 0 or y_true.numel() == 0:
                                 continue
                             if y_pred.shape != y_true.shape:
-                                continue
+                                raise RuntimeError(
+                                    f"Row mismatch for {node_type} ar{ar_i} step {step}: "
+                                    f"y_pred {tuple(y_pred.shape)} vs y_true {tuple(y_true.shape)}"
+                                )
                             if not torch.isfinite(y_pred).all():
                                 y_pred = torch.nan_to_num(y_pred, nan=0.0, posinf=0.0, neginf=0.0)
                             if not torch.isfinite(y_true).all():
