@@ -22,7 +22,8 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback, RolloutCurriculumCallback
+from ar.curriculum import RolloutCurriculumCallback
+from callbacks import ResampleDataCallback, SequentialDataCallback, ValWindowCallback
 from ckpt_utils import find_latest_checkpoint
 from gnn_datamodule import GNNDataModule
 from gnn_model import GNNLightning

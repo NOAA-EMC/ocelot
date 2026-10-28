@@ -1913,7 +1913,7 @@ class GNNLightning(pl.LightningModule):
         torch.no_grad() so their predictions can seed synthetic feedback without
         storing a full computational graph.
         """
-        from ar_utils import build_synthetic_window
+        from ar.synthetic import build_synthetic_window
 
         ar_steps = len(sequence)  # number of AR rollout steps
 
@@ -2356,7 +2356,7 @@ class GNNLightning(pl.LightningModule):
             CSVs are written per AR step with pinned init and AR lead offset,
             consistent with eval-mode prediction.
             """
-            from ar_utils import build_synthetic_window
+            from ar.synthetic import build_synthetic_window
 
             ar_steps = len(sequence)
             if batch_idx < 3:
@@ -3499,7 +3499,7 @@ class GNNLightning(pl.LightningModule):
 
     def _ar_predict_step(self, batch, batch_idx: int, n_windows: int):
         """AR prediction: eval-mode uses real sequences, inference-mode chains synthetically."""
-        from ar_utils import build_synthetic_window
+        from ar.synthetic import build_synthetic_window
 
         is_eval_mode = isinstance(batch, list)  # ARWindowDataset returns List[HeteroData]
 
@@ -3518,7 +3518,7 @@ class GNNLightning(pl.LightningModule):
           - sequence[i-1] = real prev_window for build_synthetic_window
         No gradients. No loss. CSV output per AR step.
         """
-        from ar_utils import build_synthetic_window
+        from ar.synthetic import build_synthetic_window
 
         ar_steps = len(sequence)
         print(f"[PREDICT][EVAL-AR] batch {batch_idx}: ar_steps={ar_steps}")
@@ -3649,7 +3649,7 @@ class GNNLightning(pl.LightningModule):
         No real future windows exist. Chains synthetically via ar_inference.
         Target node conditioning is synthesized (see ar_inference / build_synthetic_window).
         """
-        from ar_utils import build_synthetic_window
+        from ar.synthetic import build_synthetic_window
 
         print(f"[PREDICT][INFER-AR] batch {batch_idx}: n_windows={n_windows}")
 
@@ -3767,7 +3767,7 @@ class GNNLightning(pl.LightningModule):
             List of prediction dicts, one entry per window (length == n_windows).
             Each entry is ``Dict[base_type, List[Tensor]]`` as returned by forward().
         """
-        from ar_utils import build_synthetic_window
+        from ar.synthetic import build_synthetic_window
 
         if device is None:
             device = self.device
