@@ -233,6 +233,8 @@ def main():
     # Windowing / latent rollout
     parser.add_argument("--input_window_hours", type=int, default=12)
     parser.add_argument("--target_window_hours", type=int, default=12)
+    parser.add_argument("--init_window_freq", type=int, default=None,
+                        help="Hours between forecast init times (bins). Default: input_window_hours.")
     parser.add_argument("--latent_step_hours", type=int, default=3)
     parser.add_argument("--processor_window", type=int, default=None)   # DEFAULT:None = target_window_hours//latent_step_hours
     parser.add_argument(
@@ -612,6 +614,7 @@ def main():
         input_window_hours=input_window_hours,
         target_window_hours=target_window_hours,
         latent_step_hours=latent_step_hours,
+        init_window_freq=args.init_window_freq,
         train_val_split_ratio=float(args.train_val_split_ratio) if args.train_val_split_ratio is not None else 0.9,
         cache_val_windows=bool(args.cache_val_windows),
         val_cache_max_entries=int(args.val_cache_max_entries),

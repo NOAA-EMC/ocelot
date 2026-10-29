@@ -249,6 +249,7 @@ def organize_bins_times(
     latent_step_hours=3,
     require_targets=True,    # PREDICTION MODE: False for inference (no targets needed)
     verbose=False,
+    init_window_freq=None,   # hours between forecast init times; None -> input_window_hours
 ):
     """
     Bin definition: a bin consists of a pair of input and targets, each covers window_size.
@@ -284,7 +285,11 @@ def organize_bins_times(
             f"target_window_hours ({target_window_hours}) must be divisible by latent_step_hours ({latent_step_hours})"
         )
 
-    init_window_freq = f"{input_window_hours}h"  # replacement of window_size(e.g.,"12h"), which sets stride between forecast init times
+    # Stride between forecast init times (bins). Defaults to the input window size.
+    init_window_hours = input_window_hours if init_window_freq is None else int(init_window_freq)
+    if init_window_hours <= 0:
+        raise ValueError(f"init_window_freq must be positive, got {init_window_hours}.")
+    init_window_freq = f"{init_window_hours}h"
 
     # latent rollout setup
     num_latent_steps = target_window_hours // latent_step_hours
@@ -1460,12 +1465,12 @@ def extract_features(
             data_summary_bin["input_lon_deg"] = input_lon_raw_clean
             # Encoder validity features need this mask even when persistence is disabled.
             data_summary_bin["input_channel_mask"] = input_valid_ch_clean.astype(bool)
+            # Per-row input times are always kept: AR rollout slices real inputs by time.
+            data_summary_bin["input_time_unix"] = np.asarray(input_times_clean, dtype=np.int64)
             if include_persistence_inputs:
                 data_summary_bin["input_features_raw"] = input_features_raw_clean.astype(np.float32)
-                data_summary_bin["input_time_unix"] = np.asarray(input_times_clean, dtype=np.int64)
             else:
                 data_summary_bin.pop("input_features_raw", None)
-                data_summary_bin.pop("input_time_unix", None)
 
             # Store pressure level indices for radiosonde and aircraft
             if inst_name in ['radiosonde', 'aircraft'] and input_pressure_level is not None:

@@ -186,6 +186,7 @@ class GNNDataModule(pl.LightningDataModule):
         input_window_hours=12,      # binning input window
         target_window_hours=12,     # binning target window
         latent_step_hours=3,        # sub-target-window size for latent-space rollout
+        init_window_freq=None,      # hours between forecast init times; None -> input_window_hours
         ar_steps=1,
         train_val_split_ratio=0.9,  # Default fallback, should be passed from training script
         cache_val_windows: bool = False,
@@ -199,6 +200,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         # Normalize to int so Lightning hparams merge is stable across module/datamodule.
         latent_step_hours = int(latent_step_hours) if latent_step_hours is not None else None
+        init_window_freq = int(input_window_hours if init_window_freq is None else init_window_freq)
         self.save_hyperparameters()
         self.prediction_mode = bool(prediction_mode)
         self.include_persistence_inputs = bool(prediction_mode)
@@ -306,6 +308,16 @@ class GNNDataModule(pl.LightningDataModule):
         """
         if n < 1:
             raise ValueError(f"ar_steps must be >= 1, got {n}")
+        # AR chains consecutive bins, so bins must be one target window apart.
+        # Inference mode chains synthetically and does not use bin sequences.
+        init_h = int(self.hparams.init_window_freq)
+        target_h = int(self.hparams.target_window_hours)
+        uses_bin_sequences = self.require_targets or not self.prediction_mode
+        if n > 1 and uses_bin_sequences and init_h != target_h:
+            raise ValueError(
+                f"AR (ar_steps={n}) currently requires init_window_freq ({init_h}h) == "
+                f"target_window_hours ({target_h}h)."
+            )
         self._ar_steps = n
         self._train_version += 1
         print(f"[DM.set_ar_steps] ar_steps={n} train_version={self._train_version}")
@@ -336,6 +348,10 @@ class GNNDataModule(pl.LightningDataModule):
             "observation_config": getattr(self.hparams, "observation_config", None),
             "pipeline": getattr(self.hparams, "pipeline", None),
         }
+        # Only keyed when it differs from the default, so existing caches stay valid.
+        init_h = int(getattr(self.hparams, "init_window_freq", 0) or 0)
+        if init_h and init_h != payload["input_window_hours"]:
+            payload["init_window_freq"] = init_h
         s = json.dumps(payload, sort_keys=True, default=str)
         h = hashlib.blake2b(s.encode("utf-8"), digest_size=16).hexdigest()
         os.makedirs(self._summary_cache_dir, exist_ok=True)
@@ -358,6 +374,7 @@ class GNNDataModule(pl.LightningDataModule):
                 latent_step_hours=self.hparams.latent_step_hours,
                 require_targets=require_targets,
                 verbose=False,
+                init_window_freq=self.hparams.init_window_freq,
             )
             # Bins are named as `binYYYYMMDDHH` (time-aligned across instruments).
             # Fall back to lexicographic ordering if parsing fails.

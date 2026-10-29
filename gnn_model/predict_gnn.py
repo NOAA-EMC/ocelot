@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--eval-mode", action="store_true",
                         help="Evaluation mode: expects target observations to exist."
                              "Default: False (inference mode - no targets required)")
+    parser.add_argument("--init_window_freq", type=int, default=None,
+                        help="Hours between forecast init times (bins). Default: input_window_hours.")
     parser.add_argument(
     "--ar_steps",
     type=int,
@@ -222,6 +224,7 @@ def main():
         input_window_hours=input_window_hours,
         target_window_hours=target_window_hours,
         latent_step_hours=latent_step_hours,
+        init_window_freq=args.init_window_freq,
         train_val_split_ratio=1.0,
         train_start=args.start_date,
         train_end=args.end_date,
