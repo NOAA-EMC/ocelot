@@ -24,6 +24,7 @@ class BipartiteGAT(nn.Module):
       dropout: dropout inside attention/FFN
       edge_dim: dimension of per-edge attributes (optional); if given, used by GATv2
     """
+
     def __init__(
         self,
         send_dim: int,
@@ -193,7 +194,7 @@ class BipartiteGAT(nn.Module):
                     # `checkpoint.checkpoint` only accepts Tensor inputs; `edge_attr` may be None.
                     if ea is None:
                         def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, _conv=conv) -> torch.Tensor:
-                        # [MK DEBUG] def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor) -> torch.Tensor:
+                            # [MK DEBUG] def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor) -> torch.Tensor:
                             return _conv((xs, xd), eix, None)
 
                         out_chunk = checkpoint.checkpoint(
@@ -201,13 +202,13 @@ class BipartiteGAT(nn.Module):
                         )
                     else:
                         def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, ear: torch.Tensor, _conv=conv) -> torch.Tensor:
-                        # [MK DEBUG] def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, ear: torch.Tensor) -> torch.Tensor:
+                            # [MK DEBUG] def _f(xs: torch.Tensor, xd: torch.Tensor, eix: torch.Tensor, ear: torch.Tensor) -> torch.Tensor:
                             return _conv((xs, xd), eix, ear)
 
                         # use_reentrant=False supports non-reentrant checkpointing and plays better
                         # with complex modules; edge_index/edge_attr are treated as tensor inputs.
                         out_chunk = checkpoint.checkpoint(
-                            _f, x_src, x_dst_chunk, ei, ea, use_reentrant=False  # [MK DEBUG] tested True, testing true for K=2 while AR=3; failed 
+                            _f, x_src, x_dst_chunk, ei, ea, use_reentrant=False  # [MK DEBUG] tested True, testing true for K=2 while AR=3; failed
                         )
                 else:
                     out_chunk = conv((x_src, x_dst_chunk), ei, ea)

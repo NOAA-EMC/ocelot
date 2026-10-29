@@ -297,10 +297,10 @@ class GNNDataModule(pl.LightningDataModule):
 
     def set_ar_steps(self, n: int):
         """Set the number of AR windows for the next training epoch.
-     
+
         Analogous to set_train_window(): updates internal state and triggers
         a summary rebuild so the next dataloader reload picks up the change.
-     
+
         Args:
             n: Number of AR windows beyond the first (>= 1).
                n=1 is equivalent to the current single-step behaviour when

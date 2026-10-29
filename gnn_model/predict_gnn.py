@@ -63,10 +63,10 @@ def main():
     parser.add_argument("--init_window_freq", type=int, default=None,
                         help="Hours between forecast init times (bins). Default: input_window_hours.")
     parser.add_argument(
-    "--ar_steps",
-    type=int,
-    default=1,
-    help="Number of AR windows to chain (1 = single-step, default).",
+        "--ar_steps",
+        type=int,
+        default=1,
+        help="Number of AR windows to chain (1 = single-step, default).",
     )
 
     args = parser.parse_args()

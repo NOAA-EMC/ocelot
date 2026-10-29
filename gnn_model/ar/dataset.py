@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 
 def ar_collate_fn(batch):
     """Collate for ARWindowDataset.
- 
+
     DataLoader wraps each __getitem__ result in an outer list when batch_size=1.
     batch is therefore [ [window_0, window_1, ..., window_N] ].
     We unwrap to return the inner list directly so training_step receives:
@@ -48,32 +48,32 @@ class ARWindowDataset(Dataset):
                        sequence (>= 1). ar_steps=1 → 1 window (single step,
                        no synthetic feedback).
     """
- 
+
     def __init__(self, base_dataset: "BinDataset", ar_steps: int = 1):
         if ar_steps < 1:
             raise ValueError(f"ar_steps must be >= 1, got {ar_steps}")
- 
+
         self.base_dataset = base_dataset
         self.ar_steps = ar_steps
         self._seq_len = ar_steps  # total windows per sequence
- 
+
         n_bins = len(base_dataset)
         if n_bins < self._seq_len:
             raise ValueError(
                 f"ARWindowDataset needs at least {self._seq_len} bins "
                 f"(ar_steps={ar_steps}), but base_dataset has {n_bins}."
             )
- 
+
         # Number of valid starting positions
         self._n_sequences = n_bins - ar_steps + 1
         print(
             f"[ARWindowDataset] ar_steps={ar_steps} seq_len={self._seq_len} "
             f"n_bins={n_bins} n_sequences={self._n_sequences}"
         )
- 
+
     def __len__(self) -> int:
         return self._n_sequences
- 
+
     def __getitem__(self, idx: int) -> List:
         """Return list of ar_steps consecutive HeteroData objects."""
         if idx >= self._n_sequences:

@@ -298,8 +298,9 @@ def build_synthetic_window(
         # ---- [MATCHDIAG] once per instrument: synth row 0 vs nearest real input row ----
         if input_node_type not in _MATCH_DIAG_DONE and all_lat and all_lon:
             _MATCH_DIAG_DONE.add(input_node_type)
-            _fmt = lambda v: np.array2string(v.detach().float().cpu().numpy(), precision=3,
-                                             suppress_small=True, max_line_width=100000)
+
+            def _fmt(v): return np.array2string(v.detach().float().cpu().numpy(), precision=3,
+                                                suppress_small=True, max_line_width=100000)
             _rlat = template_window[input_node_type].lat.float()
             _rlon = template_window[input_node_type].lon.float()
             _slat = synthetic[input_node_type].lat[0].float()
@@ -309,7 +310,6 @@ def build_synthetic_window(
                   f"nearest real[{_j}] lat/lon=({float(_rlat[_j]):.3f},{float(_rlon[_j]):.3f})", flush=True)
             print(f"[MATCHDIAG] {input_node_type} real  x[{_j}] = {_fmt(template_x[_j])}", flush=True)
             print(f"[MATCHDIAG] {input_node_type} synth x[0]  = {_fmt(synthetic[input_node_type].x[0])}", flush=True)
-
 
         enc_etype = (input_node_type, "to", "mesh")
         if all_enc_edge_index:
