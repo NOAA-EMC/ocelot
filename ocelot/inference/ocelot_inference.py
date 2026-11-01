@@ -83,7 +83,7 @@ class OcelotInferenceModule(pl.LightningModule):
             # Save to CSV
             # if batch_idx < 10:
             out_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space')
-            self.model._save_latent_concatenated_csv(
+            self.model.save_latent_concatenated_csv(
                 batch=batch,
                 node_type=node_type,
                 preds_list=preds_list,
@@ -129,7 +129,7 @@ class OcelotInferenceModule(pl.LightningModule):
         if not self.model.enable_mesh_pred:
             print("[WARN] Mesh prediction is disabled in the pipeline configuration.")
         self._mesh_predictions_buffer = {}
-        self._prediction_output_dir = getattr(self, 'prediction_output_dir', 'predictions')
+        self._prediction_output_dir = self.inference_config.output_dir
         os.makedirs(self._prediction_output_dir, exist_ok=True)
         # Create pred_csv subdirectories
         os.makedirs(os.path.join(self._prediction_output_dir, 'pred_csv', 'obs-space'), exist_ok=True)

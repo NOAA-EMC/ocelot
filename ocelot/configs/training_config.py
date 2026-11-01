@@ -121,15 +121,6 @@ class AdamWConfig(OptimizerConfig):
     min_lr = Optional(FloatField(), default=1e-6)
 
 
-class CsvOutputConfig(ConfigBase):
-    enabled = Optional(BoolField(), default=False)
-    output_dir = Optional(StrField(), default='val_csv')
-    num_batches = Optional(IntField(), default=1)
-    every_n_epochs = Optional(IntField(), default=1)
-    max_rows = Optional(IntField())
-    sample_seed = Optional(IntField(), default=0)
-
-
 class ValidationModeConfig(ConfigBase):
     window_days = Optional(IntField(), default=8)
     update_every_n_epochs = Optional(IntField(), default=5)
@@ -155,7 +146,6 @@ class ValidationConfig(ConfigBase):
     })
     cache_windows = Optional(BoolField(), default=True)
     cache_max_entries = Optional(IntField(), default=16)
-    csv = Optional(CsvOutputConfig(), default={})
 
 
 class LossConfig(ConfigBase):
@@ -187,11 +177,8 @@ class CosineWarmupScheduleConfig(ScheduleConfig):
 
 
 class TrainingConfig(ConfigBase):
-    experiment_name = StrField()
     checkpoint_dir = StrField()
     detect_anomaly = Optional(BoolField(), default=False)
-    instrument_config_path = Optional(StrField(), default='configs/instrument_config.yaml')
-    pipeline_config_path = Optional(StrField(), default='configs/pipeline_config.yaml')
     seed = Optional(IntField())
     verbose = Optional(BoolField(), default=False)
     debug_mode = Optional(BoolField(), default=False)

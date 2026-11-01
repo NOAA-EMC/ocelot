@@ -1106,7 +1106,7 @@ class Ocelot(nn.Module):
 
         return predictions
 
-    def _save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
+    def save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
                                       valid_mask_list, out_dir, batch_idx, mode='val'):
         """
         Save latent rollout as concatenated observations.
@@ -1470,16 +1470,16 @@ class Ocelot(nn.Module):
                 print(f"  Pressure level distribution: {np.unique(valid_levels, return_counts=True)}")
 
         # Optional subsampling to bound I/O and file size (validation diagnostics)
-        if mode != 'predict' and self.val_csv_max_rows is not None and len(df) > self.val_csv_max_rows:
+        if mode != 'predict' and self.model_config.csv.max_rows is not None and len(df) > self.model_config.csv.max_rows:
             try:
                 node_seed = abs(hash(str(node_type))) % 1000003
                 seed = (
-                    int(self.val_csv_sample_seed)
+                    int(self.model_config.csv.sample_seed)
                     + int(self.current_epoch) * 1000003
                     + int(batch_idx) * 9176
                     + int(node_seed)
                 ) % (2**32 - 1)
-                df = df.sample(n=int(self.val_csv_max_rows), random_state=int(seed))
+                df = df.sample(n=int(self.model_config.csv.max_rows), random_state=int(seed))
             except Exception:
                 pass
 

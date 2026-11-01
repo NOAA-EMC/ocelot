@@ -98,11 +98,11 @@ def _build_window_plan(config: TrainingConfig) -> WindowPlan:
     )
 
 
-def _resolve_checkpoint(config: TrainingConfig):
+def _resolve_checkpoint(exp_name: str, config: TrainingConfig):
     from ocelot.ckpt_utils import find_latest_checkpoint
 
     if config.resume_from_latest:
-        checkpoint = find_latest_checkpoint(config.checkpoint_dir)
+        checkpoint = find_latest_checkpoint(f"{config.checkpoint_dir}/{exp_name}")
         if checkpoint:
             print(f"[INFO] Auto-resuming from: {checkpoint}")
         else:
@@ -116,7 +116,7 @@ def _resolve_checkpoint(config: TrainingConfig):
     return None
 
 
-def _build_callbacks(config: TrainingConfig, windows: WindowPlan):
+def _build_callbacks(exp_name: str, config: TrainingConfig, windows: WindowPlan):
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
     from ocelot.callbacks import (
@@ -143,7 +143,7 @@ def _build_callbacks(config: TrainingConfig, windows: WindowPlan):
 
     callbacks = [
         ModelCheckpoint(
-            dirpath=config.checkpoint_dir,
+            dirpath=f"{config.checkpoint_dir}/{exp_name}",
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
             save_top_k=1,
             monitor="val_loss",
@@ -216,13 +216,13 @@ def _build_callbacks(config: TrainingConfig, windows: WindowPlan):
     return callbacks
 
 
-def _build_trainer(config: TrainingConfig, callbacks):
+def _build_trainer(exp_name: str, training_config: TrainingConfig, callbacks):
     import lightning.pytorch as pl
     import torch
     from lightning.pytorch.loggers import CSVLogger
     from lightning.pytorch.strategies import DDPStrategy
 
-    trainer_config = config.trainer
+    trainer_config = training_config.trainer
     trainer_kwargs = {
         "max_epochs": trainer_config.max_epochs,
         "accelerator": trainer_config.accelerator,
@@ -234,8 +234,7 @@ def _build_trainer(config: TrainingConfig, callbacks):
         "gradient_clip_val": trainer_config.gradient_clip_val,
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,
-        "check_val_every_n_epoch": 1,
-        "logger": CSVLogger(save_dir="logs", name=config.experiment_name),
+        "logger": CSVLogger(save_dir="logs", name=exp_name),
         "callbacks": callbacks,
     }
     if trainer_config.devices > 1 or trainer_config.num_nodes > 1:
@@ -260,8 +259,8 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
 
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)
-    instrument_catalog = InstrumentCatalogConfig(training_config.instrument_config_path)
-    pipeline_config = PipelineConfig(training_config.pipeline_config_path)
+    instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
+    pipeline_config = PipelineConfig(model_config.pipeline_config_path)
     pipeline_config.validate_instruments(instrument_catalog)
 
     verbose = bool(verbose or training_config.verbose)
@@ -287,7 +286,7 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
 
     module.model.train()
 
-    resume_path = _resolve_checkpoint(training_config)
+    resume_path = _resolve_checkpoint(model_config.experiment_name, training_config)
     if resume_path and training_config.load_weights_only:
         print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
         checkpoint = torch.load(resume_path, map_location="cpu")
@@ -323,7 +322,12 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
         val_end=windows.initial_val_end,
     )
 
-    trainer = _build_trainer(training_config, _build_callbacks(training_config, windows))
+    trainer = _build_trainer(exp_name=model_config.experiment_name, 
+                             training_config=training_config, 
+                             callbacks=_build_callbacks(model_config.experiment_name,
+                                                        training_config, 
+                                                        windows))
+
     setup_end = time.time()
     print(f"Initial setup time: {(setup_end - setup_start) / 60:.2f} minutes")
 

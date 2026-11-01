@@ -96,8 +96,8 @@ def main():
     os.makedirs(inference_config.output_dir, exist_ok=True)
     start_time = time.time()
 
-    instrument_catalog = InstrumentCatalogConfig(inference_config.instrument_config_path)
-    pipeline_config = PipelineConfig(inference_config.pipeline_config_path)
+    instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
+    pipeline_config = PipelineConfig(model_config.pipeline_config_path)
     pipeline_config.validate_instruments(instrument_catalog)
 
     # Data path

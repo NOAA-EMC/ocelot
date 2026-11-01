@@ -345,16 +345,16 @@ class OcelotTrainingModule(pl.LightningModule):
                 if (
                     self.trainer.is_global_zero  # only main process
                     and step == 0  # only concatenate latent rollout once
-                    and self.training_config.validation.csv.enabled
-                    and batch_idx < max(1, self.training_config.validation.csv.num_batches)
-                    and (self.current_epoch % max(1, self.training_config.validation.csv.every_n_epochs) == 0)
+                    and self.model.model_config.csv.enabled
+                    and batch_idx < max(1, self.model.model_config.csv.num_batches)
+                    and (self.current_epoch % max(1, self.model.model_config.csv.every_n_epochs) == 0)
                 ):
                     # --- CSV save block ---
-                    out_dir = self.training_config.validation.csv.output_dir
+                    out_dir = self.model.model_config.csv.output_dir
                     os.makedirs(out_dir, exist_ok=True)
 
                     # LATENT ROLLOUT: Concatenate all steps into standard format
-                    self.model._save_latent_concatenated_csv(
+                    self.model.save_latent_concatenated_csv(
                         batch, node_type, preds_list, gts_list,
                         valid_mask_list, out_dir, batch_idx
                     )

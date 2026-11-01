@@ -1,3 +1,5 @@
+experiment_name: &experiment_name baseline_v1
+
 hidden_dim: &hidden_dim 192
 input_window_hours: 12
 target_window_hours: 12
@@ -46,3 +48,11 @@ embeddings:
   num_pressure_levels: 16
   scan_angle_conditioning: project
   pressure_level_conditioning: project
+
+csv:
+  enabled: True
+  output_dir: *experiment_name
+  num_batches: 3
+  every_n_epochs: 10
+  max_rows: 50000
+  sample_seed: 12345

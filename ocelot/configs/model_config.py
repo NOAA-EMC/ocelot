@@ -1,4 +1,4 @@
-
+import os
 import yaml
 
 from ocelot.configs.config_base import (
@@ -9,6 +9,7 @@ from ocelot.configs.config_base import (
     IntField,
     ListField,
     Optional,
+    StrField,
 )
 
 # Mesh configurations ##
@@ -111,16 +112,27 @@ class EmbeddingsConfig(ConfigBase):
     num_pressure_levels = Optional(IntField(), default=16)
 
 
+# CSV output configuration
+
+class CsvOutputConfig(ConfigBase):
+    enabled = Optional(BoolField(), default=False)
+    output_dir = Optional(StrField(), default='val_csv')
+    num_batches = Optional(IntField(), default=1)
+    every_n_epochs = Optional(IntField(), default=1)
+    max_rows = Optional(IntField())
+    sample_seed = Optional(IntField(), default=0)
+
+
 # Model configuration ##
 
 class ModelConfig(ConfigBase):
     hidden_dim = IntField()
+    experiment_name = Optional(StrField())
     input_window_hours = Optional(IntField(), default=12)
     target_window_hours = Optional(IntField(), default=12)
     latent_step_hours = Optional(IntField(), default=3)
     processor_window = Optional(IntField())
     channel_validity_features = Optional(BoolField(), default=True)
-
     mesh = Choices({
         'fixed': FixedMeshConfig(),
         'hierarchical': HierarchicalMeshConfig(),
@@ -140,11 +152,15 @@ class ModelConfig(ConfigBase):
         'interaction': InteractionCoderConfig(),
     })
     embeddings = EmbeddingsConfig()
+    csv = Optional(CsvOutputConfig(), default=CsvOutputConfig())
 
     def __init__(self, config_path: str):
         super().__init__()
         with open(config_path) as config_file:
             self.load(yaml.safe_load(config_file))
+
+        self.instrument_config_path = os.path.join(os.path.split(config_path)[0], 'instrument_config.yaml')
+        self.pipeline_config_path = os.path.join(os.path.split(config_path)[0], 'pipeline_config.yaml')
 
         self.flat_processors = {'interaction', 'sliding_window'}
         self.mesh_is_fixed = self.mesh.type == 'fixed'
