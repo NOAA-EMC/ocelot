@@ -29,6 +29,7 @@ class InferenceResourcesConfig(ConfigBase):
 
 
 class InferenceConfig(ConfigBase):
+    checkpoint = Optional(StrField())
     eval_mode = Optional(BoolField(), default=False)
     data = InferenceDataConfig()
     resources = Optional(InferenceResourcesConfig(), default={})

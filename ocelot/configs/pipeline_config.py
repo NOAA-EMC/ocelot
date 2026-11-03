@@ -1,4 +1,5 @@
 import os
+import glob
 from dataclasses import dataclass
 
 import yaml
@@ -166,7 +167,21 @@ class PipelineConfig(ConfigBase):
 
     @property
     def last_checkpoint_path(self) -> str:
-        return os.path.join(self.checkpoint_dir, "last.ckpt")
+        """Find the most recent checkpoint file"""
+        if not os.path.exists(self.checkpoint_dir):
+            return None
+
+        # Look for last.ckpt variants (these represent latest training state)
+        last_pattern = os.path.join(self.checkpoint_dir, "last*.ckpt")
+        last_checkpoints = glob.glob(last_pattern)
+
+        if last_checkpoints:
+            # Return the most recent "last" checkpoint by modification time
+            latest_last = max(last_checkpoints, key=os.path.getmtime)
+            return latest_last
+
+        # if no "last" checkpoint exists, start fresh
+        return None
 
     @property
     def prediction_output_dir(self) -> str:

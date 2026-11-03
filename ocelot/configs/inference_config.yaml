@@ -1,4 +1,4 @@
-output_dir: predictions/baseline_v1
+checkpoint: checkpoints/last.ckpt
 
 data:
   path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7

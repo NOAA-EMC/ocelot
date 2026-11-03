@@ -79,10 +79,12 @@ def main():
     # - latent_step_hours: Size of each latent step (from checkpoint)
     # Note: These are automatically extracted from the model checkpoint
 
+    checkpoint_path = inference_config.checkpoint or pipeline_config.last_checkpoint_path
+
     print("\n" + "="*80)
     print("GNN PREDICTION MODE")
     print("="*80)
-    print(f"Checkpoint: {pipeline_config.last_checkpoint_path}")
+    print(f"Checkpoint: {checkpoint_path}")
     print(f"Date range: {inference_config.data.start_date} to {inference_config.data.end_date}")
     print(f"Output: {pipeline_config.prediction_output_dir}")
     print(f"Devices: {inference_config.resources.devices}, Nodes: {inference_config.resources.num_nodes}")
@@ -93,8 +95,8 @@ def main():
         print("  → Inference mode: No targets required (operational forecasting)")
     print("="*80 + "\n")
 
-    if not os.path.exists(pipeline_config.last_checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint not found: {pipeline_config.last_checkpoint_path}")
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     os.makedirs(pipeline_config.prediction_output_dir, exist_ok=True)
     start_time = time.time()
@@ -113,7 +115,7 @@ def main():
     print(f"Data path: {data_path}")
 
     # Load model from checkpoint
-    print(f"\nLoading model from checkpoint: {pipeline_config.last_checkpoint_path}")
+    print(f"\nLoading model from checkpoint: {checkpoint_path}")
 
     model = ocelot.inference.make_module(
         model_config=model_config,  # Replace with actual model config if available

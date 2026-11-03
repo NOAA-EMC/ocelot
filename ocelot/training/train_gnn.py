@@ -4,6 +4,7 @@ import argparse
 import faulthandler
 import os
 import socket
+import shutil
 import sys
 import time
 import yaml
@@ -48,6 +49,11 @@ def parse_args(argv=None):
         "--train-config",
         default="configs/training_config.yaml",
         help="Path to the training YAML.",
+    )
+    parser.add_argument(
+        "--experiment_path",
+        default="",
+        help="Name of the experiment directory.",
     )
     parser.add_argument(
         "--verbose",
@@ -99,14 +105,12 @@ def _build_window_plan(config: TrainingConfig) -> WindowPlan:
 
 
 def _resolve_checkpoint(pipeline_config: PipelineConfig, training_config: TrainingConfig):
-    from ocelot.ckpt_utils import find_latest_checkpoint
-
     if training_config.resume_from_latest:
-        checkpoint = find_latest_checkpoint(pipeline_config.last_checkpoint_path)
+        checkpoint = pipeline_config.last_checkpoint_path
         if checkpoint:
             print(f"[INFO] Auto-resuming from: {checkpoint}")
         else:
-            print("[INFO] No checkpoint found, starting fresh")
+            print(f"[INFO] No checkpoint found, starting fresh. Tried {checkpoint}")
         return checkpoint
     if training_config.resume_from_checkpoint:
         print(f"[INFO] Resuming from: {training_config.resume_from_checkpoint}")
@@ -252,8 +256,10 @@ def _build_trainer(exp_name: str, training_config: TrainingConfig, callbacks):
         trainer_kwargs["limit_val_batches"] = trainer_config.limit_val_batches
     return pl.Trainer(**trainer_kwargs)
 
-
-def run_training(model_config_path: str, training_config_path: str, verbose=False):
+def run_training(model_config_path: str, 
+                 training_config_path: str, 
+                 experiment_path: str | None = None, 
+                 verbose=False):
     import lightning.pytorch as pl
     import torch
 
@@ -262,6 +268,26 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
     instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
     pipeline_config = PipelineConfig(model_config.pipeline_config_path)
     pipeline_config.validate_instruments(instrument_catalog)
+
+    # Copy configuration files to the experiment's config directory
+    experiment_path = experiment_path or pipeline_config.experiment_name
+    if os.path.split(experiment_path)[-1] != pipeline_config.experiment_name:
+        pipeline_config.experiment_name = os.path.split(experiment_path)[-1]
+        import warnings
+        warnings.warn(
+            f"Experiment path '{experiment_path}' does not match pipeline_config.experiment_name. "
+            f"Updating pipeline_config.experiment_name to '{pipeline_config.experiment_name}'."
+        )
+
+    exp_config_dir = os.path.join(experiment_path, "configs")
+    os.makedirs(exp_config_dir, exist_ok=True)
+
+    for config_path in [model_config_path, 
+                        training_config_path, 
+                        model_config.instrument_config_path, 
+                        model_config.pipeline_config_path]:
+        if not os.path.commonpath([config_path, exp_config_dir]) == exp_config_dir:
+            shutil.copy(config_path, exp_config_dir)
 
     verbose = bool(verbose or training_config.verbose)
     if verbose:
@@ -343,13 +369,24 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.experiment_path:
+        experiment_path = args.experiment_path
+        model_config = os.path.join(experiment_path, "configs", "model_config.yaml")
+        train_config = os.path.join(experiment_path, "configs", "train_config.yaml")
+    else:
+        experiment_path = None
+        model_config = args.model_config
+        train_config = args.train_config
+
     faulthandler.enable()
     sys.stderr.write("===> ENTERED MAIN\n")
+    sys.stderr.write(f"Model config: {model_config}\n")
+    sys.stderr.write(f"Train config: {train_config}\n")
     print(f"Hostname: {socket.gethostname()}")
     print(f"  SLURM_PROCID: {os.environ.get('SLURM_PROCID')}")
     print(f"  SLURM_LOCALID: {os.environ.get('SLURM_LOCALID')}")
     print(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
-    run_training(args.model_config, args.train_config, verbose=args.verbose)
+    run_training(model_config, train_config, experiment_path, verbose=args.verbose)
 
 
 if __name__ == "__main__":
