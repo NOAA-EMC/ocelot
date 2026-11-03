@@ -1,5 +1,5 @@
-checkpoint_dir: checkpoints
 seed: null
+resume_from_latest: true
 
 data:
   path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7

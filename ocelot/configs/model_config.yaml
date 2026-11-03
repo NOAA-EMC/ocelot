@@ -1,5 +1,3 @@
-experiment_name: &experiment_name baseline_v1
-
 hidden_dim: &hidden_dim 192
 input_window_hours: 12
 target_window_hours: 12
@@ -51,7 +49,6 @@ embeddings:
 
 csv:
   enabled: True
-  output_dir: *experiment_name
   num_batches: 3
   every_n_epochs: 10
   max_rows: 50000

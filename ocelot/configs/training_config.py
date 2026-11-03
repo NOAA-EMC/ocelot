@@ -177,7 +177,6 @@ class CosineWarmupScheduleConfig(ScheduleConfig):
 
 
 class TrainingConfig(ConfigBase):
-    checkpoint_dir = StrField()
     detect_anomaly = Optional(BoolField(), default=False)
     seed = Optional(IntField())
     verbose = Optional(BoolField(), default=False)

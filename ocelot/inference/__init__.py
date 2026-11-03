@@ -19,7 +19,7 @@ def make_module(model_config: ModelConfig,
         pipeline_config=pipeline_config,
         verbose=verbose)
     module = OcelotInferenceModule(model=model)
-    checkpoint = torch.load(inference_config.checkpoint, map_location="cpu")
+    checkpoint = torch.load(pipeline_config.last_checkpoint_path, map_location="cpu")
     state = checkpoint.get('state_dict', checkpoint)
     missing, unexpected = module.load_state_dict(state, strict=False)
     print(

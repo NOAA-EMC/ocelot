@@ -60,6 +60,9 @@ def main():
 
     model_config = ModelConfig(args.model_config)
     inference_config = InferenceConfig(args.inference_config)
+    instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
+    pipeline_config = PipelineConfig(model_config.pipeline_config_path)
+    pipeline_config.validate_instruments(instrument_catalog)
 
     has_cuda = torch.cuda.is_available()
     if not has_cuda and (inference_config.resources.devices != 1 or inference_config.resources.num_nodes != 1):
@@ -79,9 +82,9 @@ def main():
     print("\n" + "="*80)
     print("GNN PREDICTION MODE")
     print("="*80)
-    print(f"Checkpoint: {inference_config.checkpoint}")
+    print(f"Checkpoint: {pipeline_config.last_checkpoint_path}")
     print(f"Date range: {inference_config.data.start_date} to {inference_config.data.end_date}")
-    print(f"Output: {inference_config.output_dir}")
+    print(f"Output: {pipeline_config.prediction_output_dir}")
     print(f"Devices: {inference_config.resources.devices}, Nodes: {inference_config.resources.num_nodes}")
     print(f"Mode: {'Evaluation' if inference_config.eval_mode else 'Inference'}")
     if args.eval_mode:
@@ -90,15 +93,11 @@ def main():
         print("  → Inference mode: No targets required (operational forecasting)")
     print("="*80 + "\n")
 
-    if not os.path.exists(inference_config.checkpoint):
-        raise FileNotFoundError(f"Checkpoint not found: {inference_config.checkpoint}")
+    if not os.path.exists(pipeline_config.last_checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {pipeline_config.last_checkpoint_path}")
 
-    os.makedirs(inference_config.output_dir, exist_ok=True)
+    os.makedirs(pipeline_config.prediction_output_dir, exist_ok=True)
     start_time = time.time()
-
-    instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
-    pipeline_config = PipelineConfig(model_config.pipeline_config_path)
-    pipeline_config.validate_instruments(instrument_catalog)
 
     # Data path
     if args.data_path is None:
@@ -114,7 +113,7 @@ def main():
     print(f"Data path: {data_path}")
 
     # Load model from checkpoint
-    print(f"\nLoading model from checkpoint: {inference_config.checkpoint}")
+    print(f"\nLoading model from checkpoint: {pipeline_config.last_checkpoint_path}")
 
     model = ocelot.inference.make_module(
         model_config=model_config,  # Replace with actual model config if available
@@ -125,7 +124,6 @@ def main():
     )
 
     model.eval()
-    model.prediction_output_dir = inference_config.output_dir
 
     print(f"\nSetting up data module:")
     print(f"  Input window: {model_config.input_window_hours}h")
@@ -209,14 +207,14 @@ def main():
     print("="*80)
     print(f"Prediction time: {(end_time - setup_end_time) / 60:.2f} minutes")
     print(f"Total time: {(end_time - start_time) / 60:.2f} minutes")
-    print(f"Output saved to: {inference_config.output_dir}")
+    print(f"Output saved to: {pipeline_config.prediction_output_dir}")
     print("="*80 + "\n")
 
     # Generate summary
     print("\nPrediction summary:")
 
-    obs_dir = os.path.join(inference_config.output_dir, 'pred_csv', 'obs-space')
-    mesh_dir = os.path.join(inference_config.output_dir, 'pred_csv', 'mesh-grid')
+    obs_dir = os.path.join(pipeline_config.prediction_output_dir, 'pred_csv', 'obs-space')
+    mesh_dir = os.path.join(pipeline_config.prediction_output_dir, 'pred_csv', 'mesh-grid')
 
     if os.path.exists(obs_dir):
         csv_files = [f for f in os.listdir(obs_dir) if f.endswith('.csv')]

@@ -1079,7 +1079,9 @@ class Ocelot(nn.Module):
             )
 
         # Compute valid time = init + lead
-        lead_seconds = int(round((step_idx + 0.5) * self.latent_step_hours * 3600))
+        lead_seconds = int(round(
+            (step_idx + 0.5) * self.model_config.latent_step_hours * 3600
+        ))
         target_time_unix = int(int(init_time_unix) + lead_seconds)
 
         # Build time features using the same convention as _encode_target_time_features()
@@ -1106,8 +1108,16 @@ class Ocelot(nn.Module):
 
         return predictions
 
-    def save_latent_concatenated_csv(self, batch, node_type, preds_list, gts_list,
-                                      valid_mask_list, out_dir, batch_idx, mode='val'):
+    def save_latent_concatenated_csv(self, 
+                                     current_epoch, 
+                                     batch, 
+                                     node_type, 
+                                     preds_list, 
+                                     gts_list,
+                                     valid_mask_list, 
+                                     out_dir, 
+                                     batch_idx, 
+                                     mode='val'):
         """
         Save latent rollout as concatenated observations.
 
@@ -1297,11 +1307,8 @@ class Ocelot(nn.Module):
             all_ts.extend(ts.tolist())
             all_obs_ts.extend(obs_ts.tolist())
             all_latent_step.extend([int(step)] * int(len(ts)))
-            lead_nom = np.nan
-            try:
-                lead_nom = float(step + 1) * float(self.latent_step_hours)
-            except Exception:
-                lead_nom = np.nan
+
+            lead_nom = float(step + 1) * self.model_config.latent_step_hours
             all_lead_hours_nominal.extend([lead_nom] * int(len(ts)))
             all_pred.append(y_pred_unnorm.detach().cpu().numpy())
             all_true.append(y_true_unnorm.detach().cpu().numpy())
@@ -1411,12 +1418,15 @@ class Ocelot(nn.Module):
         if lead_arr.size == len(df):
             df['lead_hours_nominal'] = lead_arr
 
+        feature_columns = {}
         for i, fname in enumerate(feats):
             col = _safe_col_name(fname)
-            df[f"pred_{col}"] = all_pred_concat[:, i]
-            df[f"persist_{col}"] = all_persist_concat[:, i]
-            df[f"true_{col}"] = all_true_concat[:, i]
-            df[f"mask_{col}"] = all_mask_concat[:, i]
+            feature_columns[f"pred_{col}"] = all_pred_concat[:, i]
+            feature_columns[f"persist_{col}"] = all_persist_concat[:, i]
+            feature_columns[f"true_{col}"] = all_true_concat[:, i]
+            feature_columns[f"mask_{col}"] = all_mask_concat[:, i]
+
+        df = pd.concat([df, pd.DataFrame(feature_columns, index=df.index)], axis=1)
 
         # Add pressure columns for radiosonde and aircraft evaluation
         all_pressure_arr = np.array(all_pressure)
@@ -1475,7 +1485,7 @@ class Ocelot(nn.Module):
                 node_seed = abs(hash(str(node_type))) % 1000003
                 seed = (
                     int(self.model_config.csv.sample_seed)
-                    + int(self.current_epoch) * 1000003
+                    + int(current_epoch) * 1000003
                     + int(batch_idx) * 9176
                     + int(node_seed)
                 ) % (2**32 - 1)
@@ -1491,9 +1501,9 @@ class Ocelot(nn.Module):
                 filename = f"{out_dir}/pred_{node_type}_batch{batch_idx}.csv"
         else:  # validation mode
             if init_time_str != 'unknown':
-                filename = f"{out_dir}/val_{node_type}_init_{init_time_str}_epoch{self.current_epoch}_batch{batch_idx}.csv"
+                filename = f"{out_dir}/val_{node_type}_init_{init_time_str}_epoch{current_epoch}_batch{batch_idx}.csv"
             else:
-                filename = f"{out_dir}/val_{node_type}_epoch{self.current_epoch}_batch{batch_idx}_step0.csv"
+                filename = f"{out_dir}/val_{node_type}_epoch{current_epoch}_batch{batch_idx}_step0.csv"
         df.to_csv(filename, index=False)
         print(f"Saved latent concatenated CSV: {filename}")
         print(f"  Total observations from all steps: {len(df)}")

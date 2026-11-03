@@ -29,9 +29,6 @@ class InferenceResourcesConfig(ConfigBase):
 
 
 class InferenceConfig(ConfigBase):
-    experiment_name = StrField()
-    checkpoint = StrField()
-    output_dir = Optional(StrField(), default='predictions')
     eval_mode = Optional(BoolField(), default=False)
     data = InferenceDataConfig()
     resources = Optional(InferenceResourcesConfig(), default={})

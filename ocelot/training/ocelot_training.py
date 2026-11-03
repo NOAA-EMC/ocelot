@@ -350,13 +350,19 @@ class OcelotTrainingModule(pl.LightningModule):
                     and (self.current_epoch % max(1, self.model.model_config.csv.every_n_epochs) == 0)
                 ):
                     # --- CSV save block ---
-                    out_dir = self.model.model_config.csv.output_dir
+                    out_dir = self.model.pipeline_config.csv_output_dir
                     os.makedirs(out_dir, exist_ok=True)
 
                     # LATENT ROLLOUT: Concatenate all steps into standard format
-                    self.model.save_latent_concatenated_csv(
-                        batch, node_type, preds_list, gts_list,
-                        valid_mask_list, out_dir, batch_idx
+                    self.model.save_latent_concatenated_csv( 
+                        current_epoch=self.current_epoch, 
+                        batch=batch, 
+                        node_type=node_type, 
+                        preds_list=preds_list, 
+                        gts_list=gts_list,
+                        valid_mask_list=valid_mask_list, 
+                        out_dir=out_dir, 
+                        batch_idx=batch_idx
                     )
 
             # Placeholder logging for missing steps (to ensure stable CSV shape for loggers)

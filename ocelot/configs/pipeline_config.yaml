@@ -1,3 +1,5 @@
+experiment_name: baseline_v1
+
 # Selects the instrument definitions and output products used by a run.
 enabled_instruments:
   # Satellite instruments

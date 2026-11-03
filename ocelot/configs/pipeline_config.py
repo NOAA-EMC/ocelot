@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 
 import yaml
@@ -149,6 +150,7 @@ class OutputConfig(ConfigBase):
 
 
 class PipelineConfig(ConfigBase):
+    experiment_name = StrField()
     enabled_instruments = ListField(StrField())
     subsampling = SubsamplingConfig()
     outputs = Optional(OutputConfig(), default={})
@@ -157,6 +159,26 @@ class PipelineConfig(ConfigBase):
         super().__init__()
         with open(config_path) as config_file:
             self.load(yaml.safe_load(config_file))
+
+    @property
+    def checkpoint_dir(self) -> str:
+        return os.path.join(self.experiment_name, "checkpoints")
+
+    @property
+    def last_checkpoint_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, "last.ckpt")
+
+    @property
+    def prediction_output_dir(self) -> str:
+        return os.path.join(self.experiment_name, "predictions")
+
+    @property
+    def training_output_dir(self) -> str:
+        return os.path.join(self.experiment_name, "training")
+
+    @property
+    def csv_output_dir(self) -> str:
+        return os.path.join(self.experiment_name, "csv")
 
     def validate_instruments(self, catalog) -> None:
         if len(self.enabled_instruments) != len(set(self.enabled_instruments)):

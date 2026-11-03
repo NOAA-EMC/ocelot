@@ -98,25 +98,25 @@ def _build_window_plan(config: TrainingConfig) -> WindowPlan:
     )
 
 
-def _resolve_checkpoint(exp_name: str, config: TrainingConfig):
+def _resolve_checkpoint(pipeline_config: PipelineConfig, training_config: TrainingConfig):
     from ocelot.ckpt_utils import find_latest_checkpoint
 
-    if config.resume_from_latest:
-        checkpoint = find_latest_checkpoint(f"{config.checkpoint_dir}/{exp_name}")
+    if training_config.resume_from_latest:
+        checkpoint = find_latest_checkpoint(pipeline_config.last_checkpoint_path)
         if checkpoint:
             print(f"[INFO] Auto-resuming from: {checkpoint}")
         else:
             print("[INFO] No checkpoint found, starting fresh")
         return checkpoint
-    if config.resume_from_checkpoint:
-        print(f"[INFO] Resuming from: {config.resume_from_checkpoint}")
-        return config.resume_from_checkpoint
+    if training_config.resume_from_checkpoint:
+        print(f"[INFO] Resuming from: {training_config.resume_from_checkpoint}")
+        return training_config.resume_from_checkpoint
 
     print("[INFO] No checkpoint, starting fresh training")
     return None
 
 
-def _build_callbacks(exp_name: str, config: TrainingConfig, windows: WindowPlan):
+def _build_callbacks(pipeline_config: PipelineConfig, config: TrainingConfig, windows: WindowPlan):
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
     from ocelot.callbacks import (
@@ -143,7 +143,7 @@ def _build_callbacks(exp_name: str, config: TrainingConfig, windows: WindowPlan)
 
     callbacks = [
         ModelCheckpoint(
-            dirpath=f"{config.checkpoint_dir}/{exp_name}",
+            dirpath=pipeline_config.checkpoint_dir,
             filename="gnn-epoch-{epoch:02d}-val_loss-{val_loss:.2f}",
             save_top_k=1,
             monitor="val_loss",
@@ -234,7 +234,7 @@ def _build_trainer(exp_name: str, training_config: TrainingConfig, callbacks):
         "gradient_clip_val": trainer_config.gradient_clip_val,
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,
-        "logger": CSVLogger(save_dir="logs", name=exp_name),
+        "logger": CSVLogger(save_dir=exp_name, name="logs"),
         "callbacks": callbacks,
     }
     if trainer_config.devices > 1 or trainer_config.num_nodes > 1:
@@ -286,7 +286,7 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
 
     module.model.train()
 
-    resume_path = _resolve_checkpoint(model_config.experiment_name, training_config)
+    resume_path = _resolve_checkpoint(pipeline_config, training_config)
     if resume_path and training_config.load_weights_only:
         print(f"[INFO] Loading weights only (strict=False) from: {resume_path}")
         checkpoint = torch.load(resume_path, map_location="cpu")
@@ -322,9 +322,9 @@ def run_training(model_config_path: str, training_config_path: str, verbose=Fals
         val_end=windows.initial_val_end,
     )
 
-    trainer = _build_trainer(exp_name=model_config.experiment_name, 
+    trainer = _build_trainer(exp_name=pipeline_config.experiment_name,
                              training_config=training_config, 
-                             callbacks=_build_callbacks(model_config.experiment_name,
+                             callbacks=_build_callbacks(pipeline_config,
                                                         training_config, 
                                                         windows))
 
