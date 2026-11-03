@@ -127,7 +127,6 @@ class CsvOutputConfig(ConfigBase):
 
 class ModelConfig(ConfigBase):
     hidden_dim = IntField()
-    experiment_name = Optional(StrField())
     input_window_hours = Optional(IntField(), default=12)
     target_window_hours = Optional(IntField(), default=12)
     latent_step_hours = Optional(IntField(), default=3)

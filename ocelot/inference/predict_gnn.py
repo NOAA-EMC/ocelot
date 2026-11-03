@@ -39,6 +39,12 @@ def main():
     parser = argparse.ArgumentParser(description="GNN Prediction Script")
 
     parser.add_argument(
+        "--experiment_path",
+        "--experiment-path",
+        default=None,
+        help="Path to the experiment directory.",
+    )
+    parser.add_argument(
         "--model_config",
         "--model-config",
         default="configs/model_config.yaml",
@@ -57,12 +63,25 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.experiment_path:
+        experiment_path = args.experiment_path
+        model_config = os.path.join(experiment_path, "configs", "model_config.yaml")
+        inference_config = os.path.join(experiment_path, "configs", "inference_config.yaml")
+    else:
+        experiment_path = None
+        model_config = args.model_config
+        inference_config = args.inference_config
 
-    model_config = ModelConfig(args.model_config)
-    inference_config = InferenceConfig(args.inference_config)
+    model_config = ModelConfig(model_config)
+    inference_config = InferenceConfig(inference_config)
     instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
     pipeline_config = PipelineConfig(model_config.pipeline_config_path)
     pipeline_config.validate_instruments(instrument_catalog)
+
+    # Copy inference configuration to the experiment's config directory if it's not already there
+    exp_config_dir = os.path.join(experiment_path, "configs")
+    if not os.path.commonpath([inference_config, exp_config_dir]) == exp_config_dir:
+        shutil.copy(inference_config, exp_config_dir)
 
     has_cuda = torch.cuda.is_available()
     if not has_cuda and (inference_config.resources.devices != 1 or inference_config.resources.num_nodes != 1):

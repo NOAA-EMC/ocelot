@@ -151,7 +151,7 @@ class OutputConfig(ConfigBase):
 
 
 class PipelineConfig(ConfigBase):
-    experiment_name = StrField()
+    experiment_path = StrField()
     enabled_instruments = ListField(StrField())
     subsampling = SubsamplingConfig()
     outputs = Optional(OutputConfig(), default={})
@@ -163,7 +163,7 @@ class PipelineConfig(ConfigBase):
 
     @property
     def checkpoint_dir(self) -> str:
-        return os.path.join(self.experiment_name, "checkpoints")
+        return os.path.join(self.experiment_path, "checkpoints")
 
     @property
     def last_checkpoint_path(self) -> str:
@@ -185,15 +185,15 @@ class PipelineConfig(ConfigBase):
 
     @property
     def prediction_output_dir(self) -> str:
-        return os.path.join(self.experiment_name, "predictions")
+        return os.path.join(self.experiment_path, "predictions")
 
     @property
     def training_output_dir(self) -> str:
-        return os.path.join(self.experiment_name, "training")
+        return os.path.join(self.experiment_path, "training")
 
     @property
     def csv_output_dir(self) -> str:
-        return os.path.join(self.experiment_name, "csv")
+        return os.path.join(self.experiment_path, "csv")
 
     def validate_instruments(self, catalog) -> None:
         if len(self.enabled_instruments) != len(set(self.enabled_instruments)):

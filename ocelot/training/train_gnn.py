@@ -220,7 +220,7 @@ def _build_callbacks(pipeline_config: PipelineConfig, config: TrainingConfig, wi
     return callbacks
 
 
-def _build_trainer(exp_name: str, training_config: TrainingConfig, callbacks):
+def _build_trainer(experiment_path: str, training_config: TrainingConfig, callbacks):
     import lightning.pytorch as pl
     import torch
     from lightning.pytorch.loggers import CSVLogger
@@ -238,7 +238,7 @@ def _build_trainer(exp_name: str, training_config: TrainingConfig, callbacks):
         "gradient_clip_val": trainer_config.gradient_clip_val,
         "enable_progress_bar": False,
         "reload_dataloaders_every_n_epochs": 1,
-        "logger": CSVLogger(save_dir=exp_name, name="logs"),
+        "logger": CSVLogger(save_dir=experiment_path, name="logs"),
         "callbacks": callbacks,
     }
     if trainer_config.devices > 1 or trainer_config.num_nodes > 1:
@@ -270,13 +270,13 @@ def run_training(model_config_path: str,
     pipeline_config.validate_instruments(instrument_catalog)
 
     # Copy configuration files to the experiment's config directory
-    experiment_path = experiment_path or pipeline_config.experiment_name
-    if os.path.split(experiment_path)[-1] != pipeline_config.experiment_name:
-        pipeline_config.experiment_name = os.path.split(experiment_path)[-1]
+    experiment_path = experiment_path or pipeline_config.experiment_path
+    if os.path.realpath(experiment_path) != os.path.realpath(pipeline_config.experiment_path):
+        pipeline_config.experiment_path = experiment_path
         import warnings
         warnings.warn(
-            f"Experiment path '{experiment_path}' does not match pipeline_config.experiment_name. "
-            f"Updating pipeline_config.experiment_name to '{pipeline_config.experiment_name}'."
+            f"Experiment path '{experiment_path}' does not match pipeline_config.experiment_path. "
+            f"Updating pipeline_config.experiment_path to '{pipeline_config.experiment_path}'."
         )
 
     exp_config_dir = os.path.join(experiment_path, "configs")
@@ -348,7 +348,7 @@ def run_training(model_config_path: str,
         val_end=windows.initial_val_end,
     )
 
-    trainer = _build_trainer(exp_name=pipeline_config.experiment_name,
+    trainer = _build_trainer(experiment_path=pipeline_config.experiment_path,
                              training_config=training_config, 
                              callbacks=_build_callbacks(pipeline_config,
                                                         training_config, 
