@@ -141,9 +141,9 @@ MODEL_CONFIG="${MODEL_CONFIG:-configs/model_config.yaml}"
 
 echo "MODEL_CONFIG=$MODEL_CONFIG"
 echo "TRAIN_CONFIG=$TRAIN_CONFIG"
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py \
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python training/train_gnn.py \
 	--model_config "$MODEL_CONFIG" \
 	--train_config "$TRAIN_CONFIG"
 
 # Resume from specific checkpoint
-# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt
+# srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python training/train_gnn.py --mesh_type hierarchical --resume_from_checkpoint checkpoints/last.ckpt
