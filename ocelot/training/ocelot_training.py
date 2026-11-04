@@ -471,7 +471,7 @@ class OcelotTrainingModule(pl.LightningModule):
 
         try:
             with torch.no_grad():
-                temp_mesh_pred_edges = self.model._get_mesh_pred_edges()
+                temp_mesh_pred_edges = self.model.get_mesh_pred_edges()
                 init_time_unix = self.model._extract_init_time_unix(self._last_val_batch)
                 mesh_predictions = self.model._decode_all_steps_to_mesh(
                     self._last_val_mesh_features,
@@ -479,7 +479,7 @@ class OcelotTrainingModule(pl.LightningModule):
                     init_time_unix
                 )
                 if mesh_predictions:
-                    self._save_mesh_predictions(
+                    self.model.save_mesh_predictions(
                         mesh_predictions,
                         temp_mesh_pred_edges,
                         batch_idx=0,

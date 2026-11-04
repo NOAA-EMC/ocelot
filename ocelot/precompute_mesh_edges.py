@@ -90,7 +90,7 @@ def precompute_edges(model_config_path, pipeline_config_path, output_path):
         edges_data[f'{inst_name}_edge_index'] = edge_index_np
         edges_data[f'{inst_name}_edge_attr'] = edge_attr_np
         # Note: edge_attr contains 4D GraphCast-style spatial features
-        # These are consumed by BipartiteGAT with edge_dim=bipartite_edge_attr_dim
+        # Each decoder owns validation and preparation of these raw features.
 
     # Save to file
     print(f"\nSaving to {output_path}...")

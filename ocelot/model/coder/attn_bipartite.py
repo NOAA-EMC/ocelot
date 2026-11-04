@@ -11,6 +11,7 @@ from torch_geometric.nn import GATv2Conv
 from torch_geometric.data import HeteroData
 
 from ocelot.configs.model_config import GatCoderConfig
+from ocelot.logger import log
 
 
 class BipartiteGAT(nn.Module):
@@ -28,7 +29,7 @@ class BipartiteGAT(nn.Module):
 
         # bipartite GATs consume the computed spatial edge_attr
         # directly, with edge_dim (GraphCast-style features are 4-dim).
-        if self.coder_config.edge_dim <= 0:
+        if self.coder_config.edge_dim is None or self.coder_config.edge_dim <= 0:
             raise ValueError(
                 f"bipartite GAT edge_dim must be > 0 (gat: {self.coder_config.edge_dim})"
             )
@@ -217,95 +218,38 @@ class BipartiteGAT(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor:
-        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
-        E = int(edge_index.size(1))
+        """Prepare spatial attributes from an observation graph for attention."""
+        edge_attr = None
+        if edge_type in data.edge_types:
+            edge_attr = data[edge_type].get("edge_attr")
+        return self.prepare_edge_features(
+            edge_attr,
+            num_edges=edge_index.size(1),
+            device=device,
+            dtype=dtype,
+        )
 
-        # Debug printing: show whether we used real edge_attr or fell back to zeros.
-        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
-        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
-            if not getattr(self, "verbose", False):
-                return
-            if not self._is_global_zero_safe():
-                return
-            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
-                self._edge_attr_debug_seen = set()
-            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
-            if key in self._edge_attr_debug_seen:
-                return
-            self._edge_attr_debug_seen.add(key)
-
-            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
-            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
-                try:
-                    t = edge_rep_tensor.detach()
-                    mean_v = t.mean().item()
-                    std_v = t.std(unbiased=False).item()
-                    min_v = t.min().item()
-                    max_v = t.max().item()
-                    msg += (
-                        f" edge_attr_shape={tuple(t.shape)} "
-                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
-                    )
-                except Exception:
-                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
-            print(msg)
-
-        if not self.coder_config.edge_dim:
-            _maybe_print("disabled")
-            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
-
-        edge_rep = None
-        try:
-            if "edge_attr" in data[edge_type]:
-                edge_rep = data[edge_type].edge_attr
-        except Exception:
-            edge_rep = None
-
-        if edge_rep is None:
-            _maybe_print("missing")
-            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
-
-        if torch.is_tensor(edge_rep) and edge_rep.numel() == 0:
-            _maybe_print("empty")
-            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
-
-        if not torch.is_tensor(edge_rep):
-            _maybe_print("non_tensor")
-            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
-
-        if edge_rep.size(0) != E:
-            _maybe_print(f"edge_count_mismatch(edge_attr={int(edge_rep.size(0))})")
-            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
-
-        edge_rep = edge_rep.to(device=device, dtype=dtype)
-        edge_rep = self._coerce_edge_attr_dim(edge_rep, self.coder_config.edge_dim)
-
-        if edge_rep.size(-1) != self.coder_config.edge_dim:
-            _maybe_print(f"dim_mismatch(edge_attr={int(edge_rep.size(-1))})", edge_rep)
-            return torch.zeros((E, self.coder_config.edge_dim), device=device, dtype=dtype)
-
-        _maybe_print("ok", edge_rep)
-        return edge_rep
-
-    def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
+    def prepare_edge_features(
+        self,
+        edge_attr: Optional[torch.Tensor],
+        num_edges: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Require [num_edges, edge_dim] attributes; warn and use zeros if absent."""
+        expected_shape = (num_edges, self.coder_config.edge_dim)
         if edge_attr is None:
-            return edge_attr
-        if edge_attr.dim() == 1:
-            edge_attr = edge_attr.unsqueeze(-1)
-        if edge_attr.size(-1) == dim:
-            return edge_attr
-        if edge_attr.size(-1) < dim:
-            pad = dim - edge_attr.size(-1)
-            return torch.cat(
-                [
-                    edge_attr,
-                    torch.zeros(
-                        edge_attr.size(0),
-                        pad,
-                        device=edge_attr.device,
-                        dtype=edge_attr.dtype,
-                    ),
-                ],
-                dim=-1,
+            log.warning(
+                f"[EDGE_ATTR] Missing GAT spatial attributes; using zeros with "
+                f"shape {expected_shape}. For mesh-grid output, regenerate "
+                "mesh_pred_edges.npz with precompute_mesh_edges.py."
             )
-        return edge_attr[:, :dim]
+            return torch.zeros(expected_shape, device=device, dtype=dtype)
+        if not torch.is_tensor(edge_attr):
+            raise TypeError("GAT edge_attr must be a torch.Tensor or None")
+        if edge_attr.ndim != 2 or tuple(edge_attr.shape) != expected_shape:
+            raise ValueError(
+                f"GAT edge_attr must have shape {expected_shape} "
+                f"(num_edges, edge_dim), got {tuple(edge_attr.shape)}"
+            )
+        return edge_attr.to(device=device, dtype=dtype)

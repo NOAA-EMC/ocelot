@@ -106,12 +106,12 @@ class OcelotInferenceModule(pl.LightningModule):
                     if not mesh_features_per_step:
                         print("[PREDICT] No mesh features available for mesh predictions")
                     else:
-                        mesh_pred_edges = self.model._get_mesh_pred_edges()
+                        mesh_pred_edges = self.model.get_mesh_pred_edges()
                         init_time_unix = self.model._extract_init_time_unix(batch)
                         mesh_predictions = self.model._decode_all_steps_to_mesh(mesh_features_per_step, mesh_pred_edges, init_time_unix)
                         if mesh_predictions:
                             mesh_dir = os.path.join(self._prediction_output_dir, 'pred_csv', 'mesh-grid')
-                            self._save_mesh_predictions(
+                            self.model.save_mesh_predictions(
                                 mesh_predictions,
                                 mesh_pred_edges,
                                 batch_idx=batch_idx,
@@ -163,83 +163,3 @@ class OcelotInferenceModule(pl.LightningModule):
             if os.path.exists(mesh_dir):
                 mesh_files = [f for f in os.listdir(mesh_dir) if f.endswith('.csv')]
                 print(f"[PREDICT] Generated {len(mesh_files)} mesh CSV files (mesh-grid)")
-
-    def _save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
-        """
-        Save predictions on mesh grid - one file per forecast hour.
-
-        Args:
-            predictions: Dict of predictions per instrument
-            batch_idx: Batch index
-            epoch: Epoch number
-            mode: 'val' or 'predict'
-            batch: Batch data (for extracting input_time)
-            output_dir: Directory to save files
-        """
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Extract init time for logging
-        init_time_str = self.model._extract_init_time_str(batch)
-
-        # Calculate forecast hours
-        num_steps = len(next(iter(predictions.values())))
-        latent_step_hours = self.model.latent_step_hours
-        forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
-
-        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
-
-        for inst_name, pred_list in predictions.items():
-            edges = mesh_pred_edges[inst_name]
-            mesh_lats = edges['lats']
-            mesh_lons = edges['lons']
-            base_inst_name = inst_name.replace('_target', '')
-
-            # Get target variables (only the ones we want to predict on mesh)
-            mesh_vars = self.model.mesh_prediction_config.variables.get(inst_name, [])
-
-            # Get ALL features and find indices of target variables
-            all_features = self.model.instrument_catalog.get(inst_name).feature_names
-
-            # Find indices of target variables
-            mesh_indices = [i for i, feat in enumerate(all_features) if feat in mesh_vars]
-
-            for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
-                # Unnormalize using existing method
-                node_type = f"{inst_name}_target"
-                pred_unnorm = self.model.unnormalize_standardscaler(pred_tensor, node_type)
-                pred_np = pred_unnorm.detach().cpu().numpy()
-
-                df = pd.DataFrame({
-                    'mesh_idx': np.arange(len(mesh_lats), dtype=np.int64),
-                    'lat': mesh_lats,
-                    'lon': mesh_lons,
-                })
-
-                # Only add pressure columns for instruments that use pressure-level conditioning
-                if base_inst_name in ['radiosonde', 'aircraft']:
-                    STANDARD_PRESSURE_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
-                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.model.mesh_pressure_level_idx]
-                    log_pressure_height = -8000.0 * np.log(np.clip(pressure_hpa, 1.0, 1100.0) / 1013.25)
-
-                    df['pressure_hPa'] = pressure_hpa
-                    df['pressure_level_idx'] = self.model.mesh_pressure_level_idx
-                    df['pressure_level_label'] = f"{pressure_hpa}hPa"
-                    df['log_pressure_height_m'] = log_pressure_height
-                    df['log_pressure_height_norm'] = log_pressure_height / 20000.0
-
-                # Add only target variable predictions
-                for feat_idx in mesh_indices:
-                    feat_name = all_features[feat_idx]
-                    df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
-
-                # Use init_time if available, otherwise fall back to batch_idx
-                if init_time_str != 'unknown':
-                    if mode == 'predict':
-                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}.csv'
-                    else:
-                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
-                else:
-                    filepath = f'{output_dir}/{base_inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
-                df.to_csv(filepath, index=False)
-                print(f"[MESH PRED] Saved {filepath}: {len(df)} points")

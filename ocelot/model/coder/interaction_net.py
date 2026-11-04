@@ -4,6 +4,8 @@ Author: Azadeh Gholoubi
 """
 
 # Third-party
+from typing import Optional
+
 import torch
 import torch_geometric as pyg
 from torch_geometric.data import HeteroData
@@ -160,42 +162,24 @@ class InteractionNet(pyg.nn.MessagePassing):
         edge_index: torch.Tensor,
         device: torch.device,
         dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Returns per-edge features in bipartite_edge_attr_dim (raw spatial edge_attr)."""
-        E = int(edge_index.size(1))
+    ) -> Optional[torch.Tensor]:
+        """Interaction messages do not consume raw spatial edge attributes."""
+        return self.prepare_edge_features(
+            None,
+            num_edges=edge_index.size(1),
+            device=device,
+            dtype=dtype,
+        )
 
-        # Debug printing: show whether we used real edge_attr or fell back to zeros.
-        # Gated by verbose + global_zero and printed at most once per (edge_type, reason).
-        def _maybe_print(reason: str, edge_rep_tensor: torch.Tensor | None = None) -> None:
-            if not getattr(self, "verbose", False):
-                return
-            if not self._is_global_zero_safe():
-                return
-            if not hasattr(self, "_edge_attr_debug_seen") or self._edge_attr_debug_seen is None:
-                self._edge_attr_debug_seen = set()
-            key = (tuple(edge_type) if isinstance(edge_type, (list, tuple)) else str(edge_type), str(reason))
-            if key in self._edge_attr_debug_seen:
-                return
-            self._edge_attr_debug_seen.add(key)
-
-            msg = f"[EDGE_ATTR] edge_type={edge_type} E={E} used={'edge_attr' if reason == 'ok' else 'zeros'} reason={reason}"
-            if edge_rep_tensor is not None and torch.is_tensor(edge_rep_tensor) and edge_rep_tensor.numel() > 0:
-                try:
-                    t = edge_rep_tensor.detach()
-                    mean_v = t.mean().item()
-                    std_v = t.std(unbiased=False).item()
-                    min_v = t.min().item()
-                    max_v = t.max().item()
-                    msg += (
-                        f" edge_attr_shape={tuple(t.shape)} "
-                        f"mean={mean_v:.4g} std={std_v:.4g} min={min_v:.4g} max={max_v:.4g}"
-                    )
-                except Exception:
-                    msg += f" edge_attr_shape={tuple(edge_rep_tensor.shape)}"
-            print(msg)
-
-        _maybe_print("disabled")
-        return torch.zeros((E, 4), device=device, dtype=dtype)
+    def prepare_edge_features(
+        self,
+        edge_attr: Optional[torch.Tensor],
+        num_edges: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        """Ignore raw spatial attributes, independent of their feature width."""
+        return None
 
 
 class SplitMLPs(nn.Module):

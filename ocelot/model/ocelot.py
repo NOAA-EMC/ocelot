@@ -276,28 +276,86 @@ class Ocelot(nn.Module):
             return batch.to(device)
         return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
-    def _coerce_edge_attr_dim(self, edge_attr: Optional[torch.Tensor], dim: int) -> Optional[torch.Tensor]:
-        if edge_attr is None:
-            return edge_attr
-        if edge_attr.dim() == 1:
-            edge_attr = edge_attr.unsqueeze(-1)
-        if edge_attr.size(-1) == dim:
-            return edge_attr
-        if edge_attr.size(-1) < dim:
-            pad = dim - edge_attr.size(-1)
-            return torch.cat(
-                [
-                    edge_attr,
-                    torch.zeros(
-                        edge_attr.size(0),
-                        pad,
-                        device=edge_attr.device,
-                        dtype=edge_attr.dtype,
-                    ),
-                ],
-                dim=-1,
-            )
-        return edge_attr[:, :dim]
+    def save_mesh_predictions(self, predictions, mesh_pred_edges, batch_idx, epoch, mode='val', batch=None, output_dir='val_mesh_csv'):
+        """
+        Save predictions on mesh grid - one file per forecast hour.
+
+        Args:
+            predictions: Dict of predictions per instrument
+            batch_idx: Batch index
+            epoch: Epoch number
+            mode: 'val' or 'predict'
+            batch: Batch data (for extracting input_time)
+            output_dir: Directory to save files
+        """
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Extract init time for logging
+        init_time_str = self._extract_init_time_str(batch)
+
+        # Calculate forecast hours
+        num_steps = len(next(iter(predictions.values())))
+        latent_step_hours = self.latent_step_hours
+        forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
+
+        print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
+
+        for inst_name, pred_list in predictions.items():
+            edges = mesh_pred_edges[inst_name]
+            mesh_lats = edges['lats']
+            mesh_lons = edges['lons']
+            base_inst_name = inst_name.replace('_target', '')
+
+            # Get target variables (only the ones we want to predict on mesh)
+            mesh_vars = self.mesh_prediction_config.variables.get(inst_name, [])
+
+            # Get ALL features and find indices of target variables
+            all_features = self.instrument_catalog.get(inst_name).feature_names
+
+            # Find indices of target variables
+            mesh_indices = [i for i, feat in enumerate(all_features) if feat in mesh_vars]
+
+            for step_idx, (pred_tensor, fhr) in enumerate(zip(pred_list, forecast_hours)):
+                # Unnormalize using existing method
+                node_type = f"{inst_name}_target"
+                pred_unnorm = self.unnormalize_standardscaler(pred_tensor, node_type)
+                pred_np = pred_unnorm.detach().cpu().numpy()
+
+                df = pd.DataFrame({
+                    'mesh_idx': np.arange(len(mesh_lats), dtype=np.int64),
+                    'lat': mesh_lats,
+                    'lon': mesh_lons,
+                })
+
+                # Only add pressure columns for instruments that use pressure-level conditioning
+                if base_inst_name in ['radiosonde', 'aircraft']:
+                    STANDARD_PRESSURE_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 20, 10]
+                    pressure_hpa = STANDARD_PRESSURE_LEVELS[self.mesh_pressure_level_idx]
+                    log_pressure_height = -8000.0 * np.log(np.clip(pressure_hpa, 1.0, 1100.0) / 1013.25)
+
+                    df['pressure_hPa'] = pressure_hpa
+                    df['pressure_level_idx'] = self.mesh_pressure_level_idx
+                    df['pressure_level_label'] = f"{pressure_hpa}hPa"
+                    df['log_pressure_height_m'] = log_pressure_height
+                    df['log_pressure_height_norm'] = log_pressure_height / 20000.0
+
+                # Add only target variable predictions
+                for feat_idx in mesh_indices:
+                    feat_name = all_features[feat_idx]
+                    df[f'pred_{feat_name}'] = pred_np[:, feat_idx]
+
+                # Use init_time if available, otherwise fall back to batch_idx
+                if init_time_str != 'unknown':
+                    if mode == 'predict':
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}.csv'
+                    else:
+                        filepath = f'{output_dir}/{base_inst_name}_init_{init_time_str}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                else:
+                    filepath = f'{output_dir}/{base_inst_name}_f{fhr:03d}_epoch{epoch}_batch{batch_idx}.csv'
+                df.to_csv(filepath, index=False)
+                print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
+
 
     def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
         """
@@ -305,6 +363,9 @@ class Ocelot(nn.Module):
 
         This avoids calling obs_mesh_conn at runtime, which causes rtree
         multiprocessing issues when workers fork.
+
+        Attributes remain raw CPU tensors, or None when absent. The selected
+        decoder owns their preparation and expected feature width.
 
         Args:
             edges_file: Path to .npz file with pre-computed edges
@@ -361,24 +422,14 @@ class Ocelot(nn.Module):
             print(f"[MESH PRED] {inst_name}: {edge_index.shape[1]} edges")
 
             edge_attr_key = f'{inst_name}_edge_attr'
+            edge_attr = None
             if edge_attr_key in data:
                 edge_attr = torch.from_numpy(data[edge_attr_key]).float()
-                if edge_attr.shape[0] != edge_index.shape[1]:
+                if edge_attr.ndim != 2 or edge_attr.shape[0] != edge_index.shape[1]:
                     raise ValueError(
-                        f"[MESH PRED] {inst_name}: edge_attr row count ({edge_attr.shape[0]}) "
-                        f"!= edge_index edge count ({edge_index.shape[1]})"
+                        f"[MESH PRED] {inst_name}: edge_attr must have shape "
+                        f"[{edge_index.shape[1]}, feature_dim], got {tuple(edge_attr.shape)}"
                     )
-                if edge_attr.shape[1] != self.bipartite_edge_attr_dim:
-                    raise ValueError(
-                        f"[MESH PRED] {inst_name}: edge_attr dim ({edge_attr.shape[1]}) "
-                        f"!= bipartite_edge_attr_dim ({self.bipartite_edge_attr_dim})"
-                    )
-            else:
-                print(
-                    f"[MESH PRED] WARNING: No edge_attr found for {inst_name} in {edges_path}. "
-                    f"Falling back to zeros — re-run precompute_mesh_edges.py to fix this."
-                )
-                edge_attr = torch.zeros((edge_index.size(1), self.bipartite_edge_attr_dim))
 
             # Store on CPU - will move to device when used
             mesh_pred_edges[inst_name] = {
@@ -398,7 +449,7 @@ class Ocelot(nn.Module):
         print(f"[MESH PRED] Loaded edges for {list(mesh_pred_edges.keys())}")
         return mesh_pred_edges
 
-    def _get_mesh_pred_edges(self):
+    def get_mesh_pred_edges(self):
         """Load and cache mesh prediction edges once for the entire run."""
         if not hasattr(self, '_cached_mesh_pred_edges') or self._cached_mesh_pred_edges is None:
             self._cached_mesh_pred_edges = self._load_mesh_prediction_edges()
@@ -1037,7 +1088,12 @@ class Ocelot(nn.Module):
         # Move edges to correct device (they're stored on CPU)
         device = mesh_features.device
         edge_index = edges['edge_index'].to(device)
-        edge_attr = edges['edge_attr'].to(device)
+        edge_attr = decoder.prepare_edge_features(
+            edges['edge_attr'],
+            num_edges=edge_index.size(1),
+            device=device,
+            dtype=mesh_features.dtype,
+        )
 
         original_edge_index = decoder.edge_index
         decoder.edge_index = edge_index
