@@ -657,12 +657,15 @@ class OcelotTrainingModule(pl.LightningModule):
                 rebalancing=True,
                 valid_mask=valid_mask,
             )
-        return weighted_huber_loss(
-            y_pred,
-            y_true,
-            instrument_ids=instrument_ids,
-            channel_weights=self.channel_weights,
-            delta=self.training_config.loss.huber_delta,
-            rebalancing=True,
-            valid_mask=valid_mask,
-        )
+        elif self.training_config.loss.type == "huber":
+            return weighted_huber_loss(
+                y_pred,
+                y_true,
+                instrument_ids=instrument_ids,
+                channel_weights=self.channel_weights,
+                delta=self.training_config.loss.delta,
+                rebalancing=True,
+                valid_mask=valid_mask,
+            )
+        else:
+            raise ValueError(f"Unsupported loss type: {self.training_config.loss.type}")
