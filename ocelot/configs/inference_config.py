@@ -11,7 +11,7 @@ from ocelot.configs.config_base import (
 
 
 class InferenceDataConfig(ConfigBase):
-    path = Optional(StrField())
+    path = Optional(StrField(), default="/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7")
     start_date = DatetimeField()
     end_date = DatetimeField()
     batch_size = Optional(IntField(), default=1)

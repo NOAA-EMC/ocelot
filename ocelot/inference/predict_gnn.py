@@ -108,7 +108,7 @@ def main():
     print(f"Output: {pipeline_config.prediction_output_dir}")
     print(f"Devices: {inference_config.resources.devices}, Nodes: {inference_config.resources.num_nodes}")
     print(f"Mode: {'Evaluation' if inference_config.eval_mode else 'Inference'}")
-    if args.eval_mode:
+    if inference_config.eval_mode:
         print("  → Evaluation mode: Expects target observations for comparison")
     else:
         print("  → Inference mode: No targets required (operational forecasting)")
@@ -120,18 +120,7 @@ def main():
     os.makedirs(pipeline_config.prediction_output_dir, exist_ok=True)
     start_time = time.time()
 
-    # Data path
-    if args.data_path is None:
-        region = "global"
-        if region == "conus":
-            data_path = "/scratch1/NCEPDEV/da/Ronald.McLaren/shared/ocelot/data_v2/"
-        else:
-            # Keep prediction defaults aligned with train/val (multi-year merged Zarrs).
-            data_path = "/scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7"
-    else:
-        data_path = args.data_path
-
-    print(f"Data path: {data_path}")
+    print(f"Data path: {inference_config.data.path}")
 
     # Load model from checkpoint
     print(f"\nLoading model from checkpoint: {checkpoint_path}")
@@ -153,7 +142,7 @@ def main():
 
     # Create data module
     data_module = GNNDataModule(
-        data_path=data_path,
+        data_path=inference_config.data.path,
         start_date=inference_config.data.start_date,
         end_date=inference_config.data.end_date,
         instrument_catalog=instrument_catalog,
