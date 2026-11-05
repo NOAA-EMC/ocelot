@@ -568,7 +568,7 @@ class Ocelot(nn.Module):
                 )
         return torch.cat([x, validity], dim=-1)
 
-    def forward(self, data: HeteroData, step_data_list=None):  # -> Dict[str, torch.Tensor]:
+    def forward(self, data: HeteroData, step_data_list=None, global_step=None):  # -> Dict[str, torch.Tensor]:
 
         num_graphs = data.num_graphs
         num_mesh_nodes = self.mesh.x.shape[0]
@@ -675,14 +675,17 @@ class Ocelot(nn.Module):
         # --------------------------------------------------------------------
         # STAGE 4: DETECT MODE AND PROCESS
         # --------------------------------------------------------------------
-        predictions, mesh_features_per_step = self._forward_latent_rollout(data, encoded_features)
+        predictions, mesh_features_per_step = self._forward_latent_rollout(data, encoded_features, global_step)
 
         if not self.training:
             return predictions, mesh_features_per_step
 
         return predictions
 
-    def _forward_latent_rollout(self, data: HeteroData, encoded_features: dict) -> Dict[str, List[torch.Tensor]]:
+    def _forward_latent_rollout(self, 
+                                data: HeteroData, 
+                                encoded_features: dict, 
+                                global_step: int | None) -> Dict[str, List[torch.Tensor]]:
         """
         Latent rollout forward pass: Sequential processor → decoder → next processor
 
@@ -710,6 +713,7 @@ class Ocelot(nn.Module):
 
         processor_edge_types = set(self.graph_schema.processor_edge_types)
         processor_context = ProcessorContext(
+            global_step=global_step,
             num_steps=num_latent_steps,
             node_features={nt: f for nt, f in encoded_features.items() if nt != GraphSchema.MESH},
             edge_index_dict={et: ei for et, ei in data.edge_index_dict.items() if et in processor_edge_types},

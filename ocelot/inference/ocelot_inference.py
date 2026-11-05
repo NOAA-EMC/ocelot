@@ -16,7 +16,7 @@ class OcelotInferenceModule(pl.LightningModule):
         self.model = model
 
     def forward(self, data: HeteroData):
-        return self.model(data)
+        return self.model(data, global_step=self.global_step)
 
     def predict_step(self, batch, batch_idx):
         """

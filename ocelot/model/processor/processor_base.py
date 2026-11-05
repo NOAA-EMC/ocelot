@@ -28,6 +28,13 @@ class ProcessorBase(nn.Module):
         """Reset the processor state if needed."""
         pass
 
+    def forward(self,
+                step: int,
+                encoded_mesh_features: torch.Tensor,
+                context: ProcessorContext) -> torch.Tensor | list[torch.Tensor]:
+        """Forward pass through the processor for a single latent step."""
+        raise NotImplementedError("Forward method must be implemented by subclasses.")
+
     @staticmethod
     def _get_latent_step_info(data: HeteroData) -> dict:
         """

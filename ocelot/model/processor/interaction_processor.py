@@ -55,7 +55,10 @@ class InteractionProcessor(FlatProcessorBase):
                 )
             )
 
-    def forward(self, step: int, encoded_mesh_features: torch.Tensor, context: ProcessorContext) -> torch.Tensor:
+    def forward(self,
+                step: int,
+                encoded_mesh_features: torch.Tensor,
+                context: ProcessorContext) -> torch.Tensor:
         """
         Evolve the mesh state one latent step.
 

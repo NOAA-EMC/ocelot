@@ -98,6 +98,7 @@ class HierarchicalInteractionProcessorConfig(ProcessorConfig):
 
 
 class HierarchicalSlidingWindowProcessorConfig(TransformerProcessorConfig):
+    num_levels = IntField()
     use_cross_scale = Optional(BoolField(), default=True)
 
 

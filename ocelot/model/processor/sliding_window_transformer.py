@@ -189,7 +189,10 @@ class SlidingWindowTransformer(FlatProcessorBase):
         for s in states[-self.window:]:
             self.cache.append(s.detach())
 
-    def forward(self, step: int, encoded_mesh_features: torch.Tensor, context: ProcessorContext) -> torch.Tensor:
+    def forward(self,
+                step: int,
+                encoded_mesh_features: torch.Tensor,
+                context: ProcessorContext) -> torch.Tensor:
         """
         Args:
             step: int representing the current step in the sequence

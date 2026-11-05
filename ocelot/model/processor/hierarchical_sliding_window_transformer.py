@@ -244,7 +244,7 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
                 nn.LayerNorm(processor_config.hidden_dim),
                 nn.GELU()
             )
-            for _ in range(num_levels - 1)
+            for _ in range(processor_config.num_levels - 1)
         ])
 
         self.register_buffer("_dummy", torch.empty(0))
@@ -361,7 +361,10 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
 
         return fine_features
 
-    def forward(self, step: int, encoded_mesh_features: torch.Tensor, context: ProcessorContext) -> list[torch.Tensor]:
+    def forward(self,
+                step: int,
+                encoded_mesh_features: torch.Tensor,
+                context: ProcessorContext) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
@@ -476,7 +479,7 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
         # ========================================================================
         output_list = [x_seq[:, -1, :] for x_seq in processed_list]
 
-        return self._gather_node_features(step, processed_list)
+        return self._gather_node_features(step, context.global_step, processed_list)
 
     @dataclass
     class MeshData:
@@ -493,7 +496,7 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
         # NOTE: Level ordering is [finest, ..., coarsest] (level 0 = finest, level -1 = coarsest)
         mesh_features_list = []
 
-        for level in range(self.num_mesh_levels):
+        for level in range(self.num_levels):
             level_mesh_x = getattr(self.mesh, f"mesh_x_level_{level}")
 
             # Only the FINEST level (level 0) receives encoded features
@@ -512,10 +515,10 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
         print(f"[FORWARD]   - Mesh features per level: {[m.shape for m in mesh_features_list]}")
 
         # Prepare up/down edge indices for cross-scale attention
-        up_edge_index_list = [None] * (self.num_mesh_levels - 1)
-        down_edge_index_list = [None] * (self.num_mesh_levels - 1)
+        up_edge_index_list = [None] * (self.num_levels - 1)
+        down_edge_index_list = [None] * (self.num_levels - 1)
 
-        for level in range(self.num_mesh_levels - 1):
+        for level in range(self.num_levels - 1):
             up_edge_index_list[level] = getattr(self.mesh, f"mesh_up_edge_index_{level}")
             down_edge_index_list[level] = getattr(self.mesh, f"mesh_down_edge_index_{level}")
 
@@ -524,11 +527,11 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
         # Process through hierarchical transformer
         mesh_edge_index_list = [
             getattr(self.mesh, f"mesh_edge_index_level_{lvl}")
-            for lvl in range(self.num_mesh_levels)
+            for lvl in range(self.num_levels)
         ]
         mesh_edge_attr_list = [
             getattr(self.mesh, f"mesh_edge_attr_level_{lvl}")
-            for lvl in range(self.num_mesh_levels)
+            for lvl in range(self.num_levels)
         ]
 
         return MeshData(
@@ -539,13 +542,13 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
             mesh_edge_attr_list=mesh_edge_attr_list
         )
 
-    def _gather_node_features(self, step: int, processed_levels: list) -> torch.Tensor:
+    def _gather_node_features(self, step: int, global_step: int, processed_levels: list) -> torch.Tensor:
         # COARSE→FINE CONDITIONING: Add hierarchical information flow
         # Gather coarse features (L1) to fine nodes (L0) for better multi-scale learning
 
         current_mesh_features: torch.Tensor = None  # Will hold the final features for this step
 
-        if self.num_mesh_levels > 1:
+        if self.num_levels > 1:
             fine_features = processed_levels[0]  # [N_fine, H] - finest level (L0)
             coarse_features = processed_levels[1]  # [N_coarse, H] - coarse level (L1)
 
@@ -555,7 +558,7 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
             down_edge_index = getattr(self.mesh, "mesh_down_edge_index_0")
 
             # Verify directionality: source indices should be < N_coarse
-            if step == 0 and self.global_step == 0:
+            if step == 0 and global_step == 0:
                 src_max = down_edge_index[0].max().item()
                 dst_max = down_edge_index[1].max().item()
                 print(f"[COARSE→FINE] Edge direction check: src_max={src_max} (expect <{coarse_features.shape[0]}), "

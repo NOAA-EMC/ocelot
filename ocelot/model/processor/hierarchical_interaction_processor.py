@@ -111,49 +111,47 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         for level in range(self.num_levels):
             self.level_norms.append(nn.LayerNorm(self.hidden_dim))
 
-    def forward(self, data: HeteroData, encoded_features: dict) -> List[torch.Tensor]:
+    def forward(self,
+                step: int,
+                encoded_mesh_features: torch.Tensor,
+                context: ProcessorContext)  -> list[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
         Args:
-            data: HeteroData containing mesh edge indices and attributes for all levels
-            encoded_features: dict of encoded features for the finest level (level 0)
+            step: Current step index within the total number of steps
+            encoded_mesh_features: List of encoded features for each mesh level (finest → coarse)
+            context: ProcessorContext containing global step and number of steps
 
         Returns:
             List of [N_level, H] updated mesh states per level
         """
 
-        step_info = self._get_latent_step_info(data)
-        num_latent_steps = step_info["num_steps"]
-        step_mapping = step_info["step_mapping"]
-        edge_mapping = self.mesh.map_step_edges(data, step_mapping)
-
-        log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
-        log.debug(f"[LATENT] Step mapping: {step_mapping}")
-
-        for step in range(num_latent_steps):
-            self._do_forward_step(step, num_latent_steps, encoded_features["mesh"])
+        level_features = encoded_mesh_features
+        for step in range(context.num_steps):
+            level_features = self._do_forward_step(step, 
+                                                   context,
+                                                   level_features)
 
         return level_features
 
-    def _do_forward_step(self, step: int, processed_levels: list) -> torch.Tensor:
+    def _do_forward_step(self,
+                         step: int,
+                         context: ProcessorContext,
+                         current_mesh_features: torch.Tensor) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical mesh levels.
 
         Args:
-            mesh_features_list: List of mesh node features for each level [coarse → fine]
-            mesh_edge_index_list: List of edge indices for intra-level connections
-            mesh_edge_attr_list: List of edge attributes for intra-level connections
-            up_edge_index_list: List of edge indices for up connections (fine → coarse)
-            up_edge_attr_list: List of edge attributes for up connections
-            down_edge_index_list: List of edge indices for down connections (coarse → fine)
-            down_edge_attr_list: List of edge attributes for down connections
+            step: Current step index within the total number of steps
+            context: ProcessorContext containing global step and number of steps
+            current_mesh_features: Tensor of current mesh features for the finest level
 
         Returns:
             List of updated mesh features for each level
         """
 
-        mesh_data = self._prep_mesh_data(step, num_latent_steps, current_mesh_features)
+        mesh_data = self._prep_mesh_data(step, context.num_steps, current_mesh_features)
 
         # Store features at each level
         level_features = [feat.clone() for feat in mesh_data.mesh_features_list]
@@ -165,9 +163,9 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
             residual = level_features[level]
 
             # Perform message passing within this level
-            for step in range(self.num_message_passing_steps):
-                self.intra_level_layers[level][step].edge_index = mesh_data.mesh_edge_index_list[level]
-                level_features[level] = self.intra_level_layers[level][step](
+            for mp_step in range(self.num_message_passing_steps):
+                self.intra_level_layers[level][mp_step].edge_index = mesh_data.mesh_edge_index_list[level]
+                level_features[level] = self.intra_level_layers[level][mp_step](
                     send_rep=level_features[level],
                     rec_rep=level_features[level],
                     edge_rep=mesh_data.mesh_edge_attr_list[level] if mesh_data.mesh_edge_attr_list[level] is not None else None,
@@ -211,6 +209,8 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
             # Add to finer level with residual
             level_features[level] = level_features[level] + fine_update
+
+        return level_features
 
     @dataclass
     class MeshData:

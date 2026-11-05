@@ -33,7 +33,7 @@ class OcelotTrainingModule(pl.LightningModule):
         }
 
     def forward(self, data: HeteroData):
-        return self.model(data)
+        return self.model(data, global_step=self.global_step)
 
     def on_fit_start(self):
         # Reset one-time debug cache each run.
