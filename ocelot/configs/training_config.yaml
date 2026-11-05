@@ -35,10 +35,12 @@ optimizer:
   type: adamw
   lr: 1.0e-4
   weight_decay: 1.0e-5
+  lr_schedule:
+    type: cosine_warmup             # plateau | cosine_warmup
+    warmup_pct: 0.05
+    warmup_start_factor: 0.01
+    min_lr: 1.0e-6
 
 loss:
   type: mse                 # mse | huber
 
-schedule:
-  type: plateau             # plateau | cosine_warmup
-  min_lr: 1.0e-6

@@ -514,14 +514,14 @@ class OcelotTrainingModule(pl.LightningModule):
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=max_epochs - warmup_epochs,
-                eta_min=opt_config.min_lr,
+                eta_min=opt_config.lr_schedule.min_lr,
             )
 
             from torch.optim.lr_scheduler import LinearLR, SequentialLR
 
             warmup_scheduler = LinearLR(
                 optimizer,
-                start_factor=opt_config.warmup_start_factor,
+                start_factor=opt_config.lr_schedule.warmup_start_factor,
                 end_factor=1.0,
                 total_iters=warmup_epochs,
             )
@@ -531,11 +531,10 @@ class OcelotTrainingModule(pl.LightningModule):
                 schedulers=[warmup_scheduler, scheduler],
                 milestones=[warmup_epochs],
             )
-
             if self.trainer.is_global_zero:
                 print("[LR Schedule] Cosine decay with warmup")
-                print(f"  Warmup epochs: {warmup_epochs} ({opt_config.warmup_start_factor}×lr → 1.0×lr)")
-                print(f"  Cosine decay: {max_epochs - warmup_epochs} epochs (lr → {opt_config.min_lr})")
+                print(f"  Warmup epochs: {warmup_epochs} ({opt_config.lr_schedule.warmup_start_factor}×lr → 1.0×lr)")
+                print(f"  Cosine decay: {max_epochs - warmup_epochs} epochs (lr → {opt_config.lr_schedule.min_lr})")
                 print(f"  Total epochs: {max_epochs}")
 
             return {
@@ -553,7 +552,7 @@ class OcelotTrainingModule(pl.LightningModule):
             mode="min",
             factor=0.5,
             patience=3,
-            min_lr=opt_config.min_lr,
+            min_lr=opt_config.lr_schedule.min_lr,
         )
 
         return {

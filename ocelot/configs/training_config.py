@@ -108,13 +108,28 @@ class TrainerConfig(ConfigBase):
     detect_anomaly = Optional(BoolField(), default=False)
 
 
+class PlateauScheduleConfig(ScheduleConfig):
+    factor = Optional(FloatField(), default=0.5)
+    patience = Optional(IntField(), default=3)
+    min_lr = Optional(FloatField(), default=1e-6)
+
+
+class CosineWarmupScheduleConfig(ScheduleConfig):
+    warmup_pct = Optional(FloatField(), default=0.05)
+    warmup_start_factor = Optional(FloatField(), default=0.01)
+    min_lr = Optional(FloatField(), default=1e-6)
+
+
 class OptimizerConfig(ConfigBase):
     pass
 
 
 class AdamWConfig(OptimizerConfig):
     lr = Optional(FloatField(), default=5e-4)
-    lr_schedule = Optional(Choices(['plateau', 'cosine_warmup']), default='plateau')
+    lr_schedule = Optional(Choices({
+        'plateau': PlateauScheduleConfig(),
+        'cosine_warmup': CosineWarmupScheduleConfig(),
+    }), default='plateau')
     weight_decay = Optional(FloatField(), default=1e-5)
     warmup_pct = Optional(FloatField(), default=0.05)
     warmup_start_factor = Optional(FloatField(), default=0.01)
@@ -164,18 +179,6 @@ class ScheduleConfig(ConfigBase):
     pass
 
 
-class PlateauScheduleConfig(ScheduleConfig):
-    factor = Optional(FloatField(), default=0.5)
-    patience = Optional(IntField(), default=3)
-    min_lr = Optional(FloatField(), default=1e-6)
-
-
-class CosineWarmupScheduleConfig(ScheduleConfig):
-    warmup_pct = Optional(FloatField(), default=0.05)
-    warmup_start_factor = Optional(FloatField(), default=0.01)
-    min_lr = Optional(FloatField(), default=1e-6)
-
-
 class TrainingConfig(ConfigBase):
     detect_anomaly = Optional(BoolField(), default=False)
     seed = Optional(IntField())
@@ -191,10 +194,6 @@ class TrainingConfig(ConfigBase):
     loss = Choices({
         'mse': MseLossConfig(),
         'huber': HuberLossConfig(),
-    })
-    schedule = Choices({
-        'plateau': PlateauScheduleConfig(),
-        'cosine_warmup': CosineWarmupScheduleConfig(),
     })
 
     def __init__(self, config_path: str):
