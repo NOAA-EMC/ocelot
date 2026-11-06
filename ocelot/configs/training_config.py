@@ -108,6 +108,10 @@ class TrainerConfig(ConfigBase):
     detect_anomaly = Optional(BoolField(), default=False)
 
 
+class ScheduleConfig(ConfigBase):
+    pass
+
+
 class PlateauScheduleConfig(ScheduleConfig):
     factor = Optional(FloatField(), default=0.5)
     patience = Optional(IntField(), default=3)
@@ -175,10 +179,6 @@ class HuberLossConfig(LossConfig):
     delta = Optional(FloatField(), default=0.1)
 
 
-class ScheduleConfig(ConfigBase):
-    pass
-
-
 class TrainingConfig(ConfigBase):
     detect_anomaly = Optional(BoolField(), default=False)
     seed = Optional(IntField())
@@ -200,3 +200,6 @@ class TrainingConfig(ConfigBase):
         super().__init__()
         with open(config_path) as config_file:
             self.load(yaml.safe_load(config_file))
+
+if __name__ == "__main__":
+    print(TrainingConfig.describe(indent=4, recursive=True))

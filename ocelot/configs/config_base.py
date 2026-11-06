@@ -7,12 +7,24 @@ from typing import Any
 _MISSING = object()
 
 
+def _indent(level: int) -> str:
+    return " " * level
+
+
 class ConfigError(Exception):
     pass
 
 
 class ConfigItem:
-    pass
+    def describe(self, indent: int = 0, recursive: bool = False) -> str:
+        """Indent every line from the supplied absolute indentation level."""
+        return f"{_indent(indent)}{self.__class__.__name__}"
+
+    def describe_with_prefix(
+        self, prefix: str, indent: int = 0, recursive: bool = False
+    ) -> str:
+        description = self.describe(indent, recursive=recursive)
+        return f"{_indent(indent)}{prefix}{description.lstrip()}"
 
 
 class ConfigField(ConfigItem):
@@ -77,13 +89,27 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
             if isinstance(field, (ConfigBase, ConfigField)):
                 field.load(config_dict[field_name])
 
-    def describe(self) -> str:
-        optional_fields = [name for name, field in self._fields.items() if isinstance(field, Optional)]
-        required_fields = [name for name, field in self._fields.items() if not isinstance(field, Optional)]
-        newline = "\n  "
-        description = f"Required fields:\n  {newline.join(required_fields)}\n"
-        description += f"Optional fields:\n  {newline.join(optional_fields)}"
-        return description
+    @classmethod
+    def describe(
+        cls, indent: int = 0, recursive: bool = False, type_str: str | None = None
+    ) -> str:
+        """Align headers and fields and end each object block with a newline."""
+        lines = [f"{_indent(indent)}-- {cls.__name__} --"]
+        if type_str is not None:
+            lines.append(f'{_indent(indent)}type: "{type_str}"')
+        for name, field in cls._fields.items():
+            lines.append(
+                field.describe_with_prefix(f"{name}: ", indent, recursive=recursive)
+            )
+        return "\n".join(lines).rstrip("\n") + "\n"
+
+    def describe_with_prefix(
+        self, prefix: str, indent: int = 0, recursive: bool = False
+    ) -> str:
+        return (
+            f"{_indent(indent)}{prefix.rstrip()}\n"
+            f"{self.describe(indent + 4, recursive=recursive)}"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         config_dict = {}
@@ -149,6 +175,20 @@ class Choices(ConfigField):
             )
             self.choice.type = choice_type
 
+    def describe(self, indent: int = 0, recursive: bool = False) -> str:
+        if isinstance(self.choices, dict) and recursive:
+            lines = [f"{_indent(indent)}Choices {{"]
+            choice_indent = indent + 4
+            for name, choice in self.choices.items():
+                description = choice.describe(
+                    choice_indent, recursive=recursive, type_str=name
+                )
+                lines.append(description)
+            lines.append(f"{_indent(indent)}}}")
+            return "\n".join(lines)
+        choices = ", ".join(repr(name) for name in self.choices)
+        return f"{_indent(indent)}Choices {{{choices}}}"
+
 
 class Optional(ConfigField):
     type = None
@@ -157,6 +197,22 @@ class Optional(ConfigField):
         self.inner_type = inner_type
         self.default = default
         self._has_value = False
+
+    def describe(self, indent: int = 0, recursive: bool = False) -> str:
+        description = self.inner_type.describe(indent, recursive=recursive)
+        return self._describe_default(description)
+
+    def describe_with_prefix(
+        self, prefix: str, indent: int = 0, recursive: bool = False
+    ) -> str:
+        description = self.inner_type.describe_with_prefix(
+            prefix, indent, recursive=recursive
+        )
+        return self._describe_default(description)
+
+    def _describe_default(self, description: str) -> str:
+        header, newline, body = description.partition("\n")
+        return f"{header} (default={self.default}){newline}{body}"
 
     @property
     def value(self):
@@ -206,6 +262,11 @@ class ListField(ConfigField):
         super().__init__()
         self.inner_type = inner_type
 
+    def describe(self, indent: int = 0, recursive: bool = False) -> str:
+        return self.inner_type.describe_with_prefix(
+            "ListField of ", indent, recursive=recursive
+        )
+
     def load(self, value):
         if not isinstance(value, list):
             raise ConfigError(
@@ -228,6 +289,11 @@ class MapField(ConfigField):
     def __init__(self, value_type: ConfigField | ConfigBase):
         super().__init__()
         self.value_type = value_type
+
+    def describe(self, indent: int = 0, recursive: bool = False) -> str:
+        return self.value_type.describe_with_prefix(
+            "MapField of ", indent, recursive=recursive
+        )
 
     def load(self, value):
         if not isinstance(value, dict):
