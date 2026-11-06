@@ -1,0 +1,46 @@
+seed: null
+resume_from_latest: true
+
+data:
+  path: /scratch4/NAGAPE/gpu-ai4wp/Ronald.McLaren/ocelot/data/v7
+  max_rollout_steps: 1
+
+  sampler:
+    type: random            # random | sequential
+    date_range:
+      type: split_ratio     # split_ratio | predefined
+      train_val_split_ratio: 0.75
+    train_window_days: 7
+
+trainer:
+  max_epochs: 200
+  precision: 16-mixed
+  devices: 2
+  num_nodes: 4
+  detect_anomaly: false
+  early_stopping:
+    patience: 25
+    min_delta: 1.0e-5
+
+validation:
+  mode:
+    type: sequential        # fixed | random | sequential
+    window_days: 8
+    stride_days: 8
+    update_every_n_epochs: 5
+  cache_windows: true
+  cache_max_entries: 16
+
+optimizer:
+  type: adamw
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  lr_schedule:
+    type: cosine_warmup             # plateau | cosine_warmup
+    warmup_pct: 0.05
+    warmup_start_factor: 0.01
+    min_lr: 1.0e-6
+
+loss:
+  type: mse                 # mse | huber
+
