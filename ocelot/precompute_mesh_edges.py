@@ -11,9 +11,10 @@ Usage:
 import argparse
 import numpy as np
 import torch
-from create_mesh_graph_global import create_mesh, obs_mesh_conn
+
 from ocelot.configs.model_config import ModelConfig
 from ocelot.configs.pipeline_config import PipelineConfig
+from ocelot.model import mesh
 
 
 def precompute_edges(model_config_path, pipeline_config_path, output_path):
@@ -42,14 +43,8 @@ def precompute_edges(model_config_path, pipeline_config_path, output_path):
         return
 
     # Create mesh structure
-    mesh_config = model_config.mesh
-    print(f"Creating mesh with resolution {mesh_config.resolution}...")
-    mesh_structure = create_mesh(
-        splits=mesh_config.resolution,
-        levels=mesh_config.levels,
-        hierarchical=mesh_config.type == "hierarchical",
-        plot=False,
-    )
+    print(f"Creating mesh with resolution {model_config.mesh.resolution}...")
+    mesh_structure = mesh.make(model_config.mesh)
 
     # Get mesh coordinates (mesh grid points)
     mesh_latlon = mesh_structure["mesh_lat_lon_list"][-1]
@@ -69,7 +64,7 @@ def precompute_edges(model_config_path, pipeline_config_path, output_path):
     }
 
     print("\nComputing mesh→grid edges (shared for all mesh-grid instruments)...")
-    edge_index, edge_attr = obs_mesh_conn(
+    edge_index, edge_attr = mesh.obs_mesh_conn(
         mesh_lats,
         mesh_lons,
         mesh_structure["m2m_graphs"],

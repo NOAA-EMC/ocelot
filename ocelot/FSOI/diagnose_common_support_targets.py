@@ -36,7 +36,7 @@ if str(_GNN_MODEL) not in sys.path:
 if str(_FSOI) not in sys.path:
     sys.path.insert(0, str(_FSOI))
 
-from create_mesh_graph_global import obs_mesh_conn  # noqa: E402
+from ocelot.model.mesh import obs_mesh_conn  # noqa: E402
 from fsoi_dataset import FSOIDataset, verify_sequential_consistency  # noqa: E402
 from fsoi_inference import (  # noqa: E402
     configure_deterministic_inference,

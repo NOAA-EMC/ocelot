@@ -25,7 +25,7 @@ from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from ocelot.process_timeseries import extract_features, organize_bins_times
-from ocelot.model.mesh.mesh import obs_mesh_conn
+from ocelot.model.mesh import obs_mesh_conn
 
 # Number of columns for latitude and longitude in metadata
 LAT_LON_COLUMNS = 2
