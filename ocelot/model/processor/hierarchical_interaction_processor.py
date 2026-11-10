@@ -19,6 +19,7 @@ from ocelot.logger import log
 from ocelot.configs.model_config import ProcessorConfig
 from ocelot.model.graph_schema import GraphSchema
 from ocelot.model.processor.hierarchical_processor_base import HierarchicalProcessorBase
+from ocelot.model.processor.processor_base import ProcessorContext
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 from ocelot.model.coder.interaction_net import InteractionNet
 
