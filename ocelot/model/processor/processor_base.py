@@ -16,6 +16,7 @@ class ProcessorContext:
     num_steps: int
     node_features: Dict[str, torch.Tensor]  # encoded non-mesh nodes, fixed for the rollout
     edge_index_dict: Dict[EdgeType, torch.Tensor]  # batched processor edges, incl. mesh-to-mesh
+    edge_attr: Dict[EdgeType, torch.Tensor]  # edge attributes for the processor edges
 
 
 class ProcessorBase(nn.Module):
