@@ -308,15 +308,15 @@ class GNNDataModule(pl.LightningDataModule):
         """
         if n < 1:
             raise ValueError(f"ar_steps must be >= 1, got {n}")
-        # AR chains consecutive bins, so bins must be one target window apart.
+        # AR chains bins one target window apart, so that must be a whole number of bins.
         # Inference mode chains synthetically and does not use bin sequences.
         init_h = int(self.hparams.init_window_freq)
         target_h = int(self.hparams.target_window_hours)
         uses_bin_sequences = self.require_targets or not self.prediction_mode
-        if n > 1 and uses_bin_sequences and init_h != target_h:
+        if n > 1 and uses_bin_sequences and target_h % init_h != 0:
             raise ValueError(
-                f"AR (ar_steps={n}) currently requires init_window_freq ({init_h}h) == "
-                f"target_window_hours ({target_h}h)."
+                f"AR (ar_steps={n}) requires target_window_hours ({target_h}h) to be a "
+                f"multiple of init_window_freq ({init_h}h)."
             )
         self._ar_steps = n
         self._train_version += 1
@@ -852,7 +852,7 @@ class GNNDataModule(pl.LightningDataModule):
 
         if ar_steps > 1:
             from torch.utils.data import DataLoader as TorchDataLoader
-            ar_ds = ARWindowDataset(base_ds, ar_steps=ar_steps)
+            ar_ds = ARWindowDataset(base_ds, ar_steps=ar_steps, target_window_hours=int(self.hparams.target_window_hours))
             # ARWindowDataset returns lists, not plain HeteroData; PyG's collate
             # cannot handle a list of HeteroData directly.  Use batch_size=1 and
             # a no-op collate_fn to pass the raw list to training_step.
@@ -910,7 +910,7 @@ class GNNDataModule(pl.LightningDataModule):
         ar_steps = getattr(self, "_ar_steps", 1)
         if ar_steps > 1:
             from torch.utils.data import DataLoader as TorchDataLoader
-            ar_ds = ARWindowDataset(ds, ar_steps=ar_steps)
+            ar_ds = ARWindowDataset(ds, ar_steps=ar_steps, target_window_hours=int(self.hparams.target_window_hours))
             loader = TorchDataLoader(
                 ar_ds,
                 batch_size=1,
@@ -970,7 +970,7 @@ class GNNDataModule(pl.LightningDataModule):
         # identical structure to training mode.
         if ar_steps > 1 and self.require_targets:
             from torch.utils.data import DataLoader as TorchDataLoader
-            ar_ds = ARWindowDataset(base_ds, ar_steps=ar_steps)
+            ar_ds = ARWindowDataset(base_ds, ar_steps=ar_steps, target_window_hours=int(self.hparams.target_window_hours))
             loader = TorchDataLoader(
                 ar_ds,
                 batch_size=1,
