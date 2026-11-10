@@ -133,6 +133,7 @@ class ModelConfig(ConfigBase):
     latent_step_hours = Optional(IntField(), default=3)
     processor_window = Optional(IntField())
     channel_validity_features = Optional(BoolField(), default=True)
+    encoding_order = Optional(Choices(['default', 'reversed', 'random']), default='default')
     mesh = Choices({
         'fixed': FixedMeshConfig(),
         'hierarchical': HierarchicalMeshConfig(),

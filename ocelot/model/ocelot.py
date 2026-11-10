@@ -97,6 +97,7 @@ class Ocelot(nn.Module):
         self.verbose = verbose
 
         self.model_config = model_config
+        self.encoding_order = model_config.encoding_order
 
         self.instrument_catalog = instrument_catalog
         self.pipeline_config = pipeline_config
@@ -620,21 +621,38 @@ class Ocelot(nn.Module):
 
         # --------------------------------------------------------------------
         # STAGE 2: ENCODE (Pass information from observations TO the mesh)
+        # encoding_order can be set at runtime (without retraining) to test
+        # the effect of encoding sequence on FSOI rankings:
+        #   "default"  — YAML config order (satellite → conventional)
+        #   "reversed" — reverse of config order (conventional → satellite)
+        #   "random"   — shuffled each forward pass (training only; not for FSOI)
         # --------------------------------------------------------------------
         encoded_mesh_features = embedded_features["mesh"]
 
-        for edge_type, edge_index in data.edge_index_dict.items():
+        _enc_edges = [
+            (et, ei) for et, ei in data.edge_index_dict.items()
+            if et[2] == "mesh" and et[0] != "mesh"
+        ]
+
+        if self.encoding_order == "reversed":
+            _enc_edges = list(reversed(_enc_edges))
+        elif self.encoding_order == "random":
+            import random as _random
+            _random.shuffle(_enc_edges)
+        # "default" keeps config YAML order unchanged
+
+        for edge_type, edge_index in _enc_edges:
             src_type, _, dst_type = edge_type
-            print(f"encode: [edge_type] {edge_type}: {edge_index.shape}")
-            if dst_type == "mesh" and src_type != "mesh":  # This is an obs -> mesh edge
+            print(f"encode[{self.encoding_order}]: [edge_type] {edge_type}: {edge_index.shape}")
+            if True:  # filter already applied above
                 obs_features = embedded_features[src_type]
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
                 device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device
 
-                encoder = self.observation_encoders[self.mesh.edge_key(edge_type)]
+                encoder = self.observation_encoders[self._edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
-                edge_features = encoder.edge_features(
+                edge_features = self._edge_features(
                     data=data,
                     edge_type=edge_type,
                     edge_index=edge_index,
