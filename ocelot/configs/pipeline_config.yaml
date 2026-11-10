@@ -12,9 +12,9 @@ enabled_instruments:
   # - cris_pca
   - ascat
   # Conventional instruments
-  - aircraft
-  - radiosonde
   - surface_obs
+  - radiosonde
+  - aircraft
 
 subsampling:
   seed: 12345
@@ -23,14 +23,18 @@ subsampling:
     _default: {factor: 30, mode: random}
     atms: {factor: 6}
     amsua: {factor: 3}
-    avhrr: {factor: 300}
-    ascat: {factor: 10}
+    avhrr: {factor: 100}
+    ascat: {factor: 2}
     cris_pca: {factor: 1}
     seviri_asr: {factor: 60}
     seviri_csr: {factor: 60}
     ssmis: {factor: 20}
+
   conventional:
     _default: {factor: 1, mode: random}
+    surface_obs: {factor: 1}
+    radiosonde: {factor: 1}
+    aircraft: {factor: 1}
 
 outputs:
   mesh_prediction:

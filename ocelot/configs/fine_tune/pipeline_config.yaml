@@ -10,9 +10,9 @@ enabled_instruments:
   # - cris_pca
   # - ascat
   # Conventional instruments
-  - aircraft
-  - radiosonde
   - surface_obs
+  - radiosonde
+  - aircraft
 
 subsampling:
   seed: 12345
@@ -30,6 +30,9 @@ subsampling:
 
   conventional:
     _default: {factor: 1, mode: random}
+    surface_obs: {factor: 1}
+    radiosonde: {factor: 1}
+    aircraft: {factor: 1}
 
 outputs:
   mesh_prediction:
