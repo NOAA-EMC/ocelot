@@ -10,4 +10,10 @@ resources:
   devices: 1
   num_nodes: 1
 
+
+# Evaluation mode: Predict on obs-space for all instruments (AMSUA, aircraft, etc.) with ground truth comparisons.
+#                  The last timebin is held as the target bin, consistent with training.
+# Inference mode: Predict on mesh-grid for the instruments specified in configs/pipeline_config.yaml.
+#                 As the target bin is not used in this mode, all timebins are used as input.
+
 eval_mode: false
