@@ -1,16 +1,16 @@
-experiment_path: baseline_v1
+experiment_path: experiments/fine_tune
 
 # Selects the instrument definitions and output products used by a run.
 enabled_instruments:
   # Satellite instruments
-  - atms
-  - amsua
-  - ssmis
-  - seviri_asr
-  - seviri_csr
+  # - atms
+  # - amsua
+  # - ssmis
+  # - seviri_asr
+  # - seviri_csr
   - avhrr
   # - cris_pca
-  - ascat
+  # - ascat
   # Conventional instruments
   - surface_obs
   - radiosonde
@@ -53,3 +53,6 @@ outputs:
         - dewPointTemperature
         - wind_u
         - wind_v
+
+  
+

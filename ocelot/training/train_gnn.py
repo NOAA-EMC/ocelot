@@ -52,6 +52,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--experiment_path",
+        "--experiment-path",
         default="",
         help="Name of the experiment directory.",
     )
@@ -241,6 +242,7 @@ def _build_trainer(experiment_path: str, training_config: TrainingConfig, callba
         "logger": CSVLogger(save_dir=experiment_path, name="logs"),
         "callbacks": callbacks,
     }
+    print ("&&&&&&&& ", experiment_path)
     if trainer_config.devices > 1 or trainer_config.num_nodes > 1:
         use_gpu = trainer_config.accelerator != "cpu" and torch.cuda.is_available()
         trainer_kwargs["strategy"] = DDPStrategy(

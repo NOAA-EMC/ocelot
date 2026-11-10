@@ -39,6 +39,5 @@ echo "SLURM Node List: $SLURM_NODELIST"
 echo "Visible GPUs on this node:"
 nvidia-smi
 
-srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores python inference/predict_gnn.py \
-	 --model_config configs/model_config.yaml \
-	 --inference_config configs/inference_config.yaml
+srun --export=ALL --kill-on-bad-exit=1 --cpu-bind=cores \
+	 python inference/predict_gnn.py --experiment-path experiments/default
