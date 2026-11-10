@@ -1199,7 +1199,7 @@ class Ocelot(nn.Module):
                                      gts_list,
                                      valid_mask_list,
                                      out_dir,
-                                     batch_idx, 
+                                     batch_idx,
                                      mode='val'):
         """
         Save latent rollout as concatenated observations.
