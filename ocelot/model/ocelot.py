@@ -706,6 +706,9 @@ class Ocelot(nn.Module):
         num_latent_steps = step_info["num_steps"]
         edge_mapping = self.mesh.map_step_edges(data, step_mapping)
 
+        # Local list for mesh features
+        mesh_features_per_step = [] if self.enable_mesh_pred else None
+
         log.debug(f"[LATENT] {num_latent_steps} latent steps detected")
         log.debug(f"[LATENT] Step mapping: {step_mapping}")
 
@@ -726,9 +729,11 @@ class Ocelot(nn.Module):
 
         for step in range(num_latent_steps):
             encoded_features['mesh'] = self.processor(step, encoded_features['mesh'], processor_context)
+            if self.enable_mesh_pred:
+                mesh_features_per_step.append(encoded_features['mesh'].detach())
             self._generate_predictions(data, step, step_info['step_mapping'], edge_mapping, encoded_features['mesh'], predictions)
 
-        return predictions, None  # mesh_features_per_step
+        return predictions, mesh_features_per_step
 
     def _generate_predictions(self,
                               data: HeteroData,
