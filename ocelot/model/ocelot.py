@@ -738,6 +738,7 @@ class Ocelot(nn.Module):
             num_steps=num_latent_steps,
             node_features={nt: f for nt, f in encoded_features.items() if nt != GraphSchema.MESH},
             edge_index_dict={et: ei for et, ei in data.edge_index_dict.items() if et in processor_edge_types},
+            edge_attr={et: ea for et, ea in data.edge_attr.items() if et in processor_edge_types},
         )
 
         # Initialize predictions dict with lists for each base instrument

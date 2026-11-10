@@ -220,9 +220,11 @@ class SlidingWindowTransformer(FlatProcessorBase):
             if self.use_causal_mask else None
         )
 
+        mesh_edge_index = context.edge_index_dict[GraphSchema.MESH, "to", GraphSchema.MESH]
+        mesh_edge_attr = context.edge_attr[GraphSchema.MESH, "to", GraphSchema.MESH]
+
         for blk in self.blocks:
             x_seq = blk(x_seq, attn_mask)
-
             # Interleave explicit spatial mixing with temporal layers.
             # Apply mixing per time-slice (T is small: window size).
             if self.spatial_mixing_steps > 0:
@@ -230,7 +232,7 @@ class SlidingWindowTransformer(FlatProcessorBase):
                 for t in range(x_seq.size(1)):
                     xt = x_seq[:, t, :]
                     for _ in range(self.spatial_mixing_steps):
-                        xt = self.spatial_mix(xt, self.mesh.mesh_edge_index, self.mesh.mesh_edge_attr)
+                        xt = self.spatial_mix(xt, mesh_edge_index, mesh_edge_attr)
                     mixed.append(xt)
                 x_seq = torch.stack(mixed, dim=1)
 
