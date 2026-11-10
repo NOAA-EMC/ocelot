@@ -354,14 +354,14 @@ class OcelotTrainingModule(pl.LightningModule):
                     os.makedirs(out_dir, exist_ok=True)
 
                     # LATENT ROLLOUT: Concatenate all steps into standard format
-                    self.model.save_latent_concatenated_csv( 
-                        current_epoch=self.current_epoch, 
-                        batch=batch, 
-                        node_type=node_type, 
-                        preds_list=preds_list, 
+                    self.model.save_latent_concatenated_csv(
+                        current_epoch=self.current_epoch,
+                        batch=batch,
+                        node_type=node_type,
+                        preds_list=preds_list,
                         gts_list=gts_list,
-                        valid_mask_list=valid_mask_list, 
-                        out_dir=out_dir, 
+                        valid_mask_list=valid_mask_list,
+                        out_dir=out_dir,
                         batch_idx=batch_idx
                     )
 

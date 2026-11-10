@@ -256,9 +256,10 @@ def _build_trainer(experiment_path: str, training_config: TrainingConfig, callba
         trainer_kwargs["limit_val_batches"] = trainer_config.limit_val_batches
     return pl.Trainer(**trainer_kwargs)
 
-def run_training(model_config_path: str, 
-                 training_config_path: str, 
-                 experiment_path: str | None = None, 
+
+def run_training(model_config_path: str,
+                 training_config_path: str,
+                 experiment_path: str | None = None,
                  verbose=False):
     import lightning.pytorch as pl
     import torch
@@ -282,9 +283,9 @@ def run_training(model_config_path: str,
     exp_config_dir = os.path.join(experiment_path, "configs")
     os.makedirs(exp_config_dir, exist_ok=True)
 
-    for config_path in [model_config_path, 
-                        training_config_path, 
-                        model_config.instrument_config_path, 
+    for config_path in [model_config_path,
+                        training_config_path,
+                        model_config.instrument_config_path,
                         model_config.pipeline_config_path]:
         if not os.path.commonpath([config_path, exp_config_dir]) == exp_config_dir:
             shutil.copy(config_path, exp_config_dir)
@@ -349,9 +350,9 @@ def run_training(model_config_path: str,
     )
 
     trainer = _build_trainer(experiment_path=pipeline_config.experiment_path,
-                             training_config=training_config, 
+                             training_config=training_config,
                              callbacks=_build_callbacks(pipeline_config,
-                                                        training_config, 
+                                                        training_config,
                                                         windows))
 
     setup_end = time.time()

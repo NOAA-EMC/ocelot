@@ -357,7 +357,6 @@ class Ocelot(nn.Module):
                 df.to_csv(filepath, index=False)
                 print(f"[MESH PRED] Saved {filepath}: {len(df)} points")
 
-
     def _load_mesh_prediction_edges(self, edges_file='mesh_pred_edges.npz'):
         """
         Load pre-computed mesh prediction edges from file.
@@ -700,9 +699,9 @@ class Ocelot(nn.Module):
 
         return predictions
 
-    def _forward_latent_rollout(self, 
-                                data: HeteroData, 
-                                encoded_features: dict, 
+    def _forward_latent_rollout(self,
+                                data: HeteroData,
+                                encoded_features: dict,
                                 global_step: int | None) -> Dict[str, List[torch.Tensor]]:
         """
         Latent rollout forward pass: Sequential processor → decoder → next processor
@@ -1192,14 +1191,14 @@ class Ocelot(nn.Module):
 
         return predictions
 
-    def save_latent_concatenated_csv(self, 
-                                     current_epoch, 
-                                     batch, 
-                                     node_type, 
-                                     preds_list, 
+    def save_latent_concatenated_csv(self,
+                                     current_epoch,
+                                     batch,
+                                     node_type,
+                                     preds_list,
                                      gts_list,
-                                     valid_mask_list, 
-                                     out_dir, 
+                                     valid_mask_list,
+                                     out_dir,
                                      batch_idx, 
                                      mode='val'):
         """

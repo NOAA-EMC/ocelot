@@ -115,7 +115,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
     def forward(self,
                 step: int,
                 encoded_mesh_features: torch.Tensor,
-                context: ProcessorContext)  -> list[torch.Tensor]:
+                context: ProcessorContext) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical temporal transformer.
 
@@ -130,7 +130,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
 
         level_features = encoded_mesh_features
         for step in range(context.num_steps):
-            level_features = self._do_forward_step(step, 
+            level_features = self._do_forward_step(step,
                                                    context,
                                                    level_features)
 

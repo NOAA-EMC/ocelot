@@ -201,5 +201,6 @@ class TrainingConfig(ConfigBase):
         with open(config_path) as config_file:
             self.load(yaml.safe_load(config_file))
 
+
 if __name__ == "__main__":
     print(TrainingConfig.describe(indent=4, recursive=True))
