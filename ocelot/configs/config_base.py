@@ -1,7 +1,7 @@
 # From the NOAA OMD Ocelot project
 import os
 from copy import deepcopy
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 _MISSING = object()
@@ -75,8 +75,10 @@ class ConfigBase(ConfigItem, metaclass=ConfigMeta):
         unknown_fields = config_dict.keys() - self._fields.keys()
         if unknown_fields:
             names = ", ".join(sorted(unknown_fields))
-            raise ConfigError(f"Unknown field(s) for {type(self).__name__}: {names}. \n"
-                              f"\n{self.describe()}")
+            raise ConfigError(
+                f"Unknown field(s) for {type(self).__name__}: {names}. \n"
+                f"\n{self.describe()}"
+            )
 
         for field_name in self._fields:
             field = self._fields[field_name]
@@ -297,7 +299,9 @@ class MapField(ConfigField):
 
     def load(self, value):
         if not isinstance(value, dict):
-            raise ConfigError(f"Expected value of type dict but got {type(value).__name__}")
+            raise ConfigError(
+                f"Expected value of type dict but got {type(value).__name__}"
+            )
 
         items = {}
         for key, item in value.items():
@@ -314,9 +318,7 @@ class DatetimeField(ConfigField):
         elif isinstance(value, datetime):
             self.value = value
         elif isinstance(value, date):
-            self.value = datetime(
-                value.year, value.month, value.day, tzinfo=timezone.utc
-            )
+            self.value = datetime(value.year, value.month, value.day, tzinfo=UTC)
         else:
             raise ConfigError(
                 f"Expected value of type str, date, or datetime but got {type(value)}"
