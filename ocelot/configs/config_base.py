@@ -1,7 +1,7 @@
 # From the NOAA OMD Ocelot project
 import os
 from copy import deepcopy
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 _MISSING = object()
@@ -318,8 +318,8 @@ class DatetimeField(ConfigField):
         elif isinstance(value, datetime):
             self.value = value
         elif isinstance(value, date):
-            self.value = datetime(value.year, value.month, value.day, tzinfo=UTC)
+            self.value = datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
         else:
             raise ConfigError(
-                f"Expected value of type str, date, or datetime but got {type(value)}"
+                f"Expected value of type str, date, or datetime but got {type(value).__name__}"
             )

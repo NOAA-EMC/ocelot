@@ -61,6 +61,12 @@ def parse_args(argv=None):
         action="store_true",
         help="Enable debug logging in addition to the training config setting.",
     )
+    parser.add_argument(
+        "--profile_memory",
+        "--profile-memory",
+        action="store_true",
+        help="Enable memory profiling during training.",
+    )
     return parser.parse_args(argv)
 
 
@@ -389,7 +395,18 @@ def main(argv=None):
     print(f"  SLURM_PROCID: {os.environ.get('SLURM_PROCID')}")
     print(f"  SLURM_LOCALID: {os.environ.get('SLURM_LOCALID')}")
     print(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
-    run_training(model_config, train_config, experiment_path, verbose=args.verbose)
+
+    if args.profile_memory:
+        import torch
+        torch.cuda.memory._record_memory_history(max_entries=100000)
+        try:
+            run_training(model_config, train_config, experiment_path, verbose=args.verbose)
+        finally:
+            rank = int(os.environ.get("RANK", "0"))
+            torch.cuda.memory._dump_snapshot(f"memory_snapshot_{rank}.pickle")
+            torch.cuda.memory._record_memory_history(enabled=None)
+    else:
+        run_training(model_config, train_config, experiment_path, verbose=args.verbose)
 
 
 if __name__ == "__main__":

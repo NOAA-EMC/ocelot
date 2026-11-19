@@ -43,10 +43,6 @@ class OcelotTrainingModule(pl.LightningModule):
             if self.trainer.is_global_zero:
                 print("[ANOMALY] torch.autograd anomaly mode enabled once at fit start.")
 
-    def _edge_key(self, edge_type: Tuple[str, str, str]) -> str:
-        """Converts an edge_type tuple to a string key for ModuleDict."""
-        return f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
-
     def training_step(self, batch, batch_idx):
         print("[DIAG] Entered training_step()")
         if torch.cuda.is_available():
