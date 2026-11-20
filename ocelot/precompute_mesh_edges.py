@@ -47,7 +47,7 @@ def precompute_edges(model_config_path, pipeline_config_path, output_path):
     mesh_structure = mesh.make(model_config.mesh)
 
     # Get mesh coordinates (mesh grid points)
-    mesh_latlon = mesh_structure.mesh_lat_lon_list_torch[-1]
+    mesh_latlon = mesh_structure.mesh_lat_lon_list[-1]
     mesh_lats = mesh_latlon[:, 0].copy()  # Use .copy() to create standalone arrays
     mesh_lons = mesh_latlon[:, 1].copy()
 

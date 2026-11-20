@@ -16,7 +16,7 @@ import torch.utils.checkpoint as checkpoint
 from torch_geometric.data import HeteroData
 
 from ocelot.logger import log
-from ocelot.configs.model_config import ProcessorConfig
+from ocelot.configs.model_config import InteractionCoderConfig, ProcessorConfig
 from ocelot.model.graph_schema import GraphSchema
 from ocelot.model.processor.hierarchical_processor_base import HierarchicalProcessorBase
 from ocelot.model.processor.processor_base import ProcessorContext
@@ -80,86 +80,64 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         for level in range(self.num_levels):
             level_layers = nn.ModuleList()
             for _ in range(self.num_message_passing_steps):
-                level_layers.append(
-                    InteractionNet(
-                        edge_index=None,
-                        send_dim=self.hidden_dim,
-                        rec_dim=self.hidden_dim,
-                        hidden_layers=2,
-                        update_edges=False,
-                    )
-                )
+                level_layers.append(self._make_interaction_net())
             self.intra_level_layers.append(level_layers)
 
         # Up connections (fine → coarse)
         self.up_layers = nn.ModuleList()
         for level in range(self.num_levels - 1):
-            self.up_layers.append(
-                InteractionNet(
-                    edge_index=None,
-                    send_dim=self.hidden_dim,
-                    rec_dim=self.hidden_dim,
-                    hidden_layers=2,
-                    update_edges=False,
-                )
-            )
+            self.up_layers.append(self._make_interaction_net())
 
         # Down connections (coarse → fine)
         self.down_layers = nn.ModuleList()
         for level in range(self.num_levels - 1):
-            self.down_layers.append(
-                InteractionNet(
-                    edge_index=None,
-                    send_dim=self.hidden_dim,
-                    rec_dim=self.hidden_dim,
-                    hidden_layers=2,
-                    update_edges=False,
-                )
-            )
+            self.down_layers.append(self._make_interaction_net())
 
         # Layer normalization for each level
         self.level_norms = nn.ModuleList()
         for level in range(self.num_levels):
             self.level_norms.append(nn.LayerNorm(self.hidden_dim))
 
+    def _make_interaction_net(self) -> InteractionNet:
+        """Mesh-to-mesh InteractionNet mapping hidden_dim → hidden_dim; edge_index is set per step."""
+        coder_config = InteractionCoderConfig()
+        coder_config.load({
+            "send_dim": self.hidden_dim,
+            "rec_dim": self.hidden_dim,
+            "hidden_layers": 2,
+            "update_edges": False,
+        })
+        return InteractionNet(coder_config)
+
     def forward(self,
                 step: int,
                 encoded_mesh_features: torch.Tensor,
-                context: ProcessorContext) -> list[torch.Tensor]:
+                context: ProcessorContext) -> torch.Tensor:
         """
-        Forward pass through hierarchical temporal transformer.
+        Evolve the finest-level mesh state one latent step.
 
         Args:
             step: Current step index within the total number of steps
-            encoded_mesh_features: List of encoded features for each mesh level (finest → coarse)
-            context: ProcessorContext containing global step and number of steps
+            encoded_mesh_features: [N_fine * num_graphs, H] finest-level mesh features
+            context: ProcessorContext containing global step, number of steps and graphs
 
         Returns:
-            List of [N_level, H] updated mesh states per level
+            [N_fine * num_graphs, H] updated finest-level mesh features
         """
+        mesh_data = self._prep_mesh_data(context, encoded_mesh_features)
+        level_features = self._do_forward_step(mesh_data)
+        return self._gather_node_features(step, context.global_step, level_features, mesh_data)
 
-        level_features = encoded_mesh_features
-        level_features = self._do_forward_step(step, context, level_features)
-
-        return level_features
-
-    def _do_forward_step(self,
-                         step: int,
-                         context: ProcessorContext,
-                         current_mesh_features: torch.Tensor) -> list[torch.Tensor]:
+    def _do_forward_step(self, mesh_data: MeshData) -> list[torch.Tensor]:
         """
         Forward pass through hierarchical mesh levels.
 
         Args:
-            step: Current step index within the total number of steps
-            context: ProcessorContext containing global step and number of steps
-            current_mesh_features: Tensor of current mesh features for the finest level
+            mesh_data: Batched per-level features and edges from _prep_mesh_data
 
         Returns:
             List of updated mesh features for each level
         """
-
-        mesh_data = self._prep_mesh_data(context, current_mesh_features)
 
         # Store features at each level
         level_features = [feat.clone() for feat in mesh_data.mesh_features_list]
@@ -228,24 +206,24 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         mesh_edge_attr_list = []
 
         for level in range(self.num_levels):
-            level_mesh_x = getattr(self, f"mesh_x_level_{level}")
-            level_mesh_ei = getattr(self, f"mesh_edge_index_level_{level}")
-            level_mesh_ea = getattr(self, f"mesh_edge_attr_level_{level}")
+            level_mesh_x = getattr(self.mesh, f"mesh_x_level_{level}")
+            level_mesh_ei = getattr(self.mesh, f"mesh_edge_index_level_{level}")
+            level_mesh_ea = getattr(self.mesh, f"mesh_edge_attr_level_{level}")
+            num_nodes_this_level = level_mesh_x.shape[0]
 
             # Only the FINEST level (level 0) receives encoded features
             # Future: distribute features across levels
             if level == 0:
                 mesh_features_list.append(current_mesh_features)
             else:
-                # Initialize coarser levels with zeros for now
-                num_nodes_this_level = level_mesh_x.shape[0]
+                # Initialize coarser levels with zeros for now (one block per graph in the batch)
                 mesh_features_list.append(
-                    torch.zeros(num_nodes_this_level, self.hidden_dim,
-                                device=current_mesh_features.device)
+                    torch.zeros(num_nodes_this_level * context.num_graphs, self.hidden_dim,
+                                device=current_mesh_features.device,
+                                dtype=current_mesh_features.dtype)
                 )
 
             # Batch the edge indices
-            num_nodes_this_level = level_mesh_x.shape[0]
             batched_ei = [level_mesh_ei + i * num_nodes_this_level for i in range(context.num_graphs)]
             mesh_edge_index_list.append(torch.cat(batched_ei, dim=1))
             mesh_edge_attr_list.append(level_mesh_ea.repeat(context.num_graphs, 1))
@@ -257,14 +235,14 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
         down_edge_attr_list = []
 
         for level in range(self.num_levels - 1):
-            up_ei = getattr(self, f"mesh_up_edge_index_{level}")
-            up_ea = getattr(self, f"mesh_up_edge_attr_{level}")
-            down_ei = getattr(self, f"mesh_down_edge_index_{level}")
-            down_ea = getattr(self, f"mesh_down_edge_attr_{level}")
+            up_ei = getattr(self.mesh, f"mesh_up_edge_index_{level}")
+            up_ea = getattr(self.mesh, f"mesh_up_edge_attr_{level}")
+            down_ei = getattr(self.mesh, f"mesh_down_edge_index_{level}")
+            down_ea = getattr(self.mesh, f"mesh_down_edge_attr_{level}")
 
             # Batch the hierarchical edges
-            num_nodes_fine = getattr(self, f"mesh_x_level_{level}").shape[0]
-            num_nodes_coarse = getattr(self, f"mesh_x_level_{level+1}").shape[0]
+            num_nodes_fine = getattr(self.mesh, f"mesh_x_level_{level}").shape[0]
+            num_nodes_coarse = getattr(self.mesh, f"mesh_x_level_{level+1}").shape[0]
 
             batched_up_ei = []
             batched_down_ei = []
@@ -287,7 +265,11 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
             down_edge_attr_list=down_edge_attr_list,
         )
 
-    def _gather_node_features(self, step: int, processed_levels: list) -> torch.Tensor:
+    def _gather_node_features(self,
+                              step: int,
+                              global_step: int | None,
+                              processed_levels: list[torch.Tensor],
+                              mesh_data: MeshData) -> torch.Tensor:
 
         current_mesh_features: torch.Tensor = None  # Will hold the final features for this step
 
@@ -301,7 +283,7 @@ class HierarchicalInteractionProcessor(HierarchicalProcessorBase):
             down_edge_index = mesh_data.down_edge_index_list[0]  # Already batched
 
             # Direction check (only once at start)
-            if step == 0 and self.global_step == 0:
+            if step == 0 and global_step == 0:
                 src_max = down_edge_index[0].max().item()
                 dst_max = down_edge_index[1].max().item()
                 print(f"[COARSE→FINE] InteractionNet edge check: src_max={src_max}, dst_max={dst_max}")

@@ -13,6 +13,7 @@ from ocelot.model.graph_schema import EdgeType
 class ProcessorContext:
     """Per-batch inputs shared by every latent step of a rollout."""
 
+    global_step: int | None  # trainer global step; None outside a Lightning trainer
     num_steps: int
     node_features: Dict[str, torch.Tensor]  # encoded non-mesh nodes, fixed for the rollout
     edge_index_dict: Dict[EdgeType, torch.Tensor]  # batched processor edges, incl. mesh-to-mesh
