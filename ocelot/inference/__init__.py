@@ -18,12 +18,9 @@ def make_module(model_config: ModelConfig,
         instrument_catalog=instrument_catalog,
         pipeline_config=pipeline_config,
         verbose=verbose)
-    module = OcelotInferenceModule(model=model)
-    checkpoint = torch.load(pipeline_config.last_checkpoint_path, map_location="cpu")
-    state = checkpoint.get('state_dict', checkpoint)
-    missing, unexpected = module.load_state_dict(state, strict=False)
-    print(
-        "Model loaded successfully (strict=False). "
-        f"missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
-    )
+    
+    module = OcelotInferenceModule(model=model, 
+                                   inference_config=inference_config, 
+                                   pipeline_config=pipeline_config)
+
     return module

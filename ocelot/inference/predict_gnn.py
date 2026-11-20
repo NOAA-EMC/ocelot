@@ -10,6 +10,7 @@ import sys
 import time
 import pandas as pd
 import socket
+import shutil
 from datetime import timedelta
 
 import lightning.pytorch as pl
@@ -66,22 +67,24 @@ def main():
     if args.experiment_path:
         experiment_path = args.experiment_path
         model_config = os.path.join(experiment_path, "configs", "model_config.yaml")
-        inference_config = os.path.join(experiment_path, "configs", "inference_config.yaml")
+        inf_config_path = os.path.join(experiment_path, "configs", "inference_config.yaml")
     else:
         experiment_path = None
         model_config = args.model_config
-        inference_config = args.inference_config
+        inf_config_path = args.inference_config
 
     model_config = ModelConfig(model_config)
-    inference_config = InferenceConfig(inference_config)
+    inference_config = InferenceConfig(inf_config_path)
     instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
     pipeline_config = PipelineConfig(model_config.pipeline_config_path)
     pipeline_config.validate_instruments(instrument_catalog)
 
     # Copy inference configuration to the experiment's config directory if it's not already there
-    exp_config_dir = os.path.join(experiment_path, "configs")
-    if not os.path.commonpath([inference_config, exp_config_dir]) == exp_config_dir:
-        shutil.copy(inference_config, exp_config_dir)
+    if experiment_path:
+        exp_config_dir = os.path.join(experiment_path, "configs")
+        if not os.path.commonpath([inf_config_path, exp_config_dir]) == exp_config_dir:
+            shutil.copy(inf_config_path, exp_config_dir)
+            inf_config_path = os.path.join(exp_config_dir, os.path.basename(inf_config_path))
 
     has_cuda = torch.cuda.is_available()
     if not has_cuda and (inference_config.resources.devices != 1 or inference_config.resources.num_nodes != 1):
@@ -125,7 +128,7 @@ def main():
     # Load model from checkpoint
     print(f"\nLoading model from checkpoint: {checkpoint_path}")
 
-    model = ocelot.inference.make_module(
+    inf_module = ocelot.inference.make_module(
         model_config=model_config,  # Replace with actual model config if available
         inference_config=inference_config,  # Replace with actual inference config if available
         instrument_catalog=instrument_catalog,
@@ -133,7 +136,7 @@ def main():
         verbose=True
     )
 
-    model.eval()
+    inf_module.eval()
 
     print(f"\nSetting up data module:")
     print(f"  Input window: {model_config.input_window_hours}h")
@@ -147,7 +150,7 @@ def main():
         end_date=inference_config.data.end_date,
         instrument_catalog=instrument_catalog,
         pipeline_config=pipeline_config,
-        mesh_structure=model.model.mesh.mesh_structure,
+        mesh_structure=inf_module.model.mesh.mesh_structure,
         batch_size=inference_config.data.batch_size,
         num_neighbors=3,
         input_window_hours=model_config.input_window_hours,
@@ -209,7 +212,7 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    predictions = trainer.predict(model, datamodule=data_module)
+    predictions = trainer.predict(inf_module, datamodule=data_module)
 
     end_time = time.time()
     print("\n" + "="*80)

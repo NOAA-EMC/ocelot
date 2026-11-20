@@ -272,14 +272,17 @@ def run_training(model_config_path: str,
     import lightning.pytorch as pl
     import torch
 
+    model_config_path = os.path.realpath(model_config_path)
+    training_config_path = os.path.realpath(training_config_path)
+
     model_config = ModelConfig(model_config_path)
     training_config = TrainingConfig(training_config_path)
     instrument_catalog = InstrumentCatalogConfig(model_config.instrument_config_path)
     pipeline_config = PipelineConfig(model_config.pipeline_config_path)
     pipeline_config.validate_instruments(instrument_catalog)
+    experiment_path = os.path.realpath(experiment_path or pipeline_config.experiment_path)
 
     # Copy configuration files to the experiment's config directory
-    experiment_path = experiment_path or pipeline_config.experiment_path
     if os.path.realpath(experiment_path) != os.path.realpath(pipeline_config.experiment_path):
         pipeline_config.experiment_path = experiment_path
         import warnings

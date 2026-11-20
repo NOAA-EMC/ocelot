@@ -34,6 +34,15 @@ class TemporalPositionalEncoding(nn.Module):
         return x + self.pe[:, :T, :]
 
 
+@dataclass
+class MeshData:
+    mesh_features_list: List[torch.Tensor]
+    up_edge_index_list: List[torch.Tensor]
+    down_edge_index_list: List[torch.Tensor]
+    mesh_edge_index_list: List[torch.Tensor]
+    mesh_edge_attr_list: List[torch.Tensor]
+
+
 def _causal_mask(T: int, device: torch.device) -> torch.Tensor:
     # allow attend to <= current time only
     # [T, T] with True = -inf mask positions
@@ -480,14 +489,6 @@ class HierarchicalSlidingWindowTransformer(HierarchicalProcessorBase):
         output_list = [x_seq[:, -1, :] for x_seq in processed_list]
 
         return self._gather_node_features(step, context.global_step, processed_list)
-
-    @dataclass
-    class MeshData:
-        mesh_features_list: List[torch.Tensor]
-        up_edge_index_list: List[torch.Tensor]
-        down_edge_index_list: List[torch.Tensor]
-        mesh_edge_index_list: List[torch.Tensor]
-        mesh_edge_attr_list: List[torch.Tensor]
 
     def _prep_mesh_data(self, step: int, num_latent_steps: int, current_mesh_features: torch.Tensor) -> MeshData:
         # Hierarchical transformer: process all mesh levels with cross-scale attention

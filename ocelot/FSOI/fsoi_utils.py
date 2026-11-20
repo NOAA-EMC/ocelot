@@ -733,7 +733,7 @@ def compute_forecast_error_on_mesh(
     mesh_feat = mesh_features_per_step[forecast_lead_step]  # [N_mesh, D]
 
     # ── 2. Decode to mesh — WITH gradients (bypass _decode_all_steps_to_mesh) ─
-    mesh_pred_edges = model._get_mesh_pred_edges()
+    mesh_pred_edges = model.get_mesh_pred_edges()
     if mesh_instrument not in mesh_pred_edges:
         raise ValueError(
             f"[MeshFSOI] No mesh prediction edges for '{mesh_instrument}'. "

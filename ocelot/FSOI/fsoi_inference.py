@@ -2084,7 +2084,7 @@ def main():
         model.mesh_pressure_level_idx = args.mesh_pressure_level_idx
 
         # Load mesh prediction edges once (expensive, cached on model)
-        mesh_pred_edges_cache = model._get_mesh_pred_edges()
+        mesh_pred_edges_cache = model.get_mesh_pred_edges()
         if args.mesh_instrument not in mesh_pred_edges_cache:
             raise ValueError(
                 f"[MESH FSOI] No edges for '{args.mesh_instrument}'. "

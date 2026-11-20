@@ -297,7 +297,7 @@ class Ocelot(nn.Module):
 
         # Calculate forecast hours
         num_steps = len(next(iter(predictions.values())))
-        latent_step_hours = self.latent_step_hours
+        latent_step_hours = self.model_config.latent_step_hours
         forecast_hours = [(i + 1) * latent_step_hours for i in range(num_steps)]
 
         print(f"[MESH PRED] Init time: {init_time_str}, Forecast hours: {forecast_hours} (latent_step={latent_step_hours}h, steps={num_steps})")
@@ -648,10 +648,10 @@ class Ocelot(nn.Module):
                 # Use device from input data instead of self.device to avoid checkpoint loading issues
                 device = obs_features.device if obs_features.numel() > 0 else encoded_mesh_features.device
 
-                encoder = self.observation_encoders[self._edge_key(edge_type)]
+                encoder = self.observation_encoders[self.mesh.edge_key(edge_type)]
                 encoder.edge_index = edge_index
 
-                edge_features = self._edge_features(
+                edge_features = encoder.edge_features(
                     data=data,
                     edge_type=edge_type,
                     edge_index=edge_index,
@@ -737,7 +737,8 @@ class Ocelot(nn.Module):
             num_steps=num_latent_steps,
             node_features={nt: f for nt, f in encoded_features.items() if nt != GraphSchema.MESH},
             edge_index_dict={et: ei for et, ei in data.edge_index_dict.items() if et in processor_edge_types},
-            edge_attr={et: ea for et, ea in data.edge_attr.items() if et in processor_edge_types},
+            edge_attr={et: ea for et, ea in data.edge_attr_dict.items() if et in processor_edge_types},
+            num_graphs=data.num_graphs,
         )
 
         # Initialize predictions dict with lists for each base instrument

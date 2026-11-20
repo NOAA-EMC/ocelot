@@ -9,11 +9,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import HeteroData
 
+from ocelot.configs.inference_config import InferenceConfig
+from ocelot.configs.pipeline_config import PipelineConfig
+from ocelot.model.ocelot import Ocelot
 
 class OcelotInferenceModule(pl.LightningModule):
-    def __init__(self, model):
+    def __init__(self, 
+                 model: Ocelot, 
+                 inference_config: InferenceConfig, 
+                 pipeline_config: PipelineConfig):
         super().__init__()
         self.model = model
+        self.checkpoint_path = inference_config.checkpoint or pipeline_config.last_checkpoint_path
+
+        checkpoint = torch.load(self.checkpoint_path, map_location="cpu")
+        state = checkpoint.get('state_dict', checkpoint)
+        missing, unexpected = self.load_state_dict(state, strict=False)
+        print(
+            "Model loaded successfully (strict=False). "
+            f"missing_keys={len(missing)} unexpected_keys={len(unexpected)}"
+        )
 
     def forward(self, data: HeteroData):
         return self.model(data, global_step=self.global_step)

@@ -502,9 +502,9 @@ class OcelotTrainingModule(pl.LightningModule):
         optimizer = torch.optim.AdamW(self.parameters(), lr=opt_config.lr, weight_decay=opt_config.weight_decay)
 
         # TenYearTrain-style schedule: warmup + cosine decay (robust to noisy validation)
-        if opt_config.lr_schedule == "cosine_warmup":
+        if opt_config.lr_schedule.type == "cosine_warmup":
             max_epochs = self.trainer.max_epochs if self.trainer.max_epochs else 328
-            warmup_epochs = max(1, int(opt_config.warmup_pct * max_epochs))
+            warmup_epochs = max(1, int(opt_config.lr_schedule.warmup_pct * max_epochs))
             warmup_epochs = min(warmup_epochs, max(1, max_epochs - 1))
 
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
