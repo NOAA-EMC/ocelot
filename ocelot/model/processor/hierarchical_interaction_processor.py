@@ -23,6 +23,7 @@ from ocelot.model.processor.processor_base import ProcessorContext
 from ocelot.model.mesh.hierarchical_mesh import HierarchicalMesh
 from ocelot.model.coder.interaction_net import InteractionNet
 
+
 @dataclass
 class MeshData:
     mesh_features_list: List[torch.Tensor]

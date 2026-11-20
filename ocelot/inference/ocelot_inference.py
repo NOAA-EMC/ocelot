@@ -13,10 +13,11 @@ from ocelot.configs.inference_config import InferenceConfig
 from ocelot.configs.pipeline_config import PipelineConfig
 from ocelot.model.ocelot import Ocelot
 
+
 class OcelotInferenceModule(pl.LightningModule):
-    def __init__(self, 
-                 model: Ocelot, 
-                 inference_config: InferenceConfig, 
+    def __init__(self,
+                 model: Ocelot,
+                 inference_config: InferenceConfig,
                  pipeline_config: PipelineConfig):
         super().__init__()
         self.model = model

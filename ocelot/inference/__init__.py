@@ -18,9 +18,9 @@ def make_module(model_config: ModelConfig,
         instrument_catalog=instrument_catalog,
         pipeline_config=pipeline_config,
         verbose=verbose)
-    
-    module = OcelotInferenceModule(model=model, 
-                                   inference_config=inference_config, 
+
+    module = OcelotInferenceModule(model=model,
+                                   inference_config=inference_config,
                                    pipeline_config=pipeline_config)
 
     return module
